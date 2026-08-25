@@ -97,24 +97,24 @@ Deliverable: documented authentication/provider decision.
 ## M2 — Managed Runtime Foundation
 **Model:** Luna Max implementation; Sol Max review for updater/security.
 
-- [ ] runtime manifest schema
-- [ ] platform/architecture IDs
-- [ ] runtime state model
-- [ ] download staging
-- [ ] integrity verification
-- [ ] safe archive extraction
-- [ ] managed install
-- [ ] detection
-- [ ] repair
+- [x] runtime manifest schema
+- [x] platform/architecture IDs
+- [x] runtime state model
+- [x] download staging
+- [x] integrity verification
+- [x] safe archive extraction
+- [x] managed install
+- [x] detection
+- [x] repair
 - [ ] update discovery
-- [ ] safe activation
-- [ ] rollback
-- [ ] minimal active pointer and filesystem-derived startup recovery
+- [x] safe activation
+- [x] rollback
+- [x] minimal active pointer and filesystem-derived startup recovery
 - [ ] TUF-compatible runtime trust metadata and key-rotation/revocation ceremony
-- [ ] authenticated installed-file inventory and local modification detection
-- [ ] single-instance, runtime mutation lock, and game-process liveness coordination
-- [ ] block activation while game runs
-- [ ] runtime status UI
+- [x] authenticated installed-file inventory and local modification detection
+- [x] single-instance, runtime mutation lock, and game-process liveness coordination
+- [x] block activation while game runs
+- [x] runtime status UI
 - [ ] repair UI
 - [ ] macOS app/core signing and quarantine strategy
 - [ ] Windows Authenticode/Smart App Control and pointer replacement spike

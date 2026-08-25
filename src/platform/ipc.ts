@@ -8,6 +8,23 @@ export interface AppInfo {
   databaseReady: boolean;
 }
 
+export type RuntimeState =
+  | 'notInstalled'
+  | 'ready'
+  | 'installing'
+  | 'updating'
+  | 'repairing'
+  | 'broken'
+  | 'rollbackAvailable';
+
+export interface RuntimeStatus {
+  state: RuntimeState;
+  installationId: string | null;
+  releaseId: string | null;
+  canRollback: boolean;
+  repairRequired: boolean;
+}
+
 export interface IpcErrorShape {
   code: string;
   message: string;
@@ -41,6 +58,14 @@ export function normalizeIpcError(error: unknown): IpcError {
 export async function getAppInfo(): Promise<AppInfo> {
   try {
     return await invoke<AppInfo>('get_app_info');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function getRuntimeStatus(): Promise<RuntimeStatus> {
+  try {
+    return await invoke<RuntimeStatus>('get_runtime_status');
   } catch (error: unknown) {
     throw normalizeIpcError(error);
   }
