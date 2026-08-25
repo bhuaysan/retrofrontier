@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root, [data-theme="dark"] {
+    --bg:#121212; --bg-soft:#1b1b1b; --surface:#1e1e1e; --surface-2:#252525;
+    --border:#000000; --shadow:#2b2b2b; --text:#f2f2f2; --text-dim:#9a9a9a;
+    --accent:#3cb58f; --accent-2:#d0648c; --accent-3:#9a7bd4; --accent-4:#7ba05b;
+    --accent-5:#62abd9; --accent-6:#c9834a; --chip-bg:#1e1e1e;
+    --scanline:rgba(255,255,255,.028);
+  }
+  [data-theme="light"] {
+    --bg:#f4ecdc; --bg-soft:#efe4cd; --surface:#fbf5e8; --surface-2:#f1e8d4;
+    --border:#1a1a1a; --shadow:#1a1a1a; --text:#1a1a1a; --text-dim:#6b6353;
+    --accent:#1a8f80; --accent-2:#c8607f; --accent-3:#7c5cc4; --accent-4:#6b8f4e;
+    --accent-5:#568db1; --accent-6:#b5753d; --chip-bg:#fbf5e8;
+    --scanline:rgba(0,0,0,.03);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scrollbar-color: var(--text-dim) var(--bg-soft); }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    min-height: 100vh;
+    transition: background .25s ease, color .25s ease;
+    background-image: repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px);
+  }
+  ::selection { background: var(--accent); color:#000; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-3); }
+  button:focus-visible, [tabindex]:focus-visible { outline: none; }
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" data-screen-label="B7" style="display:grid; grid-template-rows:auto 1fr auto; min-height:100vh; background:var(--bg); color:var(--text); font-family:'Space Grotesk', system-ui, sans-serif; background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px); transition:background .25s ease, color .25s ease; position:relative">
+
+  <header style="display:flex; align-items:center; gap:16px; padding:14px 24px; border-bottom:3px solid var(--border); background:var(--surface)">
+    <div style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; user-select:none">RETRO<span style="color:var(--accent-2)">FRONTIER</span></div>
+    <div role="group" aria-label="Theme" style="display:flex; margin-left:auto; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); overflow:hidden; background:var(--chip-bg)">
+      <button type="button" onClick="{{ setDark }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; background:{{ darkBg }}; color:{{ darkFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">DARK</button>
+      <button type="button" onClick="{{ setLight }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; border-left:2px solid var(--border); background:{{ lightBg }}; color:{{ lightFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">LIGHT</button>
+    </div>
+  </header>
+
+  <main style="padding:34px 28px 60px; display:flex; flex-direction:column; gap:20px">
+
+    <div style="display:flex; align-items:baseline; gap:14px">
+      <h2 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; white-space:nowrap; flex-shrink:0">▶ SAVE-STATES</h2>
+      <span style="flex:1; height:3px; background:var(--border)"></span>
+      <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim); white-space:nowrap">CHRONO TRIGGER</span>
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(215px, 1fr)); gap:18px; max-width:900px">
+      <sc-for list="{{ states }}" as="st" hint-placeholder-count="3">
+        <div tabIndex="0" style="display:block; border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); position:relative; outline:none; transform-origin:center; transition:transform .12s ease-out, box-shadow .12s ease-out" style-hover="transform:scale(1.04); box-shadow:6px 6px 0 var(--shadow)" style-focus="transform:scale(1.08); box-shadow:8px 8px 0 var(--shadow)">
+          <div style="aspect-ratio:16/9; border-bottom:2px solid var(--border); position:relative; background:linear-gradient(160deg, #232a5e, #2f5d3a)">
+            <span style="position:absolute; top:8px; left:8px; font-family:'Press Start 2P', monospace; font-size:8px; padding:6px 8px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); z-index:2; background:{{ st.slotBg }}; color:{{ st.slotFg }}">{{ st.slot }}</span>
+            <button type="button" onClick="{{ st.toggleMenu }}" aria-label="Optionen" style="position:absolute; top:8px; right:8px; width:26px; height:26px; padding:0; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--surface-2); color:var(--text); cursor:pointer; z-index:3; font-family:'Press Start 2P', monospace; font-size:10px" style-hover="transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)">⋮</button>
+            <sc-if value="{{ st.menuOpen }}" hint-placeholder-val="{{ false }}">
+              <div style="position:absolute; top:38px; right:8px; z-index:4; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); display:flex; flex-direction:column; min-width:140px">
+                <button type="button" onClick="{{ st.onLoad }}" style="display:flex; align-items:center; gap:8px; font-family:'Press Start 2P', monospace; font-size:9px; padding:10px 12px; border:none; background:transparent; color:var(--text); cursor:pointer; text-align:left" style-hover="background:var(--surface)" style-focus="background:var(--text); color:var(--bg)">LADEN</button>
+                <button type="button" onClick="{{ st.onDeleteRequest }}" style="display:flex; align-items:center; gap:8px; font-family:'Press Start 2P', monospace; font-size:9px; padding:10px 12px; border:none; border-top:2px solid var(--border); background:transparent; color:var(--text); cursor:pointer; text-align:left" style-hover="background:var(--surface)" style-focus="background:var(--text); color:var(--bg)">LÖSCHEN</button>
+              </div>
+            </sc-if>
+          </div>
+          <div style="padding:10px 12px 12px; display:flex; flex-direction:column; gap:8px; align-items:flex-start">
+            <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">{{ st.when }}</span>
+            <button type="button" onClick="{{ st.onLoad }}" style="display:inline-flex; align-items:center; gap:6px; font-family:'Press Start 2P', monospace; font-size:8px; padding:7px 10px; background:var(--accent-5); color:#000; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); cursor:pointer" style-hover="transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)">
+              <svg viewBox="0 0 4 7" width="9" height="9" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true" style="flex:none; display:block"><path d="M0 0h1v1h-1zM0 1h1v1h-1zM1 1h1v1h-1zM0 2h1v1h-1zM1 2h1v1h-1zM2 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1zM0 4h1v1h-1zM1 4h1v1h-1zM2 4h1v1h-1zM0 5h1v1h-1zM1 5h1v1h-1zM0 6h1v1h-1z"></path></svg>
+              LADEN
+            </button>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+  </main>
+
+  <sc-if value="{{ deleteTarget }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:50; display:grid; place-items:center; padding:24px">
+      <div style="border:2px solid var(--border); background:var(--surface); box-shadow:6px 6px 0 var(--shadow); padding:26px 28px; max-width:420px; display:flex; flex-direction:column; gap:18px">
+        <span style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px">SAVE-STATE LÖSCHEN?</span>
+        <p style="font-size:15px; line-height:1.6; text-wrap:pretty">„{{ deleteTargetLabel }}" wird endgültig entfernt und kann nicht wiederherstellt werden.</p>
+        <div style="display:flex; gap:14px; justify-content:flex-end">
+          <button type="button" onClick="{{ cancelDelete }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:12px 16px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--surface-2); color:var(--text); cursor:pointer" style-hover="transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">ABBRECHEN</button>
+          <button type="button" onClick="{{ confirmDelete }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:12px 16px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--surface-2); color:var(--text); cursor:pointer" style-hover="transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">LÖSCHEN</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <footer style="display:flex; align-items:center; flex-wrap:wrap; row-gap:4px; gap:18px; padding:10px 24px; border-top:3px solid var(--border); background:var(--surface); font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">
+    <span>RETROARCH 1.19.0</span>
+    <span>·</span>
+    <span>CONTROLLER: 8BITDO PRO 2</span>
+    <span style="flex:1"></span>
+    <div style="display:flex; align-items:center; gap:10px">
+      <span style="font-family:'Press Start 2P', monospace; font-size:8px; padding:5px 7px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--accent); color:#000">A</span>
+      <span>LADEN</span>
+      <span style="font-family:'Press Start 2P', monospace; font-size:8px; padding:5px 7px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--surface-2); color:var(--text)">Y</span>
+      <span>OPTIONEN</span>
+      <span style="font-family:'Press Start 2P', monospace; font-size:8px; padding:5px 7px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--surface-2); color:var(--text)">B</span>
+      <span>ZURÜCK</span>
+    </div>
+  </footer>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;theme&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;dark&quot;, &quot;tsType&quot;: &quot;'dark'|'light'&quot; }
+}">
+const INITIAL_STATES = [
+  { id: 'auto', slot: 'AUTO', slotBg: 'var(--accent-3)', slotFg: '#000', when: 'vor 2 Tagen' },
+  { id: 's1', slot: 'SLOT 1', slotBg: 'var(--surface)', slotFg: 'var(--text)', when: 'vor 5 Tagen' },
+  { id: 's2', slot: 'SLOT 2', slotBg: 'var(--surface)', slotFg: 'var(--text)', when: 'vor 1 Woche' }
+];
+
+class Component extends DCLogic {
+  constructor(p) {
+    super(p);
+    this.state = { theme: null, states: INITIAL_STATES, openMenuId: null, deleteId: null };
+  }
+  theme() { return this.state.theme ?? this.props.theme ?? 'dark'; }
+  componentDidMount() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  componentDidUpdate() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  renderVals() {
+    const t = this.theme();
+    const { states, openMenuId, deleteId } = this.state;
+    const deleteTarget = states.find(s => s.id === deleteId) || null;
+    return {
+      theme: t,
+      darkBg: t === 'dark' ? 'var(--accent-3)' : 'transparent',
+      darkFg: t === 'dark' ? '#000' : 'var(--text-dim)',
+      lightBg: t === 'light' ? 'var(--accent-3)' : 'transparent',
+      lightFg: t === 'light' ? '#000' : 'var(--text-dim)',
+      setDark: () => this.setState({ theme: 'dark' }),
+      setLight: () => this.setState({ theme: 'light' }),
+      states: states.map(s => ({
+        ...s,
+        menuOpen: openMenuId === s.id,
+        toggleMenu: () => this.setState(st => ({ openMenuId: st.openMenuId === s.id ? null : s.id })),
+        onLoad: () => this.setState({ openMenuId: null }),
+        onDeleteRequest: () => this.setState({ openMenuId: null, deleteId: s.id })
+      })),
+      deleteTarget,
+      deleteTargetLabel: deleteTarget ? deleteTarget.slot + ' · ' + deleteTarget.when : '',
+      cancelDelete: () => this.setState({ deleteId: null }),
+      confirmDelete: () => this.setState(st => ({ deleteId: null, states: st.states.filter(s => s.id !== st.deleteId) }))
+    };
+  }
+}
+</script>
+</body>
+</html>

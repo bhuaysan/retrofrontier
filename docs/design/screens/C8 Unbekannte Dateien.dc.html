@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root, [data-theme="dark"] {
+    --bg:#121212; --bg-soft:#1b1b1b; --surface:#1e1e1e; --surface-2:#252525;
+    --border:#000000; --shadow:#2b2b2b; --text:#f2f2f2; --text-dim:#9a9a9a;
+    --accent:#3cb58f; --accent-2:#d0648c; --accent-3:#9a7bd4; --accent-4:#7ba05b;
+    --accent-5:#62abd9; --accent-6:#c9834a; --chip-bg:#1e1e1e;
+    --scanline:rgba(255,255,255,.028);
+  }
+  [data-theme="light"] {
+    --bg:#f4ecdc; --bg-soft:#efe4cd; --surface:#fbf5e8; --surface-2:#f1e8d4;
+    --border:#1a1a1a; --shadow:#1a1a1a; --text:#1a1a1a; --text-dim:#6b6353;
+    --accent:#1a8f80; --accent-2:#c8607f; --accent-3:#7c5cc4; --accent-4:#6b8f4e;
+    --accent-5:#568db1; --accent-6:#b5753d; --chip-bg:#fbf5e8;
+    --scanline:rgba(0,0,0,.03);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scrollbar-color: var(--text-dim) var(--bg-soft); }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    min-height: 100vh;
+    transition: background .25s ease, color .25s ease;
+    background-image: repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px);
+  }
+  ::selection { background: var(--accent); color:#000; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-3); }
+  button:focus-visible, [tabindex]:focus-visible, input:focus-visible { outline: none; }
+  input::placeholder { color: var(--text-dim); }
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" data-screen-label="C8" style="display:grid; grid-template-rows:auto 1fr; min-height:100vh; background:var(--bg); color:var(--text); font-family:'Space Grotesk', system-ui, sans-serif; background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px); transition:background .25s ease, color .25s ease">
+
+  <header style="display:flex; align-items:center; gap:16px; padding:14px 24px; border-bottom:3px solid var(--border); background:var(--surface)">
+    <div style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; user-select:none">RETRO<span style="color:var(--accent-2)">FRONTIER</span></div>
+    <div role="group" aria-label="Theme" style="display:flex; margin-left:auto; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); overflow:hidden; background:var(--chip-bg)">
+      <button type="button" onClick="{{ setDark }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; background:{{ darkBg }}; color:{{ darkFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">DARK</button>
+      <button type="button" onClick="{{ setLight }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; border-left:2px solid var(--border); background:{{ lightBg }}; color:{{ lightFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">LIGHT</button>
+    </div>
+  </header>
+
+  <main style="padding:26px 28px 60px; display:flex; flex-direction:column; gap:20px; max-width:760px">
+
+    <button type="button" style="display:inline-flex; align-items:center; gap:8px; font-family:'VT323', monospace; font-size:20px; padding:7px 16px; background:var(--chip-bg); color:var(--text); border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); cursor:pointer; align-self:flex-start" style-hover="background:var(--accent-3); color:#000" style-focus="background:var(--text); color:var(--bg)">
+      <svg viewBox="0 0 4 7" width="9" height="9" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true" style="flex:none; display:block"><path d="M3 0h1v1h-1zM2 1h1v1h-1zM3 1h1v1h-1zM1 2h1v1h-1zM2 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM1 4h1v1h-1zM2 4h1v1h-1zM2 5h1v1h-1zM3 5h1v1h-1zM3 6h1v1h-1z"></path></svg>
+      ZURÜCK
+    </button>
+
+    <div style="display:flex; align-items:baseline; gap:14px">
+      <h2 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; white-space:nowrap; flex-shrink:0">▶ UNBEKANNTE / BESCHÄDIGTE DATEIEN</h2>
+      <span style="flex:1; height:3px; background:var(--border)"></span>
+      <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim); white-space:nowrap">{{ fileCount }} DATEIEN</span>
+    </div>
+
+    <sc-for list="{{ files }}" as="f" hint-placeholder-count="3">
+      <div style="border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); padding:16px 18px; display:flex; flex-direction:column; gap:12px">
+        <div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap">
+          <span style="font-family:'Press Start 2P', monospace; font-size:9px; letter-spacing:1px; color:{{ f.statusColor }}">{{ f.statusLabel }}</span>
+          <span style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">{{ f.filename }}</span>
+        </div>
+
+        <sc-if value="{{ f.isUnknown }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap">
+            <span style="font-size:13px; color:var(--text-dim)">Titel:</span>
+            <input type="text" value="{{ f.titleInput }}" onChange="{{ f.onTitleChange }}" placeholder="Titel eingeben …" style="flex:1; min-width:180px; font-family:'VT323', monospace; font-size:18px; padding:6px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); color:var(--text)" style-focus="box-shadow:0 0 0 3px var(--text) inset, 3px 3px 0 var(--shadow)"/>
+            <button type="button" onClick="{{ f.onSaveTitle }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:11px 12px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--accent); color:#000; cursor:pointer" style-hover="transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)">TITEL SETZEN</button>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ f.isCorrupted }}" hint-placeholder-val="{{ false }}">
+          <p style="font-size:14.5px; line-height:1.55; color:var(--text-dim); text-wrap:pretty">Prüfsumme stimmt nicht mit einer bekannten Version überein — die Datei ist wahrscheinlich beschädigt oder unvollständig.</p>
+        </sc-if>
+
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap">
+          <button type="button" onClick="{{ f.onIgnore }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:11px 12px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--surface-2); color:var(--text); cursor:pointer" style-hover="transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)">IGNORIEREN</button>
+          <button type="button" onClick="{{ f.onRemove }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:11px 12px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--surface-2); color:var(--text); cursor:pointer" style-hover="transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)">AUS BIBLIOTHEK ENTFERNEN</button>
+        </div>
+      </div>
+    </sc-for>
+
+  </main>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;theme&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;dark&quot;, &quot;tsType&quot;: &quot;'dark'|'light'&quot; }
+}">
+const FILES = [
+  { id: 'f1', filename: '/home/max/roms/nes/homebrew_demo_v3.nes', type: 'unknown' },
+  { id: 'f2', filename: '/home/max/roms/gb/unknown_1994.gb', type: 'unknown' },
+  { id: 'f3', filename: '/home/max/roms/ps1/disc_dump_02.bin', type: 'unknown' },
+  { id: 'f4', filename: '/home/max/roms/snes/Earthbound (USA).sfc', type: 'corrupted' }
+];
+
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { theme: null, files: FILES.map(f => ({ ...f, title: '' })), removedIds: [] }; }
+  theme() { return this.state.theme ?? this.props.theme ?? 'dark'; }
+  componentDidMount() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  componentDidUpdate() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  renderVals() {
+    const t = this.theme();
+    const visible = this.state.files.filter(f => !this.state.removedIds.includes(f.id));
+    return {
+      theme: t,
+      darkBg: t === 'dark' ? 'var(--accent-3)' : 'transparent',
+      darkFg: t === 'dark' ? '#000' : 'var(--text-dim)',
+      lightBg: t === 'light' ? 'var(--accent-3)' : 'transparent',
+      lightFg: t === 'light' ? '#000' : 'var(--text-dim)',
+      setDark: () => this.setState({ theme: 'dark' }),
+      setLight: () => this.setState({ theme: 'light' }),
+      fileCount: visible.length,
+      files: visible.map(f => ({
+        ...f,
+        isUnknown: f.type === 'unknown',
+        isCorrupted: f.type === 'corrupted',
+        statusLabel: f.type === 'unknown' ? '⚠ UNBEKANNTE PRÜFSUMME' : '⚠ VERMUTLICH BESCHÄDIGT',
+        statusColor: 'var(--text)',
+        titleInput: f.title,
+        onTitleChange: (e) => this.setState(s => ({ files: s.files.map(x => x.id === f.id ? { ...x, title: e.target.value } : x) })),
+        onSaveTitle: () => {},
+        onIgnore: () => this.setState(s => ({ removedIds: [...s.removedIds, f.id] })),
+        onRemove: () => this.setState(s => ({ removedIds: [...s.removedIds, f.id] }))
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

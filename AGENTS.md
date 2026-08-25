@@ -168,3 +168,17 @@ Before declaring a task complete:
 - docs/architecture remain consistent
 - no secrets/prohibited binaries are present
 - final summary lists important changes and unresolved risks
+
+## Design Source of Truth
+
+The authoritative RetroFrontier design handoff is stored under:
+
+`docs/design/`
+
+Before implementing or modifying user-facing UI, read:
+
+- `docs/design/README.md`
+- `docs/design/tokens.css`
+- the relevant screen specifications under `docs/design/screens/`
+
+Do not replace or reinterpret the established design system without an explicit product/design decision.
