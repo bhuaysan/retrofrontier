@@ -200,6 +200,10 @@ Trusted TUF metadata and the highest observed anti-rollback floors live in the s
 
 The managed runtime, activation metadata, and trust state require a local application-data filesystem with supported locking and same-directory replacement semantics. V1 does not place them on a network share or cloud-synchronized root; external ROM roots remain a separate concern.
 
+For Linux x86_64, the managed runtime artifact is an extracted RetroArch AppDir. The launch path is the authenticated AppDir-defined `AppRun` entry point, for example `versions/<installation-id>/runtime/<appdir>/AppRun`; production code must not infer or substitute an inner path such as `usr/bin/retroarch`. The tested RetroArch artifact uses an `AppRun` symlink and an ELF `$ORIGIN/../lib` runpath, but other authenticated AppDirs may use a script or another executable and may establish environment variables.
+
+The extracted AppDir is relocatable for its bundled libraries, not self-contained for Linux host services. The Linux launch adapter must validate host prerequisites and preserve the user's display/session environment while explicitly controlling RetroFrontier paths. glibc/ELF loader, libstdc++, desktop graphics (OpenGL/EGL/GBM/DRM and optionally Vulkan), display libraries, audio services, and udev/input device permissions remain host responsibilities. The Linux distribution and device matrix is a release gate; see `docs/spikes/LINUX_RUNTIME_QUALIFICATION.md`.
+
 Safe update:
 1. Resolve a Runtime Release through trusted update metadata.
 2. Download into a private, operation-specific staging directory.
@@ -363,4 +367,4 @@ These areas trigger focused Sol Max review.
 7. Save-state rollback/compatibility behavior.
 8. macOS Developer ID, notarization, quarantine, and core library-validation proof.
 9. Windows Authenticode/Smart App Control and pointer-durability proof.
-10. Linux extracted-AppImage entry-point and distribution compatibility matrix.
+10. Linux extracted-AppImage/AppRun entry point and distribution/device compatibility matrix qualification.

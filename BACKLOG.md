@@ -54,11 +54,11 @@ Validate:
 Deliverable: spike report + architecture updates. No production updater required yet.
 
 Spike outcome:
-- Linux x86_64 extracted-AppImage launch, synthetic core/content smoke test, explicit-path isolation, and hostile-config test: complete.
+- Linux x86_64 extracted-AppImage/AppRun launch, synthetic core/content smoke test, explicit-path isolation, hostile-config test, and Linux lifecycle qualification: complete on Fedora 44; the documented distribution/device matrix remains a release gate.
 - Windows x86_64 portable artifact research: complete; real-device verification remains.
 - macOS arm64 and x86_64 artifact research: complete; real-device signing, quarantine, core-loading, and update verification remains.
 - Sol Max architecture/security review: complete. It accepts immutable versions, staging, a minimal active pointer, full reconstruction repair, bounded rollback, and managed approved cores; it rejects an authoritative transaction journal and selects a TUF-compatible trust model.
-- macOS managed executable/core distribution remains a production security blocker pending a real Developer ID/notarization/library-validation proof. Windows and broad Linux support also require real platform experiments.
+- macOS managed executable/core distribution remains a production security blocker pending a real Developer ID/notarization/library-validation proof. Windows and cross-distribution Linux support still require real platform experiments.
 
 ## M0.2 — Spike: ScreenScraper Authentication
 **Model:** Luna Max.
@@ -118,7 +118,7 @@ Deliverable: documented authentication/provider decision.
 - [ ] repair UI
 - [ ] macOS app/core signing and quarantine strategy
 - [ ] Windows Authenticode/Smart App Control and pointer replacement spike
-- [ ] Linux extracted-AppImage entry-point and distribution matrix spike
+- [x] Linux extracted-AppImage/AppRun entry-point and distribution/device matrix qualification (Fedora 44 proof; VM/manual matrix remains a release gate)
 - [ ] finalize hosting/source model
 
 ## M3 — Systems, Cores, BIOS
