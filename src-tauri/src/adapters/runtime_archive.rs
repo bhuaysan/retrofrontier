@@ -862,7 +862,7 @@ fn find_squashfs_offset(path: &Path) -> Result<u64, RuntimeError> {
     std::io::Read::by_ref(&mut file)
         .take(MAX_HEADER_SCAN as u64)
         .read_to_end(&mut bytes)?;
-    let magic = [b'h', b's', b'q', b's'];
+    let magic = *b"hsqs";
     bytes
         .windows(magic.len())
         .position(|window| window == magic)

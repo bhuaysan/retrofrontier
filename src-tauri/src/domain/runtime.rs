@@ -440,8 +440,10 @@ impl Sha256Digest {
             ));
         }
         let mut bytes = [0_u8; 32];
-        for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
-            bytes[index] = (hex_nibble(chunk[0]) << 4) | hex_nibble(chunk[1]);
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            let offset = index * 2;
+            *byte = (hex_nibble(value.as_bytes()[offset]) << 4)
+                | hex_nibble(value.as_bytes()[offset + 1]);
         }
         Ok(Self(bytes))
     }
