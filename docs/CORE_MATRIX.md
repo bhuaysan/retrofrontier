@@ -38,4 +38,4 @@ Open-source licensing alone does not guarantee a core is appropriate for automat
 
 Alternative cores are not a V1 requirement. Per-game overrides may exist later.
 
-The runtime spike should provide enough evidence to finalize this matrix.
+The runtime spikes provide runtime/core-loading evidence, but this matrix is finalized only after each default core passes the platform, license, content-format, BIOS, and maintainability checks.
