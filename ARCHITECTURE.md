@@ -165,9 +165,10 @@ RetroFrontier/
 ├── runtime/
 │   ├── versions/
 │   ├── staging/
-│   ├── transactions/
+│   ├── locks/
 │   ├── active.json
-│   └── previous.json
+│   └── game-process.json
+├── runtime-trust/
 ├── runtime-user/
 ├── database/
 ├── metadata/
@@ -187,33 +188,41 @@ Conceptual layout:
 ```text
 runtime/
 ├── versions/
-│   ├── <release-a>/
-│   └── <release-b>/
+│   ├── <installation-a>/
+│   └── <installation-b>/
 ├── staging/
-├── transactions/
+├── locks/
 ├── active.json
-└── previous.json
+└── game-process.json
 ```
 
-Safe update:
-1. Resolve approved Runtime Release.
-2. Download into staging.
-3. Verify integrity/authenticity according to final security design.
-4. Validate required components.
-5. Ensure no game is running.
-6. Atomically replace the small active pointer.
-7. Run a bounded smoke test and record candidate health.
-8. Retain rollback capability and reconcile interrupted transactions at startup.
-9. Clean old releases according to retention policy.
+Trusted TUF metadata and the highest observed anti-rollback floors live in the sibling `runtime-trust/` subtree. Runtime uninstall, repair, rollback, and ordinary cache cleanup do not remove that security state; only an explicit whole-application-data reset may do so.
 
-Runtime versions are immutable after validation. Runtime-user configuration, core options, cache, logs, saves, states, screenshots, metadata, and the database remain outside replaceable versions. The cross-platform activation authority is an app-owned pointer file containing a safe release ID, generation, and manifest identity; symlinks and junctions are not required. Exact replacement is platform-specific and must use same-filesystem temporary files plus startup recovery.
+The managed runtime, activation metadata, and trust state require a local application-data filesystem with supported locking and same-directory replacement semantics. V1 does not place them on a network share or cloud-synchronized root; external ROM roots remain a separate concern.
+
+Safe update:
+1. Resolve a Runtime Release through trusted update metadata.
+2. Download into a private, operation-specific staging directory.
+3. Verify trusted metadata, exact size, and SHA-256 before extraction.
+4. Extract safely and validate the complete authenticated file inventory, including any format-approved internal link targets.
+5. Finalize a uniquely named candidate directory, run a bounded smoke test from that exact path, and revalidate the tree.
+6. Write and flush its completion marker last; the version is immutable from that point.
+7. Acquire the runtime mutation lock, ensure no managed game process is running, and reduce complete installations to the current selection plus the candidate.
+8. Atomically replace the small active pointer; the former current installation is then the sole rollback candidate.
+9. Clean only owned, incomplete or inactive runtime paths according to policy.
+
+Runtime versions are immutable after their completion marker is committed. Runtime-user configuration, core options, cache, logs, saves, states, screenshots, metadata, and the database remain outside replaceable versions. The cross-platform activation authority is an app-owned pointer file containing only a schema version, safe installation-directory identifier, and canonical release-manifest SHA-256. Symlinks and junctions are not required. Exact replacement is platform-specific and must use same-directory temporary files, file and directory durability primitives where available, and startup validation.
+
+No authoritative update transaction journal is required for V1. Incomplete staging directories, incomplete version directories, complete inactive versions, and the active pointer are distinguishable from filesystem structure and completion markers. Resumable downloads may keep disposable metadata inside their own staging directory.
+
+RetroFrontier is single-instance per OS user in V1. An OS-backed runtime mutation lock protects install, activation, rollback, repair, and cleanup even from an accidentally started second or older process. A durable game-process identity record plus liveness validation prevents activation after RetroFrontier crashes while its managed RetroArch process remains alive.
 
 The Linux spike found that explicit core, save, and system directories alone are insufficient: core-info cache and core options also need explicit managed paths or disabling.
 
 ## Runtime Manifest
 Do not blindly download "latest".
 
-A RetroFrontier-controlled manifest should define approved components per platform/architecture, including:
+A RetroFrontier-controlled canonical release manifest defines approved components per platform/architecture, including:
 - runtime release
 - platform
 - architecture
@@ -225,7 +234,9 @@ A RetroFrontier-controlled manifest should define approved components per platfo
 - license metadata
 - compatibility
 
-Signing/authenticity details remain open.
+The manifest and every downloadable component are immutable targets authenticated by a TUF 1.0-compatible metadata repository. Per-component target names, lengths and hashes, extracted executable/native-library hashes or an authenticated file-inventory digest, format-specific link policy, extraction policy, launch paths, core allowlist, and OS code-signing requirements are inside the authenticated release description. V1 uses SHA-256 and Ed25519. The application ships a trusted TUF root; root and targets roles use offline threshold keys, while snapshot and timestamp roles provide consistency and freshness. HTTPS remains required but is not the authenticity root. ADR-012 defines the trust and anti-rollback policy.
+
+Installed runtimes do not expire merely because the device is offline. Expiration applies when discovering or downloading updates. Persisted trusted metadata versions, a monotonic release sequence, authenticated revocations, and an authenticated minimum-safe release sequence prevent replay and vulnerable rollback to the extent of the freshest metadata the client has received.
 
 ## RetroArch Isolation
 Every launch must use explicit RetroFrontier-controlled paths.
@@ -344,9 +355,12 @@ These areas trigger focused Sol Max review.
 
 ## Open Architecture Decisions
 1. Portable/runtime distribution per OS.
-2. Runtime manifest authenticity/signing.
-3. Runtime Release hosting/control model.
+2. TUF client implementation and production key-custody ceremony.
+3. Runtime Release hosting/control and redistribution model.
 4. ScreenScraper credential strategy.
 5. Final default-core matrix/version policy.
 6. Filesystem watcher implementation.
 7. Save-state rollback/compatibility behavior.
+8. macOS Developer ID, notarization, quarantine, and core library-validation proof.
+9. Windows Authenticode/Smart App Control and pointer-durability proof.
+10. Linux extracted-AppImage entry-point and distribution compatibility matrix.

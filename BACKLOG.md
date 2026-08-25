@@ -57,7 +57,8 @@ Spike outcome:
 - Linux x86_64 extracted-AppImage launch, synthetic core/content smoke test, explicit-path isolation, and hostile-config test: complete.
 - Windows x86_64 portable artifact research: complete; real-device verification remains.
 - macOS arm64 and x86_64 artifact research: complete; real-device signing, quarantine, core-loading, and update verification remains.
-- Manifest authenticity, macOS native-core policy, and cross-platform power-loss recovery remain Sol Max review items.
+- Sol Max architecture/security review: complete. It accepts immutable versions, staging, a minimal active pointer, full reconstruction repair, bounded rollback, and managed approved cores; it rejects an authoritative transaction journal and selects a TUF-compatible trust model.
+- macOS managed executable/core distribution remains a production security blocker pending a real Developer ID/notarization/library-validation proof. Windows and broad Linux support also require real platform experiments.
 
 ## M0.2 — Spike: ScreenScraper Authentication
 **Model:** Luna Max.
@@ -108,13 +109,16 @@ Deliverable: documented authentication/provider decision.
 - [ ] update discovery
 - [ ] safe activation
 - [ ] rollback
-- [ ] active pointer and transaction journal
-- [ ] startup recovery after interrupted transactions
+- [ ] minimal active pointer and filesystem-derived startup recovery
+- [ ] TUF-compatible runtime trust metadata and key-rotation/revocation ceremony
+- [ ] authenticated installed-file inventory and local modification detection
+- [ ] single-instance, runtime mutation lock, and game-process liveness coordination
 - [ ] block activation while game runs
 - [ ] runtime status UI
 - [ ] repair UI
 - [ ] macOS app/core signing and quarantine strategy
-- [ ] finalize authenticity/signing after spike
+- [ ] Windows Authenticode/Smart App Control and pointer replacement spike
+- [ ] Linux extracted-AppImage entry-point and distribution matrix spike
 - [ ] finalize hosting/source model
 
 ## M3 — Systems, Cores, BIOS
