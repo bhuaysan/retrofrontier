@@ -77,22 +77,22 @@ Deliverable: documented authentication/provider decision.
 ## M1 — Application Foundation
 **Model:** Luna Max.
 
-- [ ] Scaffold Tauri 2
-- [ ] React + TypeScript + Vite
-- [ ] pnpm
-- [ ] Rust formatting/linting
-- [ ] frontend formatting/linting
-- [ ] Rust module boundaries
-- [ ] typed IPC conventions
-- [ ] structured logging
-- [ ] application error model
-- [ ] SQLite/sqlx
-- [ ] migrations
-- [ ] settings repository
-- [ ] tests
-- [ ] design tokens
-- [ ] minimal app shell
-- [ ] basic CI
+- [x] Scaffold Tauri 2
+- [x] React + TypeScript + Vite
+- [x] pnpm
+- [x] Rust formatting/linting
+- [x] frontend formatting/linting
+- [x] Rust module boundaries
+- [x] typed IPC conventions
+- [x] structured logging
+- [x] application error model
+- [x] SQLite/sqlx
+- [x] migrations
+- [x] settings repository
+- [x] tests
+- [x] design tokens
+- [x] minimal app shell
+- [x] basic CI
 
 ## M2 — Managed Runtime Foundation
 **Model:** Luna Max implementation; Sol Max review for updater/security.
