@@ -1,0 +1,62 @@
+# Node / pnpm / Vite
+node_modules/
+.pnpm-store/
+.npm/
+dist/
+dist-ssr/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Rust / Tauri build output
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Local SQLite databases and sidecar files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+
+# Logs
+*.log
+logs/
+
+# IDE / editor files
+.idea/
+.vscode/
+*.code-workspace
+
+# Operating-system junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Local downloaded RetroArch runtime and cores
+/retroarch/
+/retroarch-runtime/
+/retrofrontier-runtime/
+/runtime/
+/cores/
+
+# Local ROM, BIOS, and test-content directories
+/ROMs/
+/BIOS/
+/roms/
+/bios/
+/test-content/
+/test-roms/
+**/test-content/
+**/test-roms/
+fixtures/roms/
+fixtures/bios/
