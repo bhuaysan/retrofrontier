@@ -49,6 +49,9 @@ Power-user features may exist, but must not make first-run setup harder.
 - macOS x86_64
 - Linux x86_64
 
+Linux x86_64 is the primary development and validation platform. Windows and
+macOS remain V1 targets, but must not block the initial Linux implementation.
+
 ## V1 Systems
 - NES
 - SNES

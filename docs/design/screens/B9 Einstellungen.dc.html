@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root, [data-theme="dark"] {
+    --bg:#121212; --bg-soft:#1b1b1b; --surface:#1e1e1e; --surface-2:#252525;
+    --border:#000000; --shadow:#2b2b2b; --text:#f2f2f2; --text-dim:#9a9a9a;
+    --accent:#3cb58f; --accent-2:#d0648c; --accent-3:#9a7bd4; --accent-4:#7ba05b;
+    --accent-5:#62abd9; --accent-6:#c9834a; --chip-bg:#1e1e1e;
+    --scanline:rgba(255,255,255,.028);
+  }
+  [data-theme="light"] {
+    --bg:#f4ecdc; --bg-soft:#efe4cd; --surface:#fbf5e8; --surface-2:#f1e8d4;
+    --border:#1a1a1a; --shadow:#1a1a1a; --text:#1a1a1a; --text-dim:#6b6353;
+    --accent:#1a8f80; --accent-2:#c8607f; --accent-3:#7c5cc4; --accent-4:#6b8f4e;
+    --accent-5:#568db1; --accent-6:#b5753d; --chip-bg:#fbf5e8;
+    --scanline:rgba(0,0,0,.03);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scrollbar-color: var(--text-dim) var(--bg-soft); }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    min-height: 100vh;
+    transition: background .25s ease, color .25s ease;
+    background-image: repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px);
+  }
+  ::selection { background: var(--accent); color:#000; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-3); }
+  button:focus-visible, [tabindex]:focus-visible { outline: none; }
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" data-screen-label="B9" style="display:grid; grid-template-rows:auto 1fr; min-height:100vh; background:var(--bg); color:var(--text); font-family:'Space Grotesk', system-ui, sans-serif; background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px); transition:background .25s ease, color .25s ease">
+
+  <header style="display:flex; align-items:center; gap:16px; padding:14px 24px; border-bottom:3px solid var(--border); background:var(--surface)">
+    <div style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; user-select:none">RETRO<span style="color:var(--accent-2)">FRONTIER</span></div>
+    <div role="group" aria-label="Theme" style="display:flex; margin-left:auto; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); overflow:hidden; background:var(--chip-bg)">
+      <button type="button" onClick="{{ setDark }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; background:{{ darkBg }}; color:{{ darkFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">DARK</button>
+      <button type="button" onClick="{{ setLight }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; border-left:2px solid var(--border); background:{{ lightBg }}; color:{{ lightFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">LIGHT</button>
+    </div>
+  </header>
+
+  <main style="padding:26px 28px 60px">
+
+    <button type="button" style="display:inline-flex; align-items:center; gap:8px; font-family:'VT323', monospace; font-size:20px; padding:7px 16px; background:var(--chip-bg); color:var(--text); border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); cursor:pointer; margin-bottom:26px" style-hover="background:var(--accent-3); color:#000" style-focus="background:var(--text); color:var(--bg)">
+      <svg viewBox="0 0 4 7" width="9" height="9" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true" style="flex:none; display:block"><path d="M3 0h1v1h-1zM2 1h1v1h-1zM3 1h1v1h-1zM1 2h1v1h-1zM2 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM1 4h1v1h-1zM2 4h1v1h-1zM2 5h1v1h-1zM3 5h1v1h-1zM3 6h1v1h-1z"></path></svg>
+      ZURÜCK ZUR BIBLIOTHEK
+    </button>
+
+    <div style="display:flex; align-items:baseline; gap:14px; margin-bottom:26px">
+      <h2 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; white-space:nowrap; flex-shrink:0">▶ EINSTELLUNGEN</h2>
+      <span style="flex:1; height:3px; background:var(--border)"></span>
+    </div>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:26px">
+      <sc-for list="{{ tabs }}" as="tb" hint-placeholder-count="4">
+        <button type="button" onClick="{{ tb.onSelect }}" style="font-family:'VT323', monospace; font-size:20px; padding:7px 18px; background:{{ tb.bg }}; color:{{ tb.fg }}; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); cursor:pointer; font-weight:{{ tb.weight }}" style-hover="transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">{{ tb.label }}</button>
+      </sc-for>
+    </div>
+
+    <sc-if value="{{ isAllgemein }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex; flex-direction:column; gap:0">
+        <div style="max-width:640px; border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); margin-bottom:26px">
+          <h3 style="font-family:'Press Start 2P', monospace; font-size:10px; letter-spacing:1px; padding:12px 16px; border-bottom:2px solid var(--border); background:var(--surface-2)">BIBLIOTHEK</h3>
+          <div style="display:flex; align-items:center; gap:14px; padding:13px 16px">
+            <div style="flex:1"><b style="display:block; font-size:14.5px">ROM-Ordner</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Pfad zum automatischen Scan</small></div>
+            <span style="font-family:'VT323', monospace; font-size:18px; color:var(--accent); border:2px dashed var(--text-dim); padding:4px 10px; background:var(--bg-soft)">/roms/</span>
+            <button type="button" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:12px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--surface-2); color:var(--text); cursor:pointer" style-hover="transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">ÄNDERN</button>
+          </div>
+          <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:2px solid var(--border)">
+            <div style="flex:1"><b style="display:block; font-size:14.5px">Beim Start scannen</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Neue ROMs automatisch erkennen</small></div>
+            <button type="button" onClick="{{ toggles.scanOnStart.onToggle }}" style="display:block; position:relative; width:52px; height:26px; flex:none; border:2px solid var(--border); background:{{ toggles.scanOnStart.trackBg }}; cursor:pointer; padding:0" style-focus="background:var(--text)"><i style="position:absolute; top:2px; left:{{ toggles.scanOnStart.knobLeft }}; width:18px; height:18px; background:{{ toggles.scanOnStart.knobBg }}"></i></button>
+          </div>
+          <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:2px solid var(--border)">
+            <div style="flex:1"><b style="display:block; font-size:14.5px">Cover-Art laden</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Boxarts aus Online-Datenbank</small></div>
+            <button type="button" onClick="{{ toggles.coverArt.onToggle }}" style="display:block; position:relative; width:52px; height:26px; flex:none; border:2px solid var(--border); background:{{ toggles.coverArt.trackBg }}; cursor:pointer; padding:0" style-focus="background:var(--text)"><i style="position:absolute; top:2px; left:{{ toggles.coverArt.knobLeft }}; width:18px; height:18px; background:{{ toggles.coverArt.knobBg }}"></i></button>
+          </div>
+        </div>
+
+        <div style="max-width:640px; border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); margin-bottom:26px">
+          <h3 style="font-family:'Press Start 2P', monospace; font-size:10px; letter-spacing:1px; padding:12px 16px; border-bottom:2px solid var(--border); background:var(--surface-2)">DARSTELLUNG</h3>
+          <div style="display:flex; align-items:center; gap:14px; padding:13px 16px">
+            <div style="flex:1"><b style="display:block; font-size:14.5px">Theme</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Dark (Material) oder Light (Creme)</small></div>
+            <div style="position:relative">
+              <button type="button" onClick="{{ selects.uiTheme.onToggleOpen }}" style="display:inline-flex; align-items:center; gap:6px; font-family:'VT323', monospace; font-size:18px; padding:5px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); color:var(--text); cursor:pointer" style-focus="background:var(--text); color:var(--bg)">{{ selects.uiTheme.value }} ▾</button>
+              <sc-if value="{{ selects.uiTheme.open }}" hint-placeholder-val="{{ false }}">
+                <div style="position:absolute; top:100%; right:0; margin-top:6px; min-width:120px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); z-index:10">
+                  <sc-for list="{{ selects.uiTheme.options }}" as="o" hint-placeholder-count="3">
+                    <button type="button" onClick="{{ o.onSelect }}" style="display:block; width:100%; font-family:'VT323', monospace; font-size:18px; padding:7px 12px; border:none; background:{{ o.bg }}; color:var(--text); cursor:pointer; text-align:left" style-hover="background:var(--surface)" style-focus="background:var(--text); color:var(--bg)">{{ o.label }}</button>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:2px solid var(--border)">
+            <div style="flex:1"><b style="display:block; font-size:14.5px">Scanline-Overlay</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">CRT-Look auf der Oberfläche</small></div>
+            <button type="button" onClick="{{ toggles.scanline.onToggle }}" style="display:block; position:relative; width:52px; height:26px; flex:none; border:2px solid var(--border); background:{{ toggles.scanline.trackBg }}; cursor:pointer; padding:0" style-focus="background:var(--text)"><i style="position:absolute; top:2px; left:{{ toggles.scanline.knobLeft }}; width:18px; height:18px; background:{{ toggles.scanline.knobBg }}"></i></button>
+          </div>
+          <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:2px solid var(--border)">
+            <div style="flex:1"><b style="display:block; font-size:14.5px">UI-Sounds (8-Bit)</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Klicks beim Navigieren</small></div>
+            <button type="button" onClick="{{ toggles.uiSounds.onToggle }}" style="display:block; position:relative; width:52px; height:26px; flex:none; border:2px solid var(--border); background:{{ toggles.uiSounds.trackBg }}; cursor:pointer; padding:0" style-focus="background:var(--text)"><i style="position:absolute; top:2px; left:{{ toggles.uiSounds.knobLeft }}; width:18px; height:18px; background:{{ toggles.uiSounds.knobBg }}"></i></button>
+          </div>
+          <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:2px solid var(--border)">
+            <div style="flex:1"><b style="display:block; font-size:14.5px">TV-Modus</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Größere Schrift und Kacheln für 3 m Abstand</small></div>
+            <button type="button" onClick="{{ toggles.tvMode.onToggle }}" style="display:block; position:relative; width:52px; height:26px; flex:none; border:2px solid var(--border); background:{{ toggles.tvMode.trackBg }}; cursor:pointer; padding:0" style-focus="background:var(--text)"><i style="position:absolute; top:2px; left:{{ toggles.tvMode.knobLeft }}; width:18px; height:18px; background:{{ toggles.tvMode.knobBg }}"></i></button>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isCores }}" hint-placeholder-val="{{ false }}">
+      <div style="max-width:640px; border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); margin-bottom:26px">
+        <h3 style="font-family:'Press Start 2P', monospace; font-size:10px; letter-spacing:1px; padding:12px 16px; border-bottom:2px solid var(--border); background:var(--surface-2)">STANDARD-CORES PRO SYSTEM</h3>
+        <sc-for list="{{ coreRows }}" as="row" hint-placeholder-count="5">
+          <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:{{ row.border }}">
+            <div style="flex:1"><b style="display:block; font-size:14.5px">{{ row.name }}</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">{{ row.sub }}</small></div>
+            <div style="position:relative">
+              <button type="button" onClick="{{ row.select.onToggleOpen }}" style="display:inline-flex; align-items:center; gap:6px; font-family:'VT323', monospace; font-size:18px; padding:5px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); color:var(--text); cursor:pointer" style-focus="background:var(--text); color:var(--bg)">{{ row.select.value }} ▾</button>
+              <sc-if value="{{ row.select.open }}" hint-placeholder-val="{{ false }}">
+                <div style="position:absolute; top:100%; right:0; margin-top:6px; min-width:160px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); z-index:10">
+                  <sc-for list="{{ row.select.options }}" as="o" hint-placeholder-count="2">
+                    <button type="button" onClick="{{ o.onSelect }}" style="display:block; width:100%; font-family:'VT323', monospace; font-size:18px; padding:7px 12px; border:none; background:{{ o.bg }}; color:var(--text); cursor:pointer; text-align:left; white-space:nowrap" style-hover="background:var(--surface)" style-focus="background:var(--text); color:var(--bg)">{{ o.label }}</button>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isVideo }}" hint-placeholder-val="{{ false }}">
+      <div style="max-width:640px; border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); margin-bottom:26px">
+        <h3 style="font-family:'Press Start 2P', monospace; font-size:10px; letter-spacing:1px; padding:12px 16px; border-bottom:2px solid var(--border); background:var(--surface-2)">VIDEO</h3>
+        <div style="display:flex; align-items:center; gap:14px; padding:13px 16px">
+          <div style="flex:1"><b style="display:block; font-size:14.5px">Shader</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">CRT-Effekte im Spiel</small></div>
+          <div style="position:relative">
+            <button type="button" onClick="{{ selects.shader.onToggleOpen }}" style="display:inline-flex; align-items:center; gap:6px; font-family:'VT323', monospace; font-size:18px; padding:5px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); color:var(--text); cursor:pointer" style-focus="background:var(--text); color:var(--bg)">{{ selects.shader.value }} ▾</button>
+            <sc-if value="{{ selects.shader.open }}" hint-placeholder-val="{{ false }}">
+              <div style="position:absolute; top:100%; right:0; margin-top:6px; min-width:150px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); z-index:10">
+                <sc-for list="{{ selects.shader.options }}" as="o" hint-placeholder-count="3">
+                  <button type="button" onClick="{{ o.onSelect }}" style="display:block; width:100%; font-family:'VT323', monospace; font-size:18px; padding:7px 12px; border:none; background:{{ o.bg }}; color:var(--text); cursor:pointer; text-align:left" style-hover="background:var(--surface)" style-focus="background:var(--text); color:var(--bg)">{{ o.label }}</button>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:2px solid var(--border)">
+          <div style="flex:1"><b style="display:block; font-size:14.5px">Integer Scaling</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Scharfe Pixel ohne Verzerrung</small></div>
+          <button type="button" onClick="{{ toggles.integerScaling.onToggle }}" style="display:block; position:relative; width:52px; height:26px; flex:none; border:2px solid var(--border); background:{{ toggles.integerScaling.trackBg }}; cursor:pointer; padding:0" style-focus="background:var(--text)"><i style="position:absolute; top:2px; left:{{ toggles.integerScaling.knobLeft }}; width:18px; height:18px; background:{{ toggles.integerScaling.knobBg }}"></i></button>
+        </div>
+        <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:2px solid var(--border)">
+          <div style="flex:1"><b style="display:block; font-size:14.5px">VSync</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Gegen Screen-Tearing</small></div>
+          <button type="button" onClick="{{ toggles.vsync.onToggle }}" style="display:block; position:relative; width:52px; height:26px; flex:none; border:2px solid var(--border); background:{{ toggles.vsync.trackBg }}; cursor:pointer; padding:0" style-focus="background:var(--text)"><i style="position:absolute; top:2px; left:{{ toggles.vsync.knobLeft }}; width:18px; height:18px; background:{{ toggles.vsync.knobBg }}"></i></button>
+        </div>
+        <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:2px solid var(--border)">
+          <div style="flex:1"><b style="display:block; font-size:14.5px">Seitenverhältnis</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Darstellung des Bildes</small></div>
+          <div style="position:relative">
+            <button type="button" onClick="{{ selects.aspect.onToggleOpen }}" style="display:inline-flex; align-items:center; gap:6px; font-family:'VT323', monospace; font-size:18px; padding:5px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); color:var(--text); cursor:pointer" style-focus="background:var(--text); color:var(--bg)">{{ selects.aspect.value }} ▾</button>
+            <sc-if value="{{ selects.aspect.open }}" hint-placeholder-val="{{ false }}">
+              <div style="position:absolute; top:100%; right:0; margin-top:6px; min-width:110px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); z-index:10">
+                <sc-for list="{{ selects.aspect.options }}" as="o" hint-placeholder-count="3">
+                  <button type="button" onClick="{{ o.onSelect }}" style="display:block; width:100%; font-family:'VT323', monospace; font-size:18px; padding:7px 12px; border:none; background:{{ o.bg }}; color:var(--text); cursor:pointer; text-align:left" style-hover="background:var(--surface)" style-focus="background:var(--text); color:var(--bg)">{{ o.label }}</button>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isController }}" hint-placeholder-val="{{ false }}">
+      <div style="max-width:640px; border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); margin-bottom:26px">
+        <h3 style="font-family:'Press Start 2P', monospace; font-size:10px; letter-spacing:1px; padding:12px 16px; border-bottom:2px solid var(--border); background:var(--surface-2)">CONTROLLER</h3>
+        <div style="display:flex; align-items:center; gap:14px; padding:13px 16px">
+          <div style="flex:1"><b style="display:block; font-size:14.5px">Port 1</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">8BitDo Pro 2 (Bluetooth)</small></div>
+          <span style="font-family:'VT323', monospace; font-size:18px; color:var(--accent); border:2px dashed var(--text-dim); padding:4px 10px; background:var(--bg-soft)">VERBUNDEN</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:2px solid var(--border)">
+          <div style="flex:1"><b style="display:block; font-size:14.5px">Tastenbelegung</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Pro Core überschreibbar</small></div>
+          <button type="button" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:12px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--surface-2); color:var(--text); cursor:pointer" style-hover="transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">MAPPING</button>
+        </div>
+        <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:2px solid var(--border)">
+          <div style="flex:1"><b style="display:block; font-size:14.5px">Hotkey aktivieren</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Menü-Taste während des Spiels</small></div>
+          <div style="position:relative">
+            <button type="button" onClick="{{ selects.hotkey.onToggleOpen }}" style="display:inline-flex; align-items:center; gap:6px; font-family:'VT323', monospace; font-size:18px; padding:5px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); color:var(--text); cursor:pointer" style-focus="background:var(--text); color:var(--bg)">{{ selects.hotkey.value }} ▾</button>
+            <sc-if value="{{ selects.hotkey.open }}" hint-placeholder-val="{{ false }}">
+              <div style="position:absolute; top:100%; right:0; margin-top:6px; min-width:110px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); z-index:10">
+                <sc-for list="{{ selects.hotkey.options }}" as="o" hint-placeholder-count="2">
+                  <button type="button" onClick="{{ o.onSelect }}" style="display:block; width:100%; font-family:'VT323', monospace; font-size:18px; padding:7px 12px; border:none; background:{{ o.bg }}; color:var(--text); cursor:pointer; text-align:left" style-hover="background:var(--surface)" style-focus="background:var(--text); color:var(--bg)">{{ o.label }}</button>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:14px; padding:13px 16px; border-top:2px solid var(--border)">
+          <div style="flex:1"><b style="display:block; font-size:14.5px">Hotkey-Kombo</b><small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Retroarch-Menü öffnen</small></div>
+          <span style="font-family:'VT323', monospace; font-size:18px; color:var(--accent); border:2px dashed var(--text-dim); padding:4px 10px; background:var(--bg-soft)">SELECT + START</span>
+        </div>
+      </div>
+    </sc-if>
+
+  </main>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;theme&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;dark&quot;, &quot;tsType&quot;: &quot;'dark'|'light'&quot; }
+}">
+const TABS = [
+  { id: 'allgemein', label: 'ALLGEMEIN' },
+  { id: 'cores', label: 'CORES' },
+  { id: 'video', label: 'VIDEO' },
+  { id: 'controller', label: 'CONTROLLER' }
+];
+
+class Component extends DCLogic {
+  constructor(p) {
+    super(p);
+    this.state = {
+      theme: null, activeTab: 'allgemein', openSelect: null,
+      toggles: { scanOnStart: true, coverArt: true, scanline: true, uiSounds: false, integerScaling: true, vsync: true, tvMode: false },
+      values: {
+        uiTheme: 'Dark',
+        core_snes: 'Snes9x', core_md: 'Genesis Plus GX', core_gb: 'Gambatte', core_ps1: 'Beetle PSX HW', core_arc: 'FinalBurn Neo',
+        shader: 'CRT-Royale', aspect: '4:3', hotkey: 'Select'
+      }
+    };
+  }
+  theme() { return this.state.theme ?? this.props.theme ?? 'dark'; }
+  componentDidMount() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  componentDidUpdate() { document.documentElement.setAttribute('data-theme', this.theme()); }
+
+  makeToggle(key) {
+    const on = this.state.toggles[key];
+    return {
+      on,
+      trackBg: on ? 'var(--accent)' : 'var(--bg-soft)',
+      knobBg: on ? '#fff' : 'var(--text-dim)',
+      knobLeft: on ? '28px' : '2px',
+      onToggle: () => this.setState(s => ({ toggles: { ...s.toggles, [key]: !s.toggles[key] } }))
+    };
+  }
+  makeSelect(id, options) {
+    const value = this.state.values[id];
+    return {
+      value,
+      open: this.state.openSelect === id,
+      onToggleOpen: () => this.setState(s => ({ openSelect: s.openSelect === id ? null : id })),
+      options: options.map(opt => ({
+        label: opt,
+        bg: opt === value ? 'var(--surface)' : 'transparent',
+        onSelect: () => this.setState(s => ({ values: { ...s.values, [id]: opt }, openSelect: null }))
+      }))
+    };
+  }
+
+  renderVals() {
+    const t = this.theme();
+    const active = this.state.activeTab;
+    return {
+      theme: t,
+      darkBg: t === 'dark' ? 'var(--accent-3)' : 'transparent',
+      darkFg: t === 'dark' ? '#000' : 'var(--text-dim)',
+      lightBg: t === 'light' ? 'var(--accent-3)' : 'transparent',
+      lightFg: t === 'light' ? '#000' : 'var(--text-dim)',
+      setDark: () => this.setState({ theme: 'dark' }),
+      setLight: () => this.setState({ theme: 'light' }),
+      tabs: TABS.map(tb => ({
+        ...tb,
+        bg: tb.id === active ? 'var(--accent)' : 'var(--chip-bg)',
+        fg: tb.id === active ? '#000' : 'var(--text)',
+        weight: tb.id === active ? 700 : 400,
+        onSelect: () => this.setState({ activeTab: tb.id, openSelect: null })
+      })),
+      isAllgemein: active === 'allgemein',
+      isCores: active === 'cores',
+      isVideo: active === 'video',
+      isController: active === 'controller',
+      toggles: {
+        scanOnStart: this.makeToggle('scanOnStart'),
+        coverArt: this.makeToggle('coverArt'),
+        scanline: this.makeToggle('scanline'),
+        uiSounds: this.makeToggle('uiSounds'),
+        tvMode: this.makeToggle('tvMode'),
+        integerScaling: this.makeToggle('integerScaling'),
+        vsync: this.makeToggle('vsync')
+      },
+      selects: {
+        uiTheme: this.makeSelect('uiTheme', ['Dark', 'Light', 'Auto']),
+        shader: this.makeSelect('shader', ['CRT-Royale', 'CRT-Easymode', 'Aus']),
+        aspect: this.makeSelect('aspect', ['4:3', '16:9', 'Original']),
+        hotkey: this.makeSelect('hotkey', ['Select', 'L3'])
+      },
+      coreRows: [
+        { name: 'SNES', sub: 'Nintendo 16-Bit', select: this.makeSelect('core_snes', ['Snes9x', 'bsnes']) },
+        { name: 'Mega Drive', sub: 'Sega 16-Bit', select: this.makeSelect('core_md', ['Genesis Plus GX', 'BlastEm']) },
+        { name: 'Game Boy', sub: 'DMG / Color', select: this.makeSelect('core_gb', ['Gambatte', 'mGBA']) },
+        { name: 'PS1', sub: 'PlayStation', select: this.makeSelect('core_ps1', ['Beetle PSX HW', 'SwanStation']) },
+        { name: 'Arcade', sub: 'MAME / FBNeo', select: this.makeSelect('core_arc', ['FinalBurn Neo', 'MAME 2003+']) }
+      ].map((r, i) => ({ ...r, border: i === 0 ? 'none' : '2px solid var(--border)' }))
+    };
+  }
+}
+</script>
+</body>
+</html>

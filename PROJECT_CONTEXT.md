@@ -21,6 +21,9 @@ An existing local RetroArch installation or configuration must not influence Ret
 - macOS x86_64
 - Linux x86_64
 
+Linux x86_64 is the primary development and validation platform. Windows and
+macOS remain V1 targets, but must not block the initial Linux implementation.
+
 ## V1 Systems
 - Nintendo Entertainment System (NES)
 - Super Nintendo Entertainment System (SNES)

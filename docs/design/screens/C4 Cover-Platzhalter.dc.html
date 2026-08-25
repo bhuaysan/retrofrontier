@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root, [data-theme="dark"] {
+    --bg:#121212; --bg-soft:#1b1b1b; --surface:#1e1e1e; --surface-2:#252525;
+    --border:#000000; --shadow:#2b2b2b; --text:#f2f2f2; --text-dim:#9a9a9a;
+    --accent:#3cb58f; --accent-2:#d0648c; --accent-3:#9a7bd4; --accent-4:#7ba05b;
+    --accent-5:#62abd9; --accent-6:#c9834a; --chip-bg:#1e1e1e;
+    --scanline:rgba(255,255,255,.028);
+  }
+  [data-theme="light"] {
+    --bg:#f4ecdc; --bg-soft:#efe4cd; --surface:#fbf5e8; --surface-2:#f1e8d4;
+    --border:#1a1a1a; --shadow:#1a1a1a; --text:#1a1a1a; --text-dim:#6b6353;
+    --accent:#1a8f80; --accent-2:#c8607f; --accent-3:#7c5cc4; --accent-4:#6b8f4e;
+    --accent-5:#568db1; --accent-6:#b5753d; --chip-bg:#fbf5e8;
+    --scanline:rgba(0,0,0,.03);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scrollbar-color: var(--text-dim) var(--bg-soft); }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    min-height: 100vh;
+    transition: background .25s ease, color .25s ease;
+    background-image: repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px);
+  }
+  ::selection { background: var(--accent); color:#000; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-3); }
+  button:focus-visible, [tabindex]:focus-visible { outline: none; }
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" data-screen-label="C4" style="display:grid; grid-template-rows:auto 1fr; min-height:100vh; background:var(--bg); color:var(--text); font-family:'Space Grotesk', system-ui, sans-serif; background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px); transition:background .25s ease, color .25s ease">
+
+  <header style="display:flex; align-items:center; gap:16px; padding:14px 24px; border-bottom:3px solid var(--border); background:var(--surface)">
+    <div style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; user-select:none">RETRO<span style="color:var(--accent-2)">FRONTIER</span></div>
+    <div role="group" aria-label="Theme" style="display:flex; margin-left:auto; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); overflow:hidden; background:var(--chip-bg)">
+      <button type="button" onClick="{{ setDark }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; background:{{ darkBg }}; color:{{ darkFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">DARK</button>
+      <button type="button" onClick="{{ setLight }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; border-left:2px solid var(--border); background:{{ lightBg }}; color:{{ lightFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">LIGHT</button>
+    </div>
+  </header>
+
+  <main style="padding:26px 28px 60px; display:flex; flex-direction:column; gap:20px">
+
+    <div style="display:flex; align-items:baseline; gap:14px">
+      <h2 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; white-space:nowrap; flex-shrink:0">▶ KEIN COVER — PLATZHALTER</h2>
+      <span style="flex:1; height:3px; background:var(--border)"></span>
+      <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim); white-space:nowrap">SYSTEM-AKZENT + TITEL</span>
+    </div>
+
+    <p style="font-size:15px; line-height:1.6; color:var(--text-dim); max-width:64ch; text-wrap:pretty">Fehlt die Boxart, füllt die Kachel die System-Akzentfarbe; der Titel steht in Press Start 2P, umbrochen und zentriert, in Schwarz auf allen sechs Akzenten.</p>
+
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(158px, 1fr)); gap:20px 18px; max-width:900px">
+      <sc-for list="{{ cards }}" as="c" hint-placeholder-count="6">
+        <div style="border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow)">
+          <div style="aspect-ratio:3/4; border-bottom:2px solid var(--border); background:{{ c.color }}; display:flex; align-items:center; justify-content:center; padding:14px">
+            <span style="font-family:'Press Start 2P', monospace; font-size:11px; line-height:1.6; color:#000; text-align:center; text-wrap:pretty">{{ c.title }}</span>
+          </div>
+          <div style="padding:8px 10px 10px; display:flex; flex-direction:column; gap:6px">
+            <span style="display:block; font-weight:700; font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ c.title }}</span>
+            <div style="display:flex; justify-content:space-between; align-items:center">
+              <span style="font-family:'VT323', monospace; font-size:15px; padding:1px 8px; border:2px solid var(--border); background:{{ c.color }}; color:#000; font-weight:700; letter-spacing:1px">{{ c.badge }}</span>
+              <span style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">{{ c.year }}</span>
+            </div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+  </main>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;theme&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;dark&quot;, &quot;tsType&quot;: &quot;'dark'|'light'&quot; }
+}">
+const CARDS = [
+  { title: 'Kirby\u2019s Adventure', badge: 'NES', color: 'var(--accent)', year: '1993' },
+  { title: 'Super Mario World 2', badge: 'SNES', color: 'var(--accent-2)', year: '1995' },
+  { title: 'Shining Force II', badge: 'MD', color: 'var(--accent-3)', year: '1993' },
+  { title: 'Pokémon Blue', badge: 'GB', color: 'var(--accent-4)', year: '1996' },
+  { title: 'Xenogears', badge: 'PS1', color: 'var(--accent-5)', year: '1998' },
+  { title: 'King of Fighters 98', badge: 'ARC', color: 'var(--accent-6)', year: '1998' }
+];
+
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { theme: null }; }
+  theme() { return this.state.theme ?? this.props.theme ?? 'dark'; }
+  componentDidMount() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  componentDidUpdate() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  renderVals() {
+    const t = this.theme();
+    return {
+      theme: t,
+      darkBg: t === 'dark' ? 'var(--accent-3)' : 'transparent',
+      darkFg: t === 'dark' ? '#000' : 'var(--text-dim)',
+      lightBg: t === 'light' ? 'var(--accent-3)' : 'transparent',
+      lightFg: t === 'light' ? '#000' : 'var(--text-dim)',
+      setDark: () => this.setState({ theme: 'dark' }),
+      setLight: () => this.setState({ theme: 'light' }),
+      cards: CARDS
+    };
+  }
+}
+</script>
+</body>
+</html>

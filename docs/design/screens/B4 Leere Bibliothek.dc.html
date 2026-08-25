@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root, [data-theme="dark"] {
+    --bg:#121212; --bg-soft:#1b1b1b; --surface:#1e1e1e; --surface-2:#252525;
+    --border:#000000; --shadow:#2b2b2b; --text:#f2f2f2; --text-dim:#9a9a9a;
+    --accent:#3cb58f; --accent-2:#d0648c; --accent-3:#9a7bd4; --accent-4:#7ba05b;
+    --accent-5:#62abd9; --accent-6:#c9834a; --chip-bg:#1e1e1e;
+    --scanline:rgba(255,255,255,.028);
+  }
+  [data-theme="light"] {
+    --bg:#f4ecdc; --bg-soft:#efe4cd; --surface:#fbf5e8; --surface-2:#f1e8d4;
+    --border:#1a1a1a; --shadow:#1a1a1a; --text:#1a1a1a; --text-dim:#6b6353;
+    --accent:#1a8f80; --accent-2:#c8607f; --accent-3:#7c5cc4; --accent-4:#6b8f4e;
+    --accent-5:#568db1; --accent-6:#b5753d; --chip-bg:#fbf5e8;
+    --scanline:rgba(0,0,0,.03);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scrollbar-color: var(--text-dim) var(--bg-soft); }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    min-height: 100vh;
+    transition: background .25s ease, color .25s ease;
+    background-image: repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px);
+  }
+  ::selection { background: var(--accent); color:#000; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-3); }
+  button:focus-visible, [tabindex]:focus-visible { outline: none; }
+  @media (max-width: 860px) {
+    .rf-layout { grid-template-columns: 1fr !important; }
+    .rf-sidebar { display: none !important; }
+  }
+</style>
+</helmet>
+
+<div class="rf-layout" data-theme="{{ theme }}" data-screen-label="B4" style="display:grid; grid-template-columns:232px 1fr; grid-template-rows:auto 1fr auto; min-height:100vh; background:var(--bg); color:var(--text); font-family:'Space Grotesk', system-ui, sans-serif; background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px); transition:background .25s ease, color .25s ease">
+
+  <header style="grid-column:1 / -1; display:flex; align-items:center; gap:16px; padding:14px 24px; border-bottom:3px solid var(--border); background:var(--surface)">
+    <div style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; user-select:none">RETRO<span style="color:var(--accent-2)">FRONTIER</span></div>
+    <div role="group" aria-label="Theme" style="display:flex; margin-left:auto; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); overflow:hidden; background:var(--chip-bg)">
+      <button type="button" onClick="{{ setDark }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; background:{{ darkBg }}; color:{{ darkFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">DARK</button>
+      <button type="button" onClick="{{ setLight }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; border-left:2px solid var(--border); background:{{ lightBg }}; color:{{ lightFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">LIGHT</button>
+    </div>
+  </header>
+
+  <aside class="rf-sidebar" style="border-right:3px solid var(--border); background:var(--bg-soft); padding:22px 16px; display:flex; flex-direction:column; gap:26px">
+    <div>
+      <p style="font-family:'Press Start 2P', monospace; font-size:9px; color:var(--text-dim); letter-spacing:2px; margin-bottom:12px; padding-left:4px">// SYSTEME</p>
+      <ul style="list-style:none; display:flex; flex-direction:column; gap:6px">
+        <sc-for list="{{ sidebarSystems }}" as="s" hint-placeholder-count="6">
+          <li style="display:flex; align-items:center; gap:6px; opacity:{{ s.rowOpacity }}">
+            <svg viewBox="0 0 8 8" width="14" height="14" style="margin-right:-5px; flex:none; opacity:{{ s.cursorOpacity }}; color:var(--text)" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true"><path d="M0 0h1v1h-1zM0 1h1v1h-1zM1 1h1v1h-1zM0 2h1v1h-1zM1 2h1v1h-1zM2 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1zM0 4h1v1h-1zM1 4h1v1h-1zM2 4h1v1h-1zM3 4h1v1h-1zM0 5h1v1h-1zM1 5h1v1h-1zM2 5h1v1h-1zM0 6h1v1h-1zM1 6h1v1h-1zM0 7h1v1h-1z"></path></svg>
+            <button type="button" onFocus="{{ s.onFocus }}" onBlur="{{ s.onBlur }}" style="flex:1; display:flex; align-items:center; gap:10px; padding:9px 10px; border:2px solid transparent; background:transparent; color:var(--text); font-family:inherit; cursor:default; text-align:left; outline:none">
+              <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:{{ s.color }}"></span>
+              <span style="font-weight:600; font-size:14.5px; flex:1">{{ s.name }}</span>
+              <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">{{ s.count }}</span>
+            </button>
+          </li>
+        </sc-for>
+      </ul>
+    </div>
+    <div>
+      <p style="font-family:'Press Start 2P', monospace; font-size:9px; color:var(--text-dim); letter-spacing:2px; margin-bottom:12px; padding-left:4px">// MENÜ</p>
+      <ul style="list-style:none; display:flex; flex-direction:column; gap:6px">
+        <li style="display:flex; align-items:center; gap:6px">
+          <svg viewBox="0 0 8 8" width="14" height="14" style="margin-right:-5px; flex:none; opacity:{{ menuCursorOpacity }}; color:var(--text)" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true"><path d="M0 0h1v1h-1zM0 1h1v1h-1zM1 1h1v1h-1zM0 2h1v1h-1zM1 2h1v1h-1zM2 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1zM0 4h1v1h-1zM1 4h1v1h-1zM2 4h1v1h-1zM3 4h1v1h-1zM0 5h1v1h-1zM1 5h1v1h-1zM2 5h1v1h-1zM0 6h1v1h-1zM1 6h1v1h-1zM0 7h1v1h-1z"></path></svg>
+          <button type="button" onFocus="{{ onMenuFocus }}" onBlur="{{ onMenuBlur }}" style="flex:1; display:flex; align-items:center; gap:10px; padding:9px 10px; border:2px solid transparent; font-weight:600; font-size:14.5px; cursor:pointer; transition:transform .08s ease; font-family:inherit; text-align:left; background:transparent; color:var(--text); outline:none" style-hover="background:var(--surface); transform:translateX(2px)">
+            <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:var(--text-dim)"></span>
+            <span>Einstellungen</span>
+          </button>
+        </li>
+      </ul>
+    </div>
+  </aside>
+
+  <main style="display:grid; place-items:center; padding:48px 28px">
+    <div style="display:flex; flex-direction:column; align-items:center; gap:22px; max-width:480px; text-align:center">
+
+      <svg viewBox="0 0 7 6" width="64" height="55" shape-rendering="crispEdges" fill="var(--text-dim)" aria-hidden="true"><path d="M0 0h1v1h-1zM1 0h1v1h-1zM2 0h1v1h-1zM0 1h1v1h-1zM3 1h1v1h-1zM4 1h1v1h-1zM5 1h1v1h-1zM6 1h1v1h-1zM0 2h1v1h-1zM6 2h1v1h-1zM0 3h1v1h-1zM6 3h1v1h-1zM0 4h1v1h-1zM6 4h1v1h-1zM0 5h1v1h-1zM1 5h1v1h-1zM2 5h1v1h-1zM3 5h1v1h-1zM4 5h1v1h-1zM5 5h1v1h-1zM6 5h1v1h-1z"></path></svg>
+
+      <div style="display:flex; flex-direction:column; gap:12px">
+        <h2 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; line-height:1.6">BIBLIOTHEK IST LEER</h2>
+        <p style="font-size:20px; line-height:1.6; font-weight:500; text-wrap:pretty">Es wurden noch keine ROMs gefunden. Scanne einen Ordner, um deine Bibliothek zu füllen.</p>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap; justify-content:center">
+        <button type="button" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:14px 18px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--accent); color:#000; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:8px; transition:transform .08s ease, box-shadow .08s ease" style-hover="transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)" style-active="transform:translate(2px,2px); box-shadow:1px 1px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">
+          <svg viewBox="0 0 7 6" width="11" height="11" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true" style="flex:none; display:block"><path d="M0 0h1v1h-1zM1 0h1v1h-1zM2 0h1v1h-1zM0 1h1v1h-1zM3 1h1v1h-1zM4 1h1v1h-1zM5 1h1v1h-1zM6 1h1v1h-1zM0 2h1v1h-1zM6 2h1v1h-1zM0 3h1v1h-1zM6 3h1v1h-1zM0 4h1v1h-1zM6 4h1v1h-1zM0 5h1v1h-1zM1 5h1v1h-1zM2 5h1v1h-1zM3 5h1v1h-1zM4 5h1v1h-1zM5 5h1v1h-1zM6 5h1v1h-1z"></path></svg>
+          ORDNER SCANNEN
+        </button>
+      </div>
+
+    </div>
+  </main>
+
+  <footer style="grid-column:1 / -1; display:flex; align-items:center; flex-wrap:wrap; row-gap:4px; gap:18px; padding:10px 24px; border-top:3px solid var(--border); background:var(--surface); font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">
+    <span>RETROARCH 1.19.0</span>
+    <span>·</span>
+    <span>CONTROLLER: 8BITDO PRO 2</span>
+    <span style="flex:1"></span>
+    <div style="display:flex; align-items:center; gap:10px">
+      <span style="font-family:'Press Start 2P', monospace; font-size:8px; padding:5px 7px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--accent); color:#000">A</span>
+      <span>ORDNER SCANNEN</span>
+    </div>
+  </footer>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;theme&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;dark&quot;, &quot;tsType&quot;: &quot;'dark'|'light'&quot; }
+}">
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { theme: null, menuFocused: false, focusIdx: null }; }
+  theme() { return this.state.theme ?? this.props.theme ?? 'dark'; }
+  componentDidMount() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  componentDidUpdate() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  renderVals() {
+    const t = this.theme();
+    return {
+      theme: t,
+      darkBg: t === 'dark' ? 'var(--accent-3)' : 'transparent',
+      darkFg: t === 'dark' ? '#000' : 'var(--text-dim)',
+      lightBg: t === 'light' ? 'var(--accent-3)' : 'transparent',
+      lightFg: t === 'light' ? '#000' : 'var(--text-dim)',
+      setDark: () => this.setState({ theme: 'dark' }),
+      setLight: () => this.setState({ theme: 'light' }),
+      sidebarSystems: [
+        { name: 'Alle Systeme', color: 'var(--accent)' },
+        { name: 'SNES', color: 'var(--accent-2)' },
+        { name: 'Mega Drive', color: 'var(--accent-3)' },
+        { name: 'Game Boy', color: 'var(--accent-4)' },
+        { name: 'PS1', color: 'var(--accent-5)' },
+        { name: 'Arcade', color: 'var(--accent-6)' }
+      ].map((s, i) => ({
+        ...s, count: 0, rowOpacity: 0.5,
+        cursorOpacity: this.state.focusIdx === i ? 1 : 0,
+        onFocus: () => this.setState({ focusIdx: i }),
+        onBlur: () => this.setState(s2 => (s2.focusIdx === i ? { focusIdx: null } : null))
+      })),
+      menuCursorOpacity: this.state.menuFocused ? 1 : 0,
+      onMenuFocus: () => this.setState({ menuFocused: true }),
+      onMenuBlur: () => this.setState({ menuFocused: false })
+    };
+  }
+}
+</script>
+</body>
+</html>

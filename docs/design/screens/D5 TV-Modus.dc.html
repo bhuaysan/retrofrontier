@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root, [data-theme="dark"] {
+    --bg:#121212; --bg-soft:#1b1b1b; --surface:#1e1e1e; --surface-2:#252525;
+    --border:#000000; --shadow:#2b2b2b; --text:#f2f2f2; --text-dim:#9a9a9a;
+    --accent:#3cb58f; --accent-2:#d0648c; --accent-3:#9a7bd4; --accent-4:#7ba05b;
+    --accent-5:#62abd9; --accent-6:#c9834a; --chip-bg:#1e1e1e;
+    --scanline:rgba(255,255,255,.028);
+  }
+  [data-theme="light"] {
+    --bg:#f4ecdc; --bg-soft:#efe4cd; --surface:#fbf5e8; --surface-2:#f1e8d4;
+    --border:#1a1a1a; --shadow:#1a1a1a; --text:#1a1a1a; --text-dim:#6b6353;
+    --accent:#1a8f80; --accent-2:#c8607f; --accent-3:#7c5cc4; --accent-4:#6b8f4e;
+    --accent-5:#568db1; --accent-6:#b5753d; --chip-bg:#fbf5e8;
+    --scanline:rgba(0,0,0,.03);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scrollbar-color: var(--text-dim) var(--bg-soft); }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    min-height: 100vh;
+    transition: background .25s ease, color .25s ease;
+    background-image: repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px);
+  }
+  ::selection { background: var(--accent); color:#000; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-3); }
+  button:focus-visible, [tabindex]:focus-visible { outline: none; }
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" data-screen-label="D5" style="min-height:100vh; background:var(--bg); color:var(--text); font-family:'Space Grotesk', system-ui, sans-serif; background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px); transition:background .25s ease, color .25s ease; padding:34px 28px 60px; display:flex; flex-direction:column; gap:26px">
+
+  <div style="display:flex; align-items:baseline; gap:14px">
+    <h2 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; white-space:nowrap; flex-shrink:0">▶ D5 — TV-MODUS (10-FUSS-LAYOUT)</h2>
+    <span style="flex:1; height:3px; background:var(--border)"></span>
+  </div>
+
+  <div style="border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); padding:22px 24px; display:flex; flex-direction:column; gap:12px; max-width:80ch">
+    <span style="font-family:'Press Start 2P', monospace; font-size:10px; letter-spacing:1px">VORSCHLAG: FESTE ZWEITE GRÖSSENSTUFE, FAKTOR ×1.4</span>
+    <p style="font-size:15px; line-height:1.6; text-wrap:pretty">Statt eines globalen <em style="font-style:normal">--ui-scale</em>, der jede Komponente live umrechnet, schlage ich zwei feste Stufen vor: Desktop-Größen wie bisher, TV-Größen ×1.4 auf allen drei Schriftrollen und Kachelbreiten. Fertigkeit ist dieselbe, sie skaliert nicht dynamisch — vereinfacht Layout-Berechnung, deckt aber nicht jeden TV-Abstand ab.</p>
+    <div style="display:grid; grid-template-columns:1fr auto auto; gap:8px 20px; font-family:'VT323', monospace; font-size:18px; max-width:520px; margin-top:6px">
+      <span style="color:var(--text-dim)">Press Start 2P (Label)</span><span>9px</span><span style="color:var(--accent)">13px</span>
+      <span style="color:var(--text-dim)">VT323 (Meta)</span><span>18px</span><span style="color:var(--accent)">25px</span>
+      <span style="color:var(--text-dim)">Space Grotesk (Kartentitel)</span><span>14.5px</span><span style="color:var(--accent)">20px</span>
+      <span style="color:var(--text-dim)">Kachelbreite (Grid)</span><span>158px</span><span style="color:var(--accent)">220px</span>
+      <span style="color:var(--text-dim)">Hit-Target (Buttons)</span><span>≈40px</span><span style="color:var(--accent)">≈56px</span>
+    </div>
+    <p style="font-size:15px; line-height:1.6; text-wrap:pretty">Aktivierung: manueller Schalter in den Einstellungen (Allgemein → Darstellung), kein automatisches Erkennen von Vollbild/TV. Braucht deine Freigabe: keine neuen Farben oder Schatten, nur die zweite Größenstufe selbst.</p>
+  </div>
+
+  <div style="display:flex; align-items:baseline; gap:14px; margin-top:10px">
+    <h3 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; white-space:nowrap">VORSCHAU · TV-GRÖSSEN</h3>
+    <span style="flex:1; height:3px; background:var(--border)"></span>
+  </div>
+
+  <div style="border:3px solid var(--border); background:var(--bg); display:grid; grid-template-columns:340px 1fr">
+
+    <aside style="border-right:3px solid var(--border); background:var(--bg-soft); padding:30px 22px; display:flex; flex-direction:column; gap:34px">
+      <div>
+        <p style="font-family:'Press Start 2P', monospace; font-size:13px; color:var(--text-dim); letter-spacing:2px; margin-bottom:18px">// SYSTEME</p>
+        <ul style="list-style:none; display:flex; flex-direction:column; gap:10px">
+          <sc-for list="{{ sidebarSystems }}" as="s" hint-placeholder-count="4">
+            <li style="display:flex; align-items:center; gap:16px; padding:15px 16px; border:2px solid {{ s.borderColor }}; background:{{ s.bg }}; box-shadow:{{ s.shadow }}">
+              <span style="width:22px; height:22px; border:2px solid var(--border); flex:none; background:{{ s.color }}"></span>
+              <span style="font-weight:600; font-size:20px; flex:1; color:{{ s.fg }}">{{ s.name }}</span>
+              <span style="font-family:'VT323', monospace; font-size:25px; color:{{ s.countColor }}">{{ s.count }}</span>
+            </li>
+          </sc-for>
+        </ul>
+      </div>
+    </aside>
+
+    <main style="padding:30px; display:flex; flex-direction:column; gap:26px">
+      <div style="display:flex; align-items:baseline; gap:18px">
+        <h2 style="font-family:'Press Start 2P', monospace; font-size:18px; letter-spacing:1px; white-space:nowrap">▶ BIBLIOTHEK</h2>
+        <span style="flex:1; height:4px; background:var(--border)"></span>
+        <span style="font-family:'VT323', monospace; font-size:25px; color:var(--text-dim); white-space:nowrap">128 TITEL</span>
+      </div>
+
+      <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:28px 24px">
+        <sc-for list="{{ cards }}" as="c" hint-placeholder-count="4">
+          <div tabIndex="0" style="display:block; border:3px solid var(--border); background:var(--surface); box-shadow:6px 6px 0 var(--shadow); cursor:pointer; outline:none; transform-origin:center; transition:transform .12s ease-out, box-shadow .12s ease-out" style-hover="transform:scale(1.04); box-shadow:8px 8px 0 var(--shadow)" style-focus="transform:scale(1.08); box-shadow:10px 10px 0 var(--shadow)">
+            <div style="aspect-ratio:3/4; border-bottom:3px solid var(--border); background:{{ c.cover }}"></div>
+            <div style="padding:14px 16px 16px; display:flex; flex-direction:column; gap:10px">
+              <span style="display:block; font-weight:700; font-size:20px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ c.title }}</span>
+              <div style="display:flex; justify-content:space-between; align-items:center">
+                <span style="font-family:'VT323', monospace; font-size:21px; padding:2px 11px; border:2px solid var(--border); background:{{ c.badgeColor }}; color:#000; font-weight:700; letter-spacing:1px">{{ c.badge }}</span>
+                <span style="font-family:'VT323', monospace; font-size:23px; color:var(--text-dim)">{{ c.year }}</span>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </main>
+
+  </div>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;theme&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;dark&quot;, &quot;tsType&quot;: &quot;'dark'|'light'&quot; }
+}">
+const CARD_DATA = [
+  { title: 'Chrono Trigger', badge: 'SNES', badgeColor: 'var(--accent-2)', year: '1995', cover: 'linear-gradient(160deg, #232a5e, #2f5d3a)' },
+  { title: 'Sonic The Hedgehog 2', badge: 'MD', badgeColor: 'var(--accent-3)', year: '1992', cover: 'linear-gradient(160deg, #2e2a5e, #12101f)' },
+  { title: 'Super Metroid', badge: 'SNES', badgeColor: 'var(--accent-2)', year: '1994', cover: 'linear-gradient(160deg, #1a2a3a, #3a1a4a)' },
+  { title: "Kirby's Adventure", badge: 'NES', badgeColor: 'var(--accent)', year: '1993', cover: 'linear-gradient(160deg, #4a2a5e, #2a1a3e)' }
+];
+
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { theme: null }; }
+  theme() { return this.state.theme ?? this.props.theme ?? 'dark'; }
+  componentDidMount() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  componentDidUpdate() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  renderVals() {
+    const t = this.theme();
+    return {
+      theme: t,
+      sidebarSystems: [
+        { name: 'Alle Systeme', color: 'var(--accent)', count: 128, active: true },
+        { name: 'SNES', color: 'var(--accent-2)', count: 34 },
+        { name: 'Mega Drive', color: 'var(--accent-3)', count: 22 },
+        { name: 'NES', color: 'var(--accent)', count: 7 }
+      ].map(s => ({
+        ...s,
+        bg: s.active ? 'var(--accent-3)' : 'transparent',
+        fg: s.active ? '#000' : 'var(--text)',
+        borderColor: s.active ? 'var(--border)' : 'transparent',
+        shadow: s.active ? '3px 3px 0 var(--shadow)' : 'none',
+        countColor: s.active ? '#000' : 'var(--text-dim)'
+      })),
+      cards: CARD_DATA
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root, [data-theme="dark"] {
+    --bg:#121212; --bg-soft:#1b1b1b; --surface:#1e1e1e; --surface-2:#252525;
+    --border:#000000; --shadow:#2b2b2b; --text:#f2f2f2; --text-dim:#9a9a9a;
+    --accent:#3cb58f; --accent-2:#d0648c; --accent-3:#9a7bd4; --accent-4:#7ba05b;
+    --accent-5:#62abd9; --accent-6:#c9834a; --chip-bg:#1e1e1e;
+    --scanline:rgba(255,255,255,.028);
+  }
+  [data-theme="light"] {
+    --bg:#f4ecdc; --bg-soft:#efe4cd; --surface:#fbf5e8; --surface-2:#f1e8d4;
+    --border:#1a1a1a; --shadow:#1a1a1a; --text:#1a1a1a; --text-dim:#6b6353;
+    --accent:#1a8f80; --accent-2:#c8607f; --accent-3:#7c5cc4; --accent-4:#6b8f4e;
+    --accent-5:#568db1; --accent-6:#b5753d; --chip-bg:#fbf5e8;
+    --scanline:rgba(0,0,0,.03);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scrollbar-color: var(--text-dim) var(--bg-soft); }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    min-height: 100vh;
+    transition: background .25s ease, color .25s ease;
+    background-image: repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px);
+  }
+  ::selection { background: var(--accent); color:#000; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-3); }
+  button:focus-visible, [tabindex]:focus-visible { outline: none; }
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" data-screen-label="A1" style="display:grid; grid-template-rows:auto 1fr auto; min-height:100vh; background:var(--bg); color:var(--text); font-family:'Space Grotesk', system-ui, sans-serif; background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px); transition:background .25s ease, color .25s ease">
+
+  <header style="display:flex; align-items:center; gap:16px; padding:14px 24px; border-bottom:3px solid var(--border); background:var(--surface)">
+    <div style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; user-select:none">RETRO<span style="color:var(--accent-2)">FRONTIER</span></div>
+    <div role="group" aria-label="Theme" style="display:flex; margin-left:auto; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); overflow:hidden; background:var(--chip-bg)">
+      <button type="button" onClick="{{ setDark }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; background:{{ darkBg }}; color:{{ darkFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">DARK</button>
+      <button type="button" onClick="{{ setLight }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; border-left:2px solid var(--border); background:{{ lightBg }}; color:{{ lightFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">LIGHT</button>
+    </div>
+  </header>
+
+  <main style="display:grid; place-items:center; padding:48px 28px 56px">
+    <div style="width:100%; max-width:760px; display:flex; flex-direction:column; gap:26px">
+
+      <div style="display:flex; align-items:baseline; gap:14px">
+        <h2 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px">▶ ERSTE EINRICHTUNG</h2>
+        <span style="flex:1; height:3px; background:var(--border)"></span>
+        <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">SCHRITT 1 / 3</span>
+      </div>
+
+      <div style="border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); padding:28px 32px 30px; display:flex; flex-direction:column; gap:24px">
+
+        <div style="display:flex; flex-direction:column; gap:14px">
+          <p style="font-size:20px; line-height:1.6; font-weight:500; max-width:52ch; text-wrap:pretty">Wähle den Ordner mit deinen ROMs. Unterordner werden automatisch erfasst.</p>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap">
+          <span style="font-family:'Press Start 2P', monospace; font-size:9px; color:var(--text-dim); letter-spacing:2px">// ORDNER</span>
+          <sc-if value="{{ pathSelected }}" hint-placeholder-val="{{ false }}">
+            <span style="font-family:'VT323', monospace; font-size:18px; color:var(--accent); border:2px dashed var(--text-dim); padding:4px 10px; background:var(--bg-soft)">/home/max/roms/</span>
+          </sc-if>
+          <sc-if value="{{ pathEmpty }}" hint-placeholder-val="{{ true }}">
+            <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim); border:2px dashed var(--text-dim); padding:4px 10px; background:var(--bg-soft)">KEIN ORDNER GEWÄHLT</span>
+          </sc-if>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap">
+          <button type="button" ref="{{ primaryRef }}" onClick="{{ choose }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:14px 18px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--accent); color:#000; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:8px; transition:transform .08s ease, box-shadow .08s ease" style-hover="transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)" style-active="transform:translate(2px,2px); box-shadow:1px 1px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">
+            <svg viewBox="0 0 7 6" width="11" height="11" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true" style="flex:none; display:block"><path d="M0 0h1v1h-1zM1 0h1v1h-1zM2 0h1v1h-1zM0 1h1v1h-1zM3 1h1v1h-1zM4 1h1v1h-1zM5 1h1v1h-1zM6 1h1v1h-1zM0 2h1v1h-1zM6 2h1v1h-1zM0 3h1v1h-1zM6 3h1v1h-1zM0 4h1v1h-1zM6 4h1v1h-1zM0 5h1v1h-1zM1 5h1v1h-1zM2 5h1v1h-1zM3 5h1v1h-1zM4 5h1v1h-1zM5 5h1v1h-1zM6 5h1v1h-1z"/></svg>
+            ORDNER WÄHLEN
+          </button>
+          <sc-if value="{{ pathSelected }}" hint-placeholder-val="{{ false }}">
+            <button type="button" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:14px 18px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--surface-2); color:var(--text); cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:8px; transition:transform .08s ease, box-shadow .08s ease" style-hover="transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)" style-active="transform:translate(2px,2px); box-shadow:1px 1px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">SCAN STARTEN</button>
+          </sc-if>
+        </div>
+      </div>
+
+      <sc-if value="{{ showSkip }}" hint-placeholder-val="{{ true }}">
+        <button type="button" style="align-self:flex-start; font-family:'VT323', monospace; font-size:20px; padding:7px 16px; background:transparent; color:var(--text-dim); border:2px solid transparent; cursor:pointer; transition:transform .08s ease" style-hover="color:var(--text); border-color:var(--border); background:var(--chip-bg); box-shadow:3px 3px 0 var(--shadow)" style-focus="color:var(--bg); border-color:var(--border); background:var(--text); box-shadow:3px 3px 0 var(--shadow)">Später einrichten</button>
+      </sc-if>
+
+    </div>
+  </main>
+
+  <footer style="display:flex; align-items:center; flex-wrap:wrap; row-gap:4px; gap:18px; padding:10px 24px; border-top:3px solid var(--border); background:var(--surface); font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">
+    <span>RETROARCH 1.19.0</span>
+    <span>·</span>
+    <span>CONTROLLER: 8BITDO PRO 2</span>
+    <span style="flex:1"></span>
+    <div style="display:flex; align-items:center; gap:10px">
+      <span style="font-family:'Press Start 2P', monospace; font-size:8px; padding:5px 7px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--accent); color:#000">A</span>
+      <span>BESTÄTIGEN</span>
+      <span style="font-family:'Press Start 2P', monospace; font-size:8px; padding:5px 7px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--surface-2); color:var(--text)">B</span>
+      <span>ÜBERSPRINGEN</span>
+    </div>
+  </footer>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;theme&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;dark&quot;, &quot;tsType&quot;: &quot;'dark'|'light'&quot; },
+  &quot;pathSelected&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Zustand&quot; },
+  &quot;showSkip&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Zustand&quot; },
+  &quot;focusPrimary&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Zustand&quot; }
+}">
+class Component extends DCLogic {
+  constructor(p) {
+    super(p);
+    this.state = { theme: null, picked: null };
+    this.primaryRef = React.createRef();
+  }
+  theme() { return this.state.theme ?? this.props.theme ?? 'dark'; }
+  picked() { return this.state.picked ?? (this.props.pathSelected ?? false); }
+  componentDidMount() {
+    document.documentElement.setAttribute('data-theme', this.theme());
+    if ((this.props.focusPrimary ?? false) && this.primaryRef.current) this.primaryRef.current.focus();
+  }
+  componentDidUpdate() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  renderVals() {
+    const t = this.theme(), picked = this.picked();
+    const on = { background: 'var(--accent-3)', color: '#000' };
+    return {
+      theme: t,
+      darkBg: t === 'dark' ? on.background : 'transparent',
+      darkFg: t === 'dark' ? '#000' : 'var(--text-dim)',
+      lightBg: t === 'light' ? on.background : 'transparent',
+      lightFg: t === 'light' ? '#000' : 'var(--text-dim)',
+      setDark: () => this.setState({ theme: 'dark' }),
+      setLight: () => this.setState({ theme: 'light' }),
+      pathSelected: picked,
+      pathEmpty: !picked,
+      showSkip: this.props.showSkip ?? true,
+      choose: () => this.setState({ picked: true }),
+      primaryRef: this.primaryRef
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+/* RetroFrontier — Design Tokens (Single Source of Truth)
+   Verbindlich für alle Screens. Neue Screens kopieren diesen Block 1:1
+   in :root, [data-theme="dark"] / [data-theme="light"]. */
+
+:root, [data-theme="dark"] {
+  /* Flächen */
+  --bg:#121212;
+  --bg-soft:#1b1b1b;
+  --surface:#1e1e1e;
+  --surface-2:#252525;
+  --chip-bg:#1e1e1e;
+
+  /* Linien & Tiefe */
+  --border:#000000;
+  --shadow:#2b2b2b;
+
+  /* Text */
+  --text:#f2f2f2;
+  --text-dim:#9a9a9a;
+
+  /* Akzente — 1 pro System, gleiche Sättigung/Helligkeit, nur Farbton variiert */
+  --accent:#3cb58f;    /* NES */
+  --accent-2:#d0648c;  /* SNES */
+  --accent-3:#9a7bd4;  /* Mega Drive / "aktiv"-Zustand */
+  --accent-4:#7ba05b;  /* Game Boy */
+  --accent-5:#62abd9;  /* PS1 */
+  --accent-6:#c9834a;  /* Arcade */
+
+  --scanline:rgba(255,255,255,.028);
+}
+
+[data-theme="light"] {
+  --bg:#f4ecdc;
+  --bg-soft:#efe4cd;
+  --surface:#fbf5e8;
+  --surface-2:#f1e8d4;
+  --chip-bg:#fbf5e8;
+
+  --border:#1a1a1a;
+  --shadow:#1a1a1a;
+
+  --text:#1a1a1a;
+  --text-dim:#6b6353;
+
+  --accent:#1a8f80;
+  --accent-2:#c8607f;
+  --accent-3:#7c5cc4;
+  --accent-4:#6b8f4e;
+  --accent-5:#568db1;
+  --accent-6:#b5753d;
+
+  --scanline:rgba(0,0,0,.03);
+}
+
+/* Typografie — 1:1 in jedem Screen einbinden
+   Press Start 2P → Labels/Headlines (UPPERCASE, letter-spacing 1px)
+   VT323          → Meta/Zahlen/Monospace-Werte
+   Space Grotesk  → Fließtext/Body (400/500/600/700) */
+:root {
+  --font-label: 'Press Start 2P', monospace;
+  --font-meta: 'VT323', monospace;
+  --font-body: 'Space Grotesk', system-ui, sans-serif;
+}
+
+/* Struktur-Konventionen (keine CSS-Variablen im Markup, aber verbindlich) */
+:root {
+  --border-width: 2px;      /* 3px nur für Header/Footer-Trennlinien und Cover-Rahmen */
+  --shadow-rest: 4px 4px 0 var(--shadow);
+  --shadow-hover: 6px 6px 0 var(--shadow);
+  --shadow-focus: 8px 8px 0 var(--shadow);
+  --radius: 0;               /* keine abgerundeten Ecken im gesamten System */
+}
+
+/* Fokus-Sprache (entschieden in A6 — siehe "V5 Kombination")
+   1) Listenzeile   → 18px-Cursor-Spalte (▶), Bauteil bleibt unverändert
+   2) Eigenständige Fläche (Button/Toggle/Chip) → Vordergrund/Hintergrund invertiert
+   3) Karte mit Bild (Cover/Screenshot/Save-State) → scale(1.08) + --shadow-focus
+   Kein Outline-Ring, keine neue Fokusfarbe. */

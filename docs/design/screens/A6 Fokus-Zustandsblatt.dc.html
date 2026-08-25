@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root, [data-theme="dark"] {
+    --bg:#121212; --bg-soft:#1b1b1b; --surface:#1e1e1e; --surface-2:#252525;
+    --border:#000000; --shadow:#2b2b2b; --text:#f2f2f2; --text-dim:#9a9a9a;
+    --accent:#3cb58f; --accent-2:#d0648c; --accent-3:#9a7bd4; --accent-4:#7ba05b;
+    --accent-5:#62abd9; --accent-6:#c9834a; --chip-bg:#1e1e1e;
+    --scanline:rgba(255,255,255,.028);
+  }
+  [data-theme="light"] {
+    --bg:#f4ecdc; --bg-soft:#efe4cd; --surface:#fbf5e8; --surface-2:#f1e8d4;
+    --border:#1a1a1a; --shadow:#1a1a1a; --text:#1a1a1a; --text-dim:#6b6353;
+    --accent:#1a8f80; --accent-2:#c8607f; --accent-3:#7c5cc4; --accent-4:#6b8f4e;
+    --accent-5:#568db1; --accent-6:#b5753d; --chip-bg:#fbf5e8;
+    --scanline:rgba(0,0,0,.03);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scrollbar-color: var(--text-dim) var(--bg-soft); }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    min-height: 100vh;
+  }
+  ::selection { background: var(--accent); color:#000; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-3); }
+  button:focus-visible, [tabindex]:focus-visible { outline: none; }
+  @keyframes rf-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+</style>
+</helmet>
+
+<div data-theme="dark" data-screen-label="A6" style="min-height:100vh; background:var(--bg); color:var(--text); font-family:'Space Grotesk', system-ui, sans-serif; padding:34px 28px 60px; display:flex; flex-direction:column; gap:30px; background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px)">
+
+  <div style="display:flex; align-items:baseline; gap:14px">
+    <h2 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px">▶ A6 — FOKUS-ZUSTANDSBLATT</h2>
+    <span style="flex:1; height:3px; background:var(--border)"></span>
+  </div>
+
+  <p style="font-size:20px; line-height:1.6; font-weight:500; max-width:60ch; text-wrap:pretty"><strong>Entschieden: V5, Kombination aus Cursor, invertierter Vollfläche und Karten-Zoom</strong> — Zeilen bekommen den Cursor, eigenständige Flächen invertieren, Karten mit Bild zoomen. V1–V4 unten sind verworfene Zwischenschritte; der Ring aus dem Briefing (<em style="font-style:normal; color:var(--accent-3)">--accent-3</em>, 3 px, Offset 3) ist ebenfalls verworfen.</p>
+
+  <section data-theme="dark" style="border:3px solid var(--border); background:var(--bg); padding:26px 26px 30px; display:flex; flex-direction:column; gap:22px; color:var(--text); background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px)">
+    <div style="display:flex; align-items:baseline; gap:14px">
+      <h3 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px">FOKUS OHNE RING — 4 VORSCHLÄGE</h3>
+      <span style="flex:1; height:3px; background:var(--border)"></span>
+    </div>
+    <p style="font-size:15px; line-height:1.6; max-width:74ch; text-wrap:pretty">Statt Outline färbt der Fokus das ganze Bauteil. Damit das trägt, braucht die Fokusfarbe eine Bedeutung, die kein System belegt — sonst liest man „fokussiert“ als „aktiv“ oder als Systemzuordnung.</p>
+
+    <sc-for list="{{ focusVariants }}" as="v" hint-placeholder-count="3">
+      <div style="display:grid; grid-template-columns:220px 1fr; gap:20px; align-items:start; padding-top:18px; border-top:2px solid var(--border)">
+        <div style="display:flex; flex-direction:column; gap:8px">
+          <span style="font-family:'Press Start 2P', monospace; font-size:9px; letter-spacing:1px">{{ v.label }}</span>
+          <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">{{ v.token }}</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:14px">
+          <div style="display:flex; flex-wrap:wrap; gap:20px; align-items:center">
+            <span style="{{ v.btn }}">STARTEN</span>
+            <span style="{{ v.btn2 }}">FAVORIT</span>
+            <span style="{{ v.item }}">
+              <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:var(--accent-3)"></span>
+              <span style="font-weight:600; font-size:14.5px; flex:1">Mega Drive</span>
+              <span style="font-family:'VT323', monospace; font-size:18px">22</span>
+            </span>
+          </div>
+          <p style="font-size:14.5px; line-height:1.55; color:var(--text-dim); max-width:64ch; text-wrap:pretty">{{ v.note }}</p>
+        </div>
+      </div>
+    </sc-for>
+
+    <div style="display:grid; grid-template-columns:220px 1fr; gap:20px; align-items:start; padding-top:18px; border-top:2px solid var(--border)">
+      <div style="display:flex; flex-direction:column; gap:8px">
+        <span style="font-family:'Press Start 2P', monospace; font-size:9px; letter-spacing:1px">V4 — CURSOR-DREIECK</span>
+        <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">▶ in var(--text), blinkend · kein neues Farbtoken</span>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:16px">
+
+        <div style="display:flex; flex-direction:column; gap:6px; max-width:300px">
+          <div style="display:flex; align-items:center; gap:10px">
+            <span style="width:18px; font-family:'Press Start 2P', monospace; font-size:13px; animation:rf-blink 1s steps(2) infinite">▶</span>
+            <span style="display:flex; align-items:center; gap:10px; flex:1; padding:9px 10px; border:2px solid transparent">
+              <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:var(--accent-2)"></span>
+              <span style="font-weight:600; font-size:14.5px; flex:1">SNES</span>
+              <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">34</span>
+            </span>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px">
+            <span style="width:18px"></span>
+            <span style="display:flex; align-items:center; gap:10px; flex:1; padding:9px 10px; border:2px solid var(--border); background:var(--accent-3); color:#000; box-shadow:3px 3px 0 var(--shadow)">
+              <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:var(--accent-3)"></span>
+              <span style="font-weight:600; font-size:14.5px; flex:1">Mega Drive</span>
+              <span style="font-family:'VT323', monospace; font-size:18px">22</span>
+            </span>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px">
+            <span style="width:18px"></span>
+            <span style="display:flex; align-items:center; gap:10px; flex:1; padding:9px 10px; border:2px solid transparent">
+              <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:var(--accent-4)"></span>
+              <span style="font-weight:600; font-size:14.5px; flex:1">Game Boy</span>
+              <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">27</span>
+            </span>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-wrap:wrap; gap:22px; align-items:center">
+          <span style="display:inline-flex; align-items:center; gap:10px">
+            <span style="font-family:'Press Start 2P', monospace; font-size:13px; animation:rf-blink 1s steps(2) infinite">▶</span>
+            <span style="display:inline-flex; align-items:center; justify-content:center; font-family:'Press Start 2P', monospace; font-size:9px; padding:12px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--accent); color:#000">STARTEN</span>
+          </span>
+          <span style="display:inline-flex; align-items:center; gap:10px">
+            <span style="font-family:'Press Start 2P', monospace; font-size:13px; animation:rf-blink 1s steps(2) infinite">▶</span>
+            <span style="display:block; border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); width:130px">
+              <span style="display:block; aspect-ratio:3/4; border-bottom:2px solid var(--border); background:linear-gradient(160deg, #232a5e, #2f5d3a)"></span>
+              <span style="display:block; padding:8px 10px 10px; font-weight:700; font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">Chrono Trigger</span>
+            </span>
+          </span>
+        </div>
+
+        <p style="font-size:14.5px; line-height:1.55; color:var(--text-dim); max-width:64ch; text-wrap:pretty">Der Cursor sitzt außerhalb des Bauteils, färbt also nichts ein: Aktiv (violett) und Fokus bleiben getrennt, alle sechs Akzentflächen bleiben unangetastet, und das ▶ ist schon Teil der Sprache (Sektionsköpfe). Kosten: eine Spalte Platz links in Listen — im Kartengrid braucht es eine Regel, wo das Dreieck sitzt (hier links neben dem Cover, mittig zur Karte), und Blinken ist neue Bewegung, die du freigeben müsstest. Aus 3 m ist Bewegung der stärkste Fokus-Hinweis von allen vier Vorschlägen.</p>
+      </div>
+    </div>
+  </section>
+
+  <section data-theme="dark" style="border:3px solid var(--border); background:var(--bg); padding:26px 26px 30px; display:flex; flex-direction:column; gap:22px; color:var(--text); background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px)">
+    <div style="display:flex; align-items:baseline; gap:14px">
+      <h3 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px">V5 — KOMBINATION (ENTSCHIEDEN)</h3>
+      <span style="flex:1; height:3px; background:var(--border)"></span>
+      <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">MIT TAB DURCHGEHEN</span>
+    </div>
+    <p style="font-size:15px; line-height:1.6; max-width:74ch; text-wrap:pretty">Eine Fokus-Sprache, drei Ausprägungen — die Zuordnung hängt an der Bauteilform, nicht am Ort. Alles unten ist echt fokussierbar: einmal Tab drücken und durchgehen.</p>
+
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:22px">
+
+      <div style="display:flex; flex-direction:column; gap:14px">
+        <span style="font-family:'Press Start 2P', monospace; font-size:9px; letter-spacing:1px">1 · ZEILEN → CURSOR</span>
+        <div style="display:flex; flex-direction:column; gap:4px">
+          <sc-for list="{{ demoRows }}" as="r" hint-placeholder-count="4">
+            <div style="display:flex; align-items:center; gap:8px">
+              <span style="width:18px; margin-right:-6px; font-family:'Press Start 2P', monospace; font-size:22px; opacity:{{ r.cursorOpacity }}">▶</span>
+              <button type="button" onFocus="{{ r.onFocus }}" onBlur="{{ r.onBlur }}" style="flex:1; display:flex; align-items:center; gap:10px; padding:9px 10px; border:2px solid transparent; background:transparent; color:var(--text); font-family:inherit; cursor:pointer; outline:none; text-align:left" style-hover="background:var(--surface)">
+                <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:{{ r.color }}"></span>
+                <span style="font-weight:600; font-size:14.5px; flex:1">{{ r.name }}</span>
+                <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">{{ r.count }}</span>
+              </button>
+            </div>
+          </sc-for>
+        </div>
+        <p style="font-size:14.5px; line-height:1.55; color:var(--text-dim); text-wrap:pretty">Sidebar, Menü, Setting-Zeilen, Kontextmenü: das Bauteil bleibt unangetastet, der Cursor sitzt in einer eigenen 18-px-Spalte. Aktiv (violett) bleibt sichtbar, auch wenn der Fokus woanders steht.</p>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:14px">
+        <span style="font-family:'Press Start 2P', monospace; font-size:9px; letter-spacing:1px">2 · FLÄCHEN → VOLLTON</span>
+        <div style="display:flex; flex-wrap:wrap; gap:14px; align-items:center">
+          <button type="button" style="display:inline-flex; align-items:center; justify-content:center; font-family:'Press Start 2P', monospace; font-size:9px; padding:12px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--accent); color:#000; cursor:pointer; outline:none; transition:transform .08s ease, box-shadow .08s ease" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">STARTEN</button>
+          <button type="button" style="display:inline-flex; align-items:center; justify-content:center; font-family:'Press Start 2P', monospace; font-size:9px; padding:12px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--surface-2); color:var(--text); cursor:pointer; outline:none; transition:transform .08s ease, box-shadow .08s ease" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">FAVORIT</button>
+          <button type="button" style="display:inline-flex; align-items:center; font-family:'VT323', monospace; font-size:20px; padding:7px 18px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); color:var(--text); cursor:pointer; outline:none" style-focus="background:var(--text); color:var(--bg)">CORES</button>
+          <button type="button" style="display:block; position:relative; width:52px; height:26px; flex:none; border:2px solid var(--border); background:var(--bg-soft); cursor:pointer; outline:none; padding:0" style-focus="background:var(--text)">
+            <i style="position:absolute; top:2px; left:2px; width:18px; height:18px; background:var(--text-dim)"></i>
+          </button>
+        </div>
+        <p style="font-size:14.5px; line-height:1.55; color:var(--text-dim); text-wrap:pretty"><strong>Entschieden: invertiert.</strong> Kein neues Token — Fokus = Vordergrund/Hintergrund vertauscht, kostenlos in Dark und Creme.</p>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:14px">
+        <span style="font-family:'Press Start 2P', monospace; font-size:9px; letter-spacing:1px">3 · KARTEN → ZOOM</span>
+        <div style="display:flex; gap:16px; padding:10px 4px">
+          <sc-for list="{{ demoCards }}" as="c" hint-placeholder-count="2">
+            <button type="button" style="display:block; width:120px; padding:0; text-align:left; border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); color:var(--text); font-family:inherit; cursor:pointer; outline:none; transform-origin:center; transition:transform .12s ease-out, box-shadow .12s ease-out" style-focus="transform:scale(1.08); box-shadow:6px 6px 0 var(--shadow); border-color:var(--border)">
+              <span style="display:block; aspect-ratio:3/4; border-bottom:2px solid var(--border); background:{{ c.cover }}"></span>
+              <span style="display:block; padding:8px 10px 10px">
+                <span style="display:block; font-weight:700; font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ c.title }}</span>
+              </span>
+            </button>
+          </sc-for>
+        </div>
+        <p style="font-size:14.5px; line-height:1.55; color:var(--text-dim); text-wrap:pretty">Spielkarten, Recent-Karten, Save-States, Screenshots: 1,08 × in 0,12 s ease-out, Schatten wächst auf 6 px — dieselbe Bewegung wie Hover, nur weiter. Die Karte bleibt unverfärbt, das Cover behält seine Farben. Neu freizugeben: <em style="font-style:normal">scale()</em> und die 0,12 s.</p>
+      </div>
+
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:10px; padding-top:18px; border-top:2px solid var(--border)">
+      <span style="font-family:'Press Start 2P', monospace; font-size:9px; letter-spacing:1px; color:var(--text-dim)">REGEL IN EINEM SATZ</span>
+      <p style="font-size:15px; line-height:1.6; max-width:74ch; text-wrap:pretty">Hat das Bauteil eine eigene Füllfläche, wird sie gelb; ist es eine Zeile in einer Liste, kommt der Cursor davor; hat es ein Bild, wächst es. Nie zwei davon gleichzeitig — sonst konkurrieren im Kartengrid Zoom und Cursor.</p>
+      <p style="font-size:15px; line-height:1.6; max-width:74ch; text-wrap:pretty">Entschieden: Cursor, invertierter Vollton, Karten-Zoom. Kein neues Farbtoken. Offen bleibt nur <em style="font-style:normal">scale()</em> als neue Bewegung (0,12 s ease-out) — das ziehe ich jetzt durch A1–A5.</p>
+    </div>
+  </section>
+
+  <sc-for list="{{ themes }}" as="th" hint-placeholder-count="2">
+    <section data-theme="{{ th.name }}" style="border:3px solid var(--border); background:var(--bg); padding:26px 26px 30px; display:flex; flex-direction:column; gap:20px; color:var(--text); background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px)">
+
+      <div style="display:flex; align-items:baseline; gap:14px">
+        <h3 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px">{{ th.label }}</h3>
+        <span style="flex:1; height:3px; background:var(--border)"></span>
+      </div>
+
+      <div style="display:grid; grid-template-columns:180px repeat(4, minmax(0, 1fr)); gap:16px; align-items:center">
+        <span></span>
+        <sc-for list="{{ stateHeads }}" as="h" hint-placeholder-count="4">
+          <span style="font-family:'Press Start 2P', monospace; font-size:9px; letter-spacing:1px; color:var(--text-dim)">{{ h.label }}</span>
+        </sc-for>
+      </div>
+
+      <sc-for list="{{ boxRows }}" as="r" hint-placeholder-count="10">
+        <div style="display:grid; grid-template-columns:180px repeat(4, minmax(0, 1fr)); gap:16px; align-items:center; padding-top:16px; border-top:2px solid var(--border)">
+          <span style="font-size:14.5px; font-weight:600">{{ r.label }}</span>
+          <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="4">
+            <span style="display:flex">
+              <span style="{{ c.style }}">{{ r.text }}</span>
+            </span>
+          </sc-for>
+        </div>
+      </sc-for>
+
+      <div style="display:grid; grid-template-columns:180px repeat(4, minmax(0, 1fr)); gap:16px; align-items:center; padding-top:16px; border-top:2px solid var(--border)">
+        <span style="font-size:14.5px; font-weight:600">System-Eintrag</span>
+        <sc-for list="{{ itemCells }}" as="c" hint-placeholder-count="4">
+          <span style="{{ c.style }}">
+            <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:var(--accent-2)"></span>
+            <span style="font-weight:600; font-size:14.5px; flex:1">SNES</span>
+            <span style="font-family:'VT323', monospace; font-size:18px; color:{{ c.countColor }}">34</span>
+          </span>
+        </sc-for>
+      </div>
+
+      <div style="display:grid; grid-template-columns:180px repeat(4, minmax(0, 1fr)); gap:16px; align-items:center; padding-top:16px; border-top:2px solid var(--border)">
+        <span style="font-size:14.5px; font-weight:600">Menü-Eintrag</span>
+        <sc-for list="{{ menuCells }}" as="c" hint-placeholder-count="4">
+          <span style="{{ c.style }}">
+            <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:var(--text-dim)"></span>
+            <span style="font-weight:600; font-size:14.5px">Einstellungen</span>
+          </span>
+        </sc-for>
+      </div>
+
+      <div style="display:grid; grid-template-columns:180px repeat(4, minmax(0, 1fr)); gap:16px; align-items:center; padding-top:16px; border-top:2px solid var(--border)">
+        <span style="font-size:14.5px; font-weight:600">Toggle</span>
+        <sc-for list="{{ toggleCells }}" as="c" hint-placeholder-count="4">
+          <span style="display:flex">
+            <span style="{{ c.style }}"><i style="{{ c.knob }}"></i></span>
+          </span>
+        </sc-for>
+      </div>
+
+      <div style="display:grid; grid-template-columns:180px repeat(4, minmax(0, 1fr)); gap:16px; align-items:center; padding-top:16px; border-top:2px solid var(--border)">
+        <span style="font-size:14.5px; font-weight:600">Setting-Zeile</span>
+        <sc-for list="{{ settingCells }}" as="c" hint-placeholder-count="4">
+          <span style="{{ c.style }}">
+            <span style="flex:1; min-width:0">
+              <b style="display:block; font-size:14.5px">VSync</b>
+              <small style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">Gegen Tearing</small>
+            </span>
+            <span style="{{ c.tog }}"><i style="{{ c.knob }}"></i></span>
+          </span>
+        </sc-for>
+      </div>
+
+      <div style="display:grid; grid-template-columns:180px repeat(4, minmax(0, 1fr)); gap:16px; align-items:start; padding-top:16px; border-top:2px solid var(--border)">
+        <span style="font-size:14.5px; font-weight:600">Spielkarte</span>
+        <sc-for list="{{ cardCells }}" as="c" hint-placeholder-count="4">
+          <span style="{{ c.style }}">
+            <span style="display:block; aspect-ratio:3/4; border-bottom:2px solid var(--border); background:linear-gradient(160deg, #232a5e, #2f5d3a)"></span>
+            <span style="display:block; padding:8px 10px 10px">
+              <span style="display:block; font-weight:700; font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">Chrono Trigger</span>
+              <span style="display:flex; justify-content:space-between; align-items:center; margin-top:6px">
+                <span style="font-family:'VT323', monospace; font-size:15px; padding:1px 8px; border:2px solid var(--border); background:var(--accent-2); color:#000; font-weight:700; letter-spacing:1px">SNES</span>
+                <span style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">1995</span>
+              </span>
+            </span>
+          </span>
+        </sc-for>
+      </div>
+
+      <div style="display:grid; grid-template-columns:180px repeat(4, minmax(0, 1fr)); gap:16px; align-items:start; padding-top:16px; border-top:2px solid var(--border)">
+        <span style="font-size:14.5px; font-weight:600">Recent-Karte</span>
+        <sc-for list="{{ recentCells }}" as="c" hint-placeholder-count="4">
+          <span style="{{ c.style }}">
+            <span style="display:block; width:56px; height:56px; flex:none; border:2px solid var(--border); background:linear-gradient(160deg, #232a5e, #2f5d3a)"></span>
+            <span style="display:flex; flex-direction:column; justify-content:center; gap:5px; min-width:0">
+              <span style="font-weight:700; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">Chrono Trigger</span>
+              <span style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">SNES · vor 2 Std.</span>
+              <span style="display:block; height:9px; border:2px solid var(--border); background:var(--bg-soft)"><i style="display:block; height:100%; width:78%; background:var(--accent)"></i></span>
+            </span>
+          </span>
+        </sc-for>
+      </div>
+
+      <div style="display:grid; grid-template-columns:180px repeat(4, minmax(0, 1fr)); gap:16px; align-items:start; padding-top:16px; border-top:2px solid var(--border)">
+        <span style="font-size:14.5px; font-weight:600">Save-State (Auto)</span>
+        <sc-for list="{{ stateCells }}" as="c" hint-placeholder-count="4">
+          <span style="{{ c.style }}">
+            <span style="display:block; position:relative; aspect-ratio:16/9; border-bottom:2px solid var(--border); background:linear-gradient(160deg, #232a5e, #2f5d3a)">
+              <span style="position:absolute; top:8px; left:8px; font-family:'Press Start 2P', monospace; font-size:8px; padding:6px 8px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--accent-3); color:#000">AUTO</span>
+            </span>
+            <span style="display:block; padding:8px 10px 10px; font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">heute · 21:47</span>
+          </span>
+        </sc-for>
+      </div>
+
+      <div style="display:grid; grid-template-columns:180px repeat(4, minmax(0, 1fr)); gap:16px; align-items:center; padding-top:16px; border-top:2px solid var(--border)">
+        <span style="font-size:14.5px; font-weight:600">Leerer Slot</span>
+        <sc-for list="{{ emptyCells }}" as="c" hint-placeholder-count="4">
+          <span style="{{ c.style }}">+ LEERER SLOT</span>
+        </sc-for>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:14px; padding-top:16px; border-top:2px solid var(--border)">
+        <span style="font-size:14.5px; font-weight:600">Fokus auf allen sechs Akzentflächen</span>
+        <div style="display:flex; flex-wrap:wrap; gap:22px">
+          <sc-for list="{{ accents }}" as="a" hint-placeholder-count="6">
+            <span style="display:inline-flex; align-items:center; gap:8px; padding:7px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); outline:3px solid var(--accent-3); outline-offset:3px; background:{{ a.color }}; color:#000">
+              <span style="font-family:'Press Start 2P', monospace; font-size:9px">{{ a.label }}</span>
+            </span>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:14px; padding-top:16px; border-top:2px solid var(--border)">
+        <span style="font-size:14.5px; font-weight:600">Konflikt: aktiver Eintrag (accent-3) mit Fokus</span>
+        <div style="display:flex; flex-wrap:wrap; gap:34px; align-items:center">
+          <div style="display:flex; flex-direction:column; gap:10px">
+            <span style="font-family:'Press Start 2P', monospace; font-size:9px; color:var(--text-dim); letter-spacing:1px">SCHEITERT</span>
+            <span style="display:flex; align-items:center; gap:10px; padding:9px 10px; width:220px; border:2px solid var(--border); background:var(--accent-3); color:#000; box-shadow:3px 3px 0 var(--shadow); outline:3px solid var(--accent-3); outline-offset:3px">
+              <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:var(--accent-3)"></span>
+              <span style="font-weight:600; font-size:14.5px; flex:1">Mega Drive</span>
+              <span style="font-family:'VT323', monospace; font-size:18px">22</span>
+            </span>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:10px">
+            <span style="font-family:'Press Start 2P', monospace; font-size:9px; color:var(--text-dim); letter-spacing:1px">VORSCHLAG: DOPPELRING</span>
+            <span style="display:inline-flex; outline:3px solid var(--accent-3); outline-offset:3px">
+              <span style="display:flex; align-items:center; gap:10px; padding:9px 10px; width:220px; border:2px solid var(--border); background:var(--accent-3); color:#000; box-shadow:3px 3px 0 var(--shadow); outline:3px solid var(--border); outline-offset:0">
+                <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:var(--accent-3)"></span>
+                <span style="font-weight:600; font-size:14.5px; flex:1">Mega Drive</span>
+                <span style="font-family:'VT323', monospace; font-size:18px">22</span>
+              </span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+    </section>
+  </sc-for>
+
+  <div style="border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); padding:22px 24px; display:flex; flex-direction:column; gap:12px; max-width:80ch">
+    <span style="font-family:'Press Start 2P', monospace; font-size:10px; letter-spacing:1px">BEFUND</span>
+    <p style="font-size:15px; line-height:1.6; text-wrap:pretty"><strong>Entschieden: V5</strong> — Cursor für Zeilen, invertierte Vollfläche (<em style="font-style:normal">var(--text)</em> / <em style="font-style:normal">var(--bg)</em>) für eigenständige Flächen, Zoom für Karten mit Bild. Kein neues Farbtoken. Ring und V1–V4 oben sind verworfene Zwischenschritte.</p>
+    <p style="font-size:15px; line-height:1.6; text-wrap:pretty">Der finale Cursor blinkt nicht — statisches ▶, 22px, Spitze ragt leicht in die Zeile. Blinken war nur Teil der verworfenen V4-Exploration.</p>
+    <p style="font-size:15px; line-height:1.6; text-wrap:pretty">Karten mit Cover bekommen kein zusätzliches Invertieren — Zoom ist dort die eigenständige Fokus-Sprache, siehe V5 Punkt 3.</p>
+    <p style="font-size:15px; line-height:1.6; text-wrap:pretty">Bei den beiden Selects ersetzt der Fokus-Stil den Browser-Standardfokus; die Spalte „Aktiv“ zeigt dort den gedrückten Zustand, nicht die offene Optionsliste.</p>
+  </div>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{}">
+const PX = "'Press Start 2P', monospace";
+const VT = "'VT323', monospace";
+const RING = { outline: '3px solid var(--accent-3)', outlineOffset: '3px' };
+const LIFT = { transform: 'translate(-1px,-1px)', boxShadow: '4px 4px 0 var(--shadow)' };
+const PRESS = { transform: 'translate(2px,2px)', boxShadow: '1px 1px 0 var(--shadow)' };
+
+function boxRow(label, text, base, opts) {
+  const o = opts || {};
+  const hover = o.noLift ? { ...base, ...(o.hover || {}) } : { ...base, ...LIFT, ...(o.hover || {}) };
+  return {
+    label, text,
+    cells: [
+      { style: { ...base } },
+      { style: hover },
+      { style: { ...hover, ...RING } },
+      { style: { ...base, ...(o.activeStyle || PRESS) } }
+    ]
+  };
+}
+
+class Component extends DCLogic {
+  constructor(p) { super(p); this.state = { focusIdx: null }; }
+  renderVals() {
+    const btnBase = {
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: PX, fontSize: '9px', padding: '12px 10px',
+      border: '2px solid var(--border)', boxShadow: '3px 3px 0 var(--shadow)',
+      background: 'var(--accent)', color: '#000'
+    };
+    const btn2Base = { ...btnBase, background: 'var(--surface-2)', color: 'var(--text)' };
+    const tabBase = {
+      display: 'inline-flex', alignItems: 'center', fontFamily: VT, fontSize: '20px',
+      padding: '7px 18px', border: '2px solid var(--border)',
+      boxShadow: '3px 3px 0 var(--shadow)', background: 'var(--chip-bg)', color: 'var(--text)'
+    };
+    const selBase = {
+      display: 'inline-flex', alignItems: 'center', fontFamily: VT, fontSize: '18px',
+      padding: '4px 12px', border: '2px solid var(--border)',
+      boxShadow: '3px 3px 0 var(--shadow)', background: 'var(--chip-bg)', color: 'var(--text)'
+    };
+    const themeBtnBase = {
+      display: 'inline-flex', alignItems: 'center', fontFamily: PX, fontSize: '9px',
+      padding: '9px 12px', border: '2px solid var(--border)',
+      boxShadow: '3px 3px 0 var(--shadow)', background: 'var(--chip-bg)', color: 'var(--text-dim)'
+    };
+    const favBase = {
+      display: 'grid', placeItems: 'center', width: '28px', height: '28px',
+      border: '2px solid var(--border)', boxShadow: '2px 2px 0 var(--shadow)',
+      background: 'var(--surface)', color: 'var(--text)', fontSize: '14px', lineHeight: 1
+    };
+    const chipBase = {
+      display: 'inline-flex', alignItems: 'center', fontFamily: VT, fontSize: '18px',
+      padding: '4px 10px', border: '2px dashed var(--text-dim)',
+      background: 'var(--bg-soft)', color: 'var(--accent)'
+    };
+    const itemBase = {
+      display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 10px',
+      border: '2px solid transparent', color: 'var(--text)'
+    };
+    const cardBase = {
+      display: 'block', border: '2px solid var(--border)', background: 'var(--surface)',
+      boxShadow: '4px 4px 0 var(--shadow)', maxWidth: '158px'
+    };
+    const recentBase = {
+      display: 'flex', gap: '12px', padding: '10px', border: '2px solid var(--border)',
+      background: 'var(--surface)', boxShadow: '4px 4px 0 var(--shadow)', minWidth: 0
+    };
+    const stateBase = {
+      display: 'block', border: '2px solid var(--border)', background: 'var(--surface)',
+      boxShadow: '4px 4px 0 var(--shadow)'
+    };
+    const emptyBase = {
+      display: 'grid', placeItems: 'center', minHeight: '86px',
+      border: '2px dashed var(--text-dim)', background: 'transparent',
+      fontFamily: VT, fontSize: '20px', color: 'var(--text-dim)'
+    };
+    const settingBase = {
+      display: 'flex', alignItems: 'center', gap: '12px', padding: '11px 14px',
+      border: '2px solid var(--border)', background: 'var(--surface)'
+    };
+    const togBase = {
+      display: 'block', position: 'relative', width: '52px', height: '26px', flex: 'none',
+      border: '2px solid var(--border)', background: 'var(--bg-soft)'
+    };
+    const knobOff = { position: 'absolute', top: '2px', left: '2px', width: '18px', height: '18px', background: 'var(--text-dim)' };
+    const knobOn = { ...knobOff, left: '28px', background: '#fff' };
+    const lift2 = { transform: 'translate(-2px,-2px)', boxShadow: '6px 6px 0 var(--shadow)' };
+
+    const fourCells = (base, hover, active, extra) => ([
+      { ...(extra || {}), style: { ...base } },
+      { ...(extra || {}), style: { ...base, ...hover } },
+      { ...(extra || {}), style: { ...base, ...hover, ...RING } },
+      { ...(extra || {}), style: { ...base, ...active } }
+    ]);
+
+    return {
+      demoRows: [
+        { name: 'Alle Systeme', color: 'var(--accent)', count: 128 },
+        { name: 'SNES', color: 'var(--accent-2)', count: 34 },
+        { name: 'Mega Drive', color: 'var(--accent-3)', count: 22 },
+        { name: 'Game Boy', color: 'var(--accent-4)', count: 27 }
+      ].map((r, i) => ({
+        ...r,
+        cursorOpacity: (this.state && this.state.focusIdx) === i ? 1 : 0,
+        onFocus: () => this.setState({ focusIdx: i }),
+        onBlur: () => this.setState(s => (s.focusIdx === i ? { focusIdx: null } : null))
+      })),
+      demoCards: [
+        { title: 'Chrono Trigger', cover: 'linear-gradient(160deg, #232a5e, #2f5d3a)' },
+        { title: 'Sonic 2', cover: 'linear-gradient(160deg, #c2507f, #8e3a5e)' }
+      ],
+      focusVariants: [
+        {
+          label: 'V1 — INVERTIERT',
+          token: 'var(--text) / var(--bg) · kein neues Token',
+          btn: { ...btnBase, background: 'var(--text)', color: 'var(--bg)' },
+          btn2: { ...btn2Base, background: 'var(--text)', color: 'var(--bg)' },
+          item: { ...itemBase, background: 'var(--text)', color: 'var(--bg)', borderColor: 'var(--border)', boxShadow: '3px 3px 0 var(--shadow)' },
+          note: 'Fokus = Umkehrung von Vordergrund und Hintergrund. Kostet kein neues Token, funktioniert auf jeder Fläche gleich und kollidiert mit keinem Systemakzent. Nachteil: in Dark ist die Fläche sehr hell und zieht am TV stark.'
+        },
+        {
+          label: 'V2 — ACCENT-3 VOLL',
+          token: 'var(--accent-3) · schon vorhanden',
+          btn: { ...btnBase, background: 'var(--accent-3)', color: '#000' },
+          btn2: { ...btn2Base, background: 'var(--accent-3)', color: '#000' },
+          item: { ...itemBase, background: 'var(--accent-3)', color: '#000', borderColor: 'var(--border)', boxShadow: '3px 3px 0 var(--shadow)' },
+          note: 'Nutzt die bestehende Aktiv-Farbe. Nachteil: aktiver Eintrag und fokussierter Eintrag sind dann identisch — rechts im Beispiel nicht mehr unterscheidbar. Nur brauchbar, wenn Aktiv künftig anders markiert wird.'
+        },
+        {
+          label: 'V3 — NEUES TOKEN',
+          token: '--focus: #c9b04a (Dark) / #a8892e (Creme)',
+          btn: { ...btnBase, background: '#c9b04a', color: '#000' },
+          btn2: { ...btn2Base, background: '#c9b04a', color: '#000' },
+          item: { ...itemBase, background: '#c9b04a', color: '#000', borderColor: 'var(--border)', boxShadow: '3px 3px 0 var(--shadow)' },
+          note: 'Ein siebtes, bewusst NICHT system-gebundenes Token nur für Fokus — gedämpftes Gelb, gleiche Sättigung wie die sechs Akzente, Farbton zwischen Orange und Grün, also nirgends belegt. Braucht deine Freigabe; danach bleibt Gelb für immer Fokus und darf an kein System gehen.'
+        }
+      ],
+      themes: [
+        { name: 'dark', label: 'DARK' },
+        { name: 'light', label: 'CREME' }
+      ],
+      stateHeads: [
+        { label: 'RUHE' }, { label: 'HOVER' }, { label: 'FOKUS (RING, VERWORFEN)' }, { label: 'AKTIV' }
+      ],
+      boxRows: [
+        boxRow('Primär-Button', 'STARTEN', btnBase),
+        boxRow('Sekundär-Button', 'FAVORIT', btn2Base),
+        boxRow('Tab', 'CORES', tabBase, {
+          activeStyle: { background: 'var(--accent)', color: '#000', fontWeight: 700 }
+        }),
+        boxRow('Zurück-Button', 'ZURÜCK', tabBase, {
+          hover: { background: 'var(--accent-3)', color: '#000' }
+        }),
+        boxRow('Theme-Toggle', 'LIGHT', themeBtnBase, {
+          activeStyle: { background: 'var(--accent-3)', color: '#000' }
+        }),
+        boxRow('Sortier-Select', 'Name (A–Z) ▼', selBase),
+        boxRow('Mini-Select', 'Snes9x ▼', selBase, { hover: {}, activeStyle: PRESS }),
+        boxRow('Favoriten-Button', '★', favBase, {
+          hover: { transform: 'translate(-1px,-1px)', boxShadow: '3px 3px 0 var(--shadow)' },
+          activeStyle: { background: 'var(--accent-3)', color: '#000' }
+        }),
+        boxRow('Pfad-Chip', '/roms/', chipBase, {
+          noLift: true,
+          activeStyle: { borderStyle: 'solid', borderColor: 'var(--border)' }
+        })
+      ],
+      itemCells: [
+        { style: { ...itemBase }, countColor: 'var(--text-dim)' },
+        { style: { ...itemBase, background: 'var(--surface)', transform: 'translateX(2px)' }, countColor: 'var(--text-dim)' },
+        { style: { ...itemBase, background: 'var(--surface)', transform: 'translateX(2px)', ...RING }, countColor: 'var(--text-dim)' },
+        { style: { ...itemBase, background: 'var(--accent-3)', color: '#000', borderColor: 'var(--border)', boxShadow: '3px 3px 0 var(--shadow)' }, countColor: '#000' }
+      ],
+      menuCells: fourCells(
+        itemBase,
+        { background: 'var(--surface)', transform: 'translateX(2px)' },
+        { background: 'var(--accent-3)', color: '#000', borderColor: 'var(--border)', boxShadow: '3px 3px 0 var(--shadow)' }
+      ),
+      toggleCells: [
+        { style: { ...togBase }, knob: { ...knobOff } },
+        { style: { ...togBase, transform: 'translate(-1px,-1px)' }, knob: { ...knobOff } },
+        { style: { ...togBase, ...RING }, knob: { ...knobOff } },
+        { style: { ...togBase, background: 'var(--accent)' }, knob: { ...knobOn } }
+      ],
+      settingCells: [
+        { style: { ...settingBase }, tog: { ...togBase }, knob: { ...knobOff } },
+        { style: { ...settingBase, background: 'var(--surface-2)' }, tog: { ...togBase }, knob: { ...knobOff } },
+        { style: { ...settingBase, background: 'var(--surface-2)', ...RING }, tog: { ...togBase }, knob: { ...knobOff } },
+        { style: { ...settingBase }, tog: { ...togBase, background: 'var(--accent)' }, knob: { ...knobOn } }
+      ],
+      cardCells: fourCells(cardBase, lift2, { transform: 'translate(2px,2px)', boxShadow: '1px 1px 0 var(--shadow)' }),
+      recentCells: fourCells(recentBase, lift2, { transform: 'translate(2px,2px)', boxShadow: '1px 1px 0 var(--shadow)' }),
+      stateCells: fourCells(stateBase, lift2, { transform: 'translate(2px,2px)', boxShadow: '1px 1px 0 var(--shadow)' }),
+      emptyCells: fourCells(
+        emptyBase,
+        { borderColor: 'var(--text)', color: 'var(--text)' },
+        { borderStyle: 'solid', borderColor: 'var(--border)', background: 'var(--surface)', color: 'var(--text)' }
+      ),
+      accents: [
+        { label: 'NES', color: 'var(--accent)' },
+        { label: 'SNES', color: 'var(--accent-2)' },
+        { label: 'MD', color: 'var(--accent-3)' },
+        { label: 'GB', color: 'var(--accent-4)' },
+        { label: 'PS1', color: 'var(--accent-5)' },
+        { label: 'ARC', color: 'var(--accent-6)' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

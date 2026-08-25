@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root, [data-theme="dark"] {
+    --bg:#121212; --bg-soft:#1b1b1b; --surface:#1e1e1e; --surface-2:#252525;
+    --border:#000000; --shadow:#2b2b2b; --text:#f2f2f2; --text-dim:#9a9a9a;
+    --accent:#3cb58f; --accent-2:#d0648c; --accent-3:#9a7bd4; --accent-4:#7ba05b;
+    --accent-5:#62abd9; --accent-6:#c9834a; --chip-bg:#1e1e1e;
+    --scanline:rgba(255,255,255,.028);
+  }
+  [data-theme="light"] {
+    --bg:#f4ecdc; --bg-soft:#efe4cd; --surface:#fbf5e8; --surface-2:#f1e8d4;
+    --border:#1a1a1a; --shadow:#1a1a1a; --text:#1a1a1a; --text-dim:#6b6353;
+    --accent:#1a8f80; --accent-2:#c8607f; --accent-3:#7c5cc4; --accent-4:#6b8f4e;
+    --accent-5:#568db1; --accent-6:#b5753d; --chip-bg:#fbf5e8;
+    --scanline:rgba(0,0,0,.03);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scrollbar-color: var(--text-dim) var(--bg-soft); }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    min-height: 100vh;
+    transition: background .25s ease, color .25s ease;
+    background-image: repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px);
+  }
+  ::selection { background: var(--accent); color:#000; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-3); }
+  button:focus-visible, [tabindex]:focus-visible, select:focus-visible { outline: none; }
+  @media (max-width: 860px) {
+    .rf-layout { grid-template-columns: 1fr !important; }
+    .rf-sidebar { display: none !important; }
+  }
+</style>
+</helmet>
+
+<div class="rf-layout" data-theme="{{ theme }}" data-screen-label="B3" style="display:grid; grid-template-columns:232px 1fr; grid-template-rows:auto 1fr auto; min-height:100vh; background:var(--bg); color:var(--text); font-family:'Space Grotesk', system-ui, sans-serif; background-image:repeating-linear-gradient(to bottom, var(--scanline) 0px, var(--scanline) 1px, transparent 1px, transparent 4px); transition:background .25s ease, color .25s ease">
+
+  <header style="grid-column:1 / -1; display:flex; align-items:center; gap:16px; padding:14px 24px; border-bottom:3px solid var(--border); background:var(--surface)">
+    <div style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; user-select:none">RETRO<span style="color:var(--accent-2)">FRONTIER</span></div>
+    <div role="group" aria-label="Theme" style="display:flex; margin-left:auto; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); overflow:hidden; background:var(--chip-bg)">
+      <button type="button" onClick="{{ setDark }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; background:{{ darkBg }}; color:{{ darkFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">DARK</button>
+      <button type="button" onClick="{{ setLight }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:9px 12px; border:none; border-left:2px solid var(--border); background:{{ lightBg }}; color:{{ lightFg }}; cursor:pointer" style-focus="background:var(--text); color:var(--bg)">LIGHT</button>
+    </div>
+  </header>
+
+  <aside class="rf-sidebar" style="border-right:3px solid var(--border); background:var(--bg-soft); padding:22px 16px; display:flex; flex-direction:column; gap:26px">
+    <div>
+      <p style="font-family:'Press Start 2P', monospace; font-size:9px; color:var(--text-dim); letter-spacing:2px; margin-bottom:12px; padding-left:4px">// SYSTEME</p>
+      <ul style="list-style:none; display:flex; flex-direction:column; gap:6px">
+        <sc-for list="{{ sidebarSystems }}" as="s" hint-placeholder-count="7">
+          <li style="display:flex; align-items:center; gap:6px">
+            <svg viewBox="0 0 8 8" width="14" height="14" style="margin-right:-5px; flex:none; opacity:{{ s.cursorOpacity }}; color:var(--text)" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true"><path d="M0 0h1v1h-1zM0 1h1v1h-1zM1 1h1v1h-1zM0 2h1v1h-1zM1 2h1v1h-1zM2 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1zM0 4h1v1h-1zM1 4h1v1h-1zM2 4h1v1h-1zM3 4h1v1h-1zM0 5h1v1h-1zM1 5h1v1h-1zM2 5h1v1h-1zM0 6h1v1h-1zM1 6h1v1h-1zM0 7h1v1h-1z"></path></svg>
+            <button type="button" onFocus="{{ s.onFocus }}" onBlur="{{ s.onBlur }}" style="flex:1; display:flex; align-items:center; gap:10px; padding:9px 10px; cursor:default; transition:transform .08s ease; border:2px solid {{ s.borderColor }}; background:{{ s.bg }}; color:{{ s.fg }}; box-shadow:{{ s.shadow }}; font-family:inherit; text-align:left; outline:none" style-hover="background:var(--surface); transform:translateX(2px)">
+              <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:{{ s.color }}"></span>
+              <span style="font-weight:600; font-size:14.5px; flex:1">{{ s.name }}</span>
+              <span style="font-family:'VT323', monospace; font-size:18px; color:{{ s.countColor }}">{{ s.count }}</span>
+            </button>
+          </li>
+        </sc-for>
+      </ul>
+    </div>
+    <div>
+      <p style="font-family:'Press Start 2P', monospace; font-size:9px; color:var(--text-dim); letter-spacing:2px; margin-bottom:12px; padding-left:4px">// MENÜ</p>
+      <ul style="list-style:none; display:flex; flex-direction:column; gap:6px">
+        <li style="display:flex; align-items:center; gap:6px">
+          <svg viewBox="0 0 8 8" width="14" height="14" style="margin-right:-5px; flex:none; opacity:{{ menuCursorOpacity }}; color:var(--text)" shape-rendering="crispEdges" fill="currentColor" aria-hidden="true"><path d="M0 0h1v1h-1zM0 1h1v1h-1zM1 1h1v1h-1zM0 2h1v1h-1zM1 2h1v1h-1zM2 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM3 3h1v1h-1zM0 4h1v1h-1zM1 4h1v1h-1zM2 4h1v1h-1zM3 4h1v1h-1zM0 5h1v1h-1zM1 5h1v1h-1zM2 5h1v1h-1zM0 6h1v1h-1zM1 6h1v1h-1zM0 7h1v1h-1z"></path></svg>
+          <button type="button" onFocus="{{ onMenuFocus }}" onBlur="{{ onMenuBlur }}" style="flex:1; display:flex; align-items:center; gap:10px; padding:9px 10px; border:2px solid transparent; font-weight:600; font-size:14.5px; cursor:pointer; transition:transform .08s ease; font-family:inherit; text-align:left; background:transparent; color:var(--text); outline:none" style-hover="background:var(--surface); transform:translateX(2px)">
+            <span style="width:14px; height:14px; border:2px solid var(--border); flex:none; background:var(--text-dim)"></span>
+            <span>Einstellungen</span>
+          </button>
+        </li>
+      </ul>
+    </div>
+  </aside>
+
+  <main style="padding:26px 28px 60px; display:flex; flex-direction:column; gap:20px">
+
+    <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); padding:14px 16px">
+      <span style="font-family:'Press Start 2P', monospace; font-size:9px; color:var(--text-dim); letter-spacing:2px">// FILTER</span>
+
+      <div style="position:relative">
+        <button type="button" onClick="{{ toggleGenreOpen }}" style="display:inline-flex; align-items:center; gap:8px; font-family:'VT323', monospace; font-size:18px; padding:6px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); color:var(--text); cursor:pointer" style-focus="background:var(--text); color:var(--bg)">{{ genre }} ▾</button>
+        <sc-if value="{{ genreOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute; top:100%; left:0; margin-top:6px; min-width:100%; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); z-index:10; display:flex; flex-direction:column">
+            <sc-for list="{{ genres }}" as="g" hint-placeholder-count="6">
+              <button type="button" onClick="{{ g.onSelect }}" style="font-family:'VT323', monospace; font-size:18px; padding:8px 14px; border:none; background:{{ g.bg }}; color:var(--text); cursor:pointer; text-align:left; white-space:nowrap" style-hover="background:var(--surface)" style-focus="background:var(--text); color:var(--bg)">{{ g.label }}</button>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+
+      <div style="position:relative">
+        <button type="button" onClick="{{ toggleRegionOpen }}" style="display:inline-flex; align-items:center; gap:8px; font-family:'VT323', monospace; font-size:18px; padding:6px 10px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); color:var(--text); cursor:pointer" style-focus="background:var(--text); color:var(--bg)">{{ region }} ▾</button>
+        <sc-if value="{{ regionOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute; top:100%; left:0; margin-top:6px; min-width:100%; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:var(--chip-bg); z-index:10; display:flex; flex-direction:column">
+            <sc-for list="{{ regions }}" as="r" hint-placeholder-count="4">
+              <button type="button" onClick="{{ r.onSelect }}" style="font-family:'VT323', monospace; font-size:18px; padding:8px 14px; border:none; background:{{ r.bg }}; color:var(--text); cursor:pointer; text-align:left; white-space:nowrap" style-hover="background:var(--surface)" style-focus="background:var(--text); color:var(--bg)">{{ r.label }}</button>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+
+      <button type="button" onClick="{{ toggleFavorites }}" style="font-family:'VT323', monospace; font-size:20px; padding:6px 16px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:{{ favBg }}; color:{{ favFg }}; cursor:pointer" style-hover="transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">★ FAVORITEN</button>
+
+      <button type="button" onClick="{{ toggleUnplayed }}" style="font-family:'VT323', monospace; font-size:20px; padding:6px 16px; border:2px solid var(--border); box-shadow:3px 3px 0 var(--shadow); background:{{ unplayedBg }}; color:{{ unplayedFg }}; cursor:pointer" style-hover="transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--shadow)">UNGESPIELT</button>
+
+      <span style="flex:1"></span>
+
+      <sc-if value="{{ hasActiveFilters }}" hint-placeholder-val="{{ false }}">
+        <button type="button" onClick="{{ resetFilters }}" style="font-family:'Press Start 2P', monospace; font-size:9px; padding:10px 12px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--surface-2); color:var(--text); cursor:pointer" style-hover="transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)" style-focus="background:var(--text); color:var(--bg); transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shadow)">ZURÜCKSETZEN</button>
+      </sc-if>
+    </div>
+
+    <div style="display:flex; align-items:baseline; gap:14px">
+      <h2 style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px; white-space:nowrap; flex-shrink:0">▶ BIBLIOTHEK</h2>
+      <span style="flex:1; height:3px; background:var(--border)"></span>
+      <span style="font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">{{ resultLabel }}</span>
+    </div>
+
+    <sc-if value="{{ hasResults }}" hint-placeholder-val="{{ true }}">
+      <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(158px, 1fr)); gap:20px 18px">
+        <sc-for list="{{ cards }}" as="c" hint-placeholder-count="8">
+          <div tabIndex="0" style="display:block; border:2px solid var(--border); background:var(--surface); box-shadow:4px 4px 0 var(--shadow); cursor:pointer; outline:none; transform-origin:center; transition:transform .12s ease-out, box-shadow .12s ease-out; position:relative" style-hover="transform:scale(1.04); box-shadow:6px 6px 0 var(--shadow)" style-focus="transform:scale(1.08); box-shadow:8px 8px 0 var(--shadow)">
+            <sc-if value="{{ c.favorite }}" hint-placeholder-val="{{ false }}">
+              <span style="position:absolute; top:8px; right:8px; z-index:2; font-family:'Press Start 2P', monospace; font-size:10px; color:var(--accent-2)">★</span>
+            </sc-if>
+            <div style="aspect-ratio:3/4; border-bottom:2px solid var(--border); background:{{ c.cover }}"></div>
+            <div style="padding:8px 10px 10px; display:flex; flex-direction:column; gap:6px">
+              <span style="display:block; font-weight:700; font-size:14.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{ c.title }}</span>
+              <div style="display:flex; justify-content:space-between; align-items:center">
+                <span style="font-family:'VT323', monospace; font-size:15px; padding:1px 8px; border:2px solid var(--border); background:{{ c.badgeColor }}; color:#000; font-weight:700; letter-spacing:1px">{{ c.badge }}</span>
+                <span style="font-family:'VT323', monospace; font-size:17px; color:var(--text-dim)">{{ c.year }}</span>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ hasNoResults }}" hint-placeholder-val="{{ false }}">
+      <div style="display:grid; place-items:center; border:2px dashed var(--text-dim); padding:60px 24px; gap:14px; text-align:center">
+        <span style="font-family:'Press Start 2P', monospace; font-size:13px; letter-spacing:1px">KEINE TREFFER</span>
+        <p style="font-size:15px; color:var(--text-dim); max-width:40ch">Kein Titel erfüllt diese Filterkombination. Setze einzelne Filter zurück oder wähle „Zurücksetzen".</p>
+      </div>
+    </sc-if>
+
+  </main>
+
+  <footer style="grid-column:1 / -1; display:flex; align-items:center; flex-wrap:wrap; row-gap:4px; gap:18px; padding:10px 24px; border-top:3px solid var(--border); background:var(--surface); font-family:'VT323', monospace; font-size:18px; color:var(--text-dim)">
+    <span>RETROARCH 1.19.0</span>
+    <span>·</span>
+    <span>CONTROLLER: 8BITDO PRO 2</span>
+    <span style="flex:1"></span>
+    <div style="display:flex; align-items:center; gap:10px">
+      <span style="font-family:'Press Start 2P', monospace; font-size:8px; padding:5px 7px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--accent); color:#000">A</span>
+      <span>STARTEN</span>
+      <span style="font-family:'Press Start 2P', monospace; font-size:8px; padding:5px 7px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--surface-2); color:var(--text)">X</span>
+      <span>FAVORIT</span>
+      <span style="font-family:'Press Start 2P', monospace; font-size:8px; padding:5px 7px; border:2px solid var(--border); box-shadow:2px 2px 0 var(--shadow); background:var(--surface-2); color:var(--text)">Y</span>
+      <span>FILTER FOKUSSIEREN</span>
+    </div>
+  </footer>
+
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;theme&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;dark&quot;, &quot;light&quot;], &quot;default&quot;: &quot;dark&quot;, &quot;tsType&quot;: &quot;'dark'|'light'&quot; }
+}">
+const CARD_DATA = [
+  { title: 'Chrono Trigger', badge: 'SNES', badgeColor: 'var(--accent-2)', year: '1995', genre: 'RPG', region: 'JP', favorite: true, played: true, cover: 'linear-gradient(160deg, #232a5e, #2f5d3a)' },
+  { title: 'Sonic The Hedgehog 2', badge: 'MD', badgeColor: 'var(--accent-3)', year: '1992', genre: 'Plattformer', region: 'US', favorite: false, played: true, cover: 'linear-gradient(160deg, #2e2a5e, #12101f)' },
+  { title: 'Super Metroid', badge: 'SNES', badgeColor: 'var(--accent-2)', year: '1994', genre: 'Action', region: 'US', favorite: true, played: true, cover: 'linear-gradient(160deg, #1a2a3a, #3a1a4a)' },
+  { title: "Link's Awakening", badge: 'GB', badgeColor: 'var(--accent-4)', year: '1993', genre: 'RPG', region: 'JP', favorite: false, played: false, cover: 'linear-gradient(160deg, #3a4a2a, #1a2a1a)' },
+  { title: 'Symphony of the Night', badge: 'PS1', badgeColor: 'var(--accent-5)', year: '1997', genre: 'Action', region: 'EU', favorite: true, played: false, cover: 'linear-gradient(160deg, #3f7a6d, #2e5a50)' },
+  { title: 'Metal Slug', badge: 'ARC', badgeColor: 'var(--accent-6)', year: '1996', genre: 'Shooter', region: 'JP', favorite: false, played: true, cover: 'linear-gradient(160deg, #c2507f, #8e3a5e)' },
+  { title: "Kirby's Adventure", badge: 'NES', badgeColor: 'var(--accent)', year: '1993', genre: 'Plattformer', region: 'US', favorite: false, played: false, cover: 'linear-gradient(160deg, #4a2a5e, #2a1a3e)' },
+  { title: 'Mega Man X', badge: 'SNES', badgeColor: 'var(--accent-2)', year: '1993', genre: 'Action', region: 'JP', favorite: false, played: true, cover: 'linear-gradient(160deg, #2a3a6e, #1a1a2e)' },
+  { title: 'Wipeout', badge: 'PS1', badgeColor: 'var(--accent-5)', year: '1995', genre: 'Rennspiel', region: 'EU', favorite: false, played: false, cover: 'linear-gradient(160deg, #12101f, #2e2a5e)' },
+  { title: 'Street Fighter II', badge: 'ARC', badgeColor: 'var(--accent-6)', year: '1991', genre: 'Kampf', region: 'JP', favorite: true, played: true, cover: 'linear-gradient(160deg, #8e3a3a, #5e2a2a)' },
+  { title: 'Golden Axe', badge: 'MD', badgeColor: 'var(--accent-3)', year: '1989', genre: 'Action', region: 'US', favorite: false, played: false, cover: 'linear-gradient(160deg, #5e4a2a, #3a2a1a)' },
+  { title: 'Tetris', badge: 'GB', badgeColor: 'var(--accent-4)', year: '1989', genre: 'Puzzle', region: 'US', favorite: false, played: true, cover: 'linear-gradient(160deg, #2a3a2a, #1a2a1a)' }
+];
+const GENRES = ['Alle Genres', 'RPG', 'Action', 'Plattformer', 'Shooter', 'Rennspiel', 'Kampf', 'Puzzle'];
+const REGIONS = ['Alle Regionen', 'JP', 'US', 'EU'];
+
+class Component extends DCLogic {
+  constructor(p) {
+    super(p);
+    this.state = {
+      theme: null, focusIdx: null, menuFocused: false,
+      genre: 'Alle Genres', region: 'Alle Regionen', favOnly: false, unplayedOnly: false,
+      genreOpen: false, regionOpen: false
+    };
+  }
+  theme() { return this.state.theme ?? this.props.theme ?? 'dark'; }
+  componentDidMount() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  componentDidUpdate() { document.documentElement.setAttribute('data-theme', this.theme()); }
+  renderVals() {
+    const t = this.theme();
+    const { genre, region, favOnly, unplayedOnly } = this.state;
+    const filtered = CARD_DATA.filter(c =>
+      (genre === 'Alle Genres' || c.genre === genre) &&
+      (region === 'Alle Regionen' || c.region === region) &&
+      (!favOnly || c.favorite) &&
+      (!unplayedOnly || !c.played)
+    );
+    const hasActiveFilters = genre !== 'Alle Genres' || region !== 'Alle Regionen' || favOnly || unplayedOnly;
+    return {
+      theme: t,
+      darkBg: t === 'dark' ? 'var(--accent-3)' : 'transparent',
+      darkFg: t === 'dark' ? '#000' : 'var(--text-dim)',
+      lightBg: t === 'light' ? 'var(--accent-3)' : 'transparent',
+      lightFg: t === 'light' ? '#000' : 'var(--text-dim)',
+      setDark: () => this.setState({ theme: 'dark' }),
+      setLight: () => this.setState({ theme: 'light' }),
+      genre, region,
+      genreOpen: this.state.genreOpen,
+      regionOpen: this.state.regionOpen,
+      toggleGenreOpen: () => this.setState(s => ({ genreOpen: !s.genreOpen, regionOpen: false })),
+      toggleRegionOpen: () => this.setState(s => ({ regionOpen: !s.regionOpen, genreOpen: false })),
+      genres: GENRES.map(g => ({
+        label: g,
+        bg: g === genre ? 'var(--surface)' : 'transparent',
+        onSelect: () => this.setState({ genre: g, genreOpen: false })
+      })),
+      regions: REGIONS.map(r => ({
+        label: r,
+        bg: r === region ? 'var(--surface)' : 'transparent',
+        onSelect: () => this.setState({ region: r, regionOpen: false })
+      })),
+      favBg: favOnly ? 'var(--accent)' : 'var(--chip-bg)',
+      favFg: favOnly ? '#000' : 'var(--text)',
+      unplayedBg: unplayedOnly ? 'var(--accent)' : 'var(--chip-bg)',
+      unplayedFg: unplayedOnly ? '#000' : 'var(--text)',
+      toggleFavorites: () => this.setState(s => ({ favOnly: !s.favOnly })),
+      toggleUnplayed: () => this.setState(s => ({ unplayedOnly: !s.unplayedOnly })),
+      hasActiveFilters,
+      resetFilters: () => this.setState({ genre: 'Alle Genres', region: 'Alle Regionen', favOnly: false, unplayedOnly: false }),
+      resultLabel: filtered.length + (filtered.length === 1 ? ' TITEL' : ' TITEL') + (hasActiveFilters ? ' · GEFILTERT' : ''),
+      hasResults: filtered.length > 0,
+      hasNoResults: filtered.length === 0,
+      cards: filtered,
+      sidebarSystems: [
+        { name: 'Alle Systeme', color: 'var(--accent)', count: 128, active: true },
+        { name: 'SNES', color: 'var(--accent-2)', count: 34 },
+        { name: 'Mega Drive', color: 'var(--accent-3)', count: 22 },
+        { name: 'Game Boy', color: 'var(--accent-4)', count: 27 },
+        { name: 'PS1', color: 'var(--accent-5)', count: 18 },
+        { name: 'Arcade', color: 'var(--accent-6)', count: 20 },
+        { name: 'NES', color: 'var(--accent)', count: 7 }
+      ].map((s, i) => ({
+        ...s,
+        bg: s.active ? 'var(--accent-3)' : 'transparent',
+        fg: s.active ? '#000' : 'var(--text)',
+        borderColor: s.active ? 'var(--border)' : 'transparent',
+        shadow: s.active ? '3px 3px 0 var(--shadow)' : 'none',
+        countColor: s.active ? '#000' : 'var(--text-dim)',
+        cursorOpacity: this.state.focusIdx === i ? 1 : 0,
+        onFocus: () => this.setState({ focusIdx: i }),
+        onBlur: () => this.setState(s2 => (s2.focusIdx === i ? { focusIdx: null } : null))
+      })),
+      menuCursorOpacity: this.state.menuFocused ? 1 : 0,
+      onMenuFocus: () => this.setState({ menuFocused: true }),
+      onMenuBlur: () => this.setState({ menuFocused: false })
+    };
+  }
+}
+</script>
+</body>
+</html>

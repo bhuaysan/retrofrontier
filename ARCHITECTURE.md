@@ -367,4 +367,4 @@ These areas trigger focused Sol Max review.
 7. Save-state rollback/compatibility behavior.
 8. macOS Developer ID, notarization, quarantine, and core library-validation proof.
 9. Windows Authenticode/Smart App Control and pointer-durability proof.
-10. Linux extracted-AppImage/AppRun entry point and distribution/device compatibility matrix qualification.
+10. Linux cross-distribution/device release matrix and packaging validation after the extracted-AppImage/AppRun qualification.
