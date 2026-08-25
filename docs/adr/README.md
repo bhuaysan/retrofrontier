@@ -19,3 +19,4 @@ Status values:
 - [ADR-008: Controller navigation](ADR-008-controller-navigation.md)
 - [ADR-009: Controlled default-core policy](ADR-009-core-selection-policy.md)
 - [ADR-010: GPL-3.0-or-later](ADR-010-project-license.md)
+- [ADR-011: Runtime activation pointer and recovery journal](ADR-011-runtime-activation-reference.md)

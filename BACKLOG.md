@@ -53,6 +53,12 @@ Validate:
 
 Deliverable: spike report + architecture updates. No production updater required yet.
 
+Spike outcome:
+- Linux x86_64 extracted-AppImage launch, synthetic core/content smoke test, explicit-path isolation, and hostile-config test: complete.
+- Windows x86_64 portable artifact research: complete; real-device verification remains.
+- macOS arm64 and x86_64 artifact research: complete; real-device signing, quarantine, core-loading, and update verification remains.
+- Manifest authenticity, macOS native-core policy, and cross-platform power-loss recovery remain Sol Max review items.
+
 ## M0.2 — Spike: ScreenScraper Authentication
 **Model:** Luna Max.
 
@@ -102,9 +108,12 @@ Deliverable: documented authentication/provider decision.
 - [ ] update discovery
 - [ ] safe activation
 - [ ] rollback
+- [ ] active pointer and transaction journal
+- [ ] startup recovery after interrupted transactions
 - [ ] block activation while game runs
 - [ ] runtime status UI
 - [ ] repair UI
+- [ ] macOS app/core signing and quarantine strategy
 - [ ] finalize authenticity/signing after spike
 - [ ] finalize hosting/source model
 

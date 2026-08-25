@@ -162,13 +162,19 @@ Use OS-appropriate app-data paths:
 
 ```text
 RetroFrontier/
+├── runtime/
+│   ├── versions/
+│   ├── staging/
+│   ├── transactions/
+│   ├── active.json
+│   └── previous.json
+├── runtime-user/
 ├── database/
 ├── metadata/
 ├── saves/
 ├── states/
 ├── screenshots/
-├── logs/
-└── runtime/
+└── logs/
 ```
 
 Use platform path APIs; do not hard-code OS paths.
@@ -184,7 +190,9 @@ runtime/
 │   ├── <release-a>/
 │   └── <release-b>/
 ├── staging/
-└── active-runtime-reference
+├── transactions/
+├── active.json
+└── previous.json
 ```
 
 Safe update:
@@ -193,11 +201,14 @@ Safe update:
 3. Verify integrity/authenticity according to final security design.
 4. Validate required components.
 5. Ensure no game is running.
-6. Activate new release.
-7. Retain rollback capability.
-8. Clean old releases according to retention policy.
+6. Atomically replace the small active pointer.
+7. Run a bounded smoke test and record candidate health.
+8. Retain rollback capability and reconcile interrupted transactions at startup.
+9. Clean old releases according to retention policy.
 
-Exact switching is platform-specific and must be validated by a spike.
+Runtime versions are immutable after validation. Runtime-user configuration, core options, cache, logs, saves, states, screenshots, metadata, and the database remain outside replaceable versions. The cross-platform activation authority is an app-owned pointer file containing a safe release ID, generation, and manifest identity; symlinks and junctions are not required. Exact replacement is platform-specific and must use same-filesystem temporary files plus startup recovery.
+
+The Linux spike found that explicit core, save, and system directories alone are insufficient: core-info cache and core options also need explicit managed paths or disabling.
 
 ## Runtime Manifest
 Do not blindly download "latest".
@@ -224,6 +235,8 @@ Do not rely on:
 - system config discovery
 - existing core directories
 - existing save directories
+
+The Rust launch contract must resolve an absolute managed executable and pass an explicit config, log path, core path, and content path. It must explicitly control libretro, core-info, system/BIOS, save, state, screenshot, assets, shader, playlist, cache, history, remap, autoconfig, core-option, and runtime-log paths as applicable. The child environment is constructed rather than blindly inherited. This isolates configuration and data paths; it is not a sandbox for native cores.
 
 ## Scanner Pipeline
 
