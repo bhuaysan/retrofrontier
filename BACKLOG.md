@@ -34,7 +34,7 @@ Goal: prove RetroFrontier can download and run an isolated RetroArch runtime on:
 - [ ] Windows x86_64
 - [ ] macOS arm64
 - [ ] macOS x86_64
-- [ ] Linux x86_64
+- [x] Linux x86_64 (qualified with documented limitations; cross-distribution/device release gates remain)
 
 Validate:
 - [ ] approved runtime source

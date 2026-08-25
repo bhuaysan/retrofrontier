@@ -55,7 +55,7 @@ The first incomplete config pass attempted to write:
 
 Adding core_info_cache_enable = "false", explicit core_options_path, libretro_info_path, rgui_config_directory, history paths, and runtime-log paths removed those observed host writes. This must be a regression test.
 
-Not tested: Windows, macOS, real graphics/audio devices, controllers, direct AppImage FUSE execution on a desktop, power loss, update, rollback, and repair.
+The initial disposable spike did not test Windows/macOS, real graphics/audio devices, controllers, power loss, update, rollback, or repair. The later Linux qualification added real Wayland/XWayland, graphics/audio/controller, pointer, lock, rollback, repair, and TUF evidence; the remaining release gates are tracked in `docs/spikes/LINUX_RUNTIME_QUALIFICATION.md`.
 
 ## 3. Distribution and platform matrix
 
@@ -66,7 +66,7 @@ Primary sources: [official platform downloads](https://retroarch.com/?page=platf
 | Windows x86_64 | Versioned `RetroArch.7z`; stable index also exposes installer/core archives. Extract a prepared, approved archive into managed storage. | **Requires experiment.** Pointer/version model is plausible. | Authenticode/Smart App Control/SmartScreen, antivirus, locks, process tree, long paths, graphics/audio/controllers untested. |
 | macOS arm64 | Stable `RetroArch_Metal.dmg` is universal; arm64 core indexes exist. Install an independently signed/notarized approved payload into a version directory. | **Requires further experiment; current blocker.** | Gatekeeper, quarantine, notarization, Team ID, Hardened Runtime, library validation, `.dylib` loading, update/rollback unresolved. |
 | macOS x86_64 | Stable universal and x86_64 DMGs/core indexes exist. Install an independently signed/notarized approved payload. | **Requires further experiment; current blocker.** | Same signing/core risks plus real Intel testing; a universal host does not make incompatible cores loadable. |
-| Linux x86_64 | Versioned archive containing an AppImage. Verify, safely extract, and launch the proven AppDir entry point without FUSE. | **Requires experiment.** One-host inner-binary proof succeeded. | `AppRun` behavior, glibc/distro portability, graphics/audio/controller dependencies, and RetroFrontier packaging interaction. |
+| Linux x86_64 | Versioned archive containing an AppImage. Verify, safely extract, and launch the proven AppDir entry point without FUSE. | **Accepted with documented limitations.** AppRun and one-host Linux lifecycle qualification succeeded. | Cross-distribution/device, power-loss, native-X11/frontend-return, and RetroFrontier packaging validation remain release gates. |
 
 Stable indexes reviewed: [Windows](https://buildbot.libretro.com/stable/1.22.2/windows/x86_64/), [Linux](https://buildbot.libretro.com/stable/1.22.2/linux/x86_64/), [macOS universal](https://buildbot.libretro.com/stable/1.22.2/apple/osx/universal/), and [macOS x86_64](https://buildbot.libretro.com/stable/1.22.2/apple/osx/x86_64/).
 
@@ -326,13 +326,13 @@ Do not remove quarantine as a product strategy. Use the intended downloader, ins
 
 ### Linux x86_64
 
-Official guidance says there is no catch-all build. Extracted-AppImage execution passed on one Fedora host; direct AppImage execution failed for lack of FUSE. AppImage supports extraction, but its AppDir contract names `AppRun` as the entry point. The spike launched the inner `usr/bin/retroarch`, which can bypass bundled-library/environment setup and is not yet a robust production choice. Test the verified extracted AppDir through `AppRun`, then prove all explicit RetroArch paths still win and sanitize inherited AppImage/loader variables.
+Official guidance says there is no catch-all build. Extracted-AppImage execution passed on one Fedora host; direct AppImage execution failed for lack of FUSE. AppImage supports extraction, and its AppDir contract names `AppRun` as the entry point. The initial spike launched the inner `usr/bin/retroarch`, which could bypass bundled-library/environment setup. The later [Linux qualification](spikes/LINUX_RUNTIME_QUALIFICATION.md) exercised the verified extracted AppDir through `AppRun`, confirmed explicit RetroArch paths, and established `AppRun` as the production Linux launch contract. Cross-distribution/device and packaging validation remain release gates.
 
 AppImage portability still depends on the build's glibc baseline and host kernel, GPU driver/OpenGL/Vulkan stack, audio stack, display server, udev/input permissions, and controller devices. Define a minimum supported distribution baseline and test at least Ubuntu LTS, Debian stable, and current Fedora across Wayland/X11, PipeWire/PulseAudio as applicable, Intel/AMD/NVIDIA graphics where available, controllers, saves, and return-to-frontend behavior.
 
 If RetroFrontier ships as Flatpak, the managed child runs in a materially different sandbox. Flatpak defaults exclude host files, network, graphics/audio sockets, and input devices; host execution requires broad `org.freedesktop.Flatpak` access. Do not assume the native/AppImage runtime adapter works from a Flatpak. Treat Flatpak as a separate packaging spike or exclude it from the V1 Linux package set.
 
-**Linux verdict:** viable with requirements on native distribution, but the extracted-AppImage production strategy is **REQUIRES EXPERIMENT** across the declared distribution/device matrix.
+**Linux verdict:** **READY WITH DOCUMENTED LIMITATIONS** for beginning the Linux `RuntimeManager` implementation. The extracted-AppImage/AppDir plus `AppRun` strategy is accepted; the declared distribution/device matrix, native standalone-X11/frontend return, power-loss, and packaging checks remain release gates.
 
 ## 12. Core-management implications
 
@@ -356,7 +356,7 @@ Evidence supports these refinements:
 
 ## 14. Recommended next implementation task
 
-The exact next Luna Max runtime-risk task is the smallest macOS proof-of-concept, not RuntimeManager implementation: on a real Apple Silicon Mac, use a notarized Developer ID RetroFrontier test launcher distributed from a quarantined DMG to download one intended signed/notarized RetroArch candidate and one approved architecture-compatible core through the intended packaging path; preserve realistic quarantine; verify TUF fixtures plus `codesign`/`spctl`; install under Application Support; load synthetic content; exercise pointer activation, restart, update, rollback, and offline relaunch; and document whether library validation works without an unacceptable entitlement. Repeat the proven recipe on a real Intel Mac before macOS x86_64 approval. Keep all binaries and generated material outside the repository. This is a macOS release gate; the platform-adapter boundary means it does not block separately scheduled Linux-first foundation work.
+The Linux qualification now permits the next focused Luna Max task: implement the Linux `RuntimeManager` foundation around the extracted, authenticated AppDir, `AppRun` launch contract, safe extraction, TUF client adapter, immutable version lifecycle, `active.json`, Linux locks, process identity checks, bounded retention, and full reconstruction repair. Keep all binaries and generated material outside the repository. The macOS signed/notarized runtime proof remains a separate release gate and must not block the Linux-first foundation.
 
 ## 15. Explicit threat model
 
@@ -444,7 +444,7 @@ Signing/notarizing RetroFrontier itself covers its shipped bundle only. It does 
 | Approved/pinned cores | **ACCEPT WITH CHANGES** | Enforce managed approved cores only in V1 |
 | Two-runtime retention | **ACCEPT WITH CHANGES** | Active plus one previous, with count and disk/free-space limits; temporary candidate allowed |
 | Single-instance and runtime/game locks | **ACCEPT** | OS-backed mutation lock plus live child identity validation |
-| Linux extracted-AppImage strategy | **REQUIRES EXPERIMENT** | Verify first, test `AppRun`, distro/graphics/audio/controller matrix, packaging interaction |
+| Linux extracted-AppImage/AppRun strategy | **ACCEPT WITH LIMITATIONS** | Implement the qualified contract; complete distro/graphics/audio/controller matrix, power-loss, native-X11/frontend-return, and packaging gates |
 | Windows portable runtime strategy | **REQUIRES EXPERIMENT** | PE signing/reputation, antivirus/locks, long paths, pointer crash/restart behavior |
 | macOS downloaded runtime strategy | **REQUIRES EXPERIMENT** | Developer ID/notarization/quarantine/library-validation proof on arm64 and x86_64; current blocker |
 
@@ -453,7 +453,7 @@ Signing/notarizing RetroFrontier itself covers its shipped bundle only. It does 
 1. **macOS arm64 first:** execute the exact proof in section 14 on a clean real machine with realistic quarantine and production-style signing/notarization. This is the smallest blocker-clearing experiment.
 2. **macOS x86_64:** repeat on real Intel hardware; verify exact core slices and no accidental Rosetta dependence.
 3. **Windows x86_64:** standard non-admin account; intended installer and download API; Authenticode every PE; Defender/Smart App Control/SmartScreen behavior; process-tree locks; non-ASCII and long paths; active-pointer crash/restart injection; graphics/audio/controller/save smoke test.
-4. **Linux x86_64 matrix:** oldest supported Ubuntu LTS, Debian stable, current Fedora; extracted `AppRun`; glibc baseline; Wayland/X11; PipeWire/PulseAudio; Intel/AMD/NVIDIA where practical; controller permissions; native RetroFrontier package. Flatpak requires a separate decision/spike.
+4. **Linux x86_64 release matrix:** oldest supported Ubuntu LTS, Debian stable, current Fedora, and pinned Arch; extracted `AppRun`; glibc baseline; Wayland/X11; PipeWire/PulseAudio; Intel/AMD/NVIDIA where practical; controller permissions; native RetroFrontier package; power-loss and frontend-return tests. Flatpak requires a separate decision/spike.
 5. **Trust/recovery fixture harness:** after the macOS architecture clears, evaluate a conforming Rust TUF client and key ceremony with synthetic artifacts only; hostile metadata/archives; interrupted phase and pointer replacement injection; signed rollback floors; full reconstruction repair; no production RuntimeManager or UI.
 6. **Power/restart and multi-process tests:** all supported local filesystems, mutation lock contention, stale child identity/PID reuse, active pointer replacement, startup reconciliation, and cleanup confinement.
 
