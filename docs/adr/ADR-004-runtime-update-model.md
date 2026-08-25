@@ -16,4 +16,4 @@ Normal game saves and emulator save states remain external to runtime versions. 
 
 Trusted update metadata, highest observed security floors, and revocations survive runtime uninstall, repair, rollback, and cache cleanup. They are removed only by an explicit whole-application-data reset.
 
-The Linux proof supports the directory model but does not prove power-loss durability or platform-specific activation behavior. TUF trust metadata is defined by ADR-012. macOS signing/notarization and real Windows/macOS pointer tests remain release gates.
+The Linux qualification supports the directory model, same-directory replacement, startup validation, process-crash recovery, and concurrent readers. It does not prove physical power-loss durability, native standalone-X11 integration, or cross-distribution activation behavior. TUF trust metadata is defined by ADR-012. macOS signing/notarization and real Windows/macOS pointer tests remain release gates.
