@@ -1,0 +1,7 @@
+node_modules/
+pnpm-lock.yaml
+dist/
+coverage/
+src-tauri/gen/
+src-tauri/target/
+docs/design/screens/

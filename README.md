@@ -5,9 +5,12 @@ RetroFrontier is an open-source desktop frontend, game library, and ROM manageme
 The project aims for a zero-configuration experience: install RetroFrontier, add your own ROMs and required BIOS files, and play without manually configuring a separate RetroArch installation.
 
 ## Status
-New greenfield project in planning and foundation setup.
+M1 application foundation is in place: the Tauri 2 shell, React/Vite frontend,
+Rust application layer, SQLite migrations, typed foundation IPC, and Linux CI
+are wired together. Runtime management, scanning, metadata, and game launching
+remain later milestones.
 
-## Planned Stack
+## Stack
 - Tauri 2
 - Rust
 - React
@@ -15,6 +18,11 @@ New greenfield project in planning and foundation setup.
 - Vite
 - SQLite + sqlx
 - pnpm
+
+## Development
+
+See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for prerequisites and the
+short development/check workflow.
 
 ## Runtime Model
 RetroArch is not bundled in the RetroFrontier installer.
