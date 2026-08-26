@@ -16,7 +16,10 @@ use adapters::database::Database;
 use adapters::runtime_lock::ApplicationInstanceLock;
 use adapters::runtime_paths::RuntimePaths;
 use application::AppState;
-use application::{RuntimeApplicationService, RuntimeManager, SystemsApplicationService};
+use application::{
+    LibraryApplicationService, RuntimeApplicationService, RuntimeManager,
+    SystemsApplicationService, TauriScanEventSink,
+};
 use domain::system::SystemCatalog;
 use repositories::settings::SettingsRepository;
 use services::bios::BiosService;
@@ -44,6 +47,12 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
     let bios =
         BiosService::from_catalog(documents_dir.join("RetroFrontier").join("BIOS"), &catalog)
             .map_err(error::AppError::Bios)?;
+    let library = tauri::async_runtime::block_on(LibraryApplicationService::initialize(
+        database.pool().clone(),
+        catalog.clone(),
+        documents_dir.join("RetroFrontier").join("ROMs"),
+        std::sync::Arc::new(TauriScanEventSink::new(app.clone())),
+    ))?;
     let instance_lock = ApplicationInstanceLock::acquire(&runtime.paths().application_lock())
         .map_err(error::AppError::Runtime)?;
     let runtime_status = runtime
@@ -51,11 +60,14 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
         .map_err(error::AppError::Runtime)?;
     tracing::info!(state = ?runtime_status.state, "managed runtime reconciled");
 
+    let runtime_service = RuntimeApplicationService::new(runtime.clone());
+
     Ok(AppState::new(
         settings,
-        RuntimeApplicationService::new(runtime.clone()),
-        SystemsApplicationService::new(catalog, bios, runtime),
+        runtime_service.clone(),
+        SystemsApplicationService::new(catalog, bios, runtime_service),
         instance_lock,
+        library,
     ))
 }
 
@@ -82,7 +94,15 @@ pub fn run() {
             commands::app_info::get_app_info,
             commands::runtime::get_runtime_status,
             commands::systems::get_systems,
-            commands::systems::get_bios_status
+            commands::systems::get_bios_status,
+            commands::library::get_content_roots,
+            commands::library::add_external_content_root,
+            commands::library::remove_external_content_root,
+            commands::library::set_content_root_enabled,
+            commands::library::rescan_library,
+            commands::library::get_scan_status,
+            commands::library::get_scan_issues,
+            commands::library::get_library_snapshot
         ])
         .run(tauri::generate_context!())
         .expect("error while running RetroFrontier");

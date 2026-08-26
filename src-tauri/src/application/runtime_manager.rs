@@ -13,7 +13,7 @@ use crate::adapters::runtime_source::{TrustedRelease, TrustedReleaseSource};
 use crate::adapters::runtime_trust::RuntimeTrustStore;
 use crate::domain::runtime::{
     ActivePointer, RuntimeError, RuntimeManifest, RuntimeState, RuntimeStatus, SafeIdentifier,
-    Sha256Digest,
+    Sha256Digest, VerifiedRuntimeSnapshot,
 };
 use async_trait::async_trait;
 use std::collections::BTreeSet;
@@ -183,38 +183,28 @@ impl RuntimeManager {
     }
 
     pub fn status(&self) -> Result<RuntimeStatus, RuntimeError> {
+        self.verified_snapshot().map(|snapshot| snapshot.status)
+    }
+
+    /// Verify the active runtime once and return the effective status together with the core IDs
+    /// from that same authenticated installation. The system catalog decides whether an ID is
+    /// approved; RuntimeManager only reports managed installed availability.
+    pub fn verified_snapshot(&self) -> Result<VerifiedRuntimeSnapshot, RuntimeError> {
         if let Err(error) = self.paths.prepare() {
             tracing::warn!(error = %error, "managed runtime roots could not be validated");
-            return Ok(RuntimeStatus::broken());
+            return Ok(VerifiedRuntimeSnapshot {
+                status: RuntimeStatus::broken(),
+                verified_core_ids: BTreeSet::new(),
+            });
         }
-        self.reconcile_status()
+        self.reconcile_verified_snapshot()
     }
 
     /// Return core component IDs only from the currently active, fully verified managed runtime.
-    /// The system catalog decides whether an ID is approved; RuntimeManager only reports
-    /// authenticated installed availability and does not apply system policy.
+    /// This compatibility query delegates to the coherent snapshot boundary.
     pub fn current_verified_core_ids(&self) -> Result<BTreeSet<SafeIdentifier>, RuntimeError> {
-        if let Err(error) = self.paths.prepare() {
-            tracing::warn!(error = %error, "managed runtime roots could not be validated while reading cores");
-            return Err(error);
-        }
-        let Some(pointer) = read_active_pointer(&self.paths)? else {
-            return Ok(BTreeSet::new());
-        };
-        let current = self.load_verified_installation(&pointer.installation_id)?;
-        if current.manifest_sha256 != pointer.manifest_sha256 {
-            return Err(RuntimeError::Pointer(
-                "active runtime manifest does not match its pointer".to_owned(),
-            ));
-        }
-        Ok(current
-            .manifest
-            .release
-            .components
-            .iter()
-            .filter(|component| component.kind == crate::domain::runtime::ComponentKind::Core)
-            .map(|component| component.id.clone())
-            .collect())
+        self.verified_snapshot()
+            .map(|snapshot| snapshot.verified_core_ids)
     }
 
     /// Reconcile startup-owned leftovers while holding the same kernel lock used by mutations.
@@ -517,44 +507,84 @@ impl RuntimeManager {
     }
 
     fn reconcile_status(&self) -> Result<RuntimeStatus, RuntimeError> {
+        self.verified_snapshot().map(|snapshot| snapshot.status)
+    }
+
+    fn reconcile_verified_snapshot(&self) -> Result<VerifiedRuntimeSnapshot, RuntimeError> {
         let trust_state = match self.trust_store.load() {
             Ok(state) => state,
-            Err(_) => return Ok(RuntimeStatus::broken()),
+            Err(_) => {
+                return Ok(VerifiedRuntimeSnapshot {
+                    status: RuntimeStatus::broken(),
+                    verified_core_ids: BTreeSet::new(),
+                })
+            }
         };
         let pointer = match read_active_pointer(&self.paths) {
             Ok(pointer) => pointer,
-            Err(_) => return Ok(RuntimeStatus::broken()),
+            Err(_) => {
+                return Ok(VerifiedRuntimeSnapshot {
+                    status: RuntimeStatus::broken(),
+                    verified_core_ids: BTreeSet::new(),
+                })
+            }
         };
         let Some(pointer) = pointer else {
             return if self.has_any_complete_installation()? {
-                Ok(RuntimeStatus::broken())
+                Ok(VerifiedRuntimeSnapshot {
+                    status: RuntimeStatus::broken(),
+                    verified_core_ids: BTreeSet::new(),
+                })
             } else {
-                Ok(RuntimeStatus::not_installed())
+                Ok(VerifiedRuntimeSnapshot {
+                    status: RuntimeStatus::not_installed(),
+                    verified_core_ids: BTreeSet::new(),
+                })
             };
         };
         let current =
             self.load_verified_installation_with_state(&pointer.installation_id, &trust_state);
         let Ok(current) = current else {
-            return Ok(RuntimeStatus::broken());
+            return Ok(VerifiedRuntimeSnapshot {
+                status: RuntimeStatus::broken(),
+                verified_core_ids: BTreeSet::new(),
+            });
         };
         if current.manifest_sha256 != pointer.manifest_sha256 {
-            return Ok(RuntimeStatus::broken());
+            return Ok(VerifiedRuntimeSnapshot {
+                status: RuntimeStatus::broken(),
+                verified_core_ids: BTreeSet::new(),
+            });
         }
         let can_rollback = !Self::eligible_rollback_candidates(
             &current,
-            self.list_verified_installations_with_state(&trust_state)?,
+            self.list_verified_installations_with_state_except(
+                &trust_state,
+                Some(&current.installation_id),
+            )?,
         )
         .is_empty();
-        Ok(RuntimeStatus {
-            state: if can_rollback {
-                RuntimeState::RollbackAvailable
-            } else {
-                RuntimeState::Ready
+        let verified_core_ids = current
+            .manifest
+            .release
+            .components
+            .iter()
+            .filter(|component| component.kind == crate::domain::runtime::ComponentKind::Core)
+            .map(|component| component.id.clone())
+            .collect();
+        Ok(VerifiedRuntimeSnapshot {
+            status: RuntimeStatus {
+                state: if can_rollback {
+                    RuntimeState::RollbackAvailable
+                } else {
+                    RuntimeState::Ready
+                },
+                installation_id: Some(current.installation_id.to_string()),
+                release_id: Some(current.manifest.release.release_id.to_string()),
+                can_rollback,
+                repair_required: false,
             },
-            installation_id: Some(current.installation_id.to_string()),
-            release_id: Some(current.manifest.release.release_id.to_string()),
-            can_rollback,
-            repair_required: false,
+            verified_core_ids,
         })
     }
 
@@ -594,6 +624,14 @@ impl RuntimeManager {
         &self,
         trust_state: &crate::domain::runtime::RuntimeTrustState,
     ) -> Result<Vec<VerifiedInstallation>, RuntimeError> {
+        self.list_verified_installations_with_state_except(trust_state, None)
+    }
+
+    fn list_verified_installations_with_state_except(
+        &self,
+        trust_state: &crate::domain::runtime::RuntimeTrustState,
+        excluded_id: Option<&SafeIdentifier>,
+    ) -> Result<Vec<VerifiedInstallation>, RuntimeError> {
         let mut installations = Vec::new();
         for entry in fs::read_dir(self.paths.versions_root())? {
             let entry = entry?;
@@ -602,6 +640,9 @@ impl RuntimeManager {
             let Ok(installation_id) = SafeIdentifier::new(name) else {
                 continue;
             };
+            if excluded_id.is_some_and(|excluded_id| installation_id == *excluded_id) {
+                continue;
+            }
             let metadata = fs::symlink_metadata(entry.path())?;
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 continue;

@@ -155,26 +155,26 @@ therefore reports `Ready` unless another eligible lower-sequence installation ex
 
 The Tauri command calls `RuntimeApplicationService`, which calls `RuntimeManager`; filesystem,
 TUF, download, extraction, process, and SQLite details do not appear in the command. M2 exposes
-`get_runtime_status` over IPC. M3 adds the read-only `current_verified_core_ids()` query: it
-returns core component IDs only from the active installation after the same authenticated manifest,
-completion-marker, and installed-inventory verification used by runtime status. It does not decide
-which systems approve a core.
+`get_runtime_status` over IPC. M3/M4 expose the read-only `verified_snapshot()` boundary through
+`RuntimeApplicationService`: it returns core component IDs only from the active installation after
+the same authenticated manifest, completion-marker, and installed-inventory verification used by
+runtime status. It does not decide which systems approve a core.
 
-`SystemsApplicationService` consumes that query alongside the application-owned system catalog.
+`SystemsApplicationService` consumes one snapshot alongside the application-owned system catalog.
 The catalog's policy and the runtime's installed availability remain separate, so a listed core is
 not considered usable until RuntimeManager verifies its managed component. BIOS discovery is a
 separate Rust service over the user-owned Documents/RetroFrontier/BIOS root and is never included
 in runtime cleanup or update ownership.
 
-## Tracked M3 follow-up: systems-query verification cost
+## Verified runtime snapshot
 
-`get_systems` currently obtains runtime status and then asks for verified core IDs. Those calls can
-repeat full SHA-256 verification of the active installed tree, while runtime status may also inspect
-retained installations. This is acceptable while the application composition root has no production
-runtime release source, but it can make readiness refreshes expensive once real runtime artifacts are
-installed. Before wiring a production source or adding frequent readiness refreshes, reuse one
-verified runtime snapshot for status and core availability; this remains an explicit follow-up rather
-than an M3 architecture change.
+`RuntimeManager::verified_snapshot()` performs one trust-consistent active-installation verification
+and returns both the effective `RuntimeStatus` and the verified core component IDs from that same
+installation. `RuntimeApplicationService` exposes this boundary, and `SystemsApplicationService`
+consumes one snapshot for both system runtime status and core availability. The compatibility method
+`current_verified_core_ids()` delegates to the snapshot and does not create a second verification
+algorithm. Trust decisions are still recomputed on each snapshot request; no indefinite trust cache
+was introduced.
 
 ## Review markers and deferred work
 

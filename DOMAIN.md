@@ -246,4 +246,16 @@ May combine:
 Exact matching rules remain an implementation task.
 
 ## Persistence
-SQLite is the intended store. The final schema must be introduced through migrations and should follow this domain rather than mirror UI components.
+SQLite is the store. M4 introduces the normalized schema through a forward/down migration rather
+than mirroring UI components. `content_roots` persist managed and external roots; `games`,
+`content_units`, and `content_files` keep logical, launchable, and physical identities distinct;
+`content_unit_files` stores ordered membership and roles; `scan_runs` and `scan_issues` preserve
+reconciliation evidence. Foreign keys use restrictive delete behavior so missing files and removed
+external roots do not cascade-delete logical library history. Static `SystemCatalog` knowledge is
+not duplicated in SQLite; persisted library rows store stable `SystemId` strings.
+
+The scanner marks files and units missing only after an authoritative root snapshot. An unavailable
+or incomplete root preserves the last known rows. Exact, unique content fingerprints may preserve a
+file/unit identity across a move and may relate duplicate physical copies under one provisional
+game. Ambiguous matches create a new physical identity and an inspectable issue. Local titles are
+derived from the primary path only when a unit is first created; M5 metadata matching is separate.

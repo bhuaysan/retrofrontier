@@ -83,6 +83,14 @@ pub struct RuntimeStatus {
     pub repair_required: bool,
 }
 
+/// One trust-consistent read of the managed runtime. Systems/readiness queries must use this
+/// snapshot so status and installed-core availability cannot come from separate verifications.
+#[derive(Debug, Clone)]
+pub struct VerifiedRuntimeSnapshot {
+    pub status: RuntimeStatus,
+    pub verified_core_ids: BTreeSet<SafeIdentifier>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ManagedProcessPhase {
