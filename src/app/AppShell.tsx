@@ -2,7 +2,13 @@ import { useEffect, useState, type ReactNode } from 'react';
 
 import { PixelButton } from '../components/ui/PixelButton';
 import { PixelRow } from '../components/ui/PixelRow';
-import { getAppInfo, IpcError, type AppInfo } from '../platform/ipc';
+import {
+  getAppInfo,
+  getRuntimeStatus,
+  IpcError,
+  type AppInfo,
+  type RuntimeStatus,
+} from '../platform/ipc';
 
 type Theme = 'dark' | 'light';
 
@@ -39,10 +45,33 @@ function StatusValue({ children, tone = 'neutral' }: { children: ReactNode; tone
   return <span className={`status-value status-value--${tone}`}>{children}</span>;
 }
 
+function runtimeLabel(status: RuntimeStatus | null, error: IpcError | null): string {
+  if (error) return 'UNAVAILABLE';
+  if (!status) return 'CHECKING';
+  switch (status.state) {
+    case 'notInstalled':
+      return 'NOT INSTALLED';
+    case 'rollbackAvailable':
+      return 'READY / ROLLBACK';
+    case 'broken':
+      return 'REPAIR REQUIRED';
+    case 'installing':
+      return 'INSTALLING';
+    case 'updating':
+      return 'UPDATING';
+    case 'repairing':
+      return 'REPAIRING';
+    case 'ready':
+      return 'READY';
+  }
+}
+
 export function AppShell() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [error, setError] = useState<IpcError | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
+  const [runtimeError, setRuntimeError] = useState<IpcError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
@@ -75,8 +104,41 @@ export function AppShell() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    getRuntimeStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setRuntimeStatus(status);
+          setRuntimeError(null);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) {
+          setRuntimeError(
+            reason instanceof IpcError
+              ? reason
+              : new IpcError('runtime_unavailable', 'The managed runtime is unavailable.'),
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const ipcTone = appInfo ? 'good' : error ? 'warning' : 'neutral';
   const databaseTone = appInfo?.databaseReady ? 'good' : error ? 'warning' : 'neutral';
+  const runtimeTone = runtimeError
+    ? 'warning'
+    : runtimeStatus?.state === 'broken' || runtimeStatus?.state === 'notInstalled'
+      ? 'warning'
+      : runtimeStatus
+        ? 'good'
+        : 'neutral';
+  const runtimeText = runtimeLabel(runtimeStatus, runtimeError);
 
   const showFoundationNotice = (message: string) => {
     setNotice(message);
@@ -176,7 +238,7 @@ export function AppShell() {
           <div className="panel-heading">
             <h2 id="foundation-heading">FOUNDATION STATUS</h2>
             <span aria-hidden="true" />
-            <span className="panel-meta">M1</span>
+            <span className="panel-meta">M2</span>
           </div>
           <div className="status-grid">
             <div className="status-item">
@@ -203,6 +265,10 @@ export function AppShell() {
                 {appInfo ? `${appInfo.platform} / ${appInfo.architecture}` : 'DETECTING'}
               </StatusValue>
             </div>
+            <div className="status-item">
+              <span className="status-label">RUNTIME</span>
+              <StatusValue tone={runtimeTone}>{runtimeText}</StatusValue>
+            </div>
           </div>
           {error && (
             <p className="foundation-error" role="alert">
@@ -218,7 +284,7 @@ export function AppShell() {
       </main>
 
       <footer className="app-footer">
-        <span>RUNTIME: FOUNDATION ONLY</span>
+        <span>RUNTIME: {runtimeText}</span>
         <span aria-hidden="true">·</span>
         <span>DATABASE: {appInfo?.databaseReady ? 'READY' : 'LOCAL'}</span>
         <span className="footer-spacer" />

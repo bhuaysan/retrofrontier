@@ -2,6 +2,8 @@ use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 use thiserror::Error;
 
+use crate::domain::runtime::RuntimeError;
+
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("application data path could not be resolved")]
@@ -15,6 +17,9 @@ pub enum AppError {
 
     #[error("local database migrations could not be applied")]
     Migration(#[source] sqlx::migrate::MigrateError),
+
+    #[error("managed runtime is unavailable")]
+    Runtime(#[source] RuntimeError),
 }
 
 impl AppError {
@@ -24,6 +29,7 @@ impl AppError {
             Self::Storage(_) => "storage_unavailable",
             Self::Database(_) => "database_unavailable",
             Self::Migration(_) => "migration_failed",
+            Self::Runtime(_) => "runtime_unavailable",
         }
     }
 
@@ -35,6 +41,7 @@ impl AppError {
             Self::Storage(_) => "RetroFrontier could not prepare its application data directory.",
             Self::Database(_) => "RetroFrontier could not access its local database.",
             Self::Migration(_) => "RetroFrontier could not prepare its local storage.",
+            Self::Runtime(_) => "RetroFrontier could not prepare its managed runtime.",
         }
     }
 

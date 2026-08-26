@@ -219,6 +219,14 @@ Runtime versions are immutable after their completion marker is committed. Runti
 
 No authoritative update transaction journal is required for V1. Incomplete staging directories, incomplete version directories, complete inactive versions, and the active pointer are distinguishable from filesystem structure and completion markers. Resumable downloads may keep disposable metadata inside their own staging directory.
 
+The M2 Linux implementation is in the Rust `RuntimeManager` application boundary and its runtime
+adapters. It derives status from the authoritative pointer, persisted trust state, completion
+markers, and strict installed-file inventory; it does not infer a runtime from directory order. The
+default composition root deliberately has no production release source configured yet. Explicit
+synthetic sources are available for tests, while the TUF-backed source adapter is ready to receive
+an approved root and repository configuration. See `docs/RUNTIME_MANAGER.md` for the implementation
+contract.
+
 RetroFrontier is single-instance per OS user in V1. An OS-backed runtime mutation lock protects install, activation, rollback, repair, and cleanup even from an accidentally started second or older process. A durable game-process identity record plus liveness validation prevents activation after RetroFrontier crashes while its managed RetroArch process remains alive.
 
 The Linux spike found that explicit core, save, and system directories alone are insufficient: core-info cache and core options also need explicit managed paths or disabling.
