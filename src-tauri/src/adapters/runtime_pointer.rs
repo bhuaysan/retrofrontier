@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
 static POINTER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn read_active_pointer(paths: &RuntimePaths) -> Result<Option<ActivePointer>, RuntimeError> {
@@ -47,10 +50,11 @@ pub fn write_active_pointer(
     ensure_real_directory(parent)?;
     let temporary = unique_temporary_path(parent, paths.active_pointer())?;
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&temporary)?;
         file.write_all(&bytes)?;
         file.flush()?;
         file.sync_all()?;
@@ -78,11 +82,16 @@ pub fn write_active_pointer(
 }
 
 pub fn remove_pointer_temporary_files(paths: &RuntimePaths) -> Result<(), RuntimeError> {
+    let prefixes = [
+        ".active.json.tmp-",
+        ".trust-state.json.tmp-",
+        ".game-process.json.tmp-",
+    ];
     for entry in fs::read_dir(paths.runtime_root())? {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !name.starts_with(".active.json.tmp-") {
+        if !prefixes.iter().any(|prefix| name.starts_with(prefix)) {
             continue;
         }
         let metadata = fs::symlink_metadata(entry.path())?;
@@ -227,8 +236,26 @@ mod tests {
             b"partial",
         )
         .unwrap();
+        fs::write(
+            paths.runtime_root().join(".trust-state.json.tmp-crash"),
+            b"partial",
+        )
+        .unwrap();
+        fs::write(
+            paths.runtime_root().join(".game-process.json.tmp-crash"),
+            b"partial",
+        )
+        .unwrap();
         remove_pointer_temporary_files(&paths).unwrap();
         assert!(!paths.runtime_root().join(".active.json.tmp-crash").exists());
+        assert!(!paths
+            .runtime_root()
+            .join(".trust-state.json.tmp-crash")
+            .exists());
+        assert!(!paths
+            .runtime_root()
+            .join(".game-process.json.tmp-crash")
+            .exists());
 
         let first = pointer();
         write_active_pointer(&paths, &first).unwrap();

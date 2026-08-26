@@ -93,6 +93,7 @@ pub struct ManagedProcessRecord {
     pub phase: ManagedProcessPhase,
     pub pid: u32,
     pub process_start_time_ticks: u64,
+    pub boot_id: String,
     pub installation_id: SafeIdentifier,
     pub expected_apprun_path: String,
     /// AppRun may be a script. In that case `/proc/<pid>/exe` is the interpreter rather than the
@@ -106,6 +107,7 @@ impl ManagedProcessRecord {
         if self.schema_version != 1
             || self.pid == 0
             || self.process_start_time_ticks == 0
+            || self.boot_id.trim().is_empty()
             || self.expected_apprun_path.is_empty()
             || !std::path::Path::new(&self.expected_apprun_path).is_absolute()
             || self

@@ -155,21 +155,36 @@ impl RuntimeManager {
     }
 
     pub fn status(&self) -> Result<RuntimeStatus, RuntimeError> {
-        self.paths.prepare()?;
+        if let Err(error) = self.paths.prepare() {
+            tracing::warn!(error = %error, "managed runtime roots could not be validated");
+            return Ok(RuntimeStatus::broken());
+        }
         self.reconcile_status()
     }
 
     /// Reconcile startup-owned leftovers while holding the same kernel lock used by mutations.
     pub fn startup_reconcile(&self) -> Result<RuntimeStatus, RuntimeError> {
         let _lock = self.acquire_mutation_lock()?;
-        // A process record can outlive the UI process. Refuse cleanup until the inspector has
-        // established that no managed RetroArch process is still using a runtime tree.
-        self.process_inspector.ensure_no_active_game(&self.paths)?;
-        remove_pointer_temporary_files(&self.paths)?;
-        self.cleanup_staging_locked()?;
-        self.cleanup_incomplete_versions_locked()?;
-        self.cleanup_retained_versions_locked()?;
-        self.reconcile_status()
+        let result = (|| {
+            // A process record can outlive the UI process. Refuse cleanup until the inspector has
+            // established that no managed RetroArch process is still using a runtime tree.
+            self.process_inspector.ensure_no_active_game(&self.paths)?;
+            remove_pointer_temporary_files(&self.paths)?;
+            self.cleanup_staging_locked()?;
+            self.cleanup_incomplete_versions_locked()?;
+            self.cleanup_retained_versions_locked()?;
+            self.reconcile_status()
+        })();
+        match result {
+            Ok(status) => Ok(status),
+            Err(error) => {
+                // Startup must remain usable when a recoverable state file, pointer, or owned
+                // runtime directory is damaged. Mutating operations still return the original
+                // error and re-run their safety checks under the mutation lock.
+                tracing::warn!(error = %error, "managed runtime startup reconciliation needs repair");
+                Ok(RuntimeStatus::broken())
+            }
+        }
     }
 
     pub async fn install(&self, manifest_target_name: &str) -> Result<RuntimeStatus, RuntimeError> {
@@ -190,6 +205,8 @@ impl RuntimeManager {
         release.validate()?;
         let _lock = self.acquire_mutation_lock()?;
         self.process_inspector.ensure_no_active_game(&self.paths)?;
+        self.cleanup_staging_locked()?;
+        self.ensure_candidate_storage_budget(&release)?;
         self.trust_store.record_release(&release)?;
         let candidate = self
             .construct_candidate(&release, if repair { "repair" } else { "install" })
@@ -232,7 +249,11 @@ impl RuntimeManager {
             ));
         }
         let mut candidates = self.list_verified_installations()?;
-        candidates.retain(|candidate| candidate.installation_id != current.installation_id);
+        candidates.retain(|candidate| {
+            candidate.installation_id != current.installation_id
+                && candidate.manifest.release.release_sequence
+                    < current.manifest.release.release_sequence
+        });
         candidates.sort_by(|left, right| {
             right
                 .manifest
@@ -325,6 +346,7 @@ impl RuntimeManager {
                     "runtime installation identifier already exists".to_owned(),
                 ));
             }
+            self.paths.validate_cleanup_roots()?;
             fs::rename(&tree, &installation_path)?;
             fsync_directory(self.paths.versions_root())?;
             write_complete_marker(
@@ -385,13 +407,11 @@ impl RuntimeManager {
             Err(_error) if allow_invalid_current => None,
             Err(error) => return Err(error),
         };
-        let mut current_storage = 0_u64;
+        let mut current_id = None;
         match pointer.as_ref() {
             Some(pointer) => match self.load_verified_installation(&pointer.installation_id) {
                 Ok(current) if current.manifest_sha256 == pointer.manifest_sha256 => {
-                    if current.installation_id != candidate.installation_id {
-                        current_storage = current.storage_bytes;
-                    }
+                    current_id = Some(current.installation_id);
                 }
                 Ok(_) | Err(_) if !allow_invalid_current => {
                     return Err(RuntimeError::Pointer(
@@ -399,11 +419,7 @@ impl RuntimeManager {
                             .to_owned(),
                     ))
                 }
-                Ok(_) | Err(_) => {
-                    current_storage =
-                        directory_size(&self.paths.version_path(&pointer.installation_id))
-                            .unwrap_or(0);
-                }
+                Ok(_) | Err(_) => current_id = Some(pointer.installation_id.clone()),
             },
             None => {
                 let has_complete =
@@ -415,18 +431,26 @@ impl RuntimeManager {
                 }
             }
         }
-        if candidate.storage_bytes.saturating_add(current_storage)
-            > self.retention.max_storage_bytes
-        {
-            return Err(RuntimeError::StorageLimit);
-        }
+
+        // Normalize retention while the old pointer is still authoritative. This leaves only
+        // the current selection and the verified candidate before replacement, so the former
+        // current installation becomes the sole rollback candidate after a successful switch.
+        // If there is no authoritative pointer, preserve all complete installations rather than
+        // guessing which one was active.
+        self.normalize_retention_locked(&candidate.installation_id, current_id.as_ref())?;
+        self.ensure_runtime_storage_budget_locked()?;
+
         let new_pointer = ActivePointer {
             schema_version: crate::domain::runtime::ACTIVE_POINTER_SCHEMA_VERSION,
             installation_id: candidate.installation_id.clone(),
             manifest_sha256: candidate.manifest_sha256,
         };
         write_active_pointer(&self.paths, &new_pointer)?;
-        self.cleanup_retained_versions_locked()?;
+        if let Err(error) = self.cleanup_retained_versions_locked() {
+            // The pointer replacement is the activation boundary. Cleanup after that point is
+            // housekeeping and must not make a successful activation look like a failed update.
+            tracing::warn!(error = %error, "managed runtime retention cleanup deferred");
+        }
         Ok(())
     }
 
@@ -587,7 +611,76 @@ impl RuntimeManager {
         Ok(false)
     }
 
+    fn ensure_candidate_storage_budget(
+        &self,
+        release: &TrustedRelease,
+    ) -> Result<(), RuntimeError> {
+        self.paths.validate_cleanup_roots()?;
+        let current = self.runtime_storage_bytes()?;
+        let planned = declared_candidate_peak_bytes(release)?;
+        if current
+            .checked_add(planned)
+            .is_none_or(|total| total > self.retention.max_storage_bytes)
+        {
+            return Err(RuntimeError::StorageLimit);
+        }
+        Ok(())
+    }
+
+    fn ensure_runtime_storage_budget_locked(&self) -> Result<(), RuntimeError> {
+        let current = self.runtime_storage_bytes()?;
+        if current > self.retention.max_storage_bytes {
+            return Err(RuntimeError::StorageLimit);
+        }
+        Ok(())
+    }
+
+    fn runtime_storage_bytes(&self) -> Result<u64, RuntimeError> {
+        self.paths.validate_cleanup_roots()?;
+        let mut total = 0_u64;
+        for root in [self.paths.versions_root(), self.paths.staging_root()] {
+            for entry in fs::read_dir(root)? {
+                let path = entry?.path();
+                let metadata = fs::symlink_metadata(&path)?;
+                if metadata.file_type().is_symlink() {
+                    // A symlink is never an owned runtime payload and must not be followed for
+                    // either cleanup or budget calculations.
+                    continue;
+                }
+                let size = directory_size(&path)?;
+                total = total.checked_add(size).ok_or(RuntimeError::StorageLimit)?;
+            }
+        }
+        Ok(total)
+    }
+
+    fn normalize_retention_locked(
+        &self,
+        candidate_id: &SafeIdentifier,
+        current_id: Option<&SafeIdentifier>,
+    ) -> Result<(), RuntimeError> {
+        self.paths.validate_cleanup_roots()?;
+        let Some(current_id) = current_id else {
+            // A missing or corrupt pointer is not authority to choose or delete a retained
+            // installation. Repair may still activate an explicitly verified candidate.
+            return Ok(());
+        };
+        let trust_state = self.trust_store.load()?;
+        let protected: std::collections::BTreeSet<_> = [current_id.clone(), candidate_id.clone()]
+            .into_iter()
+            .collect();
+        let verified = self.list_verified_installations_with_state(&trust_state)?;
+        for installation in verified {
+            if protected.contains(&installation.installation_id) {
+                continue;
+            }
+            self.remove_owned_installation(&installation.installation_id, current_id, &protected)?;
+        }
+        Ok(())
+    }
+
     fn cleanup_staging_locked(&self) -> Result<(), RuntimeError> {
+        self.paths.validate_cleanup_roots()?;
         for entry in fs::read_dir(self.paths.staging_root())? {
             let entry = entry?;
             let path = entry.path();
@@ -607,6 +700,7 @@ impl RuntimeManager {
     }
 
     fn cleanup_incomplete_versions_locked(&self) -> Result<(), RuntimeError> {
+        self.paths.validate_cleanup_roots()?;
         // Never remove a parseable pointer target during startup recovery, even if its completion
         // marker is missing. A broken active target must remain available for explicit repair.
         let active_id = read_active_pointer(&self.paths)
@@ -645,6 +739,7 @@ impl RuntimeManager {
     }
 
     fn cleanup_retained_versions_locked(&self) -> Result<(), RuntimeError> {
+        self.paths.validate_cleanup_roots()?;
         let pointer = match read_active_pointer(&self.paths) {
             Ok(pointer) => pointer,
             Err(_) => return Ok(()),
@@ -704,6 +799,7 @@ impl RuntimeManager {
                 "refusing to delete a path outside runtime versions".to_owned(),
             ));
         }
+        self.paths.validate_cleanup_roots()?;
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
             return Err(RuntimeError::Storage(
@@ -740,14 +836,51 @@ fn create_real_directory(base: &Path, relative: &Path) -> Result<(), RuntimeErro
     Ok(())
 }
 
+fn declared_candidate_peak_bytes(release: &TrustedRelease) -> Result<u64, RuntimeError> {
+    // During construction the staging operation holds both downloaded archives and the
+    // expanded candidate tree. Reserve metadata space as well; the final measured tree is
+    // checked again under the mutation lock before activation.
+    const METADATA_RESERVE_BYTES: u64 = 8 * 1024;
+    let archive_bytes =
+        release
+            .manifest
+            .release
+            .components
+            .iter()
+            .try_fold(0_u64, |total, component| {
+                total
+                    .checked_add(component.archive_size_bytes)
+                    .ok_or(RuntimeError::StorageLimit)
+            })?;
+    let payload_bytes =
+        release
+            .manifest
+            .release
+            .inventory
+            .iter()
+            .try_fold(0_u64, |total, entry| {
+                total
+                    .checked_add(entry.size_bytes)
+                    .ok_or(RuntimeError::StorageLimit)
+            })?;
+    archive_bytes
+        .checked_add(payload_bytes)
+        .and_then(|total| total.checked_add(release.manifest_bytes.len() as u64))
+        .and_then(|total| total.checked_add(METADATA_RESERVE_BYTES))
+        .ok_or(RuntimeError::StorageLimit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{RetentionPolicy, RuntimeManager, StructuralSmokeValidator};
-    use crate::adapters::runtime_archive::RuntimeArchiveExtractor;
+    use crate::adapters::runtime_archive::{LinuxRuntimeArchiveExtractor, RuntimeArchiveExtractor};
     use crate::adapters::runtime_integrity::{sha256_bytes, sha256_file};
+    use crate::adapters::runtime_lock::RuntimeMutationLock;
     use crate::adapters::runtime_paths::RuntimePaths;
     use crate::adapters::runtime_pointer::read_active_pointer;
-    use crate::adapters::runtime_process::StaticManagedProcessInspector;
+    use crate::adapters::runtime_process::{
+        LinuxManagedProcessInspector, StaticManagedProcessInspector,
+    };
     use crate::adapters::runtime_source::LocalTrustedReleaseSource;
     use crate::domain::runtime::{
         ArchiveFormat, ComponentKind, InstalledEntry, InstalledEntryType, RelativePath,
@@ -827,6 +960,61 @@ mod tests {
     ) -> RuntimeManager {
         fs::create_dir_all(app_data).unwrap();
         let (archive, app_run) = archive_fixture(app_data, sequence);
+        fixture_manager_from_archive(
+            app_data,
+            sequence,
+            process_inspector,
+            archive,
+            app_run,
+            std::sync::Arc::new(SyntheticRuntimeArchiveExtractor),
+        )
+    }
+
+    fn appimage_fixture(
+        directory: &std::path::Path,
+        sequence: u64,
+    ) -> (std::path::PathBuf, Vec<u8>) {
+        let app_run = format!("#!/bin/sh\nexit {sequence}\n").into_bytes();
+        let archive_path = directory.join(format!("runtime-{sequence}.appimage"));
+        let mut output = File::create(&archive_path).unwrap();
+        let mut filesystem = backhand::FilesystemWriter::default();
+        filesystem
+            .push_file(
+                std::io::Cursor::new(app_run.clone()),
+                "AppRun",
+                backhand::NodeHeader::new(0o755, 0, 0, 0),
+            )
+            .unwrap();
+        filesystem.write(&mut output).unwrap();
+        output.sync_all().unwrap();
+        (archive_path, app_run)
+    }
+
+    fn real_extractor_fixture_manager(
+        app_data: &std::path::Path,
+        sequence: u64,
+        process_inspector: StaticManagedProcessInspector,
+    ) -> RuntimeManager {
+        fs::create_dir_all(app_data).unwrap();
+        let (archive, app_run) = appimage_fixture(app_data, sequence);
+        fixture_manager_from_archive(
+            app_data,
+            sequence,
+            process_inspector,
+            archive,
+            app_run,
+            std::sync::Arc::new(LinuxRuntimeArchiveExtractor),
+        )
+    }
+
+    fn fixture_manager_from_archive(
+        app_data: &std::path::Path,
+        sequence: u64,
+        process_inspector: StaticManagedProcessInspector,
+        archive: std::path::PathBuf,
+        app_run: Vec<u8>,
+        extractor: std::sync::Arc<dyn RuntimeArchiveExtractor>,
+    ) -> RuntimeManager {
         let (archive_size, archive_hash) = sha256_file(&archive).unwrap();
         let app_hash = sha256_bytes(&app_run);
         let manifest = RuntimeManifest {
@@ -906,7 +1094,7 @@ mod tests {
         RuntimeManager::new(
             RuntimePaths::new(app_data),
             std::sync::Arc::new(source),
-            std::sync::Arc::new(SyntheticRuntimeArchiveExtractor),
+            extractor,
             std::sync::Arc::new(process_inspector),
             std::sync::Arc::new(StructuralSmokeValidator),
             RetentionPolicy::default(),
@@ -922,6 +1110,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manager_install_exercises_the_production_appimage_extractor() {
+        let directory = tempdir().unwrap();
+        let manager = real_extractor_fixture_manager(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+
+        let status = manager.install("manifests/release-1.json").await.unwrap();
+        assert_eq!(status.state, crate::domain::runtime::RuntimeState::Ready);
+        let pointer = read_active_pointer(manager.paths()).unwrap().unwrap();
+        assert_eq!(
+            fs::read(
+                manager
+                    .paths()
+                    .version_path(&pointer.installation_id)
+                    .join("runtime/app/AppRun")
+            )
+            .unwrap(),
+            b"#!/bin/sh\nexit 1\n"
+        );
+    }
+
+    #[tokio::test]
     async fn installs_immutable_versions_and_rolls_back_between_them() {
         let directory = tempdir().unwrap();
         let inspector = StaticManagedProcessInspector::default();
@@ -932,6 +1144,35 @@ mod tests {
             crate::domain::runtime::RuntimeState::Ready
         );
         let first_pointer = read_active_pointer(first.paths()).unwrap().unwrap();
+        let first_installation_path = first.paths().version_path(&first_pointer.installation_id);
+        for path in [
+            first.paths().runtime_root(),
+            first.paths().versions_root(),
+            first.paths().staging_root(),
+            first.paths().locks_root(),
+            first.paths().trust_root(),
+        ] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o700,
+                "{} should be private",
+                path.display()
+            );
+        }
+        for path in [
+            first.paths().active_pointer().to_path_buf(),
+            first.paths().trust_state().to_path_buf(),
+            first.paths().mutation_lock(),
+            first_installation_path.join(crate::adapters::runtime_installed::RELEASE_MANIFEST_FILE),
+            first_installation_path.join(crate::adapters::runtime_installed::COMPLETE_MARKER_FILE),
+        ] {
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "{} should be user-only",
+                path.display()
+            );
+        }
 
         let second = fixture_manager(directory.path(), 2, inspector);
         let second_status = second.install("manifests/release-2.json").await.unwrap();
@@ -954,6 +1195,7 @@ mod tests {
             rollback_pointer.installation_id,
             first_pointer.installation_id
         );
+        assert!(matches!(second.rollback(), Err(RuntimeError::NoRollback)));
     }
 
     #[tokio::test]
@@ -1084,5 +1326,114 @@ mod tests {
         );
         manager.cleanup().unwrap();
         assert!(outside.join("keep.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_refuses_symlinked_runtime_roots_without_touching_user_content() {
+        let directory = tempdir().unwrap();
+        let outside = directory.path().join("user-content");
+        fs::create_dir_all(outside.join("SNES")).unwrap();
+        fs::write(outside.join("SNES/game.sfc"), b"user-owned").unwrap();
+        let manager = fixture_manager(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+
+        fs::remove_dir(manager.paths().versions_root()).unwrap();
+        std::os::unix::fs::symlink(&outside, manager.paths().versions_root()).unwrap();
+
+        assert!(matches!(manager.cleanup(), Err(RuntimeError::Storage(_))));
+        assert_eq!(
+            fs::read(outside.join("SNES/game.sfc")).unwrap(),
+            b"user-owned"
+        );
+    }
+
+    #[test]
+    fn startup_recovers_corrupt_process_state_and_keeps_the_application_usable() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+        let manager = RuntimeManager {
+            process_inspector: std::sync::Arc::new(LinuxManagedProcessInspector),
+            ..manager
+        };
+        fs::write(manager.paths().game_process_record(), b"truncated").unwrap();
+
+        let status = manager.startup_reconcile().unwrap();
+        assert_eq!(
+            status.state,
+            crate::domain::runtime::RuntimeState::NotInstalled
+        );
+        assert!(!manager.paths().game_process_record().exists());
+    }
+
+    #[test]
+    fn startup_reports_broken_when_a_live_game_blocks_reconciliation() {
+        let directory = tempdir().unwrap();
+        let inspector = StaticManagedProcessInspector::default();
+        let manager = fixture_manager(directory.path(), 1, inspector.clone());
+        inspector.set_active(true);
+
+        let status = manager.startup_reconcile().unwrap();
+        assert_eq!(status.state, crate::domain::runtime::RuntimeState::Broken);
+        assert!(status.repair_required);
+    }
+
+    #[test]
+    fn storage_budget_is_rejected_before_a_download_operation_is_created() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+        let manager = RuntimeManager {
+            retention: RetentionPolicy {
+                max_retained_installations: 2,
+                max_storage_bytes: 100,
+            },
+            ..manager
+        };
+
+        let result = tauri::async_runtime::block_on(manager.install("manifests/release-1.json"));
+        assert!(matches!(result, Err(RuntimeError::StorageLimit)));
+        assert_eq!(
+            fs::read_dir(manager.paths().staging_root())
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(
+            fs::read_dir(manager.paths().versions_root())
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn two_runtime_managers_cannot_mutate_the_same_tree_concurrently() {
+        let directory = tempdir().unwrap();
+        let first = fixture_manager(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+        let second = fixture_manager(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+        let lock = RuntimeMutationLock::acquire(&first.paths().mutation_lock()).unwrap();
+        let second_thread = std::thread::spawn(move || second.cleanup());
+        let result = second_thread.join().unwrap();
+        assert!(matches!(result, Err(RuntimeError::Lock(_))));
+        drop(lock);
     }
 }

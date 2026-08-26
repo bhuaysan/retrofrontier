@@ -31,7 +31,13 @@ local targets.
 
 The database, metadata, logs, saves, states, screenshots, ROM roots, and BIOS roots are not
 RuntimeManager-owned paths. Cleanup accepts only a direct child of `runtime/versions` with a
-valid `SafeIdentifier`, and refuses symlink/non-directory targets before deletion.
+valid `SafeIdentifier`, and refuses symlink/non-directory targets before deletion. The `versions`
+and `staging` roots are revalidated as real directories while holding the runtime mutation lock
+immediately before enumeration; a relocated or symlinked root produces a repair-required state
+and is never recursively deleted.
+
+Runtime-owned directories are created with user-only `0700` permissions. Pointer, trust, process,
+lock, manifest, and completion state files are created with user-only `0600` permissions.
 
 ## State
 
@@ -57,8 +63,9 @@ limits, and the complete installed inventory. JSON duplicate keys and unknown fi
 
 `TrustedReleaseSource` separates RuntimeManager from network I/O. `ToughTrustedReleaseSource`
 keeps TUF verification behind that boundary using the maintained `tough` client, authenticated
-targets, safe metadata expiration, a persistent datastore, and an optional authenticated runtime
-policy target. `LocalTrustedReleaseSource` is limited to explicit synthetic/development fixtures
+targets, safe metadata expiration, a persistent datastore, and a required authenticated,
+versioned runtime-policy target. Construction validates the supplied trusted root before a source
+can be used. `LocalTrustedReleaseSource` is limited to explicit synthetic/development fixtures
 but preserves the same manifest/target size/hash relationships.
 
 The local `RuntimeTrustState` retains authenticated release digests, metadata versions, the
@@ -107,10 +114,12 @@ The runtime mutation lock is a kernel advisory `flock` on a stable file and rele
 exit. Application startup also takes a separate application lock, while the runtime lock remains
 mandatory for defense in depth.
 
-The Linux process abstraction records PID, `/proc` start-time ticks, authenticated AppRun path,
-and the observed executable path for script-based AppRun support. A dead or PID-reused process is
-treated as stale; malformed, inaccessible, or mismatched identity is treated conservatively as
-active and blocks mutation.
+The Linux process abstraction records PID, `/proc` start-time ticks, the Linux boot ID,
+authenticated AppRun path, and the observed executable path for script-based AppRun support. A
+dead, PID-reused, or pre-reboot process is treated as stale. A regular process record that is
+truncated or otherwise unparseable is quarantined and cleared; a live or identity-mismatched
+process remains blocking. Startup reports `Broken`/repair-required for reconciliation failures so
+the UI remains usable while mutation paths continue to enforce the safety check.
 
 Startup reconciliation removes owned pointer temporary files, staging operations, and incomplete
 non-active version directories while holding the mutation lock. It then derives status from the
@@ -118,11 +127,17 @@ authoritative pointer and verification results.
 
 ## Retention and rollback
 
-Defaults retain two verified installations and cap logical runtime storage at 2 GiB. The active
-installation and one verified fallback are preserved. Cleanup never deletes the active runtime,
-the selected fallback, an unsafe path, or anything outside the versions root. If pointer state is
-not authoritative, complete installations are preserved for explicit repair rather than guessed or
-deleted.
+Defaults retain two verified installations and cap logical runtime storage at 2 GiB. Before a
+download starts, the manager reserves the declared archive bytes, expanded inventory bytes, and
+metadata working space in addition to current runtime staging/version usage. It rechecks measured
+usage under the mutation lock before activation. With an authoritative current pointer, retention
+is normalized before pointer replacement so only the current installation and verified candidate
+remain; if cleanup cannot complete, activation aborts before the pointer changes. Cleanup after a
+successful pointer replacement is housekeeping and is logged/deferred rather than reported as an
+activation failure. The active installation and one verified fallback are preserved. Cleanup never
+deletes the active runtime, the selected fallback, an unsafe path, or anything outside the versions
+root. If pointer state is not authoritative, complete installations are preserved for explicit
+repair rather than guessed or deleted.
 
 ## Application boundary
 

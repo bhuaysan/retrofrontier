@@ -224,14 +224,15 @@ fn extract_zip(
         let entry = archive.by_index(index).map_err(|error| {
             RuntimeError::Extraction(format!("zip entry could not be read: {error}"))
         })?;
-        let is_symlink = entry
-            .unix_mode()
-            .is_some_and(|mode| mode & 0o170000 == 0o120000);
-        if is_symlink {
-            return Err(RuntimeError::Extraction(
-                "zip symlinks are rejected unless a dedicated safe format adapter is provided"
-                    .to_owned(),
-            ));
+        if let Some(mode) = entry.unix_mode() {
+            let file_type = mode & 0o170000;
+            let expected_type = if entry.is_dir() { 0o040000 } else { 0o100000 };
+            if file_type != 0 && file_type != expected_type {
+                return Err(RuntimeError::Extraction(
+                    "zip symlinks and special entries are not accepted in runtime artifacts"
+                        .to_owned(),
+                ));
+            }
         }
         let member_type = if entry.is_dir() {
             MemberType::Directory

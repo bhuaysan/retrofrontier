@@ -6,13 +6,13 @@ use crate::domain::runtime::{
 };
 use async_trait::async_trait;
 use futures::StreamExt;
-use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tough::schema::{Root, Signed};
 use tough::{DefaultTransport, ExpirationEnforcement, Repository, RepositoryLoader, TargetName};
 use url::Url;
 
@@ -65,6 +65,8 @@ impl TrustedRelease {
                 "trusted release has no manifest target".to_owned(),
             ));
         }
+        crate::domain::runtime::RelativePath::new(self.manifest_target_name.clone())
+            .map_err(|_| RuntimeError::Trust("manifest target name is unsafe".to_owned()))?;
         let manifest_target = self
             .targets
             .get(&self.manifest_target_name)
@@ -250,7 +252,7 @@ pub struct ToughTrustedReleaseSource {
     metadata_base_url: Url,
     targets_base_url: Url,
     datastore: PathBuf,
-    policy_target_name: Option<String>,
+    policy_target_name: String,
 }
 
 impl ToughTrustedReleaseSource {
@@ -259,32 +261,20 @@ impl ToughTrustedReleaseSource {
         metadata_base_url: Url,
         targets_base_url: Url,
         datastore: PathBuf,
+        policy_target_name: impl Into<String>,
     ) -> Result<Self, RuntimeError> {
-        if trusted_root.is_empty() {
-            return Err(RuntimeError::Trust(
-                "the trusted TUF root is empty".to_owned(),
-            ));
-        }
+        validate_trusted_root(&trusted_root)?;
         validate_repository_url(&metadata_base_url)?;
         validate_repository_url(&targets_base_url)?;
+        let policy_target_name = policy_target_name.into();
+        validate_policy_target_name(&policy_target_name)?;
         Ok(Self {
             trusted_root,
             metadata_base_url,
             targets_base_url,
             datastore,
-            policy_target_name: None,
+            policy_target_name,
         })
-    }
-
-    pub fn with_policy_target(
-        mut self,
-        target_name: impl Into<String>,
-    ) -> Result<Self, RuntimeError> {
-        let target_name = target_name.into();
-        crate::domain::runtime::RelativePath::new(target_name.clone())
-            .map_err(|_| RuntimeError::Trust("runtime-policy target name is unsafe".to_owned()))?;
-        self.policy_target_name = Some(target_name);
-        Ok(self)
     }
 
     async fn load_repository(&self) -> Result<Repository, RuntimeError> {
@@ -327,16 +317,11 @@ impl TrustedReleaseSource for ToughTrustedReleaseSource {
                 trusted_target_from_tough(&component.target_name, &target)?,
             );
         }
-        let policy = if let Some(policy_target_name) = &self.policy_target_name {
-            let policy_bytes =
-                read_target_bytes(&repository, policy_target_name, MAX_MANIFEST_BYTES).await?;
-            let policy: RuntimePolicy = parse_strict_json(&policy_bytes)
-                .map_err(|error| RuntimeError::Trust(error.to_owned()))?;
-            policy.validate()?;
-            policy
-        } else {
-            RuntimePolicy::default()
-        };
+        let policy_bytes =
+            read_target_bytes(&repository, &self.policy_target_name, MAX_MANIFEST_BYTES).await?;
+        let policy: RuntimePolicy = parse_strict_json(&policy_bytes)
+            .map_err(|error| RuntimeError::Trust(error.to_owned()))?;
+        policy.validate()?;
         let release = TrustedRelease {
             manifest_target_name: manifest_target_name.to_owned(),
             manifest_bytes,
@@ -383,14 +368,34 @@ fn validate_repository_url(url: &Url) -> Result<(), RuntimeError> {
     Ok(())
 }
 
+fn validate_policy_target_name(name: &str) -> Result<(), RuntimeError> {
+    crate::domain::runtime::RelativePath::new(name.to_owned())
+        .map(|_| ())
+        .map_err(|_| RuntimeError::Trust("runtime-policy target name is unsafe".to_owned()))
+}
+
+fn validate_trusted_root(bytes: &[u8]) -> Result<(), RuntimeError> {
+    if bytes.is_empty() || bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(RuntimeError::Trust(
+            "the trusted TUF root is empty or too large".to_owned(),
+        ));
+    }
+    let root: Signed<Root> = serde_json::from_slice(bytes).map_err(|error| {
+        RuntimeError::Trust(format!("the trusted TUF root is invalid: {error}"))
+    })?;
+    root.signed.verify_role(&root).map_err(|error| {
+        RuntimeError::Trust(format!(
+            "the trusted TUF root is not self-authenticating: {error}"
+        ))
+    })
+}
+
 fn find_target(repository: &Repository, name: &str) -> Result<tough::schema::Target, RuntimeError> {
     let target_name = TargetName::new(name.to_owned())
         .map_err(|error| RuntimeError::Trust(format!("invalid TUF target name: {error}")))?;
     let matches: Vec<_> = repository
         .all_targets()
-        .filter(|(candidate, _)| {
-            candidate.raw() == target_name.raw() || candidate.resolved() == target_name.resolved()
-        })
+        .filter(|(candidate, _)| candidate.raw() == target_name.raw())
         .map(|(_, target)| target.clone())
         .collect();
     match matches.as_slice() {
@@ -606,11 +611,6 @@ fn reject_existing_destination(destination: &Path) -> Result<(), RuntimeError> {
     }
 }
 
-#[allow(dead_code)]
-fn _strict_policy_json<T: Serialize>(value: &T) -> Result<Vec<u8>, RuntimeError> {
-    serde_json::to_vec(value).map_err(|error| RuntimeError::Trust(error.to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{stage_copy, LocalTrustedReleaseSource, TrustedReleaseSource, TrustedTarget};
@@ -738,6 +738,7 @@ mod tests {
             url::Url::parse("http://example.invalid/metadata/").unwrap(),
             url::Url::parse("https://example.invalid/targets/").unwrap(),
             std::path::PathBuf::from("/tmp/retrofrontier-test-tuf"),
+            "policy.json",
         )
         .is_err());
         let source = super::ToughTrustedReleaseSource::new(
@@ -745,16 +746,11 @@ mod tests {
             url::Url::parse("file:///tmp/metadata/").unwrap(),
             url::Url::parse("file:///tmp/targets/").unwrap(),
             std::path::PathBuf::from("/tmp/retrofrontier-test-tuf"),
+            "policy.json",
         )
-        .unwrap();
-        assert!(source.with_policy_target("../policy.json").is_err());
-        let source = super::ToughTrustedReleaseSource::new(
-            vec![1, 2, 3],
-            url::Url::parse("file:///tmp/metadata/").unwrap(),
-            url::Url::parse("file:///tmp/targets/").unwrap(),
-            std::path::PathBuf::from("/tmp/retrofrontier-test-tuf"),
-        )
-        .unwrap();
-        assert!(source.with_policy_target("policy.json").is_ok());
+        .unwrap_err();
+        assert!(source.to_string().contains("trusted TUF root"));
+        let unsafe_policy = super::validate_policy_target_name("../policy.json");
+        assert!(unsafe_policy.is_err());
     }
 }

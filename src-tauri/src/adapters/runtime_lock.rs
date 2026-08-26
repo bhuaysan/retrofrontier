@@ -2,6 +2,9 @@ use crate::domain::runtime::{RuntimeError, SafeIdentifier};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
 #[derive(Debug)]
 pub struct RuntimeMutationLock {
     file: File,
@@ -85,12 +88,16 @@ fn open_lock_file(path: &Path) -> Result<File, RuntimeError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(RuntimeError::Io(error)),
     }
-    Ok(OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)?)
+    #[cfg(unix)]
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(file)
 }
 
 pub fn operation_identifier(prefix: &str, counter: u64) -> Result<SafeIdentifier, RuntimeError> {

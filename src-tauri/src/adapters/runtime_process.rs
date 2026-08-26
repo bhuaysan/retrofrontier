@@ -1,4 +1,4 @@
-use crate::adapters::runtime_paths::RuntimePaths;
+use crate::adapters::runtime_paths::{fsync_directory, RuntimePaths};
 use crate::adapters::runtime_trust::atomic_replace;
 use crate::domain::runtime::{
     parse_strict_json, ManagedProcessRecord, RuntimeError, SafeIdentifier,
@@ -6,7 +6,11 @@ use crate::domain::runtime::{
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static PROCESS_RECORD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub trait ManagedProcessInspector: Send + Sync {
     fn ensure_no_active_game(&self, paths: &RuntimePaths) -> Result<(), RuntimeError>;
@@ -17,11 +21,28 @@ pub struct LinuxManagedProcessInspector;
 
 impl ManagedProcessInspector for LinuxManagedProcessInspector {
     fn ensure_no_active_game(&self, paths: &RuntimePaths) -> Result<(), RuntimeError> {
-        let Some(record) = read_process_record(paths)? else {
-            return Ok(());
+        let record = match read_process_record(paths) {
+            Ok(Some(record)) => record,
+            Ok(None) => return Ok(()),
+            Err(RuntimeError::GameActive) => {
+                // A regular record that cannot be parsed or validated is not evidence of a live
+                // process. Quarantine it before removing it; symlinks and non-regular paths are
+                // left blocking because they cannot be safely owned by this adapter.
+                if quarantine_unusable_process_record(paths)? {
+                    return Ok(());
+                }
+                return Err(RuntimeError::GameActive);
+            }
+            Err(error) => return Err(error),
         };
         if !record_targets_runtime(paths, &record) {
-            return Err(RuntimeError::GameActive);
+            return match process_identity(&record) {
+                Ok(false) => {
+                    clear_process_record(paths)?;
+                    Ok(())
+                }
+                Ok(true) | Err(_) => Err(RuntimeError::GameActive),
+            };
         }
         match process_identity(&record) {
             Ok(true) => Err(RuntimeError::GameActive),
@@ -109,13 +130,47 @@ pub fn write_process_record(
 pub fn clear_process_record(paths: &RuntimePaths) -> Result<(), RuntimeError> {
     match fs::symlink_metadata(paths.game_process_record()) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(RuntimeError::GameActive),
-        Ok(_) => {
+        Ok(metadata) if metadata.is_file() => {
             fs::remove_file(paths.game_process_record())?;
             Ok(())
         }
+        Ok(_) => Err(RuntimeError::GameActive),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(RuntimeError::Io(error)),
     }
+}
+
+fn quarantine_unusable_process_record(paths: &RuntimePaths) -> Result<bool, RuntimeError> {
+    let record_path = paths.game_process_record();
+    let metadata = match fs::symlink_metadata(record_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(RuntimeError::Io(error)),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Ok(false);
+    }
+
+    let counter = PROCESS_RECORD_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let quarantine = paths.runtime_root().join(format!(
+        ".game-process.json.invalid-{}-{counter}-{stamp}",
+        std::process::id()
+    ));
+    if fs::symlink_metadata(&quarantine).is_ok() {
+        return Err(RuntimeError::GameActive);
+    }
+    fs::rename(record_path, &quarantine)?;
+    fsync_directory(paths.runtime_root())?;
+    if let Err(error) = fs::remove_file(&quarantine) {
+        tracing::warn!(error = %error, "invalid managed process record was quarantined");
+    } else {
+        fsync_directory(paths.runtime_root())?;
+    }
+    Ok(true)
 }
 
 fn record_targets_runtime(paths: &RuntimePaths, record: &ManagedProcessRecord) -> bool {
@@ -138,6 +193,10 @@ fn record_targets_runtime(paths: &RuntimePaths, record: &ManagedProcessRecord) -
 }
 
 fn process_identity(record: &ManagedProcessRecord) -> Result<bool, std::io::Error> {
+    let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    if boot_id.trim() != record.boot_id {
+        return Ok(false);
+    }
     let stat_path = PathBuf::from(format!("/proc/{}/stat", record.pid));
     let stat = match fs::read_to_string(&stat_path) {
         Ok(stat) => stat,
@@ -202,6 +261,7 @@ pub fn make_process_record(
         phase,
         pid,
         process_start_time_ticks: process_start_time_ticks(pid)?,
+        boot_id: current_boot_id()?,
         installation_id,
         expected_apprun_path: expected_apprun_path
             .to_str()
@@ -219,6 +279,17 @@ pub fn make_process_record(
     Ok(record)
 }
 
+fn current_boot_id() -> Result<String, RuntimeError> {
+    let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    let boot_id = boot_id.trim();
+    if boot_id.is_empty() {
+        return Err(RuntimeError::Storage(
+            "managed process boot identity is empty".to_owned(),
+        ));
+    }
+    Ok(boot_id.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_start_time_ticks, LinuxManagedProcessInspector, ManagedProcessInspector};
@@ -234,17 +305,16 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_mismatched_process_records_block_concurrent_mutation() {
+    fn malformed_process_records_are_recovered_but_mismatched_live_identity_blocks() {
         let directory = tempdir().unwrap();
         let paths = RuntimePaths::new(directory.path());
         paths.prepare().unwrap();
         fs::write(paths.game_process_record(), b"not json").unwrap();
-        assert!(matches!(
-            LinuxManagedProcessInspector.ensure_no_active_game(&paths),
-            Err(crate::domain::runtime::RuntimeError::GameActive)
-        ));
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
 
-        fs::remove_file(paths.game_process_record()).unwrap();
         let installation_id: SafeIdentifier = "install-1".try_into().unwrap();
         let installation = paths.version_path(&installation_id);
         fs::create_dir_all(&installation).unwrap();
@@ -255,6 +325,10 @@ mod tests {
             phase: ManagedProcessPhase::Running,
             pid: std::process::id(),
             process_start_time_ticks: super::process_start_time_ticks(std::process::id()).unwrap(),
+            boot_id: fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .unwrap()
+                .trim()
+                .to_owned(),
             installation_id,
             expected_apprun_path: apprun.to_str().unwrap().to_owned(),
             expected_executable_path: Some("/bin/sh".to_owned()),
@@ -264,5 +338,48 @@ mod tests {
             LinuxManagedProcessInspector.ensure_no_active_game(&paths),
             Err(crate::domain::runtime::RuntimeError::GameActive)
         ));
+
+        fs::remove_file(paths.game_process_record()).unwrap();
+        let old_boot_record = ManagedProcessRecord {
+            boot_id: "previous-boot".to_owned(),
+            ..record
+        };
+        super::write_process_record(&paths, &old_boot_record).unwrap();
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
+    }
+
+    #[test]
+    fn stale_record_for_deleted_installation_is_cleared_after_liveness_check() {
+        let directory = tempdir().unwrap();
+        let paths = RuntimePaths::new(directory.path());
+        paths.prepare().unwrap();
+        let installation_id: SafeIdentifier = "deleted-install".try_into().unwrap();
+        let expected_apprun = paths.version_path(&installation_id).join("AppRun");
+        let record = ManagedProcessRecord {
+            schema_version: 1,
+            phase: ManagedProcessPhase::Launching,
+            pid: u32::MAX,
+            process_start_time_ticks: 1,
+            boot_id: fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .unwrap()
+                .trim()
+                .to_owned(),
+            installation_id,
+            expected_apprun_path: expected_apprun.to_str().unwrap().to_owned(),
+            expected_executable_path: None,
+        };
+        fs::write(
+            paths.game_process_record(),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
     }
 }

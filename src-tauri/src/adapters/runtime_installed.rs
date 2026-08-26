@@ -7,7 +7,7 @@ use crate::domain::runtime::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 pub const RELEASE_MANIFEST_FILE: &str = "release-manifest.json";
@@ -29,10 +29,9 @@ pub fn write_release_manifest(path: &Path, manifest_bytes: &[u8]) -> Result<(), 
     }
     let manifest = RuntimeManifest::parse(manifest_bytes)?;
     let target = path.join(RELEASE_MANIFEST_FILE);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&target)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = options.open(&target)?;
     file.write_all(manifest_bytes)?;
     file.flush()?;
     file.sync_all()?;
@@ -80,10 +79,9 @@ pub fn write_complete_marker(
     };
     let bytes = serialize_json(&marker)?;
     let target = path.join(COMPLETE_MARKER_FILE);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&target)?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = options.open(&target)?;
     file.write_all(&bytes)?;
     file.flush()?;
     file.sync_all()?;

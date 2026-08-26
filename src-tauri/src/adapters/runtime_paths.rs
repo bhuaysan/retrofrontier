@@ -2,6 +2,11 @@ use crate::domain::runtime::{RuntimeError, SafeIdentifier};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+
 /// Files owned by the managed runtime lifecycle.
 ///
 /// This type deliberately exposes no ROM, BIOS, save, state, metadata, or database paths. The
@@ -107,6 +112,15 @@ impl RuntimePaths {
         Ok(())
     }
 
+    /// Validate the roots immediately before cleanup. Construction-time checks cannot protect
+    /// against a same-user process replacing a managed root afterwards.
+    pub fn validate_cleanup_roots(&self) -> Result<(), RuntimeError> {
+        ensure_real_directory(&self.runtime_root)?;
+        ensure_real_directory(&self.versions_root)?;
+        ensure_real_directory(&self.staging_root)?;
+        Ok(())
+    }
+
     pub fn is_owned_version_path(&self, path: &Path) -> bool {
         path.parent() == Some(self.versions_root.as_path())
             && path
@@ -122,16 +136,6 @@ impl RuntimePaths {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| SafeIdentifier::new(name).is_ok())
     }
-
-    pub fn refuse_symlink(&self, path: &Path) -> Result<(), RuntimeError> {
-        if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-            return Err(RuntimeError::Storage(format!(
-                "runtime-owned path is a symlink: {}",
-                path.display()
-            )));
-        }
-        Ok(())
-    }
 }
 
 fn ensure_directory(path: &Path) -> Result<(), RuntimeError> {
@@ -144,11 +148,9 @@ fn ensure_directory(path: &Path) -> Result<(), RuntimeError> {
             "runtime path is not a directory: {}",
             path.display()
         ))),
-        Ok(_) => Ok(()),
+        Ok(_) => set_private_directory_permissions(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(path).map_err(|create_error| {
-                RuntimeError::Storage(format!("{}: {create_error}", path.display()))
-            })
+            create_private_directory(path)
         }
         Err(error) => Err(RuntimeError::Storage(format!(
             "{}: {error}",
@@ -168,6 +170,7 @@ pub fn ensure_empty_directory(path: &Path) -> Result<(), RuntimeError> {
             path.display()
         ))),
         Ok(_) => {
+            set_private_directory_permissions(path)?;
             if fs::read_dir(path)
                 .map_err(|error| RuntimeError::Storage(error.to_string()))?
                 .next()
@@ -181,9 +184,52 @@ pub fn ensure_empty_directory(path: &Path) -> Result<(), RuntimeError> {
             Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir_all(path).map_err(RuntimeError::Io)
+            fs::create_dir_all(path).map_err(RuntimeError::Io)?;
+            set_private_directory_permissions(path)
         }
         Err(error) => Err(RuntimeError::Io(error)),
+    }
+}
+
+fn create_private_directory(path: &Path) -> Result<(), RuntimeError> {
+    #[cfg(unix)]
+    {
+        fs::DirBuilder::new()
+            .mode(PRIVATE_DIRECTORY_MODE)
+            .create(path)
+            .map_err(|error| RuntimeError::Storage(format!("{}: {error}", path.display())))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir(path)
+            .map_err(|error| RuntimeError::Storage(format!("{}: {error}", path.display())))?;
+    }
+    set_private_directory_permissions(path)
+}
+
+fn set_private_directory_permissions(path: &Path) -> Result<(), RuntimeError> {
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE))?;
+    }
+    Ok(())
+}
+
+fn ensure_real_directory(path: &Path) -> Result<(), RuntimeError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(RuntimeError::Storage(format!(
+            "runtime-owned directory cannot be a symlink: {}",
+            path.display()
+        ))),
+        Ok(metadata) if !metadata.is_dir() => Err(RuntimeError::Storage(format!(
+            "runtime-owned path is not a directory: {}",
+            path.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(error) => Err(RuntimeError::Storage(format!(
+            "{}: {error}",
+            path.display()
+        ))),
     }
 }
 
