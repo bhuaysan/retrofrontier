@@ -2606,6 +2606,259 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleting_a_whole_subdirectory_marks_its_files_and_units_missing() {
+        let context = test_context(Some(SystemId::Nes)).await;
+        write_fixture(&context.root, "sub/game.nes", &[1, 2, 3]);
+        write_fixture(&context.root, "top.nes", &[4, 5, 6]);
+        let first = context.scanner.scan_once().await.unwrap();
+        assert_eq!(first.state, ScanRunState::Completed);
+
+        let before = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(before.games.len(), 2);
+        let before_sub = before
+            .games
+            .iter()
+            .find(|game| game.game.local_title == "game")
+            .unwrap();
+        let before_top = before
+            .games
+            .iter()
+            .find(|game| game.game.local_title == "top")
+            .unwrap();
+        assert_eq!(
+            before_sub.game.availability,
+            crate::domain::library::GameAvailability::Available
+        );
+        assert_eq!(
+            before_sub.content_units[0].availability,
+            ContentUnitAvailability::Available
+        );
+        assert_eq!(
+            before_sub.content_units[0].files[0].file.availability,
+            ContentFileAvailability::Available
+        );
+        assert_eq!(
+            before_top.game.availability,
+            crate::domain::library::GameAvailability::Available
+        );
+
+        fs::remove_dir_all(PathBuf::from(&context.root.path).join("sub")).unwrap();
+        let second = context.scanner.scan_once().await.unwrap();
+        assert_eq!(second.state, ScanRunState::Completed);
+
+        let after = context.repository.get_library_snapshot().await.unwrap();
+        let sub = after
+            .games
+            .iter()
+            .find(|game| game.game.local_title == "game")
+            .unwrap();
+        assert_eq!(sub.game.id, before_sub.game.id);
+        assert_eq!(
+            sub.game.availability,
+            crate::domain::library::GameAvailability::Unavailable
+        );
+        assert_eq!(sub.content_units[0].id, before_sub.content_units[0].id);
+        assert_eq!(
+            sub.content_units[0].availability,
+            ContentUnitAvailability::Missing
+        );
+        assert_eq!(
+            sub.content_units[0].files[0].file.id,
+            before_sub.content_units[0].files[0].file.id
+        );
+        assert_eq!(
+            sub.content_units[0].files[0].file.availability,
+            ContentFileAvailability::Missing
+        );
+
+        let top = after
+            .games
+            .iter()
+            .find(|game| game.game.local_title == "top")
+            .unwrap();
+        assert_eq!(top.game.id, before_top.game.id);
+        assert_eq!(
+            top.game.availability,
+            crate::domain::library::GameAvailability::Available
+        );
+        assert_eq!(top.content_units[0].id, before_top.content_units[0].id);
+        assert_eq!(
+            top.content_units[0].availability,
+            ContentUnitAvailability::Available
+        );
+        assert_eq!(
+            top.content_units[0].files[0].file.availability,
+            ContentFileAvailability::Available
+        );
+        assert_eq!(
+            top.content_units[0].files[0].file.sha1,
+            before_top.content_units[0].files[0].file.sha1
+        );
+
+        let root = context
+            .repository
+            .content_root(context.root.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(root.availability, ContentRootAvailability::Available);
+        assert!(root.last_successful_scan_at.is_some());
+        assert!(context
+            .repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .is_empty());
+
+        let summarize = |snapshot: &crate::domain::library::LibrarySnapshot| {
+            snapshot
+                .games
+                .iter()
+                .map(|game| {
+                    (
+                        game.game.id,
+                        game.game.availability,
+                        game.content_units
+                            .iter()
+                            .map(|unit| {
+                                (
+                                    unit.id,
+                                    unit.availability,
+                                    unit.files
+                                        .iter()
+                                        .map(|member| (member.file.id, member.file.availability))
+                                        .collect::<Vec<_>>(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let after_shape = summarize(&after);
+
+        let repeated = context.scanner.scan_once().await.unwrap();
+        assert_eq!(repeated.state, ScanRunState::Completed);
+        let repeated_snapshot = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(summarize(&repeated_snapshot), after_shape);
+        assert!(context
+            .repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_deeply_nested_subdirectory_reconciles_through_missing_intermediates() {
+        let context = test_context(Some(SystemId::Nes)).await;
+        write_fixture(&context.root, "a/b/c/game.nes", &[1, 2, 3]);
+        context.scanner.scan_once().await.unwrap();
+        let before = context.repository.get_library_snapshot().await.unwrap();
+        let before_game = &before.games[0];
+
+        fs::remove_dir_all(PathBuf::from(&context.root.path).join("a/b")).unwrap();
+        let summary = context.scanner.scan_once().await.unwrap();
+        assert_eq!(summary.state, ScanRunState::Completed);
+
+        let after = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(after.games.len(), 1);
+        let game = &after.games[0];
+        assert_eq!(game.game.id, before_game.game.id);
+        assert_eq!(
+            game.game.availability,
+            crate::domain::library::GameAvailability::Unavailable
+        );
+        assert_eq!(game.content_units.len(), 1);
+        assert_eq!(game.content_units[0].id, before_game.content_units[0].id);
+        assert_eq!(
+            game.content_units[0].availability,
+            ContentUnitAvailability::Missing
+        );
+        assert_eq!(
+            game.content_units[0].files[0].file.relative_path,
+            "a/b/c/game.nes"
+        );
+        assert_eq!(
+            game.content_units[0].files[0].file.availability,
+            ContentFileAvailability::Missing
+        );
+        assert!(context
+            .repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unreadable_intermediate_subtree_still_protects_prior_content() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let context = test_context(Some(SystemId::Nes)).await;
+        write_fixture(&context.root, "a/b/game.nes", &[1, 2, 3]);
+        write_fixture(&context.root, "top.nes", &[4, 5, 6]);
+        context.scanner.scan_once().await.unwrap();
+
+        let protected = PathBuf::from(&context.root.path).join("a/b");
+        let original_permissions = fs::metadata(&protected).unwrap().permissions();
+        let mut unreadable_permissions = original_permissions.clone();
+        unreadable_permissions.set_mode(0o000);
+        fs::set_permissions(&protected, unreadable_permissions).unwrap();
+        let unreadable = fs::read_dir(&protected).is_err();
+        if !unreadable {
+            fs::set_permissions(&protected, original_permissions).unwrap();
+            return;
+        }
+
+        fs::remove_file(PathBuf::from(&context.root.path).join("top.nes")).unwrap();
+        let summary = context.scanner.scan_once().await.unwrap();
+        fs::set_permissions(&protected, original_permissions).unwrap();
+        assert_eq!(summary.state, ScanRunState::Completed);
+
+        let snapshot = context.repository.get_library_snapshot().await.unwrap();
+        let hidden = snapshot
+            .games
+            .iter()
+            .find(|game| game.game.local_title == "game")
+            .unwrap();
+        assert_eq!(
+            hidden.game.availability,
+            crate::domain::library::GameAvailability::Available
+        );
+        assert_eq!(
+            hidden.content_units[0].availability,
+            ContentUnitAvailability::Available
+        );
+        assert_eq!(
+            hidden.content_units[0].files[0].file.availability,
+            ContentFileAvailability::Available
+        );
+
+        let removed = snapshot
+            .games
+            .iter()
+            .find(|game| game.game.local_title == "top")
+            .unwrap();
+        assert_eq!(
+            removed.game.availability,
+            crate::domain::library::GameAvailability::Unavailable
+        );
+        assert_eq!(
+            removed.content_units[0].availability,
+            ContentUnitAvailability::Missing
+        );
+        assert!(context
+            .repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .iter()
+            .any(|issue| issue.kind == ScanIssueKind::UnreadablePath));
+    }
+
+    #[tokio::test]
     async fn removal_preserves_logical_game_and_marks_content_missing() {
         let context = test_context(Some(SystemId::Nes)).await;
         write_fixture(&context.root, "game.nes", &[1, 2, 3]);

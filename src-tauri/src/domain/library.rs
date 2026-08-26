@@ -373,11 +373,13 @@ pub struct ScannedUnit {
 
 /// Describes which parts of a root were observed reliably enough to reconcile absence.
 ///
-/// A successful directory enumeration is authoritative for its direct children. An unsafe or
-/// incomplete entry protects only that entry/prefix, while a failed enumeration of a directory
-/// protects the whole directory subtree. Unrepresentable entries prevent a root from being fully
-/// authoritative but do not invalidate representable siblings. This keeps absence reconciliation
-/// conservative without making one bad sibling invalidate the complete remainder of a root.
+/// A successful directory enumeration is authoritative for its direct children and, through the
+/// ancestor walk in `can_reconcile_file`, for descendants whose intermediate directories have
+/// disappeared. An unsafe or incomplete entry protects only that entry/prefix, while a failed
+/// enumeration of a directory protects the whole directory subtree. Unrepresentable entries
+/// prevent a root from being fully authoritative but do not invalidate representable siblings. This
+/// keeps absence reconciliation conservative without making one bad sibling invalidate the complete
+/// remainder of a root.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanAuthority {
     pub root_enumerated: bool,
@@ -415,14 +417,26 @@ impl ScanAuthority {
         if !self.root_enumerated {
             return false;
         }
-        let parent = relative_path
+        if self
+            .incomplete_prefixes
+            .iter()
+            .any(|prefix| path_prefix_contains(prefix, relative_path))
+        {
+            return false;
+        }
+
+        let mut ancestor = relative_path
             .rsplit_once('/')
             .map_or("", |(parent, _)| parent);
-        self.enumerated_directories.contains(parent)
-            && !self
-                .incomplete_prefixes
-                .iter()
-                .any(|prefix| path_prefix_contains(prefix, relative_path))
+        loop {
+            if self.enumerated_directories.contains(ancestor) {
+                return true;
+            }
+            if ancestor.is_empty() {
+                return false;
+            }
+            ancestor = ancestor.rsplit_once('/').map_or("", |(parent, _)| parent);
+        }
     }
 }
 
@@ -616,4 +630,30 @@ pub fn catalog_managed_folder_names(catalog: &SystemCatalog) -> Vec<String> {
         .iter()
         .map(|system| system.managed_rom_folder_name.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScanAuthority;
+
+    #[test]
+    fn scan_authority_walks_to_an_enumerated_ancestor() {
+        let mut authority = ScanAuthority::default();
+        authority.mark_directory_enumerated("");
+        authority.mark_directory_enumerated("a");
+
+        assert!(authority.can_reconcile_file("a/b/c/game.nes"));
+        assert!(authority.can_reconcile_file("deleted/game.nes"));
+    }
+
+    #[test]
+    fn scan_authority_prefixes_are_component_aware() {
+        let mut authority = ScanAuthority::default();
+        authority.mark_directory_enumerated("");
+        authority.mark_directory_enumerated("foobar");
+        authority.mark_incomplete("foo");
+
+        assert!(!authority.can_reconcile_file("foo/game.nes"));
+        assert!(authority.can_reconcile_file("foobar/game.nes"));
+    }
 }

@@ -53,12 +53,15 @@ Every manual or watcher-triggered scan records a `scan_runs` row and progresses 
 
 Absence reconciliation uses a granular authority snapshot rather than one root-wide boolean. The
 scanner records successfully enumerated directory prefixes, protected/incomplete prefixes, and
-unrepresentable entries. A prior file can be marked missing only when its parent directory was
-successfully enumerated and the file is not inside a protected prefix. A root that cannot itself be
-enumerated protects the whole root; an unreadable directory protects only that subtree; a known
-unsafe sibling such as a dangling symlink does not disable reconciliation for clean siblings.
-Unrepresentable entries prevent the root from being considered fully successful but do not mask
-representable sibling absence. A malformed but discovered descriptor can still produce an
+unrepresentable entries. Once the root has been successfully enumerated, a prior file can be marked
+missing when walking upward from its prior parent reaches a successfully enumerated ancestor and no
+protected prefix covers the file. This means a missing directory and all of its missing intermediate
+directories are authoritative absences: if one still existed, recursive enumeration would have
+reached it. An explicitly incomplete or unsafe prefix protects its subtree instead. A root that
+cannot itself be enumerated protects the whole root; an unreadable directory protects only that
+subtree; a known unsafe sibling such as a dangling symlink does not disable reconciliation for clean
+siblings. Unrepresentable entries prevent the root from being considered fully successful but do not
+mask representable sibling absence. A malformed but discovered descriptor can still produce an
 incomplete unit and its issue; it does not turn an unreadable root into an authoritative empty root.
 
 ## System evidence

@@ -255,9 +255,11 @@ external roots do not cascade-delete logical library history. Static `SystemCata
 not duplicated in SQLite; persisted library rows store stable `SystemId` strings.
 
 The scanner marks files and units missing only for locations covered by a granular authoritative
-snapshot: the relevant parent directory must have been successfully enumerated and must not be
-under an incomplete or unsafe prefix. A root that cannot be enumerated protects all prior rows,
-while an unreadable subtree or unsafe sibling protects only its affected location. Exact, unique
+snapshot: after the root is successfully enumerated, a successfully enumerated ancestor establishes
+authority for a vanished descendant, provided no incomplete or unsafe prefix covers that path. This
+allows a deleted directory tree to reconcile while an existing unreadable or otherwise protected
+subtree remains protected from false absence. A root that cannot be enumerated protects all prior
+rows, while an unreadable subtree or unsafe sibling protects only its affected location. Exact,
 content fingerprints may preserve a file/unit identity across a move and may relate duplicate
 physical copies under one provisional game. Ambiguous matches create a new physical identity and
 an inspectable issue. A transient hash read failure degrades availability but preserves previously
