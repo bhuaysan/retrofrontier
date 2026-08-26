@@ -3,9 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppShell } from './AppShell';
 
-const { getAppInfo, getRuntimeStatus } = vi.hoisted(() => ({
+const { getAppInfo, getRuntimeStatus, getSystems } = vi.hoisted(() => ({
   getAppInfo: vi.fn(),
   getRuntimeStatus: vi.fn(),
+  getSystems: vi.fn(),
 }));
 
 vi.mock('../platform/ipc', () => ({
@@ -19,6 +20,7 @@ vi.mock('../platform/ipc', () => ({
   },
   getAppInfo,
   getRuntimeStatus,
+  getSystems,
 }));
 
 describe('AppShell', () => {
@@ -37,6 +39,46 @@ describe('AppShell', () => {
       canRollback: false,
       repairRequired: false,
     });
+    getSystems.mockResolvedValue({
+      runtime: {
+        state: 'ready',
+        installationId: 'install-1',
+        releaseId: 'release-1',
+        canRollback: false,
+        repairRequired: false,
+      },
+      biosRoot: '/documents/RetroFrontier/BIOS',
+      biosRootStatus: 'ready',
+      systems: [
+        {
+          id: 'nes',
+          displayName: 'Nintendo Entertainment System',
+          manufacturer: 'Nintendo',
+          aliases: ['NES'],
+          supportedExtensions: ['.nes'],
+          core: {
+            policy: {
+              defaultCoreId: null,
+              approvedCoreIds: [],
+              decision: {
+                kind: 'unresolved',
+                researchItem: 'Default core is unresolved',
+              },
+            },
+            availability: {
+              runtimeState: 'ready',
+              availableCoreIds: [],
+              defaultCoreAvailable: null,
+            },
+          },
+          bios: { policy: 'notRequired', ready: true, requirements: [] },
+          readiness: {
+            ready: false,
+            reasons: [{ kind: 'corePolicyUnresolved', researchItem: 'Default core is unresolved' }],
+          },
+        },
+      ],
+    });
   });
 
   it('renders the empty-library foundation and reports native status', async () => {
@@ -47,6 +89,10 @@ describe('AppShell', () => {
     expect(screen.getByText('RetroFrontier 0.1.0')).toBeInTheDocument();
     expect(screen.getByText('DATABASE').parentElement).toHaveTextContent('READY');
     expect(screen.getByText('RUNTIME').parentElement).toHaveTextContent('READY');
+    expect(await screen.findByRole('heading', { name: 'SUPPORTED SYSTEMS' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Nintendo Entertainment System' }),
+    ).toBeInTheDocument();
   });
 
   it('switches the theme and keeps the selected theme on the document root', () => {

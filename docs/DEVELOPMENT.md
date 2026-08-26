@@ -1,8 +1,9 @@
 # RetroFrontier development
 
-M1 establishes the desktop application foundation only. Runtime installation,
-ROM discovery, metadata, cores, BIOS validation, and game launching are later
-milestones and are intentionally not part of the local workflow yet.
+M3 establishes the supported-system catalog, managed-core policy model, BIOS
+discovery/validation boundary, and system-readiness surface. ROM discovery,
+metadata, core selection UI, and game launching remain later milestones and are
+intentionally not part of the local workflow yet.
 
 ## Prerequisites
 
@@ -47,6 +48,29 @@ cargo test --manifest-path src-tauri/Cargo.toml
 Rust tests use temporary SQLite files. The application database is created in
 the OS-specific Tauri application-data directory, under its `database/`
 subdirectory; no source-tree database is used or committed.
+
+## BIOS development checks
+
+Production discovery uses the OS-resolved user-data path:
+
+```text
+Documents/RetroFrontier/BIOS
+```
+
+BIOS files are user-owned data. The service reads expected candidates and hashes
+them without modifying, moving, renaming, deleting, downloading, or executing
+them. Standard tests use synthetic files in temporary directories.
+
+If a developer has intentionally supplied local files in the ignored repository
+`BIOS/` directory, the opt-in integration check can be run with:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml inspect_local_real_bios_directory_read_only -- --ignored --nocapture
+```
+
+This test is ignored by default, is not part of CI, prints only filename/state/
+size/SHA-256, and uses explicit absolute overrides. It does not copy or modify
+the files. Do not add `BIOS/` files to Git with `git add -f`.
 
 ## Boundaries and conventions
 
