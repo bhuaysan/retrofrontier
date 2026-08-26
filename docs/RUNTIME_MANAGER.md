@@ -155,8 +155,16 @@ therefore reports `Ready` unless another eligible lower-sequence installation ex
 
 The Tauri command calls `RuntimeApplicationService`, which calls `RuntimeManager`; filesystem,
 TUF, download, extraction, process, and SQLite details do not appear in the command. M2 exposes
-only `get_runtime_status` over IPC. The shell shows a small design-system-compatible runtime
-status value and does not implement an updater/settings screen.
+`get_runtime_status` over IPC. M3 adds the read-only `current_verified_core_ids()` query: it
+returns core component IDs only from the active installation after the same authenticated manifest,
+completion-marker, and installed-inventory verification used by runtime status. It does not decide
+which systems approve a core.
+
+`SystemsApplicationService` consumes that query alongside the application-owned system catalog.
+The catalog's policy and the runtime's installed availability remain separate, so a listed core is
+not considered usable until RuntimeManager verifies its managed component. BIOS discovery is a
+separate Rust service over the user-owned Documents/RetroFrontier/BIOS root and is never included
+in runtime cleanup or update ownership.
 
 ## Review markers and deferred work
 
