@@ -65,15 +65,23 @@ Spike outcome:
 **Model:** Luna Max.
 
 Research:
-- [ ] developer credential requirements
+- [x] developer credential requirements
 - [ ] distribution/embedding rules
-- [ ] user credential options
-- [ ] request/thread limits
+- [x] user credential options
+- [x] request/thread limits and returned quota fields
 - [ ] client identification
 - [ ] cache/retry expectations
 - [ ] offline behavior
 
 Deliverable: documented authentication/provider decision.
+
+Research was executed on 2026-08-27 and is documented in
+[`docs/SCREENSCRAPER_SPIKE.md`](docs/SCREENSCRAPER_SPIKE.md). M0.2 remains open and **M5 is not
+ready**: public first-party material does not resolve production developer-credential distribution,
+proxy permission, metadata/media cache and attribution rights, or canonical CHD/CUE/GDI/M3U lookup
+semantics. Those questions require written ScreenScraper maintainer confirmation. A focused M4 M3U
+ownership/contested-move identity cleanup is also required before durable metadata is attached to
+`GameId`.
 
 ## M1 — Application Foundation
 **Model:** Luna Max.
