@@ -8,6 +8,7 @@ use thiserror::Error;
 pub const RUNTIME_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const ACTIVE_POINTER_SCHEMA_VERSION: u32 = 1;
 pub const COMPLETE_MARKER_SCHEMA_VERSION: u32 = 1;
+pub const MANAGED_PROCESS_RECORD_SCHEMA_VERSION: u32 = 2;
 pub const MAX_ACTIVE_POINTER_BYTES: u64 = 4 * 1024;
 pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub const MAX_TRUST_STATE_BYTES: u64 = 1024 * 1024;
@@ -43,6 +44,9 @@ pub enum RuntimeError {
 
     #[error("a managed RetroArch process is still active")]
     GameActive,
+
+    #[error("managed process record schema is unsupported")]
+    ProcessRecordSchema,
 
     #[error("no verified rollback runtime is available")]
     NoRollback,
@@ -104,8 +108,10 @@ pub struct ManagedProcessRecord {
 
 impl ManagedProcessRecord {
     pub fn validate(&self) -> Result<(), RuntimeError> {
-        if self.schema_version != 1
-            || self.pid == 0
+        if self.schema_version != MANAGED_PROCESS_RECORD_SCHEMA_VERSION {
+            return Err(RuntimeError::ProcessRecordSchema);
+        }
+        if self.pid == 0
             || self.process_start_time_ticks == 0
             || self.boot_id.trim().is_empty()
             || self.expected_apprun_path.is_empty()

@@ -48,7 +48,7 @@ and verified installed trees:
 | --- | --- |
 | `NotInstalled` | No active pointer and no complete installation |
 | `Ready` | Pointer resolves to a trusted, complete, inventory-verified installation |
-| `RollbackAvailable` | The active installation is valid and another retained installation is valid |
+| `RollbackAvailable` | The active installation is valid and another trusted, verified installation has a strictly lower release sequence |
 | `Broken` | Pointer, target, trust state, completion marker, or installed inventory is invalid |
 
 `Installing`, `Updating`, and `Repairing` are domain vocabulary for future operation reporting;
@@ -114,16 +114,20 @@ The runtime mutation lock is a kernel advisory `flock` on a stable file and rele
 exit. Application startup also takes a separate application lock, while the runtime lock remains
 mandatory for defense in depth.
 
-The Linux process abstraction records PID, `/proc` start-time ticks, the Linux boot ID,
-authenticated AppRun path, and the observed executable path for script-based AppRun support. A
-dead, PID-reused, or pre-reboot process is treated as stale. A regular process record that is
-truncated or otherwise unparseable is quarantined and cleared; a live or identity-mismatched
-process remains blocking. Startup reports `Broken`/repair-required for reconciliation failures so
-the UI remains usable while mutation paths continue to enforce the safety check.
+The Linux process abstraction uses managed-process record schema version 2. It records PID,
+`/proc` start-time ticks, the Linux boot ID, authenticated AppRun path, and the observed executable
+path for script-based AppRun support. A dead, PID-reused, or pre-reboot process is treated as stale.
+An old, newer, or otherwise incompatible schema is not deleted: it is treated as uncertain,
+blocks runtime mutation, and makes startup report `Broken`/repair-required until an explicit
+recovery path handles it. A regular record with no recognizable supported schema that is truncated
+or otherwise unparseable may be quarantined and cleared; a live or identity-mismatched process
+remains blocking. Startup reports `Broken`/repair-required for reconciliation failures so the UI
+remains usable while mutation paths continue to enforce the safety check.
 
-Startup reconciliation removes owned pointer temporary files, staging operations, and incomplete
-non-active version directories while holding the mutation lock. It then derives status from the
-authoritative pointer and verification results.
+Startup reconciliation removes owned pointer/process temporary and leftover process-quarantine
+files in `runtime/`, trust-state temporary files in `runtime-trust/`, staging operations, and
+incomplete non-active version directories while holding the mutation lock. It then derives status
+from the authoritative pointer and verification results.
 
 ## Retention and rollback
 
@@ -134,10 +138,18 @@ usage under the mutation lock before activation. With an authoritative current p
 is normalized before pointer replacement so only the current installation and verified candidate
 remain; if cleanup cannot complete, activation aborts before the pointer changes. Cleanup after a
 successful pointer replacement is housekeeping and is logged/deferred rather than reported as an
-activation failure. The active installation and one verified fallback are preserved. Cleanup never
+activation failure: once `active.json` is durably replaced, the candidate is active and activation
+has succeeded. The active installation and one verified fallback are preserved. Cleanup never
 deletes the active runtime, the selected fallback, an unsafe path, or anything outside the versions
 root. If pointer state is not authoritative, complete installations are preserved for explicit
 repair rather than guessed or deleted.
+
+Rollback is monotonic. `rollback()` selects the highest-sequence trusted and fully verified
+installation whose release sequence is strictly lower than the active release. It never rolls
+forward to a newer retained installation. Status uses this exact same eligibility predicate, so
+`canRollback` is true if and only if `rollback()` can select a candidate. After rolling back, a
+newer installation may remain as the retained fallback, but it is not rollback-eligible; status
+therefore reports `Ready` unless another eligible lower-sequence installation exists.
 
 ## Application boundary
 

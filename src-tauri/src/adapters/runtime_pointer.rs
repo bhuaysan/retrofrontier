@@ -82,12 +82,20 @@ pub fn write_active_pointer(
 }
 
 pub fn remove_pointer_temporary_files(paths: &RuntimePaths) -> Result<(), RuntimeError> {
-    let prefixes = [
-        ".active.json.tmp-",
-        ".trust-state.json.tmp-",
-        ".game-process.json.tmp-",
-    ];
-    for entry in fs::read_dir(paths.runtime_root())? {
+    remove_temporary_files(
+        paths.runtime_root(),
+        &[
+            ".active.json.tmp-",
+            ".game-process.json.tmp-",
+            ".game-process.json.invalid-",
+        ],
+    )?;
+    remove_temporary_files(paths.trust_root(), &[".trust-state.json.tmp-"])?;
+    Ok(())
+}
+
+fn remove_temporary_files(root: &Path, prefixes: &[&str]) -> Result<(), RuntimeError> {
+    for entry in fs::read_dir(root)? {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
@@ -97,7 +105,7 @@ pub fn remove_pointer_temporary_files(paths: &RuntimePaths) -> Result<(), Runtim
         let metadata = fs::symlink_metadata(entry.path())?;
         if metadata.file_type().is_symlink() {
             return Err(RuntimeError::Pointer(
-                "active pointer temporary is a symlink".to_owned(),
+                "managed runtime state temporary is a symlink".to_owned(),
             ));
         }
         if metadata.is_file() {
@@ -237,7 +245,7 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            paths.runtime_root().join(".trust-state.json.tmp-crash"),
+            paths.trust_root().join(".trust-state.json.tmp-crash"),
             b"partial",
         )
         .unwrap();
@@ -246,15 +254,26 @@ mod tests {
             b"partial",
         )
         .unwrap();
+        fs::write(
+            paths
+                .runtime_root()
+                .join(".game-process.json.invalid-crash"),
+            b"invalid",
+        )
+        .unwrap();
         remove_pointer_temporary_files(&paths).unwrap();
         assert!(!paths.runtime_root().join(".active.json.tmp-crash").exists());
         assert!(!paths
-            .runtime_root()
+            .trust_root()
             .join(".trust-state.json.tmp-crash")
             .exists());
         assert!(!paths
             .runtime_root()
             .join(".game-process.json.tmp-crash")
+            .exists());
+        assert!(!paths
+            .runtime_root()
+            .join(".game-process.json.invalid-crash")
             .exists());
 
         let first = pointer();

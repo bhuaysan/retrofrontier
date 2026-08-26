@@ -18,6 +18,8 @@ use crate::domain::runtime::{
 use async_trait::async_trait;
 use std::fs;
 use std::path::Path;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -74,6 +76,13 @@ impl RuntimeSmokeValidator for StructuralSmokeValidator {
     }
 }
 
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct RuntimeManagerTestHooks {
+    fail_retention_normalization: AtomicBool,
+    fail_post_activation_cleanup: AtomicBool,
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 struct UnavailableTrustedReleaseSource;
 
@@ -110,6 +119,8 @@ pub struct RuntimeManager {
     trust_store: RuntimeTrustStore,
     retention: RetentionPolicy,
     operation_counter: Arc<AtomicU64>,
+    #[cfg(test)]
+    test_hooks: Arc<RuntimeManagerTestHooks>,
 }
 
 impl RuntimeManager {
@@ -143,6 +154,8 @@ impl RuntimeManager {
             smoke_validator,
             retention,
             operation_counter: Arc::new(AtomicU64::new(0)),
+            #[cfg(test)]
+            test_hooks: Arc::new(RuntimeManagerTestHooks::default()),
         })
     }
 
@@ -152,6 +165,20 @@ impl RuntimeManager {
 
     pub fn retention(&self) -> RetentionPolicy {
         self.retention
+    }
+
+    #[cfg(test)]
+    fn inject_retention_normalization_failure(&self) {
+        self.test_hooks
+            .fail_retention_normalization
+            .store(true, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    fn inject_post_activation_cleanup_failure(&self) {
+        self.test_hooks
+            .fail_post_activation_cleanup
+            .store(true, Ordering::Relaxed);
     }
 
     pub fn status(&self) -> Result<RuntimeStatus, RuntimeError> {
@@ -248,24 +275,11 @@ impl RuntimeManager {
                 "active pointer does not match the current installation".to_owned(),
             ));
         }
-        let mut candidates = self.list_verified_installations()?;
-        candidates.retain(|candidate| {
-            candidate.installation_id != current.installation_id
-                && candidate.manifest.release.release_sequence
-                    < current.manifest.release.release_sequence
-        });
-        candidates.sort_by(|left, right| {
-            right
-                .manifest
-                .release
-                .release_sequence
-                .cmp(&left.manifest.release.release_sequence)
-                .then_with(|| left.installation_id.cmp(&right.installation_id))
-        });
-        let fallback = candidates
-            .into_iter()
-            .next()
-            .ok_or(RuntimeError::NoRollback)?;
+        let fallback =
+            Self::eligible_rollback_candidates(&current, self.list_verified_installations()?)
+                .into_iter()
+                .next()
+                .ok_or(RuntimeError::NoRollback)?;
         self.activate_locked(fallback, false)?;
         self.reconcile_status()
     }
@@ -454,6 +468,26 @@ impl RuntimeManager {
         Ok(())
     }
 
+    fn eligible_rollback_candidates(
+        current: &VerifiedInstallation,
+        mut candidates: Vec<VerifiedInstallation>,
+    ) -> Vec<VerifiedInstallation> {
+        candidates.retain(|candidate| {
+            candidate.installation_id != current.installation_id
+                && candidate.manifest.release.release_sequence
+                    < current.manifest.release.release_sequence
+        });
+        candidates.sort_by(|left, right| {
+            right
+                .manifest
+                .release
+                .release_sequence
+                .cmp(&left.manifest.release.release_sequence)
+                .then_with(|| left.installation_id.cmp(&right.installation_id))
+        });
+        candidates
+    }
+
     fn reconcile_status(&self) -> Result<RuntimeStatus, RuntimeError> {
         let trust_state = match self.trust_store.load() {
             Ok(state) => state,
@@ -478,10 +512,11 @@ impl RuntimeManager {
         if current.manifest_sha256 != pointer.manifest_sha256 {
             return Ok(RuntimeStatus::broken());
         }
-        let can_rollback = self
-            .list_verified_installations_with_state(&trust_state)?
-            .into_iter()
-            .any(|candidate| candidate.installation_id != current.installation_id);
+        let can_rollback = !Self::eligible_rollback_candidates(
+            &current,
+            self.list_verified_installations_with_state(&trust_state)?,
+        )
+        .is_empty();
         Ok(RuntimeStatus {
             state: if can_rollback {
                 RuntimeState::RollbackAvailable
@@ -660,6 +695,16 @@ impl RuntimeManager {
         current_id: Option<&SafeIdentifier>,
     ) -> Result<(), RuntimeError> {
         self.paths.validate_cleanup_roots()?;
+        #[cfg(test)]
+        if self
+            .test_hooks
+            .fail_retention_normalization
+            .swap(false, Ordering::Relaxed)
+        {
+            return Err(RuntimeError::Storage(
+                "injected retention-normalization failure".to_owned(),
+            ));
+        }
         let Some(current_id) = current_id else {
             // A missing or corrupt pointer is not authority to choose or delete a retained
             // installation. Repair may still activate an explicitly verified candidate.
@@ -740,6 +785,16 @@ impl RuntimeManager {
 
     fn cleanup_retained_versions_locked(&self) -> Result<(), RuntimeError> {
         self.paths.validate_cleanup_roots()?;
+        #[cfg(test)]
+        if self
+            .test_hooks
+            .fail_post_activation_cleanup
+            .swap(false, Ordering::Relaxed)
+        {
+            return Err(RuntimeError::Storage(
+                "injected post-activation cleanup failure".to_owned(),
+            ));
+        }
         let pointer = match read_active_pointer(&self.paths) {
             Ok(pointer) => pointer,
             Err(_) => return Ok(()),
@@ -1188,14 +1243,181 @@ mod tests {
         let rollback_status = second.rollback().unwrap();
         assert_eq!(
             rollback_status.state,
-            crate::domain::runtime::RuntimeState::RollbackAvailable
+            crate::domain::runtime::RuntimeState::Ready
         );
+        assert!(!rollback_status.can_rollback);
         let rollback_pointer = read_active_pointer(second.paths()).unwrap().unwrap();
         assert_eq!(
             rollback_pointer.installation_id,
             first_pointer.installation_id
         );
+        assert!(!second.status().unwrap().can_rollback);
         assert!(matches!(second.rollback(), Err(RuntimeError::NoRollback)));
+    }
+
+    #[tokio::test]
+    async fn activation_succeeds_when_post_activation_cleanup_fails() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+        manager.inject_post_activation_cleanup_failure();
+
+        let status = manager.install("manifests/release-1.json").await.unwrap();
+        let pointer = read_active_pointer(manager.paths()).unwrap().unwrap();
+
+        assert_eq!(status.state, crate::domain::runtime::RuntimeState::Ready);
+        assert_eq!(
+            status.installation_id.as_deref(),
+            Some(pointer.installation_id.as_str())
+        );
+        assert_eq!(
+            manager.status().unwrap().installation_id.as_deref(),
+            Some(pointer.installation_id.as_str())
+        );
+        assert_eq!(
+            read_active_pointer(manager.paths())
+                .unwrap()
+                .unwrap()
+                .installation_id,
+            pointer.installation_id
+        );
+    }
+
+    #[tokio::test]
+    async fn retention_normalization_preserves_current_and_candidate_before_activation() {
+        let directory = tempdir().unwrap();
+        let inspector = StaticManagedProcessInspector::default();
+
+        let first = fixture_manager(directory.path(), 1, inspector.clone());
+        first.install("manifests/release-1.json").await.unwrap();
+        let first_pointer = read_active_pointer(first.paths()).unwrap().unwrap();
+
+        let second = fixture_manager(directory.path(), 2, inspector.clone());
+        second.install("manifests/release-2.json").await.unwrap();
+        let second_pointer = read_active_pointer(second.paths()).unwrap().unwrap();
+        second.rollback().unwrap();
+        assert_eq!(
+            read_active_pointer(second.paths())
+                .unwrap()
+                .unwrap()
+                .installation_id,
+            first_pointer.installation_id
+        );
+        assert!(second
+            .paths()
+            .version_path(&second_pointer.installation_id)
+            .exists());
+
+        let candidate_manager = fixture_manager(directory.path(), 3, inspector);
+        let release = candidate_manager
+            .source
+            .resolve_release("manifests/release-3.json")
+            .await
+            .unwrap();
+        candidate_manager
+            .trust_store
+            .record_release(&release)
+            .unwrap();
+        let _lock = candidate_manager.acquire_mutation_lock().unwrap();
+        let candidate = candidate_manager
+            .construct_candidate(&release, "test")
+            .await
+            .unwrap();
+
+        candidate_manager
+            .normalize_retention_locked(
+                &candidate.installation_id,
+                Some(&first_pointer.installation_id),
+            )
+            .unwrap();
+        assert!(candidate_manager
+            .paths
+            .version_path(&first_pointer.installation_id)
+            .exists());
+        assert!(candidate_manager
+            .paths
+            .version_path(&candidate.installation_id)
+            .exists());
+        assert!(!candidate_manager
+            .paths
+            .version_path(&second_pointer.installation_id)
+            .exists());
+        assert_eq!(
+            read_active_pointer(candidate_manager.paths())
+                .unwrap()
+                .unwrap()
+                .installation_id,
+            first_pointer.installation_id
+        );
+        drop(_lock);
+
+        let status = candidate_manager
+            .activate_candidate(&candidate.installation_id, candidate.manifest_sha256)
+            .unwrap();
+        let final_pointer = read_active_pointer(candidate_manager.paths())
+            .unwrap()
+            .unwrap();
+        let retained: Vec<_> = fs::read_dir(candidate_manager.paths().versions_root())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+
+        assert_eq!(
+            status.installation_id.as_deref(),
+            Some(final_pointer.installation_id.as_str())
+        );
+        assert_eq!(final_pointer.installation_id, candidate.installation_id);
+        assert_eq!(retained.len(), 2);
+        assert!(candidate_manager
+            .paths
+            .version_path(&candidate.installation_id)
+            .exists());
+        assert!(candidate_manager
+            .paths
+            .version_path(&first_pointer.installation_id)
+            .exists());
+        assert!(!candidate_manager
+            .paths
+            .version_path(&second_pointer.installation_id)
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn failed_retention_normalization_aborts_before_active_pointer_changes() {
+        let directory = tempdir().unwrap();
+        let inspector = StaticManagedProcessInspector::default();
+        let first = fixture_manager(directory.path(), 1, inspector.clone());
+        first.install("manifests/release-1.json").await.unwrap();
+        let first_pointer = read_active_pointer(first.paths()).unwrap().unwrap();
+
+        let second = fixture_manager(directory.path(), 2, inspector.clone());
+        second.install("manifests/release-2.json").await.unwrap();
+        second.rollback().unwrap();
+        let retained_before = fs::read_dir(second.paths().versions_root())
+            .unwrap()
+            .count();
+
+        let candidate_manager = fixture_manager(directory.path(), 3, inspector);
+        candidate_manager.inject_retention_normalization_failure();
+        let result = candidate_manager.install("manifests/release-3.json").await;
+
+        assert!(matches!(result, Err(RuntimeError::Storage(_))));
+        assert_eq!(
+            read_active_pointer(candidate_manager.paths())
+                .unwrap()
+                .unwrap()
+                .installation_id,
+            first_pointer.installation_id
+        );
+        assert_eq!(
+            fs::read_dir(candidate_manager.paths().versions_root())
+                .unwrap()
+                .count(),
+            retained_before + 1
+        );
     }
 
     #[tokio::test]

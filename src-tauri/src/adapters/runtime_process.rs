@@ -2,6 +2,7 @@ use crate::adapters::runtime_paths::{fsync_directory, RuntimePaths};
 use crate::adapters::runtime_trust::atomic_replace;
 use crate::domain::runtime::{
     parse_strict_json, ManagedProcessRecord, RuntimeError, SafeIdentifier,
+    MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
 };
 use std::fs;
 use std::io::Read;
@@ -31,6 +32,12 @@ impl ManagedProcessInspector for LinuxManagedProcessInspector {
                 if quarantine_unusable_process_record(paths)? {
                     return Ok(());
                 }
+                return Err(RuntimeError::GameActive);
+            }
+            Err(RuntimeError::ProcessRecordSchema) => {
+                // An old, newer, or otherwise incompatible schema may contain a live process
+                // identity that this binary cannot safely interpret. Preserve it and keep all
+                // runtime mutation blocked until an explicit recovery path handles it.
                 return Err(RuntimeError::GameActive);
             }
             Err(error) => return Err(error),
@@ -101,8 +108,19 @@ pub fn read_process_record(
     if bytes.len() > 4096 {
         return Err(RuntimeError::GameActive);
     }
-    let record: ManagedProcessRecord =
+    let value: serde_json::Value =
         parse_strict_json(&bytes).map_err(|_| RuntimeError::GameActive)?;
+    let declared_schema = value.get("schema_version");
+    if declared_schema.and_then(serde_json::Value::as_u64)
+        != Some(MANAGED_PROCESS_RECORD_SCHEMA_VERSION as u64)
+    {
+        if declared_schema.is_some() {
+            return Err(RuntimeError::ProcessRecordSchema);
+        }
+        return Err(RuntimeError::GameActive);
+    }
+    let record: ManagedProcessRecord =
+        serde_json::from_value(value).map_err(|_| RuntimeError::GameActive)?;
     record.validate()?;
     Ok(Some(record))
 }
@@ -166,7 +184,11 @@ fn quarantine_unusable_process_record(paths: &RuntimePaths) -> Result<bool, Runt
     fs::rename(record_path, &quarantine)?;
     fsync_directory(paths.runtime_root())?;
     if let Err(error) = fs::remove_file(&quarantine) {
-        tracing::warn!(error = %error, "invalid managed process record was quarantined");
+        tracing::warn!(
+            path = %quarantine.display(),
+            error = %error,
+            "invalid managed process record remains in quarantine"
+        );
     } else {
         fsync_directory(paths.runtime_root())?;
     }
@@ -257,7 +279,7 @@ pub fn make_process_record(
     expected_apprun_path: &Path,
 ) -> Result<ManagedProcessRecord, RuntimeError> {
     let record = ManagedProcessRecord {
-        schema_version: 1,
+        schema_version: MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
         phase,
         pid,
         process_start_time_ticks: process_start_time_ticks(pid)?,
@@ -292,9 +314,15 @@ fn current_boot_id() -> Result<String, RuntimeError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_start_time_ticks, LinuxManagedProcessInspector, ManagedProcessInspector};
+    use super::{
+        parse_start_time_ticks, read_process_record, LinuxManagedProcessInspector,
+        ManagedProcessInspector,
+    };
     use crate::adapters::runtime_paths::RuntimePaths;
-    use crate::domain::runtime::{ManagedProcessPhase, ManagedProcessRecord, SafeIdentifier};
+    use crate::domain::runtime::{
+        ManagedProcessPhase, ManagedProcessRecord, RuntimeError, SafeIdentifier,
+        MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
+    };
     use std::fs;
     use tempfile::tempdir;
 
@@ -321,7 +349,7 @@ mod tests {
         let apprun = installation.join("AppRun");
         fs::copy(std::env::current_exe().unwrap(), &apprun).unwrap();
         let record = ManagedProcessRecord {
-            schema_version: 1,
+            schema_version: MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
             phase: ManagedProcessPhase::Running,
             pid: std::process::id(),
             process_start_time_ticks: super::process_start_time_ticks(std::process::id()).unwrap(),
@@ -352,6 +380,78 @@ mod tests {
     }
 
     #[test]
+    fn current_process_record_schema_round_trips_and_incompatible_versions_remain_blocking() {
+        let directory = tempdir().unwrap();
+        let paths = RuntimePaths::new(directory.path());
+        paths.prepare().unwrap();
+
+        let installation_id = SafeIdentifier::new("install-1").unwrap();
+        let installation = paths.version_path(&installation_id);
+        fs::create_dir(&installation).unwrap();
+        let apprun = installation.join("AppRun");
+        fs::write(&apprun, b"placeholder").unwrap();
+        let current = ManagedProcessRecord {
+            schema_version: MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
+            phase: ManagedProcessPhase::Launching,
+            pid: u32::MAX,
+            process_start_time_ticks: 1,
+            boot_id: "current-boot".to_owned(),
+            installation_id,
+            expected_apprun_path: apprun.to_str().unwrap().to_owned(),
+            expected_executable_path: None,
+        };
+        super::write_process_record(&paths, &current).unwrap();
+        assert_eq!(
+            read_process_record(&paths).unwrap().unwrap().schema_version,
+            MANAGED_PROCESS_RECORD_SCHEMA_VERSION
+        );
+        fs::remove_file(paths.game_process_record()).unwrap();
+
+        let old = serde_json::json!({
+            "schema_version": 1,
+            "phase": "launching",
+            "pid": 1,
+            "process_start_time_ticks": 1,
+            "installation_id": "install-1",
+            "expected_apprun_path": "/tmp/runtime/install-1/AppRun"
+        });
+        fs::write(
+            paths.game_process_record(),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            read_process_record(&paths),
+            Err(RuntimeError::ProcessRecordSchema)
+        ));
+        assert!(matches!(
+            LinuxManagedProcessInspector.ensure_no_active_game(&paths),
+            Err(RuntimeError::GameActive)
+        ));
+        assert!(paths.game_process_record().exists());
+
+        let newer = serde_json::json!({
+            "schema_version": MANAGED_PROCESS_RECORD_SCHEMA_VERSION + 1,
+            "phase": "launching",
+            "pid": 1,
+            "process_start_time_ticks": 1,
+            "boot_id": "future-boot",
+            "installation_id": "install-1",
+            "expected_apprun_path": "/tmp/runtime/install-1/AppRun"
+        });
+        fs::write(
+            paths.game_process_record(),
+            serde_json::to_vec(&newer).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            LinuxManagedProcessInspector.ensure_no_active_game(&paths),
+            Err(RuntimeError::GameActive)
+        ));
+        assert!(paths.game_process_record().exists());
+    }
+
+    #[test]
     fn stale_record_for_deleted_installation_is_cleared_after_liveness_check() {
         let directory = tempdir().unwrap();
         let paths = RuntimePaths::new(directory.path());
@@ -359,7 +459,7 @@ mod tests {
         let installation_id: SafeIdentifier = "deleted-install".try_into().unwrap();
         let expected_apprun = paths.version_path(&installation_id).join("AppRun");
         let record = ManagedProcessRecord {
-            schema_version: 1,
+            schema_version: MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
             phase: ManagedProcessPhase::Launching,
             pid: u32::MAX,
             process_start_time_ticks: 1,
