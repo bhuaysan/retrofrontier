@@ -124,33 +124,43 @@ Deliverable: documented authentication/provider decision.
 ## M3 — Systems, Cores, BIOS
 **Model:** Luna Max.
 
-- [ ] system registry
-- [ ] content formats
-- [ ] default-core matrix
-- [ ] core licenses
-- [ ] platform/architecture availability
-- [ ] BIOS requirements
-- [ ] BIOS discovery
-- [ ] BIOS hashing/validation
-- [ ] actionable BIOS UI
-- [ ] map user BIOS folders to internal layout
+- [x] system registry with stable identifiers and aliases
+- [x] supported file extensions in the system catalog
+- [x] default/approved-core policy model with explicit unresolved decisions
+- [ ] resolve the default-core matrix
+- [ ] core licenses and approved distribution sources
+- [x] platform/architecture availability model
+- [x] BIOS requirements
+- [x] BIOS discovery
+- [x] BIOS hashing/validation when authoritative identities exist
+- [x] per-system BIOS/readiness status UI
+- [ ] map user BIOS folders to any future core-required internal layout
+
+M3 research still open: the repository's core matrix does not approve a default or alternative
+core for any system, and it does not provide authoritative BIOS identities/hashes. The catalog
+keeps both uncertainties explicit; filename candidates are not treated as valid identities.
+
+M3 review follow-up before production runtime artifacts or frequent readiness
+refreshes: reuse one verified runtime snapshot for systems status and core
+availability so a systems query does not repeat full runtime verification.
 
 Systems:
-- [ ] NES
-- [ ] SNES
-- [ ] Nintendo 64
-- [ ] Game Boy
-- [ ] Game Boy Color
-- [ ] Game Boy Advance
-- [ ] Sega Mega Drive / Genesis
-- [ ] PlayStation
-- [ ] Sega Saturn
-- [ ] Sega Dreamcast
-- [ ] Nintendo GameCube
+- [x] NES
+- [x] SNES
+- [x] Nintendo 64
+- [x] Game Boy
+- [x] Game Boy Color
+- [x] Game Boy Advance
+- [x] Sega Mega Drive / Genesis
+- [x] PlayStation
+- [x] Sega Saturn
+- [x] Sega Dreamcast
+- [x] Nintendo GameCube
 
 ## M4 — Library Scanner
 **Model:** Luna Max.
 
+- [ ] reuse one verified runtime snapshot for systems/readiness queries before production runtime artifacts or frequent refreshes (M3 MEDIUM-1)
 - [ ] managed ROM folder structure
 - [ ] persist content roots
 - [ ] external ROM roots

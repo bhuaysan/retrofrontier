@@ -17,6 +17,21 @@ Owns configuration such as:
 - default core policy
 - launch capabilities
 
+The V1 system catalog is application-owned static product knowledge. A stable
+system identifier is distinct from its display name and aliases, so names such
+as Mega Drive and Genesis resolve to one logical system. Catalog validation
+checks identifiers, aliases, extensions, BIOS requirements, and core mappings
+before the application exposes them.
+
+### System Readiness
+
+The application-level readiness result explains whether a system can be used by
+combining its resolved approved default-core policy, availability from the
+verified managed runtime, and required BIOS status. It does not include game or
+ROM availability. Reasons such as an unresolved core policy, missing verified
+core, missing required BIOS, invalid BIOS, or an identity not covered by the
+catalog remain inspectable.
+
 ### Game
 A logical library entry presented to the user.
 
@@ -103,22 +118,28 @@ A RetroArch/libretro core available to the managed runtime.
 
 Tracks:
 - stable identifier
+- libretro/core name
 - display name
-- license
 - supported systems
 - platform/architecture support
-- installed version
-- runtime component reference
+- managed component identity
+
+Static core policy is distinct from runtime availability. Only approved cores
+from an authenticated managed runtime can become available; system-installed
+cores, arbitrary user paths, and user downloads are outside the V1 model.
 
 ### BIOS Requirement
 A known firmware requirement for a System or Core.
 
 Tracks:
-- expected filename
-- accepted hashes
+- expected filename(s)
+- accepted hashes and known size where authoritative
 - required/optional status
 - user-facing description
-- internal runtime destination
+
+A filename match without an authoritative identity is not a valid BIOS result.
+BIOS files remain user-owned data and are never downloaded, executed, or
+modified by RetroFrontier.
 
 ### BIOS File
 A user-supplied local firmware file discovered by RetroFrontier.

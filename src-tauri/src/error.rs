@@ -3,6 +3,7 @@ use serde::{Serialize, Serializer};
 use thiserror::Error;
 
 use crate::domain::runtime::RuntimeError;
+use crate::services::bios::BiosError;
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -20,6 +21,15 @@ pub enum AppError {
 
     #[error("managed runtime is unavailable")]
     Runtime(#[source] RuntimeError),
+
+    #[error("the system catalog is invalid: {0}")]
+    Catalog(String),
+
+    #[error("BIOS discovery is unavailable")]
+    Bios(#[source] BiosError),
+
+    #[error("BIOS path overrides are available only in development builds")]
+    BiosOverrideNotAllowed,
 }
 
 impl AppError {
@@ -30,6 +40,9 @@ impl AppError {
             Self::Database(_) => "database_unavailable",
             Self::Migration(_) => "migration_failed",
             Self::Runtime(_) => "runtime_unavailable",
+            Self::Catalog(_) => "catalog_invalid",
+            Self::Bios(_) => "bios_unavailable",
+            Self::BiosOverrideNotAllowed => "bios_override_disabled",
         }
     }
 
@@ -42,6 +55,11 @@ impl AppError {
             Self::Database(_) => "RetroFrontier could not access its local database.",
             Self::Migration(_) => "RetroFrontier could not prepare its local storage.",
             Self::Runtime(_) => "RetroFrontier could not prepare its managed runtime.",
+            Self::Catalog(_) => "RetroFrontier could not load its supported-system catalog.",
+            Self::Bios(_) => "RetroFrontier could not inspect the BIOS folder.",
+            Self::BiosOverrideNotAllowed => {
+                "BIOS path overrides are available only in development builds."
+            }
         }
     }
 

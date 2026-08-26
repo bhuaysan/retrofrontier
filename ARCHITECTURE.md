@@ -137,10 +137,43 @@ Never use a system `retroarch` from `PATH`.
 - normalize result
 
 ### BiosService
-- discover user BIOS files
-- hash/validate
-- map user-friendly BIOS storage to core-required layout
-- report actionable missing/invalid states
+- discover user BIOS files under the OS-resolved `Documents/RetroFrontier/BIOS` root
+- hash and validate against catalog identities when authoritative values exist
+- report missing, invalid, optional, and not-covered BIOS states
+- never modify, move, rename, delete, download, or execute user BIOS files
+
+### Systems, core policy, and readiness
+
+`SystemCatalog` is application-owned static product knowledge. It defines stable `SystemId`
+values, display metadata, aliases, normalized content extensions, BIOS requirements, and core
+policy. Display names and aliases are lookup conveniences only; they are never database/domain
+identifiers. The catalog is validated at startup and in unit tests, and static system/core policy
+is not duplicated in SQLite.
+
+`CoreDefinition` and `CorePolicy` model approved managed cores separately from runtime state. A
+policy may name one default and approved alternatives, but the current matrix keeps each V1 choice
+explicitly unresolved where documentation has not approved a core. RetroFrontier never treats a
+catalog entry as installed and never accepts system RetroArch cores, arbitrary user core paths, or
+user-downloaded cores.
+
+`RuntimeManager::current_verified_core_ids()` is the read-only boundary for runtime availability.
+It reports core components only after the active installation, authenticated manifest, completion
+marker, and installed inventory have passed the existing M2 verification path. It does not apply
+system policy or trust static catalog data.
+
+`BiosService` owns discovery orchestration but not the BIOS files. Its default root is constructed
+from Tauri's OS-specific document directory and `RetroFrontier/BIOS`; it does not hard-code a home
+directory and it never creates or repairs that user-data folder. Production discovery examines
+only explicitly declared filenames directly below the selected root. A development/test caller may
+pass one explicit absolute root override; release IPC rejects that override. The service rejects
+relative roots and symlink roots, tolerates unrelated files, and hashes candidates read-only.
+This flat layout is also the current user-facing policy: system-specific nested BIOS folders are not
+automatically searched. Supporting nested BIOS layouts remains a follow-up and is not part of M3.
+
+`SystemReadiness` combines the resolved core policy, verified runtime availability, and required
+BIOS status into inspectable reasons. ROM/game availability is deliberately not part of this
+milestone. The M3 IPC surface exposes one coherent systems response plus a development-only BIOS
+status query; React does not inspect the filesystem, hash BIOS files, or query RuntimeManager.
 
 ### SaveService
 - resolve save directories

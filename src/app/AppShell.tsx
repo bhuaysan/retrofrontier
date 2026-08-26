@@ -4,24 +4,49 @@ import { PixelButton } from '../components/ui/PixelButton';
 import { PixelRow } from '../components/ui/PixelRow';
 import {
   getAppInfo,
+  getSystems,
   getRuntimeStatus,
   IpcError,
   type AppInfo,
   type RuntimeStatus,
+  type ReadinessReason,
+  type SystemId,
+  type SystemStatus,
+  type SystemsResponse,
 } from '../platform/ipc';
 
 type Theme = 'dark' | 'light';
 
 const THEME_STORAGE_KEY = 'retrofrontier.theme';
 
-const sidebarSystems = [
+const fallbackSystems: Array<{ label: string; accent: string }> = [
   { label: 'All systems', accent: 'var(--accent)' },
+  { label: 'Nintendo Entertainment System', accent: 'var(--accent)' },
   { label: 'SNES', accent: 'var(--accent-2)' },
-  { label: 'Mega Drive', accent: 'var(--accent-3)' },
+  { label: 'Nintendo 64', accent: 'var(--accent-3)' },
   { label: 'Game Boy', accent: 'var(--accent-4)' },
-  { label: 'PS1', accent: 'var(--accent-5)' },
-  { label: 'Arcade', accent: 'var(--accent-6)' },
+  { label: 'Game Boy Color', accent: 'var(--accent-4)' },
+  { label: 'Game Boy Advance', accent: 'var(--accent-4)' },
+  { label: 'Mega Drive', accent: 'var(--accent-3)' },
+  { label: 'PlayStation', accent: 'var(--accent-5)' },
+  { label: 'Sega Saturn', accent: 'var(--accent-6)' },
+  { label: 'Sega Dreamcast', accent: 'var(--accent-6)' },
+  { label: 'Nintendo GameCube', accent: 'var(--accent-2)' },
 ];
+
+const systemAccents: Record<SystemId, string> = {
+  nes: 'var(--accent)',
+  snes: 'var(--accent-2)',
+  nintendo_64: 'var(--accent-3)',
+  game_boy: 'var(--accent-4)',
+  game_boy_color: 'var(--accent-4)',
+  game_boy_advance: 'var(--accent-4)',
+  mega_drive: 'var(--accent-3)',
+  playstation: 'var(--accent-5)',
+  sega_saturn: 'var(--accent-6)',
+  sega_dreamcast: 'var(--accent-6)',
+  nintendo_gamecube: 'var(--accent-2)',
+};
 
 function initialTheme(): Theme {
   const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
@@ -48,7 +73,11 @@ function StatusValue({ children, tone = 'neutral' }: { children: ReactNode; tone
 function runtimeLabel(status: RuntimeStatus | null, error: IpcError | null): string {
   if (error) return 'UNAVAILABLE';
   if (!status) return 'CHECKING';
-  switch (status.state) {
+  return runtimeStateLabel(status.state);
+}
+
+function runtimeStateLabel(state: RuntimeStatus['state']): string {
+  switch (state) {
     case 'notInstalled':
       return 'NOT INSTALLED';
     case 'rollbackAvailable':
@@ -66,12 +95,113 @@ function runtimeLabel(status: RuntimeStatus | null, error: IpcError | null): str
   }
 }
 
+function coreLabel(system: SystemStatus): { text: string; tone: string } {
+  if (system.core.policy.decision.kind === 'unresolved') {
+    return { text: 'POLICY TBD', tone: 'warning' };
+  }
+  if (
+    system.core.availability.runtimeState !== 'ready' &&
+    system.core.availability.runtimeState !== 'rollbackAvailable'
+  ) {
+    return { text: 'MISSING', tone: 'warning' };
+  }
+  return system.core.availability.defaultCoreAvailable
+    ? { text: 'READY', tone: 'good' }
+    : { text: 'MISSING', tone: 'warning' };
+}
+
+function biosLabel(system: SystemStatus): { text: string; tone: string } {
+  if (system.bios.policy === 'notRequired') {
+    return { text: 'NOT REQUIRED', tone: 'good' };
+  }
+  const required = system.bios.requirements.filter((requirement) => requirement.required);
+  const missing = required.filter((requirement) => requirement.state === 'missing').length;
+  const invalid = required.filter((requirement) => requirement.state === 'presentInvalid').length;
+  const uncovered = required.filter(
+    (requirement) => requirement.state === 'notCoveredByCatalog',
+  ).length;
+  if (missing > 0) return { text: `${missing} REQUIRED BIOS MISSING`, tone: 'warning' };
+  if (invalid > 0) return { text: `${invalid} BIOS INVALID`, tone: 'warning' };
+  if (uncovered > 0) return { text: 'IDENTITY TBD', tone: 'warning' };
+  if (system.bios.policy === 'optional') {
+    return { text: 'OPTIONAL', tone: 'neutral' };
+  }
+  return { text: 'READY', tone: 'good' };
+}
+
+function reasonLabel(reason: ReadinessReason): string {
+  switch (reason.kind) {
+    case 'corePolicyUnresolved':
+      return 'Default core decision is unresolved';
+    case 'runtimeUnavailable':
+      return `Managed runtime: ${runtimeStateLabel(reason.state)}`;
+    case 'missingCore':
+      return `Approved core missing: ${reason.coreId}`;
+    case 'missingRequiredBios':
+      return `Required BIOS missing: ${reason.requirementId}`;
+    case 'invalidRequiredBios':
+      return `Required BIOS invalid: ${reason.requirementId}`;
+    case 'biosIdentityNotCovered':
+      return `BIOS identity not covered: ${reason.requirementId}`;
+  }
+}
+
+function SystemStatusCard({ system }: { system: SystemStatus }) {
+  const core = coreLabel(system);
+  const bios = biosLabel(system);
+  return (
+    <article className="system-card" data-system-id={system.id}>
+      <div className="system-card-header">
+        <span
+          className="system-card-swatch"
+          style={{ background: systemAccents[system.id] }}
+          aria-hidden="true"
+        />
+        <div className="system-card-title">
+          <h3>{system.displayName}</h3>
+          <span>
+            {system.manufacturer} · {system.aliases.slice(0, 2).join(' / ')}
+          </span>
+        </div>
+        <StatusValue tone={system.readiness.ready ? 'good' : 'warning'}>
+          {system.readiness.ready ? 'READY' : 'NOT READY'}
+        </StatusValue>
+      </div>
+
+      <div className="system-card-checks">
+        <div className="system-check-row">
+          <span className="system-check-label">CORE</span>
+          <StatusValue tone={core.tone}>{core.text}</StatusValue>
+        </div>
+        <div className="system-check-row">
+          <span className="system-check-label">BIOS</span>
+          <StatusValue tone={bios.tone}>{bios.text}</StatusValue>
+        </div>
+      </div>
+
+      {system.readiness.reasons.length > 0 && (
+        <ul className="system-card-reasons" aria-label={`${system.displayName} readiness reasons`}>
+          {system.readiness.reasons.map((reason) => (
+            <li
+              key={`${reason.kind}-${reason.kind === 'corePolicyUnresolved' ? 'policy' : reason.kind === 'runtimeUnavailable' ? reason.state : reason.kind === 'missingCore' ? reason.coreId : reason.requirementId}`}
+            >
+              {reasonLabel(reason)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </article>
+  );
+}
+
 export function AppShell() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [error, setError] = useState<IpcError | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
   const [runtimeError, setRuntimeError] = useState<IpcError | null>(null);
+  const [systemsResponse, setSystemsResponse] = useState<SystemsResponse | null>(null);
+  const [systemsError, setSystemsError] = useState<IpcError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
@@ -95,6 +225,31 @@ export function AppShell() {
             reason instanceof IpcError
               ? reason
               : new IpcError('ipc_unavailable', 'The native foundation is unavailable.'),
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getSystems()
+      .then((response) => {
+        if (!cancelled) {
+          setSystemsResponse(response);
+          setSystemsError(null);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) {
+          setSystemsError(
+            reason instanceof IpcError
+              ? reason
+              : new IpcError('systems_unavailable', 'Supported systems are unavailable.'),
           );
         }
       });
@@ -143,6 +298,16 @@ export function AppShell() {
   const showFoundationNotice = (message: string) => {
     setNotice(message);
   };
+
+  const sidebarSystems = systemsResponse
+    ? [
+        { label: 'All systems', accent: 'var(--accent)' },
+        ...systemsResponse.systems.map((system) => ({
+          label: system.displayName,
+          accent: systemAccents[system.id],
+        })),
+      ]
+    : fallbackSystems;
 
   return (
     <div className="app-shell" data-theme={theme}>
@@ -212,10 +377,53 @@ export function AppShell() {
 
       <main className="app-main">
         <div className="section-heading">
-          <h1>▶ LIBRARY</h1>
+          <h1>▶ SYSTEMS</h1>
           <span aria-hidden="true" />
-          <span className="section-meta">FOUNDATION</span>
+          <span className="section-meta">M3</span>
         </div>
+
+        <section className="systems-panel" aria-labelledby="systems-panel-heading">
+          <div className="panel-heading">
+            <h2 id="systems-panel-heading">SUPPORTED SYSTEMS</h2>
+            <span aria-hidden="true" />
+            <span className="panel-meta">
+              {systemsResponse ? `${systemsResponse.systems.length} SYSTEMS` : 'CHECKING'}
+            </span>
+          </div>
+          <p className="systems-intro">
+            Static platform policy lives in RetroFrontier. Core availability comes only from the
+            verified managed runtime. Put expected BIOS filenames directly in the BIOS root shown
+            below; system-specific subfolders are not searched yet.
+          </p>
+          <div className="systems-root-row">
+            <span className="system-check-label">BIOS ROOT</span>
+            <span className="systems-root-path">
+              {systemsResponse?.biosRoot ?? (systemsError ? 'UNAVAILABLE' : 'CHECKING')}
+            </span>
+            {systemsResponse && (
+              <StatusValue tone={systemsResponse.biosRootStatus === 'ready' ? 'good' : 'warning'}>
+                {systemsResponse.biosRootStatus === 'ready' ? 'AVAILABLE' : 'NOT AVAILABLE'}
+              </StatusValue>
+            )}
+          </div>
+          {!systemsResponse && !systemsError && (
+            <p className="systems-loading" role="status">
+              READING SYSTEM CATALOG…
+            </p>
+          )}
+          {systemsError && (
+            <p className="foundation-error" role="alert">
+              {systemsError.message}
+            </p>
+          )}
+          {systemsResponse && (
+            <div className="system-grid">
+              {systemsResponse.systems.map((system) => (
+                <SystemStatusCard key={system.id} system={system} />
+              ))}
+            </div>
+          )}
+        </section>
 
         <section className="empty-state" aria-labelledby="empty-title">
           <EmptyLibraryIcon />
@@ -238,7 +446,7 @@ export function AppShell() {
           <div className="panel-heading">
             <h2 id="foundation-heading">FOUNDATION STATUS</h2>
             <span aria-hidden="true" />
-            <span className="panel-meta">M2</span>
+            <span className="panel-meta">M3</span>
           </div>
           <div className="status-grid">
             <div className="status-item">

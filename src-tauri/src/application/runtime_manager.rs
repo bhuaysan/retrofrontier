@@ -16,6 +16,7 @@ use crate::domain::runtime::{
     Sha256Digest,
 };
 use async_trait::async_trait;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 #[cfg(test)]
@@ -187,6 +188,33 @@ impl RuntimeManager {
             return Ok(RuntimeStatus::broken());
         }
         self.reconcile_status()
+    }
+
+    /// Return core component IDs only from the currently active, fully verified managed runtime.
+    /// The system catalog decides whether an ID is approved; RuntimeManager only reports
+    /// authenticated installed availability and does not apply system policy.
+    pub fn current_verified_core_ids(&self) -> Result<BTreeSet<SafeIdentifier>, RuntimeError> {
+        if let Err(error) = self.paths.prepare() {
+            tracing::warn!(error = %error, "managed runtime roots could not be validated while reading cores");
+            return Err(error);
+        }
+        let Some(pointer) = read_active_pointer(&self.paths)? else {
+            return Ok(BTreeSet::new());
+        };
+        let current = self.load_verified_installation(&pointer.installation_id)?;
+        if current.manifest_sha256 != pointer.manifest_sha256 {
+            return Err(RuntimeError::Pointer(
+                "active runtime manifest does not match its pointer".to_owned(),
+            ));
+        }
+        Ok(current
+            .manifest
+            .release
+            .components
+            .iter()
+            .filter(|component| component.kind == crate::domain::runtime::ComponentKind::Core)
+            .map(|component| component.id.clone())
+            .collect())
     }
 
     /// Reconcile startup-owned leftovers while holding the same kernel lock used by mutations.
@@ -954,12 +982,25 @@ mod tests {
     impl RuntimeArchiveExtractor for SyntheticRuntimeArchiveExtractor {
         fn extract(
             &self,
-            _component: &RuntimeComponent,
+            component: &RuntimeComponent,
             artifact: &std::path::Path,
             destination: &std::path::Path,
             _inventory: &[InstalledEntry],
             _limits: &crate::domain::runtime::ExtractionLimits,
         ) -> Result<(), RuntimeError> {
+            if component.kind == ComponentKind::Core {
+                let core = b"synthetic core";
+                let output_path = destination.join("core.so");
+                let mut output = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(output_path)?;
+                output.write_all(core)?;
+                output.flush()?;
+                output.sync_all()?;
+                return Ok(());
+            }
+
             let mut archive = tar::Archive::new(File::open(artifact)?);
             let mut found = false;
             for entry in archive.entries()? {
@@ -1022,6 +1063,25 @@ mod tests {
             archive,
             app_run,
             std::sync::Arc::new(SyntheticRuntimeArchiveExtractor),
+            false,
+        )
+    }
+
+    fn fixture_manager_with_core(
+        app_data: &std::path::Path,
+        sequence: u64,
+        process_inspector: StaticManagedProcessInspector,
+    ) -> RuntimeManager {
+        fs::create_dir_all(app_data).unwrap();
+        let (archive, app_run) = archive_fixture(app_data, sequence);
+        fixture_manager_from_archive(
+            app_data,
+            sequence,
+            process_inspector,
+            archive,
+            app_run,
+            std::sync::Arc::new(SyntheticRuntimeArchiveExtractor),
+            true,
         )
     }
 
@@ -1059,6 +1119,7 @@ mod tests {
             archive,
             app_run,
             std::sync::Arc::new(LinuxRuntimeArchiveExtractor),
+            false,
         )
     }
 
@@ -1069,9 +1130,103 @@ mod tests {
         archive: std::path::PathBuf,
         app_run: Vec<u8>,
         extractor: std::sync::Arc<dyn RuntimeArchiveExtractor>,
+        include_core: bool,
     ) -> RuntimeManager {
         let (archive_size, archive_hash) = sha256_file(&archive).unwrap();
         let app_hash = sha256_bytes(&app_run);
+        let mut components = vec![RuntimeComponent {
+            id: SafeIdentifier::new("retroarch").unwrap(),
+            kind: ComponentKind::Runtime,
+            target_name: format!("targets/runtime-{sequence}.tar"),
+            source_id: None,
+            source_url: None,
+            archive_format: ArchiveFormat::AppImage,
+            archive_size_bytes: archive_size,
+            sha256: archive_hash,
+            install_path: RelativePath::new("runtime/app").unwrap(),
+            expected_root: None,
+            payload_filename: None,
+            executable_relative_path: None,
+            display_version: None,
+            source_revision: None,
+            source_pinning: None,
+            license: "GPL-3.0-or-later".to_owned(),
+            systems: Vec::new(),
+        }];
+        let mut inventory = vec![
+            InstalledEntry {
+                path: RelativePath::new("runtime").unwrap(),
+                entry_type: InstalledEntryType::Directory,
+                size_bytes: 0,
+                sha256: None,
+                executable: false,
+                link_target: None,
+            },
+            InstalledEntry {
+                path: RelativePath::new("runtime/app").unwrap(),
+                entry_type: InstalledEntryType::Directory,
+                size_bytes: 0,
+                sha256: None,
+                executable: false,
+                link_target: None,
+            },
+            InstalledEntry {
+                path: RelativePath::new("runtime/app/AppRun").unwrap(),
+                entry_type: InstalledEntryType::File,
+                size_bytes: app_run.len() as u64,
+                sha256: Some(app_hash),
+                executable: true,
+                link_target: None,
+            },
+        ];
+        if include_core {
+            let core = b"synthetic core";
+            components.push(RuntimeComponent {
+                id: SafeIdentifier::new("synthetic-core").unwrap(),
+                kind: ComponentKind::Core,
+                target_name: format!("targets/core-{sequence}.tar"),
+                source_id: None,
+                source_url: None,
+                archive_format: ArchiveFormat::Tar,
+                archive_size_bytes: archive_size,
+                sha256: archive_hash,
+                install_path: RelativePath::new("cores/synthetic-core").unwrap(),
+                expected_root: None,
+                payload_filename: None,
+                executable_relative_path: None,
+                display_version: None,
+                source_revision: None,
+                source_pinning: None,
+                license: "MIT".to_owned(),
+                systems: vec![SafeIdentifier::new("nes").unwrap()],
+            });
+            inventory.extend([
+                InstalledEntry {
+                    path: RelativePath::new("cores").unwrap(),
+                    entry_type: InstalledEntryType::Directory,
+                    size_bytes: 0,
+                    sha256: None,
+                    executable: false,
+                    link_target: None,
+                },
+                InstalledEntry {
+                    path: RelativePath::new("cores/synthetic-core").unwrap(),
+                    entry_type: InstalledEntryType::Directory,
+                    size_bytes: 0,
+                    sha256: None,
+                    executable: false,
+                    link_target: None,
+                },
+                InstalledEntry {
+                    path: RelativePath::new("cores/synthetic-core/core.so").unwrap(),
+                    entry_type: InstalledEntryType::File,
+                    size_bytes: core.len() as u64,
+                    sha256: Some(sha256_bytes(core)),
+                    executable: false,
+                    link_target: None,
+                },
+            ]);
+        }
         let manifest = RuntimeManifest {
             schema_version: 1,
             manifest_id: SafeIdentifier::new(format!("manifest-{sequence}")).unwrap(),
@@ -1084,52 +1239,9 @@ mod tests {
                 retroarch_version: format!("1.{sequence}"),
                 platform: RuntimePlatform::Linux,
                 architecture: RuntimeArchitecture::X86_64,
-                components: vec![RuntimeComponent {
-                    id: SafeIdentifier::new("retroarch").unwrap(),
-                    kind: ComponentKind::Runtime,
-                    target_name: format!("targets/runtime-{sequence}.tar"),
-                    source_id: None,
-                    source_url: None,
-                    archive_format: ArchiveFormat::AppImage,
-                    archive_size_bytes: archive_size,
-                    sha256: archive_hash,
-                    install_path: RelativePath::new("runtime/app").unwrap(),
-                    expected_root: None,
-                    payload_filename: None,
-                    executable_relative_path: None,
-                    display_version: None,
-                    source_revision: None,
-                    source_pinning: None,
-                    license: "GPL-3.0-or-later".to_owned(),
-                    systems: Vec::new(),
-                }],
+                components,
                 app_run_path: RelativePath::new("runtime/app/AppRun").unwrap(),
-                inventory: vec![
-                    InstalledEntry {
-                        path: RelativePath::new("runtime").unwrap(),
-                        entry_type: InstalledEntryType::Directory,
-                        size_bytes: 0,
-                        sha256: None,
-                        executable: false,
-                        link_target: None,
-                    },
-                    InstalledEntry {
-                        path: RelativePath::new("runtime/app").unwrap(),
-                        entry_type: InstalledEntryType::Directory,
-                        size_bytes: 0,
-                        sha256: None,
-                        executable: false,
-                        link_target: None,
-                    },
-                    InstalledEntry {
-                        path: RelativePath::new("runtime/app/AppRun").unwrap(),
-                        entry_type: InstalledEntryType::File,
-                        size_bytes: app_run.len() as u64,
-                        sha256: Some(app_hash),
-                        executable: true,
-                        link_target: None,
-                    },
-                ],
+                inventory,
                 extraction: Default::default(),
             },
             compatibility: RuntimeCompatibility {
@@ -1139,7 +1251,10 @@ mod tests {
         };
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
         let mut target_files = BTreeMap::new();
-        target_files.insert(format!("targets/runtime-{sequence}.tar"), archive);
+        target_files.insert(format!("targets/runtime-{sequence}.tar"), archive.clone());
+        if include_core {
+            target_files.insert(format!("targets/core-{sequence}.tar"), archive);
+        }
         let source = LocalTrustedReleaseSource::from_manifest_bytes(
             format!("manifests/release-{sequence}.json"),
             manifest_bytes,
@@ -1162,6 +1277,36 @@ mod tests {
         let policy = RetentionPolicy::default();
         assert_eq!(policy.max_retained_installations, 2);
         assert!(policy.max_storage_bytes > 0);
+    }
+
+    #[test]
+    fn no_active_verified_runtime_reports_no_core_components() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+
+        assert!(manager.current_verified_core_ids().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn core_availability_comes_from_the_active_verified_installation() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager_with_core(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+
+        manager.install("manifests/release-1.json").await.unwrap();
+
+        let core_ids = manager.current_verified_core_ids().unwrap();
+        assert_eq!(
+            core_ids,
+            std::collections::BTreeSet::from([SafeIdentifier::new("synthetic-core").unwrap()])
+        );
     }
 
     #[tokio::test]

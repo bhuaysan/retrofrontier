@@ -1,4 +1,4 @@
-// Runtime adapters and domain operations intentionally outnumber the M2 IPC surface; later
+// Runtime adapters and domain operations intentionally outnumber the M2/M3 IPC surface; later
 // milestones will expose more of this application-owned API without making the adapters public.
 #[allow(dead_code)]
 mod adapters;
@@ -10,13 +10,16 @@ mod domain;
 mod error;
 mod logging;
 mod repositories;
+mod services;
 
 use adapters::database::Database;
 use adapters::runtime_lock::ApplicationInstanceLock;
 use adapters::runtime_paths::RuntimePaths;
 use application::AppState;
-use application::{RuntimeApplicationService, RuntimeManager};
+use application::{RuntimeApplicationService, RuntimeManager, SystemsApplicationService};
+use domain::system::SystemCatalog;
 use repositories::settings::SettingsRepository;
+use services::bios::BiosService;
 use tauri::Manager;
 
 fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError> {
@@ -30,6 +33,17 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
     tauri::async_runtime::block_on(settings.set("foundation.ready", "true"))?;
     let runtime = RuntimeManager::for_app(RuntimePaths::new(&app_data_dir))
         .map_err(error::AppError::Runtime)?;
+    let catalog = SystemCatalog::v1();
+    catalog
+        .validate()
+        .map_err(|source| error::AppError::Catalog(source.to_string()))?;
+    let documents_dir = app
+        .path()
+        .document_dir()
+        .map_err(|source| error::AppError::PathResolution(source.to_string()))?;
+    let bios =
+        BiosService::from_catalog(documents_dir.join("RetroFrontier").join("BIOS"), &catalog)
+            .map_err(error::AppError::Bios)?;
     let instance_lock = ApplicationInstanceLock::acquire(&runtime.paths().application_lock())
         .map_err(error::AppError::Runtime)?;
     let runtime_status = runtime
@@ -39,7 +53,8 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
 
     Ok(AppState::new(
         settings,
-        RuntimeApplicationService::new(runtime),
+        RuntimeApplicationService::new(runtime.clone()),
+        SystemsApplicationService::new(catalog, bios, runtime),
         instance_lock,
     ))
 }
@@ -65,7 +80,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_info::get_app_info,
-            commands::runtime::get_runtime_status
+            commands::runtime::get_runtime_status,
+            commands::systems::get_systems,
+            commands::systems::get_bios_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running RetroFrontier");

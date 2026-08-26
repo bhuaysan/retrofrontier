@@ -86,7 +86,12 @@ Default ROM root: `Documents/RetroFrontier/ROMs`
 
 Default BIOS root: `Documents/RetroFrontier/BIOS`
 
-The application may create system-specific subdirectories. Users may additionally add external ROM roots. External content stays where it is.
+ROM organization may use system-specific subdirectories. BIOS discovery
+currently uses a flat layout: expected BIOS filenames must be placed directly
+inside `Documents/RetroFrontier/BIOS`. Discovery is non-recursive, so
+system-specific nested folders such as `BIOS/PlayStation/` are not automatically
+searched. Users may additionally add external ROM roots. External content stays
+where it is.
 
 ## Core V1 Capabilities
 
