@@ -1,5 +1,5 @@
 use crate::application::RuntimeManager;
-use crate::domain::runtime::RuntimeStatus;
+use crate::domain::runtime::{RuntimeStatus, VerifiedRuntimeSnapshot};
 use crate::error::AppError;
 
 /// Application-facing runtime boundary. Tauri commands depend on this service rather than on
@@ -15,7 +15,12 @@ impl RuntimeApplicationService {
     }
 
     pub async fn get_runtime_status(&self) -> Result<RuntimeStatus, AppError> {
-        self.manager.status().map_err(AppError::Runtime)
+        self.verified_runtime_snapshot()
+            .map(|snapshot| snapshot.status)
+    }
+
+    pub fn verified_runtime_snapshot(&self) -> Result<VerifiedRuntimeSnapshot, AppError> {
+        self.manager.verified_snapshot().map_err(AppError::Runtime)
     }
 
     pub fn manager(&self) -> &RuntimeManager {

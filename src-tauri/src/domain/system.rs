@@ -62,6 +62,23 @@ impl SystemId {
             Self::NintendoGameCube => "nintendo_gamecube",
         }
     }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "nes" => Some(Self::Nes),
+            "snes" => Some(Self::Snes),
+            "nintendo_64" => Some(Self::Nintendo64),
+            "game_boy" => Some(Self::GameBoy),
+            "game_boy_color" => Some(Self::GameBoyColor),
+            "game_boy_advance" => Some(Self::GameBoyAdvance),
+            "mega_drive" => Some(Self::MegaDrive),
+            "playstation" => Some(Self::PlayStation),
+            "sega_saturn" => Some(Self::SegaSaturn),
+            "sega_dreamcast" => Some(Self::SegaDreamcast),
+            "nintendo_gamecube" => Some(Self::NintendoGameCube),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for SystemId {
@@ -77,6 +94,7 @@ pub struct SystemDefinition {
     pub display_name: String,
     pub manufacturer: String,
     pub aliases: Vec<String>,
+    pub managed_rom_folder_name: String,
     pub supported_extensions: Vec<String>,
     pub core_policy: CorePolicy,
     pub bios_policy: BiosPolicy,
@@ -133,6 +151,7 @@ impl SystemCatalog {
                 "Nintendo Entertainment System",
                 "Nintendo",
                 &["NES"],
+                "NES",
                 &[".nes"],
                 unresolved(),
                 BiosPolicy::NotRequired,
@@ -143,6 +162,7 @@ impl SystemCatalog {
                 "Super Nintendo Entertainment System",
                 "Nintendo",
                 &["SNES", "Super Famicom"],
+                "SNES",
                 &[".sfc", ".smc"],
                 unresolved(),
                 BiosPolicy::NotRequired,
@@ -153,6 +173,7 @@ impl SystemCatalog {
                 "Nintendo 64",
                 "Nintendo",
                 &["N64"],
+                "Nintendo 64",
                 &[".n64", ".z64", ".v64"],
                 unresolved(),
                 BiosPolicy::NotRequired,
@@ -163,6 +184,7 @@ impl SystemCatalog {
                 "Game Boy",
                 "Nintendo",
                 &["GB", "DMG"],
+                "Game Boy",
                 &[".gb"],
                 unresolved(),
                 BiosPolicy::NotRequired,
@@ -173,6 +195,7 @@ impl SystemCatalog {
                 "Game Boy Color",
                 "Nintendo",
                 &["GBC"],
+                "Game Boy Color",
                 &[".gbc"],
                 unresolved(),
                 BiosPolicy::NotRequired,
@@ -183,6 +206,7 @@ impl SystemCatalog {
                 "Game Boy Advance",
                 "Nintendo",
                 &["GBA"],
+                "Game Boy Advance",
                 &[".gba"],
                 unresolved(),
                 BiosPolicy::Optional,
@@ -201,6 +225,7 @@ impl SystemCatalog {
                 "Mega Drive / Genesis",
                 "Sega",
                 &["Mega Drive", "Genesis", "MD"],
+                "Mega Drive",
                 &[".md", ".gen", ".smd", ".bin"],
                 unresolved(),
                 BiosPolicy::NotRequired,
@@ -211,6 +236,7 @@ impl SystemCatalog {
                 "PlayStation",
                 "Sony",
                 &["PS1", "PlayStation 1", "PSX"],
+                "PlayStation",
                 &[".cue", ".chd", ".pbp", ".bin", ".iso", ".m3u"],
                 unresolved(),
                 BiosPolicy::Required,
@@ -229,6 +255,7 @@ impl SystemCatalog {
                 "Sega Saturn",
                 "Sega",
                 &["Saturn"],
+                "Sega Saturn",
                 &[".cue", ".chd", ".iso", ".bin", ".m3u"],
                 unresolved(),
                 BiosPolicy::Required,
@@ -247,6 +274,7 @@ impl SystemCatalog {
                 "Sega Dreamcast",
                 "Sega",
                 &["Dreamcast", "DC"],
+                "Sega Dreamcast",
                 &[".gdi", ".cdi", ".chd", ".m3u"],
                 unresolved(),
                 BiosPolicy::Required,
@@ -273,6 +301,7 @@ impl SystemCatalog {
                 "Nintendo GameCube",
                 "Nintendo",
                 &["GameCube", "GC"],
+                "Nintendo GameCube",
                 &[".iso", ".gcm", ".rvz"],
                 unresolved(),
                 BiosPolicy::NotRequired,
@@ -309,6 +338,44 @@ impl SystemCatalog {
         })
     }
 
+    /// Resolve the explicit managed-folder name. Existing catalog aliases are accepted for
+    /// lookup, while creation always uses `managed_rom_folder_name`.
+    pub fn system_for_managed_folder_name(&self, value: &str) -> Option<&SystemDefinition> {
+        let normalized = normalize_lookup_name(value);
+        self.systems.iter().find(|system| {
+            normalize_lookup_name(&system.managed_rom_folder_name) == normalized
+                || normalize_lookup_name(&system.display_name) == normalized
+                || system
+                    .aliases
+                    .iter()
+                    .any(|alias| normalize_lookup_name(alias) == normalized)
+        })
+    }
+
+    pub fn systems_for_extension(&self, extension: &str) -> Vec<SystemId> {
+        let extension = extension.to_ascii_lowercase();
+        self.systems
+            .iter()
+            .filter(|system| {
+                system
+                    .supported_extensions
+                    .iter()
+                    .any(|candidate| candidate == &extension)
+            })
+            .map(|system| system.id)
+            .collect()
+    }
+
+    pub fn supports_extension(&self, system_id: SystemId, extension: &str) -> bool {
+        let extension = extension.to_ascii_lowercase();
+        self.system(system_id).is_some_and(|system| {
+            system
+                .supported_extensions
+                .iter()
+                .any(|candidate| candidate == &extension)
+        })
+    }
+
     pub fn bios_requirements(&self) -> impl Iterator<Item = &BiosRequirement> {
         self.systems
             .iter()
@@ -322,6 +389,7 @@ impl SystemCatalog {
 
         let mut system_ids = BTreeSet::new();
         let mut lookup_names = BTreeMap::new();
+        let mut managed_folder_names = BTreeMap::new();
         let mut requirement_ids = BTreeSet::new();
         for system in &self.systems {
             if !system_ids.insert(system.id) {
@@ -330,6 +398,7 @@ impl SystemCatalog {
             if system.display_name.trim().is_empty() || system.manufacturer.trim().is_empty() {
                 return Err(CatalogError::MissingSystemMetadata(system.id));
             }
+            validate_managed_folder_name(system, &mut managed_folder_names)?;
             validate_extensions(system)?;
             register_lookup_name(&mut lookup_names, system.id.as_str(), system.id)?;
             register_lookup_name(&mut lookup_names, &system.display_name, system.id)?;
@@ -487,6 +556,7 @@ fn system(
     display_name: &str,
     manufacturer: &str,
     aliases: &[&str],
+    managed_rom_folder_name: &str,
     extensions: &[&str],
     core_policy: CorePolicy,
     bios_policy: BiosPolicy,
@@ -497,11 +567,49 @@ fn system(
         display_name: display_name.to_owned(),
         manufacturer: manufacturer.to_owned(),
         aliases: aliases.iter().map(|value| (*value).to_owned()).collect(),
+        managed_rom_folder_name: managed_rom_folder_name.to_owned(),
         supported_extensions: extensions.iter().map(|value| (*value).to_owned()).collect(),
         core_policy,
         bios_policy,
         bios_requirements,
     }
+}
+
+fn validate_managed_folder_name(
+    system: &SystemDefinition,
+    lookup_names: &mut BTreeMap<String, SystemId>,
+) -> Result<(), CatalogError> {
+    let folder = system.managed_rom_folder_name.trim();
+    if folder.is_empty()
+        || folder != system.managed_rom_folder_name.as_str()
+        || folder == "."
+        || folder == ".."
+        || folder.contains('/')
+        || folder.contains('\\')
+        || folder.contains(':')
+        || folder.chars().any(char::is_control)
+        || folder.ends_with('.')
+        || folder.ends_with(' ')
+    {
+        return Err(CatalogError::InvalidManagedRomFolderName {
+            system: system.id,
+            folder: system.managed_rom_folder_name.clone(),
+        });
+    }
+
+    let key = normalize_lookup_name(folder);
+    if let Some(existing) = lookup_names.get(&key) {
+        if *existing != system.id {
+            return Err(CatalogError::DuplicateManagedRomFolderName {
+                folder: system.managed_rom_folder_name.clone(),
+                first: *existing,
+                second: system.id,
+            });
+        }
+    } else {
+        lookup_names.insert(key, system.id);
+    }
+    Ok(())
 }
 
 fn validate_extensions(system: &SystemDefinition) -> Result<(), CatalogError> {
@@ -573,6 +681,14 @@ pub enum CatalogError {
     DuplicateSystem(SystemId),
     #[error("system metadata is incomplete for {0}")]
     MissingSystemMetadata(SystemId),
+    #[error("system {system} declares an invalid managed ROM folder name '{folder}'")]
+    InvalidManagedRomFolderName { system: SystemId, folder: String },
+    #[error("managed ROM folder '{folder}' is used by both {first} and {second}")]
+    DuplicateManagedRomFolderName {
+        folder: String,
+        first: SystemId,
+        second: SystemId,
+    },
     #[error("system lookup name '{name}' is used by both {first} and {second}")]
     DuplicateSystemName {
         name: String,
@@ -661,6 +777,33 @@ mod tests {
     }
 
     #[test]
+    fn v1_managed_rom_folders_are_explicit_and_catalog_resolvable() {
+        let catalog = SystemCatalog::v1();
+        let expected = [
+            (SystemId::Nes, "NES"),
+            (SystemId::Snes, "SNES"),
+            (SystemId::Nintendo64, "Nintendo 64"),
+            (SystemId::GameBoy, "Game Boy"),
+            (SystemId::GameBoyColor, "Game Boy Color"),
+            (SystemId::GameBoyAdvance, "Game Boy Advance"),
+            (SystemId::MegaDrive, "Mega Drive"),
+            (SystemId::PlayStation, "PlayStation"),
+            (SystemId::SegaSaturn, "Sega Saturn"),
+            (SystemId::SegaDreamcast, "Sega Dreamcast"),
+            (SystemId::NintendoGameCube, "Nintendo GameCube"),
+        ];
+
+        for (system_id, folder) in expected {
+            let system = catalog.system(system_id).unwrap();
+            assert_eq!(system.managed_rom_folder_name, folder);
+            assert_eq!(
+                catalog.system_for_managed_folder_name(folder).unwrap().id,
+                system_id
+            );
+        }
+    }
+
+    #[test]
     fn aliases_resolve_to_one_logical_system() {
         let catalog = SystemCatalog::v1();
 
@@ -693,6 +836,7 @@ mod tests {
             display_name,
             "Synthetic",
             aliases,
+            id.as_str(),
             extensions,
             CorePolicy::unresolved("synthetic core research"),
             BiosPolicy::NotRequired,
@@ -794,6 +938,7 @@ mod tests {
             "Nintendo Entertainment System",
             "Nintendo",
             &["NES"],
+            "NES",
             &[".nes"],
             CorePolicy::resolved(core_id.clone(), vec![core_id.clone()]),
             BiosPolicy::NotRequired,

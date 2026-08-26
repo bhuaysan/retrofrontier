@@ -102,7 +102,20 @@ This is directional; do not create empty folders without need.
 - progress
 - watcher signals
 
-Scanning should be idempotent.
+Scanning should be idempotent. M4 implements this service in Rust with a distinct discovery →
+relationship-resolution → hashing → transactional per-root reconciliation pipeline. Discovery
+produces an explicit authority snapshot of enumerated directories and protected prefixes, so
+absence reconciliation is granular and cannot infer deletion from an unreadable subtree. `Game`,
+`ContentUnit`, `ContentFile`, and `ContentRoot` are separate domain concepts backed by the
+`content_roots`, `games`, `content_units`, `content_files`, `content_unit_files`, `scan_runs`, and
+`scan_issues` tables. SQL remains behind `LibraryRepository`; Tauri commands expose only typed
+application use cases and snapshots.
+
+The managed root is bootstrapped from the OS document directory and the static catalog's explicit
+managed-folder names. External roots are read-only to automatic maintenance. Filesystem watchers
+only schedule a debounced real scan; they never mutate rows directly. See
+[`docs/LIBRARY_SCANNER.md`](docs/LIBRARY_SCANNER.md) for the reconciliation and relationship
+contract.
 
 ### MetadataService
 - provider abstraction
@@ -156,10 +169,11 @@ explicitly unresolved where documentation has not approved a core. RetroFrontier
 catalog entry as installed and never accepts system RetroArch cores, arbitrary user core paths, or
 user-downloaded cores.
 
-`RuntimeManager::current_verified_core_ids()` is the read-only boundary for runtime availability.
-It reports core components only after the active installation, authenticated manifest, completion
-marker, and installed inventory have passed the existing M2 verification path. It does not apply
-system policy or trust static catalog data.
+`RuntimeManager::verified_snapshot()` is the read-only boundary for runtime availability. It
+returns the effective runtime status and core component IDs from one active-installation
+verification. `RuntimeApplicationService` exposes that coherent snapshot to systems/readiness;
+the query does not apply system policy or trust static catalog data. The older
+`current_verified_core_ids()` compatibility method delegates to the same snapshot boundary.
 
 `BiosService` owns discovery orchestration but not the BIOS files. Its default root is constructed
 from Tauri's OS-specific document directory and `RetroFrontier/BIOS`; it does not hard-code a home
@@ -171,9 +185,10 @@ This flat layout is also the current user-facing policy: system-specific nested 
 automatically searched. Supporting nested BIOS layouts remains a follow-up and is not part of M3.
 
 `SystemReadiness` combines the resolved core policy, verified runtime availability, and required
-BIOS status into inspectable reasons. ROM/game availability is deliberately not part of this
-milestone. The M3 IPC surface exposes one coherent systems response plus a development-only BIOS
-status query; React does not inspect the filesystem, hash BIOS files, or query RuntimeManager.
+BIOS status into inspectable reasons. ROM/game availability is now owned by the M4 library service,
+not readiness. The M3/M4 IPC surfaces expose one coherent systems response, a development-only BIOS
+status query, typed library root/snapshot queries, and scan progress/completion events; React does
+not inspect the filesystem, hash content, or query RuntimeManager.
 
 ### SaveService
 - resolve save directories
@@ -187,6 +202,17 @@ status query; React does not inspect the filesystem, hash BIOS files, or query R
 ```text
 Documents/RetroFrontier/
 ├── ROMs/
+│   ├── NES/
+│   ├── SNES/
+│   ├── Nintendo 64/
+│   ├── Game Boy/
+│   ├── Game Boy Color/
+│   ├── Game Boy Advance/
+│   ├── Mega Drive/
+│   ├── PlayStation/
+│   ├── Sega Saturn/
+│   ├── Sega Dreamcast/
+│   └── Nintendo GameCube/
 └── BIOS/
 ```
 

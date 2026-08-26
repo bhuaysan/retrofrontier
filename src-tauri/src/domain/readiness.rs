@@ -131,6 +131,7 @@ mod tests {
                 display_name: "Nintendo Entertainment System".to_owned(),
                 manufacturer: "Nintendo".to_owned(),
                 aliases: vec!["NES".to_owned()],
+                managed_rom_folder_name: "NES".to_owned(),
                 supported_extensions: vec![".nes".to_owned()],
                 core_policy: CorePolicy::resolved(core_id.clone(), vec![core_id.clone()]),
                 bios_policy: BiosPolicy::NotRequired,

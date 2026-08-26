@@ -1,4 +1,5 @@
 mod app_info;
+pub mod library;
 mod runtime;
 pub mod runtime_manager;
 mod systems;
@@ -7,6 +8,7 @@ use crate::repositories::settings::SettingsRepository;
 
 use crate::adapters::runtime_lock::ApplicationInstanceLock;
 pub use app_info::AppInfoService;
+pub use library::{LibraryApplicationService, TauriScanEventSink};
 pub use runtime::RuntimeApplicationService;
 pub use runtime_manager::RuntimeManager;
 use std::sync::Arc;
@@ -17,6 +19,7 @@ pub struct AppState {
     app_info: AppInfoService,
     runtime: RuntimeApplicationService,
     systems: SystemsApplicationService,
+    library: LibraryApplicationService,
     _instance_lock: Arc<ApplicationInstanceLock>,
 }
 
@@ -26,11 +29,13 @@ impl AppState {
         runtime: RuntimeApplicationService,
         systems: SystemsApplicationService,
         instance_lock: ApplicationInstanceLock,
+        library: LibraryApplicationService,
     ) -> Self {
         Self {
             app_info: AppInfoService::new(settings),
             runtime,
             systems,
+            library,
             _instance_lock: Arc::new(instance_lock),
         }
     }
@@ -45,5 +50,9 @@ impl AppState {
 
     pub fn systems(&self) -> &SystemsApplicationService {
         &self.systems
+    }
+
+    pub fn library(&self) -> &LibraryApplicationService {
+        &self.library
     }
 }

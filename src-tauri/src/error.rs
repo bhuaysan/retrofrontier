@@ -30,6 +30,9 @@ pub enum AppError {
 
     #[error("BIOS path overrides are available only in development builds")]
     BiosOverrideNotAllowed,
+
+    #[error("local game library is unavailable: {0}")]
+    Library(String),
 }
 
 impl AppError {
@@ -43,6 +46,7 @@ impl AppError {
             Self::Catalog(_) => "catalog_invalid",
             Self::Bios(_) => "bios_unavailable",
             Self::BiosOverrideNotAllowed => "bios_override_disabled",
+            Self::Library(_) => "library_unavailable",
         }
     }
 
@@ -60,6 +64,7 @@ impl AppError {
             Self::BiosOverrideNotAllowed => {
                 "BIOS path overrides are available only in development builds."
             }
+            Self::Library(_) => "RetroFrontier could not access the local game library.",
         }
     }
 

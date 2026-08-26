@@ -1,24 +1,52 @@
-use crate::application::RuntimeManager;
+use crate::application::RuntimeApplicationService;
 use crate::domain::bios::{BiosDiscovery, BiosRequirementStatus, BiosRootStatus, SystemBiosStatus};
 use crate::domain::core::{CoreId, CorePolicy};
 use crate::domain::readiness::SystemReadiness;
-use crate::domain::runtime::{RuntimeState, RuntimeStatus};
+use crate::domain::runtime::{RuntimeState, RuntimeStatus, VerifiedRuntimeSnapshot};
 use crate::domain::system::{SystemCatalog, SystemDefinition, SystemId};
 use crate::error::AppError;
 use crate::services::bios::BiosService;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
+
+trait RuntimeSnapshotReader: Send + Sync {
+    fn verified_runtime_snapshot(&self) -> Result<VerifiedRuntimeSnapshot, AppError>;
+}
+
+impl RuntimeSnapshotReader for RuntimeApplicationService {
+    fn verified_runtime_snapshot(&self) -> Result<VerifiedRuntimeSnapshot, AppError> {
+        RuntimeApplicationService::verified_runtime_snapshot(self)
+    }
+}
 
 #[derive(Clone)]
 pub struct SystemsApplicationService {
     catalog: SystemCatalog,
     bios: BiosService,
-    runtime: RuntimeManager,
+    runtime: Arc<dyn RuntimeSnapshotReader>,
 }
 
 impl SystemsApplicationService {
-    pub fn new(catalog: SystemCatalog, bios: BiosService, runtime: RuntimeManager) -> Self {
+    pub fn new(
+        catalog: SystemCatalog,
+        bios: BiosService,
+        runtime: RuntimeApplicationService,
+    ) -> Self {
+        Self {
+            catalog,
+            bios,
+            runtime: Arc::new(runtime),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_runtime_reader(
+        catalog: SystemCatalog,
+        bios: BiosService,
+        runtime: Arc<dyn RuntimeSnapshotReader>,
+    ) -> Self {
         Self {
             catalog,
             bios,
@@ -27,8 +55,9 @@ impl SystemsApplicationService {
     }
 
     pub fn get_systems(&self) -> Result<SystemsResponse, AppError> {
-        let runtime = self.runtime.status().map_err(AppError::Runtime)?;
-        let available_core_ids = self.available_core_ids(&runtime)?;
+        let snapshot = self.runtime.verified_runtime_snapshot()?;
+        let available_core_ids = self.available_core_ids(&snapshot)?;
+        let runtime = snapshot.status;
         let bios = self.bios.discover(None).map_err(AppError::Bios)?;
         Ok(self.build_response(runtime, available_core_ids, bios))
     }
@@ -42,17 +71,19 @@ impl SystemsApplicationService {
             .map_err(AppError::Bios)
     }
 
-    fn available_core_ids(&self, runtime: &RuntimeStatus) -> Result<BTreeSet<CoreId>, AppError> {
+    fn available_core_ids(
+        &self,
+        snapshot: &VerifiedRuntimeSnapshot,
+    ) -> Result<BTreeSet<CoreId>, AppError> {
         if !matches!(
-            runtime.state,
+            snapshot.status.state,
             RuntimeState::Ready | RuntimeState::RollbackAvailable
         ) {
             return Ok(BTreeSet::new());
         }
-        self.runtime
-            .current_verified_core_ids()
-            .map_err(AppError::Runtime)?
-            .into_iter()
+        snapshot
+            .verified_core_ids
+            .iter()
             .map(|id| {
                 CoreId::new(id.as_str()).map_err(|error| AppError::Catalog(error.to_string()))
             })
@@ -171,13 +202,18 @@ pub struct CoreAvailabilityStatus {
 #[cfg(test)]
 mod tests {
     use super::build_system_status;
+    use super::RuntimeSnapshotReader;
+    use super::SystemsApplicationService;
     use crate::domain::bios::{
         BiosPolicy, BiosRequirementStatus, BiosRequirementStatusState, SystemBiosStatus,
     };
     use crate::domain::core::CoreId;
-    use crate::domain::runtime::{RuntimeState, RuntimeStatus};
+    use crate::domain::runtime::{RuntimeState, RuntimeStatus, VerifiedRuntimeSnapshot};
     use crate::domain::system::{SystemCatalog, SystemId};
+    use crate::services::bios::BiosService;
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn unresolved_policy_is_exposed_separately_from_runtime_core_availability() {
@@ -237,5 +273,43 @@ mod tests {
             reason,
             crate::domain::readiness::ReadinessReason::InvalidRequiredBios { .. }
         )));
+    }
+
+    struct CountingSnapshotReader {
+        calls: AtomicUsize,
+        snapshot: VerifiedRuntimeSnapshot,
+    }
+
+    impl RuntimeSnapshotReader for CountingSnapshotReader {
+        fn verified_runtime_snapshot(
+            &self,
+        ) -> Result<VerifiedRuntimeSnapshot, crate::error::AppError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.snapshot.clone())
+        }
+    }
+
+    #[test]
+    fn systems_query_consumes_one_coherent_runtime_snapshot() {
+        let catalog = SystemCatalog::v1();
+        let bios = BiosService::from_catalog("/tmp/retrofrontier-m4-test-bios", &catalog).unwrap();
+        let reader = Arc::new(CountingSnapshotReader {
+            calls: AtomicUsize::new(0),
+            snapshot: VerifiedRuntimeSnapshot {
+                status: RuntimeStatus {
+                    state: RuntimeState::Ready,
+                    installation_id: Some("install-1".to_owned()),
+                    release_id: Some("release-1".to_owned()),
+                    can_rollback: false,
+                    repair_required: false,
+                },
+                verified_core_ids: BTreeSet::new(),
+            },
+        });
+        let service = SystemsApplicationService::with_runtime_reader(catalog, bios, reader.clone());
+
+        service.get_systems().unwrap();
+
+        assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
     }
 }

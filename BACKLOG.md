@@ -1,7 +1,8 @@
 # RetroFrontier Backlog
 
 ## Current Priority
-The project is in planning/foundation. Risky runtime and metadata assumptions should be tested before broad feature implementation.
+The project has completed its local-library foundation. Metadata-provider, launch, and UI work remain
+later milestones; runtime trust and core-policy research remain explicit release gates.
 
 ## M0 — Planning and Repository Foundation
 
@@ -140,9 +141,8 @@ M3 research still open: the repository's core matrix does not approve a default 
 core for any system, and it does not provide authoritative BIOS identities/hashes. The catalog
 keeps both uncertainties explicit; filename candidates are not treated as valid identities.
 
-M3 review follow-up before production runtime artifacts or frequent readiness
-refreshes: reuse one verified runtime snapshot for systems status and core
-availability so a systems query does not repeat full runtime verification.
+M3 review follow-up: complete. Systems/readiness now consumes one coherent
+verified runtime snapshot for status and verified core availability.
 
 Systems:
 - [x] NES
@@ -160,29 +160,43 @@ Systems:
 ## M4 — Library Scanner
 **Model:** Luna Max.
 
-- [ ] reuse one verified runtime snapshot for systems/readiness queries before production runtime artifacts or frequent refreshes (M3 MEDIUM-1)
-- [ ] managed ROM folder structure
-- [ ] persist content roots
-- [ ] external ROM roots
-- [ ] recursive discovery
-- [ ] system hints
-- [ ] format classification
-- [ ] hashing
-- [ ] single-file content
-- [ ] CUE/BIN
-- [ ] CHD
-- [ ] M3U
-- [ ] multi-disc
-- [ ] persist Game/Content Unit/Content File
-- [ ] reconcile removed files
-- [ ] safe moved-content reconciliation
-- [ ] manual rescan
-- [ ] filesystem watcher
-- [ ] coalesced progress
-- [ ] scan issues
-- [ ] integration tests with synthetic fixtures
+- [x] reuse one verified runtime snapshot for systems/readiness queries before production runtime artifacts or frequent refreshes (M3 MEDIUM-1)
+- [x] managed ROM folder structure
+- [x] persist content roots
+- [x] external ROM roots
+- [x] recursive discovery
+- [x] system hints
+- [x] format classification
+- [x] hashing
+- [x] single-file content
+- [x] CUE/BIN
+- [x] CHD
+- [x] GDI
+- [x] M3U
+- [x] multi-disc
+- [x] persist Game/Content Unit/Content File
+- [x] reconcile removed files
+- [x] safe moved-content reconciliation
+- [x] manual rescan
+- [x] filesystem watcher
+- [x] coalesced progress
+- [x] scan issues
+- [x] integration tests with synthetic fixtures
 
 V1: no automatic rename, move, conversion, or deletion.
+
+### M4 corrective-pass behavior
+
+The M4 scanner also enforces canonical containment before reading descriptor or playlist members,
+caps descriptor reads at 256 KiB, preserves verified identity across transient hash failures,
+tracks absence authority per enumerated directory/protected subtree, keeps consumed move candidates
+live and unique, and never falls back to standalone M3U units. CUE/GDI compatibility includes
+BOM/CRLF handling, unquoted CUE filenames, preserved Windows separators, and harmless trailing GDI
+text. These are scanner behavior clarifications, not a new milestone or a change to the normalized
+Game/ContentUnit/ContentFile model.
+
+The remaining M4 review performance, schema, IPC, watcher, startup, and large-scale follow-ups
+remain deferred to their appropriate later milestone.
 
 ## M5 — Metadata
 **Model:** Luna Max.

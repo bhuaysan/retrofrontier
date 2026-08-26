@@ -5,10 +5,12 @@ RetroFrontier is an open-source desktop frontend, game library, and ROM manageme
 The project aims for a zero-configuration experience: install RetroFrontier, add your own ROMs and required BIOS files, and play without manually configuring a separate RetroArch installation.
 
 ## Status
-M1 application foundation is in place: the Tauri 2 shell, React/Vite frontend,
-Rust application layer, SQLite migrations, typed foundation IPC, and Linux CI
-are wired together. Runtime management, scanning, metadata, and game launching
-remain later milestones.
+M1 application foundation, M2 managed-runtime foundations, M3 systems/cores/BIOS
+foundations, and M4 local library scanning are in place. The Rust scanner owns
+content-root bootstrap, recursive discovery, CUE/BIN, GDI, CHD, and M3U
+relationship resolution, hashing, durable reconciliation, and typed scan IPC.
+Metadata enrichment, visual library UI, and game launching remain later
+milestones.
 
 ## Stack
 - Tauri 2
@@ -58,7 +60,10 @@ Documents/RetroFrontier/
 └── BIOS/
 ```
 
-External ROM directories will also be supported.
+External ROM directories can be added as read-only content roots.
+
+The M4 scanner contract and IPC event names are documented in
+[`docs/LIBRARY_SCANNER.md`](docs/LIBRARY_SCANNER.md).
 
 ## Project Documentation
 - [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md)

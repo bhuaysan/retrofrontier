@@ -1,9 +1,9 @@
 # RetroFrontier development
 
-M3 establishes the supported-system catalog, managed-core policy model, BIOS
-discovery/validation boundary, and system-readiness surface. ROM discovery,
-metadata, core selection UI, and game launching remain later milestones and are
-intentionally not part of the local workflow yet.
+M4 establishes the local library scanner, durable content model, root management,
+and system-readiness snapshot boundary. Metadata, library UI, core selection UI,
+and game launching remain later milestones and are intentionally not part of the
+local workflow yet.
 
 ## Prerequisites
 
@@ -43,6 +43,7 @@ pnpm tauri:build
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
+cargo build --manifest-path src-tauri/Cargo.toml --release
 ```
 
 Rust tests use temporary SQLite files. The application database is created in
