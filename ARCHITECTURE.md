@@ -103,7 +103,9 @@ This is directional; do not create empty folders without need.
 - watcher signals
 
 Scanning should be idempotent. M4 implements this service in Rust with a distinct discovery →
-relationship-resolution → hashing → transactional per-root reconciliation pipeline. `Game`,
+relationship-resolution → hashing → transactional per-root reconciliation pipeline. Discovery
+produces an explicit authority snapshot of enumerated directories and protected prefixes, so
+absence reconciliation is granular and cannot infer deletion from an unreadable subtree. `Game`,
 `ContentUnit`, `ContentFile`, and `ContentRoot` are separate domain concepts backed by the
 `content_roots`, `games`, `content_units`, `content_files`, `content_unit_files`, `scan_runs`, and
 `scan_issues` tables. SQL remains behind `LibraryRepository`; Tauri commands expose only typed

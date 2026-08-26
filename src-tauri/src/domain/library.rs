@@ -1,5 +1,6 @@
 use crate::domain::system::{SystemCatalog, SystemId};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fmt;
 
 pub type UnixTimestamp = i64;
@@ -347,6 +348,7 @@ pub struct ScannedFile {
     pub modified_at: UnixTimestamp,
     pub hashes: Option<ContentHashes>,
     pub available: bool,
+    pub hash_failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,13 +367,77 @@ pub struct ScannedUnit {
     pub primary_relative_path: String,
     pub fingerprint: Option<String>,
     pub complete: bool,
+    pub hash_failed: bool,
     pub members: Vec<ScannedMember>,
+}
+
+/// Describes which parts of a root were observed reliably enough to reconcile absence.
+///
+/// A successful directory enumeration is authoritative for its direct children. An unsafe or
+/// incomplete entry protects only that entry/prefix, while a failed enumeration of a directory
+/// protects the whole directory subtree. Unrepresentable entries prevent a root from being fully
+/// authoritative but do not invalidate representable siblings. This keeps absence reconciliation
+/// conservative without making one bad sibling invalidate the complete remainder of a root.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanAuthority {
+    pub root_enumerated: bool,
+    pub enumerated_directories: BTreeSet<String>,
+    pub incomplete_prefixes: BTreeSet<String>,
+    pub has_unrepresentable_entries: bool,
+}
+
+impl ScanAuthority {
+    pub fn mark_directory_enumerated(&mut self, relative_path: &str) {
+        self.enumerated_directories.insert(relative_path.to_owned());
+        if relative_path.is_empty() {
+            self.root_enumerated = true;
+        }
+    }
+
+    pub fn mark_incomplete(&mut self, relative_path: &str) {
+        self.incomplete_prefixes.insert(relative_path.to_owned());
+        if relative_path.is_empty() {
+            self.root_enumerated = false;
+        }
+    }
+
+    pub fn mark_unrepresentable_entry(&mut self) {
+        self.has_unrepresentable_entries = true;
+    }
+
+    pub fn is_fully_authoritative(&self) -> bool {
+        self.root_enumerated
+            && self.incomplete_prefixes.is_empty()
+            && !self.has_unrepresentable_entries
+    }
+
+    pub fn can_reconcile_file(&self, relative_path: &str) -> bool {
+        if !self.root_enumerated {
+            return false;
+        }
+        let parent = relative_path
+            .rsplit_once('/')
+            .map_or("", |(parent, _)| parent);
+        self.enumerated_directories.contains(parent)
+            && !self
+                .incomplete_prefixes
+                .iter()
+                .any(|prefix| path_prefix_contains(prefix, relative_path))
+    }
+}
+
+fn path_prefix_contains(prefix: &str, relative_path: &str) -> bool {
+    prefix.is_empty()
+        || prefix == relative_path
+        || relative_path
+            .strip_prefix(prefix)
+            .is_some_and(|remainder| remainder.starts_with('/'))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannedRoot {
     pub root: ContentRoot,
-    pub authoritative: bool,
+    pub authority: ScanAuthority,
     pub files: Vec<ScannedFile>,
     pub units: Vec<ScannedUnit>,
     pub issues: Vec<ScanIssue>,

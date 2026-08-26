@@ -1,8 +1,8 @@
 use crate::domain::library::{
     roots_overlap, ContentFileRole, ContentFormat, ContentHashes, ContentRoot,
-    ContentRootAvailability, ContentRootKind, ContentUnitKind, ScanCounters, ScanIssue,
-    ScanIssueKind, ScanPhase, ScanProgress, ScanRunId, ScanRunState, ScanSummary, ScannedFile,
-    ScannedMember, ScannedRoot, ScannedUnit,
+    ContentRootAvailability, ContentRootKind, ContentUnitKind, ScanAuthority, ScanCounters,
+    ScanIssue, ScanIssueKind, ScanPhase, ScanProgress, ScanRunId, ScanRunState, ScanSummary,
+    ScannedFile, ScannedMember, ScannedRoot, ScannedUnit,
 };
 use crate::domain::system::{SystemCatalog, SystemId};
 use crate::error::AppError;
@@ -19,6 +19,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const LIBRARY_SCAN_PROGRESS_EVENT: &str = "library-scan-progress";
 pub const LIBRARY_SCAN_COMPLETED_EVENT: &str = "library-scan-completed";
+/// Maximum UTF-8 descriptor text loaded into memory for one CUE, GDI, or M3U file.
+pub const MAX_DESCRIPTOR_SIZE: usize = 256 * 1024;
 
 pub trait ScanEventSink: Send + Sync {
     fn progress(&self, progress: ScanProgress);
@@ -121,7 +123,8 @@ impl ScanService {
                 discovered_roots.push(DiscoveredRoot {
                     root: root.clone(),
                     root_path: PathBuf::from(&root.path),
-                    authoritative: false,
+                    canonical_root: None,
+                    authority: ScanAuthority::default(),
                     candidates: BTreeMap::new(),
                     issues: vec![issue(
                         Some(root.id),
@@ -247,6 +250,7 @@ struct Candidate {
     relevant: bool,
     hashes: Option<ContentHashes>,
     hash_available: bool,
+    hash_failed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -259,7 +263,8 @@ struct ClassificationIssue {
 struct DiscoveredRoot {
     root: ContentRoot,
     root_path: PathBuf,
-    authoritative: bool,
+    canonical_root: Option<PathBuf>,
+    authority: ScanAuthority,
     candidates: BTreeMap<String, Candidate>,
     issues: Vec<ScanIssue>,
 }
@@ -269,14 +274,15 @@ fn discover_root(root: &ContentRoot, catalog: &SystemCatalog) -> DiscoveredRoot 
     let mut discovered = DiscoveredRoot {
         root: root.clone(),
         root_path: root_path.clone(),
-        authoritative: true,
+        canonical_root: None,
+        authority: ScanAuthority::default(),
         candidates: BTreeMap::new(),
         issues: Vec::new(),
     };
 
     if !root_path.is_absolute() {
-        discovered.authoritative = false;
         discovered.root.availability = ContentRootAvailability::Unsafe;
+        discovered.authority.mark_incomplete("");
         discovered.issues.push(issue(
             Some(root.id),
             ScanIssueKind::UnsafePath,
@@ -288,9 +294,9 @@ fn discover_root(root: &ContentRoot, catalog: &SystemCatalog) -> DiscoveredRoot 
     }
 
     match fs::symlink_metadata(&root_path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            discovered.authoritative = false;
+        Ok(metadata) if is_symlink_or_reparse_point(&metadata) => {
             discovered.root.availability = ContentRootAvailability::Unsafe;
+            discovered.authority.mark_incomplete("");
             discovered.issues.push(issue(
                 Some(root.id),
                 ScanIssueKind::UnsafePath,
@@ -301,8 +307,8 @@ fn discover_root(root: &ContentRoot, catalog: &SystemCatalog) -> DiscoveredRoot 
             return discovered;
         }
         Ok(metadata) if !metadata.is_dir() => {
-            discovered.authoritative = false;
             discovered.root.availability = ContentRootAvailability::Unavailable;
+            discovered.authority.mark_incomplete("");
             discovered.issues.push(issue(
                 Some(root.id),
                 ScanIssueKind::RootUnavailable,
@@ -313,8 +319,8 @@ fn discover_root(root: &ContentRoot, catalog: &SystemCatalog) -> DiscoveredRoot 
             return discovered;
         }
         Err(error) => {
-            discovered.authoritative = false;
             discovered.root.availability = ContentRootAvailability::Unavailable;
+            discovered.authority.mark_incomplete("");
             discovered.issues.push(issue(
                 Some(root.id),
                 ScanIssueKind::RootUnavailable,
@@ -327,9 +333,38 @@ fn discover_root(root: &ContentRoot, catalog: &SystemCatalog) -> DiscoveredRoot 
         Ok(_) => {}
     }
 
+    let canonical_root = match fs::canonicalize(&root_path) {
+        Ok(path) if path.is_dir() => path,
+        Ok(_) => {
+            discovered.root.availability = ContentRootAvailability::Unavailable;
+            discovered.authority.mark_incomplete("");
+            discovered.issues.push(issue(
+                Some(discovered.root.id),
+                ScanIssueKind::RootUnavailable,
+                None,
+                None,
+                Some("configured content root is not a directory".to_owned()),
+            ));
+            return discovered;
+        }
+        Err(error) => {
+            discovered.root.availability = ContentRootAvailability::Unavailable;
+            discovered.authority.mark_incomplete("");
+            discovered.issues.push(issue(
+                Some(discovered.root.id),
+                ScanIssueKind::RootUnavailable,
+                None,
+                None,
+                Some(error.to_string()),
+            ));
+            return discovered;
+        }
+    };
+    discovered.canonical_root = Some(canonical_root);
+
     let mut relative = Vec::new();
     walk_directory(&mut discovered, catalog, &mut relative);
-    if discovered.authoritative {
+    if discovered.authority.is_fully_authoritative() {
         discovered.root.availability = ContentRootAvailability::Available;
     } else if discovered.root.availability == ContentRootAvailability::Available {
         discovered.root.availability = ContentRootAvailability::PartiallyAvailable;
@@ -346,7 +381,9 @@ fn walk_directory(
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) => {
-            discovered.authoritative = false;
+            let relative_directory =
+                relative_path_from_components(relative_components).unwrap_or_default();
+            discovered.authority.mark_incomplete(&relative_directory);
             discovered.root.availability = ContentRootAvailability::PartiallyAvailable;
             discovered.issues.push(issue(
                 Some(discovered.root.id),
@@ -359,12 +396,17 @@ fn walk_directory(
         }
     };
 
+    let relative_directory = relative_path_from_components(relative_components).unwrap_or_default();
+    discovered
+        .authority
+        .mark_directory_enumerated(&relative_directory);
+
     let mut named_entries = Vec::new();
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                discovered.authoritative = false;
+                discovered.authority.mark_incomplete(&relative_directory);
                 discovered.root.availability = ContentRootAvailability::PartiallyAvailable;
                 discovered.issues.push(issue(
                     Some(discovered.root.id),
@@ -378,7 +420,7 @@ fn walk_directory(
         };
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
-            discovered.authoritative = false;
+            discovered.authority.mark_unrepresentable_entry();
             discovered.root.availability = ContentRootAvailability::PartiallyAvailable;
             discovered.issues.push(issue(
                 Some(discovered.root.id),
@@ -390,7 +432,7 @@ fn walk_directory(
             continue;
         };
         if name.contains('\\') {
-            discovered.authoritative = false;
+            discovered.authority.mark_unrepresentable_entry();
             discovered.root.availability = ContentRootAvailability::PartiallyAvailable;
             discovered.issues.push(issue(
                 Some(discovered.root.id),
@@ -413,7 +455,7 @@ fn walk_directory(
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) => {
-                discovered.authoritative = false;
+                discovered.authority.mark_incomplete(&relative_path);
                 discovered.root.availability = ContentRootAvailability::PartiallyAvailable;
                 discovered.issues.push(issue(
                     Some(discovered.root.id),
@@ -426,8 +468,8 @@ fn walk_directory(
                 continue;
             }
         };
-        if metadata.file_type().is_symlink() {
-            discovered.authoritative = false;
+        if is_symlink_or_reparse_point(&metadata) {
+            discovered.authority.mark_incomplete(&relative_path);
             discovered.root.availability = ContentRootAvailability::PartiallyAvailable;
             discovered.issues.push(issue(
                 Some(discovered.root.id),
@@ -445,7 +487,7 @@ fn walk_directory(
             continue;
         }
         if !metadata.is_file() {
-            discovered.authoritative = false;
+            discovered.authority.mark_incomplete(&relative_path);
             discovered.root.availability = ContentRootAvailability::PartiallyAvailable;
             discovered.issues.push(issue(
                 Some(discovered.root.id),
@@ -485,6 +527,7 @@ fn walk_directory(
                 relevant: false,
                 hashes: None,
                 hash_available: false,
+                hash_failed: false,
             },
         );
         relative_components.pop();
@@ -565,7 +608,7 @@ struct RawUnit {
 struct ResolvedRoot {
     root: ContentRoot,
     root_path: PathBuf,
-    authoritative: bool,
+    authority: ScanAuthority,
     candidates: BTreeMap<String, Candidate>,
     units: Vec<RawUnit>,
     issues: Vec<ScanIssue>,
@@ -580,7 +623,8 @@ fn resolve_root(discovered: DiscoveredRoot, catalog: &SystemCatalog) -> Resolved
 struct RelationshipResolver<'a> {
     root: ContentRoot,
     root_path: PathBuf,
-    authoritative: bool,
+    canonical_root: Option<PathBuf>,
+    authority: ScanAuthority,
     catalog: &'a SystemCatalog,
     candidates: BTreeMap<String, Candidate>,
     units: Vec<RawUnit>,
@@ -596,12 +640,34 @@ struct M3uSpec {
     valid: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnsureCandidateResult {
+    Present,
+    Missing,
+    Rejected,
+}
+
+#[derive(Debug)]
+enum ContainedPathError {
+    Missing,
+    Unsafe(&'static str),
+    Io(io::Error),
+}
+
+#[derive(Debug)]
+enum DescriptorReadError {
+    Unsafe,
+    TooLarge,
+    Io(io::Error),
+}
+
 impl<'a> RelationshipResolver<'a> {
     fn new(discovered: DiscoveredRoot, catalog: &'a SystemCatalog) -> Self {
         Self {
             root: discovered.root,
             root_path: discovered.root_path,
-            authoritative: discovered.authoritative,
+            canonical_root: discovered.canonical_root,
+            authority: discovered.authority,
             catalog,
             candidates: discovered.candidates,
             units: Vec::new(),
@@ -631,22 +697,23 @@ impl<'a> RelationshipResolver<'a> {
             self.build_m3u_unit(&relative_path);
         }
 
-        // A cycle can make every playlist appear to have an incoming edge. Build one of those
-        // playlists as a root as well so the cycle is surfaced as an issue instead of silently
-        // disappearing from the local library.
-        let m3u_paths: Vec<_> = self
-            .candidates
-            .values()
-            .filter(|candidate| {
-                candidate.format == ContentFormat::M3u && candidate.system_id.is_some()
-            })
-            .map(|candidate| candidate.relative_path.clone())
-            .collect();
-        for relative_path in m3u_paths {
-            if !self.owned_paths.contains(&relative_path) {
-                self.build_m3u_unit(&relative_path);
+        // A cycle can make every playlist appear to have an incoming edge. Keep breaking one
+        // remaining playlist at a time until every playlist has an owning unit, so independent
+        // cycles are all surfaced rather than falling through to standalone handling.
+        loop {
+            let next_unowned = self
+                .candidates
+                .values()
+                .find(|candidate| {
+                    candidate.format == ContentFormat::M3u
+                        && candidate.system_id.is_some()
+                        && !self.owned_paths.contains(&candidate.relative_path)
+                })
+                .map(|candidate| candidate.relative_path.clone());
+            let Some(relative_path) = next_unowned else {
                 break;
-            }
+            };
+            self.build_m3u_unit(&relative_path);
         }
 
         let descriptor_paths: Vec<_> = self
@@ -676,6 +743,9 @@ impl<'a> RelationshipResolver<'a> {
             let Some(system_id) = candidate.system_id else {
                 continue;
             };
+            if candidate.format == ContentFormat::M3u {
+                continue;
+            }
             candidate.relevant = true;
             self.owned_paths.insert(relative_path.clone());
             self.units.push(RawUnit {
@@ -708,7 +778,7 @@ impl<'a> RelationshipResolver<'a> {
                 // extension is not itself a standalone format for the hinted system.
                 continue;
             }
-            self.authoritative = false;
+            self.authority.mark_incomplete(&relative_path);
             self.root.availability = ContentRootAvailability::PartiallyAvailable;
             self.issues.push(issue(
                 Some(self.root.id),
@@ -757,7 +827,35 @@ impl<'a> RelationshipResolver<'a> {
                         }
                     }
                 }
-                Err(error) => {
+                Err(DescriptorReadError::Unsafe) => {
+                    self.issues.push(issue(
+                        Some(self.root.id),
+                        ScanIssueKind::UnsafeDescriptorReference,
+                        Some(relative_path.clone()),
+                        None,
+                        Some("descriptor path is outside the configured content root".to_owned()),
+                    ));
+                    M3uSpec {
+                        entries: Vec::new(),
+                        valid: false,
+                    }
+                }
+                Err(DescriptorReadError::TooLarge) => {
+                    self.issues.push(issue(
+                        Some(self.root.id),
+                        ScanIssueKind::MalformedM3u,
+                        Some(relative_path.clone()),
+                        None,
+                        Some(format!(
+                            "descriptor exceeds the maximum size of {MAX_DESCRIPTOR_SIZE} bytes"
+                        )),
+                    ));
+                    M3uSpec {
+                        entries: Vec::new(),
+                        valid: false,
+                    }
+                }
+                Err(DescriptorReadError::Io(error)) => {
                     self.issues.push(issue(
                         Some(self.root.id),
                         ScanIssueKind::MalformedM3u,
@@ -879,7 +977,11 @@ impl<'a> RelationshipResolver<'a> {
                 }
             };
             let present = self.ensure_candidate(&referenced);
-            if !present {
+            if present != EnsureCandidateResult::Present {
+                if present == EnsureCandidateResult::Rejected {
+                    complete = false;
+                    continue;
+                }
                 self.issues.push(issue(
                     Some(self.root.id),
                     ScanIssueKind::MissingReferencedFile,
@@ -1001,7 +1103,33 @@ impl<'a> RelationshipResolver<'a> {
                 ));
                 return false;
             }
-            Err(error) => {
+            Err(DescriptorReadError::Unsafe) => {
+                self.issues.push(issue(
+                    Some(self.root.id),
+                    ScanIssueKind::UnsafeDescriptorReference,
+                    Some(relative_path.to_owned()),
+                    None,
+                    Some("descriptor path is outside the configured content root".to_owned()),
+                ));
+                return false;
+            }
+            Err(DescriptorReadError::TooLarge) => {
+                self.issues.push(issue(
+                    Some(self.root.id),
+                    if format == Some(ContentFormat::Cue) {
+                        ScanIssueKind::MalformedCue
+                    } else {
+                        ScanIssueKind::MalformedGdi
+                    },
+                    Some(relative_path.to_owned()),
+                    None,
+                    Some(format!(
+                        "descriptor exceeds the maximum size of {MAX_DESCRIPTOR_SIZE} bytes"
+                    )),
+                ));
+                return false;
+            }
+            Err(DescriptorReadError::Io(error)) => {
                 self.issues.push(issue(
                     Some(self.root.id),
                     if format == Some(ContentFormat::Cue) {
@@ -1033,8 +1161,13 @@ impl<'a> RelationshipResolver<'a> {
                 }
             };
             let present = self.ensure_candidate(&referenced);
-            self.add_member(members, &referenced, track_role, present);
-            if !present {
+            if present == EnsureCandidateResult::Rejected {
+                complete = false;
+                continue;
+            }
+            let is_present = present == EnsureCandidateResult::Present;
+            self.add_member(members, &referenced, track_role, is_present);
+            if !is_present {
                 self.issues.push(issue(
                     Some(self.root.id),
                     ScanIssueKind::MissingReferencedFile,
@@ -1114,34 +1247,54 @@ impl<'a> RelationshipResolver<'a> {
         });
     }
 
-    fn ensure_candidate(&mut self, relative_path: &str) -> bool {
-        if self.candidates.contains_key(relative_path) {
-            return true;
-        }
-        let path = components_to_path_from_relative(&self.root_path, relative_path);
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
+    fn ensure_candidate(&mut self, relative_path: &str) -> EnsureCandidateResult {
+        let path = match resolve_contained_path(
+            &self.root_path,
+            self.canonical_root.as_deref(),
+            relative_path,
+        ) {
+            Ok(path) => path,
+            Err(ContainedPathError::Missing) => return EnsureCandidateResult::Missing,
+            Err(ContainedPathError::Unsafe(detail)) => {
                 self.issues.push(issue(
                     Some(self.root.id),
-                    ScanIssueKind::UnsafePath,
+                    ScanIssueKind::UnsafeDescriptorReference,
                     Some(relative_path.to_owned()),
                     None,
-                    Some("referenced symbolic links are not followed".to_owned()),
+                    Some(detail.to_owned()),
                 ));
-                return false;
+                return EnsureCandidateResult::Rejected;
             }
+            Err(ContainedPathError::Io(error)) => {
+                self.issues.push(issue(
+                    Some(self.root.id),
+                    ScanIssueKind::UnreadablePath,
+                    Some(relative_path.to_owned()),
+                    None,
+                    Some(error.to_string()),
+                ));
+                return EnsureCandidateResult::Rejected;
+            }
+        };
+        if let Some(candidate) = self.candidates.get_mut(relative_path) {
+            candidate.path = path;
+            return EnsureCandidateResult::Present;
+        }
+        let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_file() => metadata,
             Ok(_) => {
                 self.issues.push(issue(
                     Some(self.root.id),
-                    ScanIssueKind::UnsafePath,
+                    ScanIssueKind::UnsafeDescriptorReference,
                     Some(relative_path.to_owned()),
                     None,
                     Some("referenced path is not a regular file".to_owned()),
                 ));
-                return false;
+                return EnsureCandidateResult::Rejected;
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return EnsureCandidateResult::Missing;
+            }
             Err(error) => {
                 self.issues.push(issue(
                     Some(self.root.id),
@@ -1150,7 +1303,7 @@ impl<'a> RelationshipResolver<'a> {
                     None,
                     Some(error.to_string()),
                 ));
-                return false;
+                return EnsureCandidateResult::Rejected;
             }
         };
         let extension = Path::new(relative_path)
@@ -1174,23 +1327,49 @@ impl<'a> RelationshipResolver<'a> {
                 relevant: false,
                 hashes: None,
                 hash_available: false,
+                hash_failed: false,
             },
         );
-        true
+        EnsureCandidateResult::Present
     }
 
-    fn read_text_file(&self, relative_path: &str) -> Result<String, io::Error> {
-        fs::read_to_string(components_to_path_from_relative(
+    fn read_text_file(&self, relative_path: &str) -> Result<String, DescriptorReadError> {
+        let path = resolve_contained_path(
             &self.root_path,
+            self.canonical_root.as_deref(),
             relative_path,
-        ))
+        )
+        .map_err(|error| match error {
+            ContainedPathError::Missing => DescriptorReadError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "descriptor not found",
+            )),
+            ContainedPathError::Unsafe(_) => DescriptorReadError::Unsafe,
+            ContainedPathError::Io(error) => DescriptorReadError::Io(error),
+        })?;
+        let file = File::open(path).map_err(DescriptorReadError::Io)?;
+        let mut limited = file.take((MAX_DESCRIPTOR_SIZE as u64).saturating_add(1));
+        let mut bytes = Vec::new();
+        limited
+            .read_to_end(&mut bytes)
+            .map_err(DescriptorReadError::Io)?;
+        if bytes.len() > MAX_DESCRIPTOR_SIZE {
+            return Err(DescriptorReadError::TooLarge);
+        }
+        let contents = String::from_utf8(bytes).map_err(|_| {
+            DescriptorReadError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "descriptor is not valid UTF-8",
+            ))
+        })?;
+        Ok(strip_utf8_bom(contents))
     }
 
     fn into_resolved_root(self) -> ResolvedRoot {
         ResolvedRoot {
             root: self.root,
             root_path: self.root_path,
-            authoritative: self.authoritative,
+            authority: self.authority,
             candidates: self.candidates,
             units: self.units,
             issues: self.issues,
@@ -1224,6 +1403,7 @@ fn hash_resolved_root(mut resolved: ResolvedRoot) -> (ScannedRoot, u64, u64, u64
             }
             Err(error) => {
                 candidate.hash_available = false;
+                candidate.hash_failed = true;
                 issue_count = issue_count.saturating_add(1);
                 resolved.issues.push(issue(
                     Some(resolved.root.id),
@@ -1248,6 +1428,7 @@ fn hash_resolved_root(mut resolved: ResolvedRoot) -> (ScannedRoot, u64, u64, u64
             modified_at: candidate.metadata.modified_at,
             hashes: candidate.hashes.clone(),
             available: candidate.hash_available,
+            hash_failed: candidate.hash_failed,
         });
     }
     files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
@@ -1278,6 +1459,12 @@ fn hash_resolved_root(mut resolved: ResolvedRoot) -> (ScannedRoot, u64, u64, u64
         } else {
             None
         };
+        let hash_failed = unit.members.iter().any(|member| {
+            resolved
+                .candidates
+                .get(&member.relative_path)
+                .is_some_and(|candidate| candidate.hash_failed)
+        });
         units.push(ScannedUnit {
             system_id: unit.system_id,
             kind: unit.kind,
@@ -1285,6 +1472,7 @@ fn hash_resolved_root(mut resolved: ResolvedRoot) -> (ScannedRoot, u64, u64, u64
             primary_relative_path: unit.primary_relative_path,
             fingerprint,
             complete,
+            hash_failed,
             members: unit.members,
         });
     }
@@ -1292,7 +1480,7 @@ fn hash_resolved_root(mut resolved: ResolvedRoot) -> (ScannedRoot, u64, u64, u64
     (
         ScannedRoot {
             root: resolved.root,
-            authoritative: resolved.authoritative,
+            authority: resolved.authority,
             files,
             units,
             issues: resolved.issues,
@@ -1334,11 +1522,16 @@ fn content_fingerprint(
 
 fn parse_cue_file(contents: &str) -> Result<Vec<String>, String> {
     let mut references = Vec::new();
-    for line in contents.lines() {
+    for line in without_utf8_bom(contents).lines() {
         let trimmed = line.trim();
-        if !trimmed
-            .get(..4)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file"))
+        let Some(prefix) = trimmed.get(..4) else {
+            continue;
+        };
+        if !prefix.eq_ignore_ascii_case("file")
+            || trimmed
+                .get(4..)
+                .and_then(|remainder| remainder.chars().next())
+                .is_some_and(|character| !character.is_whitespace())
         {
             continue;
         }
@@ -1346,29 +1539,30 @@ fn parse_cue_file(contents: &str) -> Result<Vec<String>, String> {
         let Some(quote) = remainder.chars().next() else {
             return Err("FILE directive has no filename".to_owned());
         };
-        if quote != '"' && quote != '\'' {
-            return Err("FILE directive filename must be quoted".to_owned());
-        }
-        let mut escaped = false;
-        let mut value = String::new();
-        let mut closed = false;
-        for character in remainder[quote.len_utf8()..].chars() {
-            if escaped {
-                value.push(character);
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == quote {
-                closed = true;
-                break;
-            } else {
+        if quote == '"' || quote == '\'' {
+            let mut value = String::new();
+            let mut closed = false;
+            for character in remainder[quote.len_utf8()..].chars() {
+                if character == quote {
+                    closed = true;
+                    break;
+                }
                 value.push(character);
             }
+            if !closed || value.is_empty() {
+                return Err("FILE directive has an unterminated or empty filename".to_owned());
+            }
+            references.push(value);
+        } else {
+            let mut fields = remainder.split_whitespace();
+            let Some(value) = fields.next() else {
+                return Err("FILE directive has no filename".to_owned());
+            };
+            if value.is_empty() {
+                return Err("FILE directive has an empty filename".to_owned());
+            }
+            references.push(value.to_owned());
         }
-        if !closed || value.is_empty() {
-            return Err("FILE directive has an unterminated or empty filename".to_owned());
-        }
-        references.push(value);
     }
     if references.is_empty() {
         return Err("CUE sheet contains no FILE directives".to_owned());
@@ -1377,7 +1571,7 @@ fn parse_cue_file(contents: &str) -> Result<Vec<String>, String> {
 }
 
 fn parse_gdi_file(contents: &str) -> Result<Vec<String>, String> {
-    let mut lines = contents
+    let mut lines = without_utf8_bom(contents)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty());
@@ -1386,8 +1580,13 @@ fn parse_gdi_file(contents: &str) -> Result<Vec<String>, String> {
         .ok_or_else(|| "GDI descriptor is empty".to_owned())?
         .parse::<usize>()
         .map_err(|_| "GDI track count is invalid".to_owned())?;
-    let mut references = Vec::with_capacity(track_count);
+    // The declared count is untrusted input. The bounded descriptor read limits the number of
+    // rows we can inspect, so do not use an attacker-controlled count as an allocation size.
+    let mut references = Vec::new();
     for line in lines {
+        if references.len() == track_count {
+            break;
+        }
         let fields = split_descriptor_fields(line)?;
         if fields.len() < 5 {
             return Err("GDI track line has too few fields".to_owned());
@@ -1404,17 +1603,7 @@ fn split_descriptor_fields(line: &str) -> Result<Vec<String>, String> {
     let mut fields = Vec::new();
     let mut current = String::new();
     let mut quote = None;
-    let mut escaped = false;
     for character in line.chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-            continue;
-        }
-        if character == '\\' && quote.is_some() {
-            escaped = true;
-            continue;
-        }
         if let Some(expected) = quote {
             if character == expected {
                 quote = None;
@@ -1431,7 +1620,7 @@ fn split_descriptor_fields(line: &str) -> Result<Vec<String>, String> {
             current.push(character);
         }
     }
-    if quote.is_some() || escaped {
+    if quote.is_some() {
         return Err("descriptor field has an unterminated quote".to_owned());
     }
     if !current.is_empty() {
@@ -1471,15 +1660,94 @@ fn safe_relative_reference(descriptor_path: &str, raw: &str) -> Result<String, S
     Ok(components.join("/"))
 }
 
+fn resolve_contained_path(
+    root: &Path,
+    canonical_root: Option<&Path>,
+    relative_path: &str,
+) -> Result<PathBuf, ContainedPathError> {
+    let Some(canonical_root) = canonical_root else {
+        return Err(ContainedPathError::Unsafe(
+            "configured content root could not be canonicalized",
+        ));
+    };
+    if relative_path.is_empty()
+        || relative_path.starts_with('/')
+        || relative_path.starts_with('\\')
+        || relative_path.as_bytes().get(1) == Some(&b':')
+        || Path::new(relative_path).is_absolute()
+    {
+        return Err(ContainedPathError::Unsafe(
+            "absolute descriptor references are not allowed",
+        ));
+    }
+
+    let mut path = root.to_path_buf();
+    for component in relative_path.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            return Err(ContainedPathError::Unsafe(
+                "descriptor reference contains an unsafe path component",
+            ));
+        }
+        path.push(component);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(ContainedPathError::Missing);
+            }
+            Err(error) => return Err(ContainedPathError::Io(error)),
+        };
+        if is_symlink_or_reparse_point(&metadata) {
+            return Err(ContainedPathError::Unsafe(
+                "symbolic links and reparse points are not followed for descriptor references",
+            ));
+        }
+    }
+
+    let canonical_path = match fs::canonicalize(&path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(ContainedPathError::Missing);
+        }
+        Err(error) => return Err(ContainedPathError::Io(error)),
+    };
+    if !canonical_path.starts_with(canonical_root) {
+        return Err(ContainedPathError::Unsafe(
+            "descriptor reference escapes the configured content root",
+        ));
+    }
+    Ok(canonical_path)
+}
+
+fn strip_utf8_bom(contents: String) -> String {
+    if let Some(stripped) = contents.strip_prefix('\u{feff}') {
+        stripped.to_owned()
+    } else {
+        contents
+    }
+}
+
+fn is_symlink_or_reparse_point(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        metadata.file_type().is_symlink()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+fn without_utf8_bom(contents: &str) -> &str {
+    contents.strip_prefix('\u{feff}').unwrap_or(contents)
+}
+
 fn components_to_path(root: &Path, components: &[String]) -> PathBuf {
     components
         .iter()
-        .fold(root.to_path_buf(), |path, component| path.join(component))
-}
-
-fn components_to_path_from_relative(root: &Path, relative_path: &str) -> PathBuf {
-    relative_path
-        .split('/')
         .fold(root.to_path_buf(), |path, component| path.join(component))
 }
 
@@ -1587,14 +1855,14 @@ fn hash_file(root: &Path, candidate: &Candidate) -> Result<ContentHashes, io::Er
             "file escaped its configured content root",
         ));
     }
-    let metadata_before = fs::symlink_metadata(&candidate.path)?;
-    if metadata_before.file_type().is_symlink() || !metadata_before.is_file() {
+    let metadata_before = fs::symlink_metadata(&canonical_file)?;
+    if is_symlink_or_reparse_point(&metadata_before) || !metadata_before.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "file is no longer a regular non-link file",
         ));
     }
-    let mut file = File::open(&candidate.path)?;
+    let mut file = File::open(&canonical_file)?;
     let mut crc = Crc32Hasher::new();
     let mut md5 = md5::Md5::new();
     let mut sha1 = Sha1::new();
@@ -1608,7 +1876,7 @@ fn hash_file(root: &Path, candidate: &Candidate) -> Result<ContentHashes, io::Er
         md5.update(&buffer[..read]);
         sha1.update(&buffer[..read]);
     }
-    let metadata_after = fs::symlink_metadata(&candidate.path)?;
+    let metadata_after = fs::symlink_metadata(&canonical_file)?;
     if metadata_before.len() != metadata_after.len()
         || modified_timestamp(&metadata_before) != modified_timestamp(&metadata_after)
     {
@@ -1639,15 +1907,17 @@ mod tests {
     use super::{
         hash_file, parse_cue_file, parse_gdi_file, safe_relative_reference,
         split_descriptor_fields, Candidate, FileMetadata, ProgressReporter, ScanEventSink,
-        ScanService,
+        ScanService, MAX_DESCRIPTOR_SIZE,
     };
     use crate::adapters::database::Database;
     use crate::domain::library::{
-        ContentFileRole, ContentFormat, ContentRoot, ContentRootAvailability, ContentUnitKind,
-        ScanCounters, ScanIssueKind, ScanPhase, ScanProgress, ScanRunId, ScanRunState, ScanSummary,
+        ContentFileAvailability, ContentFileRole, ContentFormat, ContentRoot,
+        ContentRootAvailability, ContentUnitAvailability, ContentUnitKind, ScanCounters,
+        ScanIssueKind, ScanPhase, ScanProgress, ScanRunId, ScanRunState, ScanSummary,
     };
     use crate::domain::system::{SystemCatalog, SystemId};
     use crate::repositories::library::LibraryRepository;
+    use std::collections::BTreeSet;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::PathBuf;
@@ -1710,26 +1980,60 @@ mod tests {
     }
 
     #[test]
-    fn cue_parser_preserves_file_order_and_supports_quoted_names() {
-        let references = parse_cue_file(
-            r#"FILE "track 01.bin" BINARY
-TRACK 01 MODE1/2352
-FILE 'track 02.bin' BINARY
-TRACK 02 AUDIO"#,
-        )
-        .unwrap();
-        assert_eq!(references, vec!["track 01.bin", "track 02.bin"]);
+    fn cue_parser_accepts_supported_file_forms() {
+        let cases = [
+            (
+                "quoted",
+                "FILE \"track 01.bin\" BINARY\nFILE 'track 02.bin' BINARY",
+                vec!["track 01.bin", "track 02.bin"],
+            ),
+            ("unquoted", "FILE game.bin BINARY", vec!["game.bin"]),
+            (
+                "windows separators",
+                r#"FILE "sub\game.bin" BINARY"#,
+                vec!["sub\\game.bin"],
+            ),
+            (
+                "utf8 bom",
+                "\u{feff}FILE \"game.bin\" BINARY",
+                vec!["game.bin"],
+            ),
+            (
+                "crlf",
+                "FILE game.bin BINARY\r\nFILE second.bin BINARY\r\n",
+                vec!["game.bin", "second.bin"],
+            ),
+        ];
+        for (name, contents, expected) in cases {
+            assert_eq!(parse_cue_file(contents).unwrap(), expected, "{name}");
+        }
+        assert!(parse_cue_file("FILEFOO \"game.bin\" BINARY").is_err());
     }
 
     #[test]
-    fn gdi_parser_reads_ordered_track_filenames() {
-        let references = parse_gdi_file(
-            r#"2
-1 0 4 2352 "track01.bin" 0
-2 45000 0 2352 "track02.bin" 0"#,
-        )
-        .unwrap();
-        assert_eq!(references, vec!["track01.bin", "track02.bin"]);
+    fn gdi_parser_accepts_bom_crlf_and_trailing_non_track_text() {
+        let cases = [
+            (
+                "normal",
+                "2\n1 0 4 2352 \"track01.bin\" 0\n2 45000 0 2352 \"track02.bin\" 0",
+            ),
+            (
+                "bom and crlf",
+                "\u{feff}2\r\n1 0 4 2352 \"track01.bin\" 0\r\n2 45000 0 2352 \"track02.bin\" 0\r\n",
+            ),
+            (
+                "trailing comment",
+                "2\n1 0 4 2352 \"track01.bin\" 0\n2 45000 0 2352 \"track02.bin\" 0\n// generated by tool",
+            ),
+        ];
+        for (name, contents) in cases {
+            assert_eq!(
+                parse_gdi_file(contents).unwrap(),
+                vec!["track01.bin", "track02.bin"],
+                "{name}"
+            );
+        }
+        assert!(parse_gdi_file("18446744073709551615").is_err());
     }
 
     #[test]
@@ -1878,6 +2182,27 @@ TRACK 02 AUDIO"#,
         assert_eq!(unit.files[2].role, ContentFileRole::Track);
         assert_eq!(unit.files[1].file.relative_path, "disc/track 01.bin");
         assert_eq!(unit.files[2].file.relative_path, "disc/track 02.bin");
+    }
+
+    #[tokio::test]
+    async fn unquoted_cue_file_produces_an_available_ordered_unit() {
+        let context = test_context(Some(SystemId::PlayStation)).await;
+        write_fixture(
+            &context.root,
+            "disc/game.cue",
+            b"FILE track02.bin BINARY\r\nFILE track01.bin BINARY\r\n",
+        );
+        write_fixture(&context.root, "disc/track02.bin", &[2]);
+        write_fixture(&context.root, "disc/track01.bin", &[1]);
+
+        context.scanner.scan_once().await.unwrap();
+        let snapshot = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(snapshot.games.len(), 1);
+        let unit = &snapshot.games[0].content_units[0];
+        assert_eq!(unit.kind, ContentUnitKind::CueBin);
+        assert_eq!(unit.availability, ContentUnitAvailability::Available);
+        assert_eq!(unit.files[1].file.relative_path, "disc/track02.bin");
+        assert_eq!(unit.files[2].file.relative_path, "disc/track01.bin");
     }
 
     #[tokio::test]
@@ -2116,6 +2441,53 @@ TRACK 02 AUDIO"#,
     }
 
     #[tokio::test]
+    async fn independent_m3u_cycles_are_all_incomplete_and_never_standalone() {
+        let context = test_context(Some(SystemId::PlayStation)).await;
+        write_fixture(&context.root, "a.m3u", b"b.m3u\n");
+        write_fixture(&context.root, "b.m3u", b"a.m3u\n");
+        write_fixture(&context.root, "c.m3u", b"d.m3u\n");
+        write_fixture(&context.root, "d.m3u", b"c.m3u\n");
+
+        context.scanner.scan_once().await.unwrap();
+        let snapshot = context.repository.get_library_snapshot().await.unwrap();
+        let units: Vec<_> = snapshot
+            .games
+            .iter()
+            .flat_map(|game| game.content_units.iter())
+            .collect();
+        assert_eq!(units.len(), 2);
+        assert!(units.iter().all(|unit| {
+            unit.kind == ContentUnitKind::M3u
+                && unit.availability != ContentUnitAvailability::Available
+                && unit
+                    .files
+                    .iter()
+                    .all(|member| member.role != ContentFileRole::Standalone)
+        }));
+        let issues = context.repository.list_latest_scan_issues().await.unwrap();
+        assert_eq!(
+            issues
+                .iter()
+                .filter(|issue| issue.kind == ScanIssueKind::ReferenceCycle)
+                .count(),
+            2
+        );
+
+        context.scanner.scan_once().await.unwrap();
+        let repeated = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(repeated.games.len(), snapshot.games.len());
+        assert_eq!(repeated.games[0].game.id, snapshot.games[0].game.id);
+        assert_eq!(
+            repeated.games[0].content_units[0].id,
+            snapshot.games[0].content_units[0].id
+        );
+        assert_eq!(
+            repeated.games[1].content_units[0].files[1].file.id,
+            snapshot.games[1].content_units[0].files[1].file.id
+        );
+    }
+
+    #[tokio::test]
     async fn m3u_missing_member_is_incomplete_and_reported() {
         let context = test_context(Some(SystemId::PlayStation)).await;
         write_fixture(
@@ -2174,6 +2546,65 @@ TRACK 02 AUDIO"#,
             .any(|issue| issue.kind == ScanIssueKind::UnsafePath));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn descriptor_member_symlink_escape_is_rejected_before_reading() {
+        use std::os::unix::fs::symlink;
+
+        let context = test_context(Some(SystemId::PlayStation)).await;
+        let outside = context._directory.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(
+            outside.join("secret.cue"),
+            b"FILE \"outside.bin\" BINARY\nTRACK 01 MODE1/2352\n",
+        )
+        .unwrap();
+        fs::write(outside.join("outside.bin"), [9_u8]).unwrap();
+        symlink(&outside, PathBuf::from(&context.root.path).join("link")).unwrap();
+        write_fixture(&context.root, "list.m3u", b"link/secret.cue\n");
+
+        context.scanner.scan_once().await.unwrap();
+        let issues = context.repository.list_latest_scan_issues().await.unwrap();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.kind == ScanIssueKind::UnsafeDescriptorReference));
+        assert!(!issues
+            .iter()
+            .any(|issue| issue.kind == ScanIssueKind::MalformedCue));
+
+        let snapshot = context.repository.get_library_snapshot().await.unwrap();
+        assert!(snapshot
+            .games
+            .iter()
+            .flat_map(|game| game.content_units.iter())
+            .flat_map(|unit| unit.files.iter())
+            .all(|member| member.file.relative_path != "link/secret.cue"));
+    }
+
+    #[tokio::test]
+    async fn oversized_descriptor_is_bounded_and_incomplete() {
+        let context = test_context(Some(SystemId::PlayStation)).await;
+        let oversized = vec![b'#'; MAX_DESCRIPTOR_SIZE + 1];
+        write_fixture(&context.root, "oversized.m3u", &oversized);
+
+        let summary = context.scanner.scan_once().await.unwrap();
+        assert_eq!(summary.state, ScanRunState::Completed);
+        let issues = context.repository.list_latest_scan_issues().await.unwrap();
+        assert!(issues.iter().any(|issue| {
+            issue.kind == ScanIssueKind::MalformedM3u
+                && issue
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("maximum size"))
+        }));
+        let snapshot = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(snapshot.games.len(), 1);
+        assert_ne!(
+            snapshot.games[0].content_units[0].availability,
+            ContentUnitAvailability::Available
+        );
+    }
+
     #[tokio::test]
     async fn removal_preserves_logical_game_and_marks_content_missing() {
         let context = test_context(Some(SystemId::Nes)).await;
@@ -2228,6 +2659,64 @@ TRACK 02 AUDIO"#,
         assert_eq!(
             after.games[0].content_units[0].files[0].file.relative_path,
             "new.nes"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_missing_file_identity_is_not_reused_for_two_new_copies() {
+        let context = test_context(Some(SystemId::Nes)).await;
+        write_fixture(&context.root, "old.nes", &[1, 2, 3]);
+        context.scanner.scan_once().await.unwrap();
+        let before = context.repository.get_library_snapshot().await.unwrap();
+        let original_game_id = before.games[0].game.id;
+        let original_unit_id = before.games[0].content_units[0].id;
+
+        fs::remove_file(PathBuf::from(&context.root.path).join("old.nes")).unwrap();
+        write_fixture(&context.root, "a/dup1.nes", &[1, 2, 3]);
+        write_fixture(&context.root, "b/dup2.nes", &[1, 2, 3]);
+        context.scanner.scan_once().await.unwrap();
+
+        let snapshot = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(snapshot.games.len(), 1);
+        assert_eq!(snapshot.games[0].game.id, original_game_id);
+        assert_eq!(snapshot.games[0].content_units.len(), 2);
+        let units = &snapshot.games[0].content_units;
+        let file_ids: BTreeSet<_> = units
+            .iter()
+            .flat_map(|unit| unit.files.iter().map(|member| member.file.id))
+            .collect();
+        assert_eq!(file_ids.len(), 2);
+        assert!(units.iter().all(|unit| {
+            unit.primary_relative_path == unit.files[0].file.relative_path
+                && unit
+                    .files
+                    .iter()
+                    .any(|member| member.file.relative_path == unit.primary_relative_path)
+        }));
+        assert!(units.iter().any(|unit| unit.id == original_unit_id));
+        let issues = context.repository.list_latest_scan_issues().await.unwrap();
+        assert!(issues
+            .iter()
+            .any(|issue| issue.kind == ScanIssueKind::AmbiguousReconciliation));
+
+        context.scanner.scan_once().await.unwrap();
+        let repeated = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(repeated.games.len(), 1);
+        assert_eq!(
+            repeated.games[0]
+                .content_units
+                .iter()
+                .map(|unit| unit.id)
+                .collect::<Vec<_>>(),
+            units.iter().map(|unit| unit.id).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            repeated.games[0]
+                .content_units
+                .iter()
+                .flat_map(|unit| unit.files.iter().map(|member| member.file.id))
+                .collect::<BTreeSet<_>>(),
+            file_ids
         );
     }
 
@@ -2322,6 +2811,161 @@ TRACK 02 AUDIO"#,
             .any(|issue| issue.kind == ScanIssueKind::RootUnavailable));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unsafe_sibling_does_not_disable_clean_absence_reconciliation() {
+        use std::os::unix::fs::symlink;
+
+        let context = test_context(Some(SystemId::Nes)).await;
+        write_fixture(&context.root, "game.nes", &[1]);
+        write_fixture(&context.root, "other.nes", &[2]);
+        symlink(
+            context._directory.path().join("does-not-exist"),
+            PathBuf::from(&context.root.path).join("shortcut"),
+        )
+        .unwrap();
+        context.scanner.scan_once().await.unwrap();
+
+        fs::remove_file(PathBuf::from(&context.root.path).join("game.nes")).unwrap();
+        context.scanner.scan_once().await.unwrap();
+
+        let snapshot = context.repository.get_library_snapshot().await.unwrap();
+        let game = snapshot
+            .games
+            .iter()
+            .find(|game| game.game.local_title == "game")
+            .unwrap();
+        assert_eq!(
+            game.game.availability,
+            crate::domain::library::GameAvailability::Unavailable
+        );
+        assert_eq!(
+            game.content_units[0].availability,
+            ContentUnitAvailability::Missing
+        );
+        let other = snapshot
+            .games
+            .iter()
+            .find(|game| game.game.local_title == "other")
+            .unwrap();
+        assert_eq!(
+            other.game.availability,
+            crate::domain::library::GameAvailability::Available
+        );
+        assert!(context
+            .repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .iter()
+            .any(|issue| issue.kind == ScanIssueKind::UnsafePath));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unreadable_subtree_is_protected_from_false_missing_reconciliation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let context = test_context(Some(SystemId::Nes)).await;
+        write_fixture(&context.root, "private/hidden.nes", &[1]);
+        write_fixture(&context.root, "public.nes", &[2]);
+        context.scanner.scan_once().await.unwrap();
+
+        let private = PathBuf::from(&context.root.path).join("private");
+        let original_permissions = fs::metadata(&private).unwrap().permissions();
+        let mut unreadable_permissions = original_permissions.clone();
+        unreadable_permissions.set_mode(0o000);
+        fs::set_permissions(&private, unreadable_permissions).unwrap();
+        let unreadable = fs::read_dir(&private).is_err();
+        if !unreadable {
+            fs::set_permissions(&private, original_permissions).unwrap();
+            return;
+        }
+
+        context.scanner.scan_once().await.unwrap();
+        fs::set_permissions(&private, original_permissions).unwrap();
+
+        let snapshot = context.repository.get_library_snapshot().await.unwrap();
+        let hidden = snapshot
+            .games
+            .iter()
+            .find(|game| game.game.local_title == "hidden")
+            .unwrap();
+        assert_eq!(
+            hidden.game.availability,
+            crate::domain::library::GameAvailability::Available
+        );
+        assert_eq!(
+            hidden.content_units[0].availability,
+            ContentUnitAvailability::Available
+        );
+        assert!(snapshot
+            .games
+            .iter()
+            .any(|game| game.game.local_title == "public"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_hash_preserves_identity_for_a_later_move() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let context = test_context(Some(SystemId::Nes)).await;
+        write_fixture(&context.root, "game.nes", &[1, 2, 3]);
+        context.scanner.scan_once().await.unwrap();
+        let before = context.repository.get_library_snapshot().await.unwrap();
+        let before_game = before.games[0].game.id;
+        let before_unit = before.games[0].content_units[0].id;
+        let before_file = before.games[0].content_units[0].files[0].file.clone();
+        let path = PathBuf::from(&context.root.path).join("game.nes");
+        let original_permissions = fs::metadata(&path).unwrap().permissions();
+        let mut unreadable_permissions = original_permissions.clone();
+        unreadable_permissions.set_mode(0o000);
+        fs::set_permissions(&path, unreadable_permissions).unwrap();
+        if File::open(&path).is_ok() {
+            fs::set_permissions(&path, original_permissions).unwrap();
+            return;
+        }
+
+        context.scanner.scan_once().await.unwrap();
+        let failed = context.repository.get_library_snapshot().await.unwrap();
+        let failed_file = &failed.games[0].content_units[0].files[0].file;
+        assert_eq!(
+            failed_file.availability,
+            ContentFileAvailability::Unavailable
+        );
+        assert_eq!(failed_file.crc32, before_file.crc32);
+        assert_eq!(failed_file.md5, before_file.md5);
+        assert_eq!(failed_file.sha1, before_file.sha1);
+        assert_eq!(
+            failed.games[0].content_units[0].fingerprint,
+            before.games[0].content_units[0].fingerprint
+        );
+        assert!(context
+            .repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .iter()
+            .any(|issue| issue.kind == ScanIssueKind::HashReadFailure));
+
+        fs::set_permissions(&path, original_permissions).unwrap();
+        fs::rename(&path, PathBuf::from(&context.root.path).join("renamed.nes")).unwrap();
+        context.scanner.scan_once().await.unwrap();
+        let moved = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(moved.games.len(), 1);
+        assert_eq!(moved.games[0].game.id, before_game);
+        assert_eq!(moved.games[0].content_units[0].id, before_unit);
+        assert_eq!(
+            moved.games[0].content_units[0].files[0].file.id,
+            before_file.id
+        );
+        assert_eq!(
+            moved.games[0].content_units[0].files[0].file.relative_path,
+            "renamed.nes"
+        );
+    }
+
     #[test]
     fn hash_file_uses_streaming_hashes_for_large_synthetic_content() {
         let directory = tempdir().unwrap();
@@ -2347,6 +2991,7 @@ TRACK 02 AUDIO"#,
             relevant: true,
             hashes: None,
             hash_available: false,
+            hash_failed: false,
         };
         let hashes = hash_file(directory.path(), &candidate).unwrap();
         assert_eq!(hashes.crc32.len(), 8);

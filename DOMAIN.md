@@ -254,8 +254,12 @@ reconciliation evidence. Foreign keys use restrictive delete behavior so missing
 external roots do not cascade-delete logical library history. Static `SystemCatalog` knowledge is
 not duplicated in SQLite; persisted library rows store stable `SystemId` strings.
 
-The scanner marks files and units missing only after an authoritative root snapshot. An unavailable
-or incomplete root preserves the last known rows. Exact, unique content fingerprints may preserve a
-file/unit identity across a move and may relate duplicate physical copies under one provisional
-game. Ambiguous matches create a new physical identity and an inspectable issue. Local titles are
-derived from the primary path only when a unit is first created; M5 metadata matching is separate.
+The scanner marks files and units missing only for locations covered by a granular authoritative
+snapshot: the relevant parent directory must have been successfully enumerated and must not be
+under an incomplete or unsafe prefix. A root that cannot be enumerated protects all prior rows,
+while an unreadable subtree or unsafe sibling protects only its affected location. Exact, unique
+content fingerprints may preserve a file/unit identity across a move and may relate duplicate
+physical copies under one provisional game. Ambiguous matches create a new physical identity and
+an inspectable issue. A transient hash read failure degrades availability but preserves previously
+verified file hashes and the unit fingerprint for later reconciliation. Local titles are derived
+from the primary path only when a unit is first created; M5 metadata matching is separate.

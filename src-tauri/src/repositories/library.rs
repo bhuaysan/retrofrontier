@@ -330,9 +330,16 @@ impl LibraryRepository {
             .collect();
         let existing_units = load_existing_units(&mut transaction, root_id).await?;
 
+        let mut files_by_id: BTreeMap<ContentFileId, ExistingFile> = existing_files
+            .iter()
+            .cloned()
+            .map(|file| (file.id, file))
+            .collect();
         let mut files_by_path = existing_by_path.clone();
         let mut file_ids_by_path = BTreeMap::<String, ContentFileId>::new();
         let mut seen_file_ids = BTreeSet::new();
+        let mut used_existing_file_ids = BTreeSet::new();
+        let mut consumed_move_identities = BTreeSet::new();
         let mut generated_issues = Vec::new();
         let discovered_paths: BTreeSet<_> = snapshot
             .files
@@ -341,31 +348,47 @@ impl LibraryRepository {
             .collect();
 
         for file in &snapshot.files {
-            let file_id = if let Some(existing) = existing_by_path.get(&file.relative_path) {
-                update_file(&mut transaction, existing.id, file, now).await?;
+            let file_id = if let Some(existing) = files_by_path.get(&file.relative_path).cloned() {
+                update_file(&mut transaction, &existing, file, now).await?;
+                let updated = existing.updated_from_scanned(file);
+                put_live_file(&mut files_by_id, &mut files_by_path, updated);
+                used_existing_file_ids.insert(existing.id);
                 existing.id
             } else {
-                let candidates: Vec<_> = existing_files
-                    .iter()
+                let candidates: Vec<_> = files_by_id
+                    .values()
                     .filter(|candidate| {
-                        (candidate.availability == ContentFileAvailability::Missing
-                            || !discovered_paths.contains(candidate.relative_path.as_str()))
+                        !used_existing_file_ids.contains(&candidate.id)
+                            && (candidate.availability == ContentFileAvailability::Missing
+                                || !discovered_paths.contains(candidate.relative_path.as_str()))
                             && hashes_match_file(candidate, file)
                     })
+                    .cloned()
                     .collect();
                 if candidates.len() == 1 {
-                    let candidate = candidates[0];
+                    let candidate = candidates
+                        .into_iter()
+                        .next()
+                        .expect("one file candidate exists");
                     update_file_path_and_content(
                         &mut transaction,
-                        candidate.id,
+                        &candidate,
                         &file.relative_path,
                         file,
                         now,
                     )
                     .await?;
+                    used_existing_file_ids.insert(candidate.id);
+                    if let Some(identity) = file_identity(file) {
+                        consumed_move_identities.insert(identity);
+                    }
+                    let updated = candidate.updated_from_scanned_at_path(file, &file.relative_path);
+                    put_live_file(&mut files_by_id, &mut files_by_path, updated);
                     candidate.id
                 } else {
-                    if candidates.len() > 1 {
+                    let consumed_match = file_identity(file)
+                        .is_some_and(|identity| consumed_move_identities.contains(&identity));
+                    if candidates.len() > 1 || consumed_match {
                         generated_issues.push(ScanIssue {
                             id: None,
                             scan_run_id: Some(run_id),
@@ -373,22 +396,27 @@ impl LibraryRepository {
                             kind: ScanIssueKind::AmbiguousReconciliation,
                             relative_path: Some(file.relative_path.clone()),
                             related_path: None,
-                            detail: Some(
+                            detail: Some(if candidates.len() > 1 {
                                 "more than one missing file has the same content fingerprint"
-                                    .to_owned(),
-                            ),
+                                    .to_owned()
+                            } else {
+                                "one existing file identity matched more than one discovered path"
+                                    .to_owned()
+                            }),
                             created_at: now,
                         });
                     }
-                    insert_file(&mut transaction, root_id, file, now).await?
+                    let file_id = insert_file(&mut transaction, root_id, file, now).await?;
+                    put_live_file(
+                        &mut files_by_id,
+                        &mut files_by_path,
+                        ExistingFile::from_scanned(file_id, file),
+                    );
+                    file_id
                 }
             };
             seen_file_ids.insert(file_id);
             file_ids_by_path.insert(file.relative_path.clone(), file_id);
-            files_by_path.insert(
-                file.relative_path.clone(),
-                ExistingFile::from_scanned(file_id, file),
-            );
         }
 
         let mut seen_unit_ids = BTreeSet::new();
@@ -421,13 +449,22 @@ impl LibraryRepository {
             for member in &scanned_unit.members {
                 let file_id = if let Some(file_id) = file_ids_by_path.get(&member.relative_path) {
                     *file_id
-                } else if let Some(existing) = existing_by_path.get(&member.relative_path) {
+                } else if let Some(existing) = files_by_path.get(&member.relative_path).cloned() {
                     mark_file_missing(&mut transaction, existing.id, now).await?;
-                    existing.id
+                    let mut updated = existing;
+                    updated.availability = ContentFileAvailability::Missing;
+                    let file_id = updated.id;
+                    put_live_file(&mut files_by_id, &mut files_by_path, updated);
+                    file_id
                 } else {
                     let file_id =
                         insert_missing_file(&mut transaction, root_id, &member.relative_path, now)
                             .await?;
+                    put_live_file(
+                        &mut files_by_id,
+                        &mut files_by_path,
+                        ExistingFile::missing(file_id, &member.relative_path),
+                    );
                     file_ids_by_path.insert(member.relative_path.clone(), file_id);
                     file_id
                 };
@@ -436,7 +473,12 @@ impl LibraryRepository {
 
             let primary_file_id = file_ids_by_path
                 .get(&scanned_unit.primary_relative_path)
-                .copied();
+                .copied()
+                .or_else(|| {
+                    files_by_path
+                        .get(&scanned_unit.primary_relative_path)
+                        .map(|file| file.id)
+                });
             let matching_existing: Vec<_> = existing_units
                 .iter()
                 .filter(|candidate| {
@@ -536,7 +578,19 @@ impl LibraryRepository {
             };
 
             if !is_new_unit {
-                update_unit(&mut transaction, unit_id, scanned_unit, now).await?;
+                let existing = matching_existing
+                    .first()
+                    .copied()
+                    .expect("matched content unit exists");
+                let fingerprint = if scanned_unit.hash_failed {
+                    scanned_unit
+                        .fingerprint
+                        .as_deref()
+                        .or(existing.fingerprint.as_deref())
+                } else {
+                    scanned_unit.fingerprint.as_deref()
+                };
+                update_unit(&mut transaction, unit_id, scanned_unit, fingerprint, now).await?;
             }
             replace_unit_members(
                 &mut transaction,
@@ -546,7 +600,15 @@ impl LibraryRepository {
             )
             .await?;
             seen_unit_ids.insert(unit_id);
-            if let Some(fingerprint) = &scanned_unit.fingerprint {
+            let persisted_fingerprint = if !is_new_unit && scanned_unit.hash_failed {
+                matching_existing
+                    .first()
+                    .and_then(|existing| existing.fingerprint.as_ref())
+                    .or(scanned_unit.fingerprint.as_ref())
+            } else {
+                scanned_unit.fingerprint.as_ref()
+            };
+            if let Some(fingerprint) = persisted_fingerprint {
                 known_fingerprints
                     .entry(fingerprint.clone())
                     .or_default()
@@ -554,27 +616,32 @@ impl LibraryRepository {
             }
         }
 
-        if snapshot.authoritative {
+        if snapshot.authority.root_enumerated {
             for existing in &existing_files {
-                if !seen_file_ids.contains(&existing.id) {
+                if !seen_file_ids.contains(&existing.id)
+                    && snapshot
+                        .authority
+                        .can_reconcile_file(&existing.relative_path)
+                {
                     mark_file_missing(&mut transaction, existing.id, now).await?;
-                    if let Some(file) = files_by_path
-                        .values_mut()
-                        .find(|file| file.id == existing.id)
-                    {
+                    if let Some(file) = files_by_id.get_mut(&existing.id) {
                         file.availability = ContentFileAvailability::Missing;
+                    }
+                    if let Some(file) = files_by_path.get_mut(&existing.relative_path) {
+                        if file.id == existing.id {
+                            file.availability = ContentFileAvailability::Missing;
+                        }
                     }
                 }
             }
             for existing in &existing_units {
-                if !seen_unit_ids.contains(&existing.id) {
+                if !seen_unit_ids.contains(&existing.id)
+                    && existing_unit_is_authoritative(existing, &files_by_id, &snapshot.authority)
+                {
                     let availability = if existing.members.iter().any(|member| {
-                        files_by_path
-                            .values()
-                            .find(|file| file.id == member.file_id)
-                            .is_some_and(|file| {
-                                file.availability != ContentFileAvailability::Missing
-                            })
+                        files_by_id.get(&member.file_id).is_some_and(|file| {
+                            file.availability != ContentFileAvailability::Missing
+                        })
                     }) {
                         ContentUnitAvailability::Incomplete
                     } else {
@@ -593,7 +660,8 @@ impl LibraryRepository {
             }
         }
 
-        let root_availability = if snapshot.authoritative {
+        let root_fully_authoritative = snapshot.authority.is_fully_authoritative();
+        let root_availability = if root_fully_authoritative {
             ContentRootAvailability::Available
         } else {
             snapshot.root.availability
@@ -605,7 +673,7 @@ impl LibraryRepository {
         )
         .bind(root_availability.as_db())
         .bind(now)
-        .bind(snapshot.authoritative)
+        .bind(root_fully_authoritative)
         .bind(now)
         .bind(now)
         .bind(root_id.0)
@@ -732,6 +800,79 @@ impl ExistingFile {
             },
         }
     }
+
+    fn missing(id: ContentFileId, relative_path: &str) -> Self {
+        Self {
+            id,
+            relative_path: relative_path.to_owned(),
+            size_bytes: 0,
+            crc32: None,
+            md5: None,
+            sha1: None,
+            availability: ContentFileAvailability::Missing,
+        }
+    }
+
+    fn updated_from_scanned(&self, file: &crate::domain::library::ScannedFile) -> Self {
+        self.updated_from_scanned_at_path(file, &file.relative_path)
+    }
+
+    fn updated_from_scanned_at_path(
+        &self,
+        file: &crate::domain::library::ScannedFile,
+        relative_path: &str,
+    ) -> Self {
+        let mut updated = Self::from_scanned(self.id, file);
+        if file.hash_failed {
+            if updated.crc32.is_none() {
+                updated.crc32 = self.crc32.clone();
+            }
+            if updated.md5.is_none() {
+                updated.md5 = self.md5.clone();
+            }
+            if updated.sha1.is_none() {
+                updated.sha1 = self.sha1.clone();
+            }
+        }
+        updated.relative_path = relative_path.to_owned();
+        updated
+    }
+}
+
+fn put_live_file(
+    files_by_id: &mut BTreeMap<ContentFileId, ExistingFile>,
+    files_by_path: &mut BTreeMap<String, ExistingFile>,
+    file: ExistingFile,
+) {
+    let file_id = file.id;
+    if let Some(previous) = files_by_id.insert(file_id, file.clone()) {
+        if previous.relative_path != file.relative_path
+            && files_by_path
+                .get(&previous.relative_path)
+                .is_some_and(|candidate| candidate.id == file_id)
+        {
+            files_by_path.remove(&previous.relative_path);
+        }
+    }
+    files_by_path.insert(file.relative_path.clone(), file);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FileIdentity {
+    size_bytes: u64,
+    crc32: String,
+    md5: String,
+    sha1: String,
+}
+
+fn file_identity(file: &crate::domain::library::ScannedFile) -> Option<FileIdentity> {
+    let hashes = file.hashes.as_ref()?;
+    Some(FileIdentity {
+        size_bytes: file.size_bytes,
+        crc32: hashes.crc32.clone(),
+        md5: hashes.md5.clone(),
+        sha1: hashes.sha1.clone(),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -748,6 +889,21 @@ struct ExistingUnit {
     primary_relative_path: String,
     fingerprint: Option<String>,
     members: Vec<ExistingMembership>,
+}
+
+fn existing_unit_is_authoritative(
+    unit: &ExistingUnit,
+    files_by_id: &BTreeMap<ContentFileId, ExistingFile>,
+    authority: &crate::domain::library::ScanAuthority,
+) -> bool {
+    if unit.members.is_empty() {
+        return authority.can_reconcile_file(&unit.primary_relative_path);
+    }
+    unit.members.iter().all(|member| {
+        files_by_id
+            .get(&member.file_id)
+            .is_some_and(|file| authority.can_reconcile_file(&file.relative_path))
+    })
 }
 
 async fn load_existing_files(
@@ -888,26 +1044,27 @@ async fn insert_missing_file(
 
 async fn update_file(
     transaction: &mut Transaction<'_, Sqlite>,
-    file_id: ContentFileId,
+    existing: &ExistingFile,
     file: &crate::domain::library::ScannedFile,
     now: i64,
 ) -> Result<(), AppError> {
+    let (crc32, md5, sha1) = persisted_hashes(existing, file);
     sqlx::query(
         "UPDATE content_files SET size_bytes = ?, modified_at = ?, crc32 = ?, md5 = ?, sha1 = ?, \
          availability = ?, updated_at = ? WHERE id = ?",
     )
     .bind(sqlite_size(file.size_bytes)?)
     .bind(file.modified_at)
-    .bind(file.hashes.as_ref().map(|hashes| hashes.crc32.as_str()))
-    .bind(file.hashes.as_ref().map(|hashes| hashes.md5.as_str()))
-    .bind(file.hashes.as_ref().map(|hashes| hashes.sha1.as_str()))
+    .bind(crc32)
+    .bind(md5)
+    .bind(sha1)
     .bind(if file.available {
         ContentFileAvailability::Available.as_db()
     } else {
         ContentFileAvailability::Unavailable.as_db()
     })
     .bind(now)
-    .bind(file_id.0)
+    .bind(existing.id.0)
     .execute(&mut **transaction)
     .await
     .map_err(AppError::Database)?;
@@ -916,11 +1073,12 @@ async fn update_file(
 
 async fn update_file_path_and_content(
     transaction: &mut Transaction<'_, Sqlite>,
-    file_id: ContentFileId,
+    existing: &ExistingFile,
     relative_path: &str,
     file: &crate::domain::library::ScannedFile,
     now: i64,
 ) -> Result<(), AppError> {
+    let (crc32, md5, sha1) = persisted_hashes(existing, file);
     sqlx::query(
         "UPDATE content_files SET relative_path = ?, size_bytes = ?, modified_at = ?, crc32 = ?, \
          md5 = ?, sha1 = ?, availability = ?, updated_at = ? WHERE id = ?",
@@ -928,20 +1086,41 @@ async fn update_file_path_and_content(
     .bind(relative_path)
     .bind(sqlite_size(file.size_bytes)?)
     .bind(file.modified_at)
-    .bind(file.hashes.as_ref().map(|hashes| hashes.crc32.as_str()))
-    .bind(file.hashes.as_ref().map(|hashes| hashes.md5.as_str()))
-    .bind(file.hashes.as_ref().map(|hashes| hashes.sha1.as_str()))
+    .bind(crc32)
+    .bind(md5)
+    .bind(sha1)
     .bind(if file.available {
         ContentFileAvailability::Available.as_db()
     } else {
         ContentFileAvailability::Unavailable.as_db()
     })
     .bind(now)
-    .bind(file_id.0)
+    .bind(existing.id.0)
     .execute(&mut **transaction)
     .await
     .map_err(AppError::Database)?;
     Ok(())
+}
+
+fn persisted_hashes(
+    existing: &ExistingFile,
+    file: &crate::domain::library::ScannedFile,
+) -> (Option<String>, Option<String>, Option<String>) {
+    if let Some(hashes) = &file.hashes {
+        return (
+            Some(hashes.crc32.clone()),
+            Some(hashes.md5.clone()),
+            Some(hashes.sha1.clone()),
+        );
+    }
+    if file.hash_failed {
+        return (
+            existing.crc32.clone(),
+            existing.md5.clone(),
+            existing.sha1.clone(),
+        );
+    }
+    (None, None, None)
 }
 
 async fn mark_file_missing(
@@ -1010,6 +1189,7 @@ async fn update_unit(
     transaction: &mut Transaction<'_, Sqlite>,
     unit_id: ContentUnitId,
     unit: &crate::domain::library::ScannedUnit,
+    fingerprint: Option<&str>,
     now: i64,
 ) -> Result<(), AppError> {
     sqlx::query(
@@ -1019,7 +1199,7 @@ async fn update_unit(
     .bind(unit.system_id.as_str())
     .bind(unit.kind.as_db())
     .bind(&unit.primary_relative_path)
-    .bind(unit.fingerprint.as_deref())
+    .bind(fingerprint)
     .bind(unit_availability(unit).as_db())
     .bind(now)
     .bind(unit_id.0)

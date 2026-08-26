@@ -26,7 +26,15 @@ game history.
 Configured paths and durable relative paths must be representable as UTF-8 in the current SQLite
 and IPC model. Non-representable names are skipped with an `unrepresentablePath` issue. Directory
 symlinks/reparse points, file symlinks, special files, and references that leave a root are not
-followed.
+followed. Descriptor and playlist members use one canonical containment rule: the reference is
+normalized relative to the configured root, every path component is checked without following
+symlinks/reparse points, the target is canonicalized, and the canonical target must remain below
+the canonical root. Rejected references produce an `unsafeDescriptorReference` issue before any
+descriptor contents are read.
+
+Descriptor text is loaded incrementally with a 256 KiB maximum for each CUE, GDI, or M3U file.
+Files over that cap produce the corresponding malformed-descriptor issue and are not treated as
+healthy relationship units.
 
 ## Scan phases
 
@@ -43,11 +51,15 @@ Every manual or watcher-triggered scan records a `scan_runs` row and progresses 
    failure publishes a failed completion summary and does not perform absence reconciliation for
    an uncompleted root.
 
-An authoritative root snapshot is required before prior files or units can be marked missing.
-Unavailable roots, unreadable subtrees, unsafe entries, and unresolved system classification make
-the root non-authoritative, preserving prior library state. A malformed but discovered descriptor
-can still produce an incomplete unit and its issue; it does not turn an unreadable root into an
-authoritative empty root.
+Absence reconciliation uses a granular authority snapshot rather than one root-wide boolean. The
+scanner records successfully enumerated directory prefixes, protected/incomplete prefixes, and
+unrepresentable entries. A prior file can be marked missing only when its parent directory was
+successfully enumerated and the file is not inside a protected prefix. A root that cannot itself be
+enumerated protects the whole root; an unreadable directory protects only that subtree; a known
+unsafe sibling such as a dangling symlink does not disable reconciliation for clean siblings.
+Unrepresentable entries prevent the root from being considered fully successful but do not mask
+representable sibling absence. A malformed but discovered descriptor can still produce an
+incomplete unit and its issue; it does not turn an unreadable root into an authoritative empty root.
 
 ## System evidence
 
@@ -78,16 +90,20 @@ Game
 stat fingerprint persisted for safe reconciliation. It is never an absolute path identity alone.
 
 - Ordinary supported files become `singleFile` units. `.chd` becomes an explicit `chd` unit.
-- CUE parsing reads quoted `FILE` directives, resolves them relative to the CUE, and stores the
-  descriptor before ordered track members. Missing or unsafe references make the unit incomplete
-  and create typed issues. Referenced tracks are not standalone units.
-- GDI parsing reads the declared track count and filename field from each track line. It follows
-  the same containment, missing-member, role, and no-double-counting rules as CUE.
+- CUE parsing accepts quoted and unquoted single-token `FILE` filenames, strips a leading UTF-8
+  BOM, preserves backslash separators for safe normalization, and stores the descriptor before
+  ordered track members. Missing or unsafe references make the unit incomplete and create typed
+  issues. Referenced tracks are not standalone units.
+- GDI parsing strips a leading UTF-8 BOM and tolerates harmless text after the declared track rows
+  while still requiring the declared count and every required track record. It follows the same
+  containment, missing-member, role, and no-double-counting rules as CUE.
 - M3U parsing ignores blank lines and comment/directive lines, preserves remaining entries in exact
   order, and accepts supported disc content including CUE, CHD, and GDI. Nested playlists and
   descriptor dependencies are recursively resolved. Unsupported present playlist members become
-  `unsupportedSystem` issues. Cycles become `referenceCycle` issues and do not recurse indefinitely.
-  Playlist-owned discs are not independently surfaced.
+  `unsupportedSystem` issues. Cycles become `referenceCycle` issues and do not recurse indefinitely;
+  each cyclic playlist group is represented by an incomplete/unavailable playlist unit. An M3U is
+  never emitted as a generic standalone unit, including when parsing fails or it is the remaining
+  member of a cycle. Playlist-owned discs are not independently surfaced.
 
 The membership `ordinal` and `role` are normalized in `content_unit_files`, so order survives a
 database round trip rather than being stored as an opaque descriptor blob.
@@ -96,8 +112,10 @@ database round trip rather than being stored as an opaque descriptor blob.
 
 Hashing uses a fixed 64 KiB buffer and computes CRC32, MD5, and SHA-1 concurrently. A file that
 changes while it is being read is reported as `hashReadFailure`; it is not treated as healthy
-identified content. Unit fingerprints are deterministic SHA-1 values over system, unit kind, and
-ordered member hash/role data, never absolute paths.
+identified content. If a previously hashed file cannot be refreshed, its last known hashes and
+the affected unit's last known fingerprint are retained while availability is degraded. A later
+successful refresh replaces them. Unit fingerprints are deterministic SHA-1 values over system,
+unit kind, and ordered member hash/role data, never absolute paths.
 
 Repeated scans update existing rows in place. A disappeared file is marked `missing`, its unit is
 `missing` or `incomplete`, and its game becomes unavailable only when no other unit remains

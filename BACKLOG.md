@@ -185,6 +185,19 @@ Systems:
 
 V1: no automatic rename, move, conversion, or deletion.
 
+### M4 corrective-pass behavior
+
+The M4 scanner also enforces canonical containment before reading descriptor or playlist members,
+caps descriptor reads at 256 KiB, preserves verified identity across transient hash failures,
+tracks absence authority per enumerated directory/protected subtree, keeps consumed move candidates
+live and unique, and never falls back to standalone M3U units. CUE/GDI compatibility includes
+BOM/CRLF handling, unquoted CUE filenames, preserved Windows separators, and harmless trailing GDI
+text. These are scanner behavior clarifications, not a new milestone or a change to the normalized
+Game/ContentUnit/ContentFile model.
+
+The remaining M4 review performance, schema, IPC, watcher, startup, and large-scale follow-ups
+remain deferred to their appropriate later milestone.
+
 ## M5 — Metadata
 **Model:** Luna Max.
 
