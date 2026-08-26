@@ -90,6 +90,10 @@ describe('AppShell', () => {
     expect(screen.getByText('DATABASE').parentElement).toHaveTextContent('READY');
     expect(screen.getByText('RUNTIME').parentElement).toHaveTextContent('READY');
     expect(await screen.findByRole('heading', { name: 'SUPPORTED SYSTEMS' })).toBeInTheDocument();
+    expect(screen.getByText('/documents/RetroFrontier/BIOS')).toBeInTheDocument();
+    expect(
+      screen.getByText(/system-specific subfolders are not searched yet/i),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: 'Nintendo Entertainment System' }),
     ).toBeInTheDocument();

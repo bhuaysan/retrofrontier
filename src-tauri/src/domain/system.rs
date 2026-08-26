@@ -298,14 +298,14 @@ impl SystemCatalog {
     /// Resolve a human-entered display name or alias without making that text the persisted
     /// identity. Stable IDs should be used for storage and IPC whenever possible.
     pub fn system_for_name_or_alias(&self, value: &str) -> Option<&SystemDefinition> {
-        let normalized = value.trim().to_ascii_lowercase();
+        let normalized = normalize_lookup_name(value);
         self.systems.iter().find(|system| {
             system.id.as_str() == normalized
-                || system.display_name.to_ascii_lowercase() == normalized
+                || normalize_lookup_name(&system.display_name) == normalized
                 || system
                     .aliases
                     .iter()
-                    .any(|alias| alias.to_ascii_lowercase() == normalized)
+                    .any(|alias| normalize_lookup_name(alias) == normalized)
         })
     }
 
@@ -321,7 +321,7 @@ impl SystemCatalog {
         }
 
         let mut system_ids = BTreeSet::new();
-        let mut aliases = BTreeMap::new();
+        let mut lookup_names = BTreeMap::new();
         let mut requirement_ids = BTreeSet::new();
         for system in &self.systems {
             if !system_ids.insert(system.id) {
@@ -331,17 +331,31 @@ impl SystemCatalog {
                 return Err(CatalogError::MissingSystemMetadata(system.id));
             }
             validate_extensions(system)?;
+            register_lookup_name(&mut lookup_names, system.id.as_str(), system.id)?;
+            register_lookup_name(&mut lookup_names, &system.display_name, system.id)?;
+            let mut aliases = BTreeSet::new();
             for alias in &system.aliases {
-                let key = alias.trim().to_ascii_lowercase();
+                let key = normalize_lookup_name(alias);
                 if key.is_empty() {
                     return Err(CatalogError::EmptyAlias(system.id));
                 }
-                if let Some(existing) = aliases.insert(key, system.id) {
+                if !aliases.insert(key.clone()) {
                     return Err(CatalogError::DuplicateAlias {
                         alias: alias.clone(),
-                        first: existing,
+                        first: system.id,
                         second: system.id,
                     });
+                }
+                if let Some(existing) = lookup_names.get(&key) {
+                    if *existing != system.id {
+                        return Err(CatalogError::DuplicateSystemName {
+                            name: alias.clone(),
+                            first: *existing,
+                            second: system.id,
+                        });
+                    }
+                } else {
+                    lookup_names.insert(key, system.id);
                 }
             }
             if BiosPolicy::from_requirements(&system.bios_requirements) != system.bios_policy {
@@ -443,6 +457,30 @@ impl SystemCatalog {
     }
 }
 
+fn normalize_lookup_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn register_lookup_name(
+    lookup_names: &mut BTreeMap<String, SystemId>,
+    name: &str,
+    system: SystemId,
+) -> Result<(), CatalogError> {
+    let key = normalize_lookup_name(name);
+    if let Some(existing) = lookup_names.get(&key) {
+        if *existing != system {
+            return Err(CatalogError::DuplicateSystemName {
+                name: name.to_owned(),
+                first: *existing,
+                second: system,
+            });
+        }
+    } else {
+        lookup_names.insert(key, system);
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn system(
     id: SystemId,
@@ -469,11 +507,16 @@ fn system(
 fn validate_extensions(system: &SystemDefinition) -> Result<(), CatalogError> {
     let mut extensions = BTreeSet::new();
     for extension in &system.supported_extensions {
+        let valid_suffix = extension.as_bytes().get(1..).is_some_and(|suffix| {
+            suffix
+                .iter()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        });
         if extension.is_empty()
             || extension != &extension.to_ascii_lowercase()
             || !extension.starts_with('.')
             || extension.len() == 1
-            || extension.chars().any(char::is_whitespace)
+            || !valid_suffix
             || !extensions.insert(extension)
         {
             return Err(CatalogError::InvalidExtension {
@@ -530,6 +573,12 @@ pub enum CatalogError {
     DuplicateSystem(SystemId),
     #[error("system metadata is incomplete for {0}")]
     MissingSystemMetadata(SystemId),
+    #[error("system lookup name '{name}' is used by both {first} and {second}")]
+    DuplicateSystemName {
+        name: String,
+        first: SystemId,
+        second: SystemId,
+    },
     #[error("alias '{alias}' is used by both {first} and {second}")]
     DuplicateAlias {
         alias: String,
@@ -631,6 +680,79 @@ mod tests {
             SystemId::MegaDrive
         );
         assert_eq!(catalog.systems().len(), 11);
+    }
+
+    fn synthetic_system(
+        id: SystemId,
+        display_name: &str,
+        aliases: &[&str],
+        extensions: &[&str],
+    ) -> super::SystemDefinition {
+        system(
+            id,
+            display_name,
+            "Synthetic",
+            aliases,
+            extensions,
+            CorePolicy::unresolved("synthetic core research"),
+            BiosPolicy::NotRequired,
+            Vec::new(),
+        )
+    }
+
+    fn assert_duplicate_lookup_name(systems: Vec<super::SystemDefinition>) {
+        assert!(matches!(
+            SystemCatalog::new(systems, Vec::new()).validate(),
+            Err(CatalogError::DuplicateSystemName { .. })
+        ));
+    }
+
+    #[test]
+    fn aliases_cannot_collide_with_other_system_lookup_names() {
+        assert_duplicate_lookup_name(vec![
+            synthetic_system(SystemId::Nes, "Nintendo", &[], &[".nes"]),
+            synthetic_system(SystemId::Snes, "Super Nintendo", &["NES"], &[".sfc"]),
+        ]);
+        assert_duplicate_lookup_name(vec![
+            synthetic_system(SystemId::Nes, "Nintendo", &[], &[".nes"]),
+            synthetic_system(SystemId::Snes, "Super Nintendo", &["nInTeNdO"], &[".sfc"]),
+        ]);
+        assert_duplicate_lookup_name(vec![
+            synthetic_system(SystemId::Nes, "Nintendo", &["Shared"], &[".nes"]),
+            synthetic_system(SystemId::Snes, "Super Nintendo", &["sHaReD"], &[".sfc"]),
+        ]);
+    }
+
+    #[test]
+    fn extensions_reject_path_like_and_unsafe_values() {
+        for extension in [
+            ".NES",
+            "nes",
+            ".",
+            ".nes/other",
+            r".nes\other",
+            ".nes.other",
+            ".nes with-space",
+            ".nes!",
+            ".é",
+        ] {
+            let catalog = SystemCatalog::new(
+                vec![synthetic_system(
+                    SystemId::Nes,
+                    "Nintendo",
+                    &[],
+                    &[extension],
+                )],
+                Vec::new(),
+            );
+            assert!(matches!(
+                catalog.validate(),
+                Err(CatalogError::InvalidExtension {
+                    extension: actual,
+                    ..
+                }) if actual == extension
+            ));
+        }
     }
 
     #[test]

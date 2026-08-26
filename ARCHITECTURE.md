@@ -167,6 +167,8 @@ directory and it never creates or repairs that user-data folder. Production disc
 only explicitly declared filenames directly below the selected root. A development/test caller may
 pass one explicit absolute root override; release IPC rejects that override. The service rejects
 relative roots and symlink roots, tolerates unrelated files, and hashes candidates read-only.
+This flat layout is also the current user-facing policy: system-specific nested BIOS folders are not
+automatically searched. Supporting nested BIOS layouts remains a follow-up and is not part of M3.
 
 `SystemReadiness` combines the resolved core policy, verified runtime availability, and required
 BIOS status into inspectable reasons. ROM/game availability is deliberately not part of this

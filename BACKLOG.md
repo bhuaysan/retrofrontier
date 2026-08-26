@@ -140,6 +140,10 @@ M3 research still open: the repository's core matrix does not approve a default 
 core for any system, and it does not provide authoritative BIOS identities/hashes. The catalog
 keeps both uncertainties explicit; filename candidates are not treated as valid identities.
 
+M3 review follow-up before production runtime artifacts or frequent readiness
+refreshes: reuse one verified runtime snapshot for systems status and core
+availability so a systems query does not repeat full runtime verification.
+
 Systems:
 - [x] NES
 - [x] SNES
@@ -156,6 +160,7 @@ Systems:
 ## M4 — Library Scanner
 **Model:** Luna Max.
 
+- [ ] reuse one verified runtime snapshot for systems/readiness queries before production runtime artifacts or frequent refreshes (M3 MEDIUM-1)
 - [ ] managed ROM folder structure
 - [ ] persist content roots
 - [ ] external ROM roots

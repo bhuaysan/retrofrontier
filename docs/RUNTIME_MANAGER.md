@@ -166,6 +166,16 @@ not considered usable until RuntimeManager verifies its managed component. BIOS 
 separate Rust service over the user-owned Documents/RetroFrontier/BIOS root and is never included
 in runtime cleanup or update ownership.
 
+## Tracked M3 follow-up: systems-query verification cost
+
+`get_systems` currently obtains runtime status and then asks for verified core IDs. Those calls can
+repeat full SHA-256 verification of the active installed tree, while runtime status may also inspect
+retained installations. This is acceptable while the application composition root has no production
+runtime release source, but it can make readiness refreshes expensive once real runtime artifacts are
+installed. Before wiring a production source or adding frequent readiness refreshes, reuse one
+verified runtime snapshot for status and core availability; this remains an explicit follow-up rather
+than an M3 architecture change.
+
 ## Review markers and deferred work
 
 The code contains focused Sol Max review markers for TUF trusted-root lifecycle, extraction,

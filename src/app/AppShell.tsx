@@ -392,11 +392,14 @@ export function AppShell() {
           </div>
           <p className="systems-intro">
             Static platform policy lives in RetroFrontier. Core availability comes only from the
-            verified managed runtime; BIOS files stay in your user-owned Documents folder.
+            verified managed runtime. Put expected BIOS filenames directly in the BIOS root shown
+            below; system-specific subfolders are not searched yet.
           </p>
           <div className="systems-root-row">
             <span className="system-check-label">BIOS ROOT</span>
-            <span className="systems-root-path">Documents / RetroFrontier / BIOS</span>
+            <span className="systems-root-path">
+              {systemsResponse?.biosRoot ?? (systemsError ? 'UNAVAILABLE' : 'CHECKING')}
+            </span>
             {systemsResponse && (
               <StatusValue tone={systemsResponse.biosRootStatus === 'ready' ? 'good' : 'warning'}>
                 {systemsResponse.biosRootStatus === 'ready' ? 'AVAILABLE' : 'NOT AVAILABLE'}

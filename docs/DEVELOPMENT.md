@@ -57,6 +57,11 @@ Production discovery uses the OS-resolved user-data path:
 Documents/RetroFrontier/BIOS
 ```
 
+Discovery is intentionally non-recursive. Declared BIOS filenames must be
+directly below this root; system-specific nested folders are not automatically
+searched and may therefore still be reported as missing. This is the current
+M3 folder-layout policy.
+
 BIOS files are user-owned data. The service reads expected candidates and hashes
 them without modifying, moving, renaming, deleting, downloading, or executing
 them. Standard tests use synthetic files in temporary directories.

@@ -306,8 +306,10 @@ mod tests {
     };
     use crate::domain::system::{SystemCatalog, SystemId};
     use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::SystemTime;
     use tempfile::tempdir;
 
     fn digest(bytes: &[u8]) -> String {
@@ -339,6 +341,50 @@ mod tests {
 
     fn service(root: PathBuf, requirement: BiosRequirement) -> BiosService {
         BiosService::new(root, vec![requirement]).unwrap()
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct TreeEntrySnapshot {
+        is_file: bool,
+        is_directory: bool,
+        is_symlink: bool,
+        is_readonly: bool,
+        size: u64,
+        modified: SystemTime,
+        sha256: Option<String>,
+    }
+
+    fn snapshot_tree(root: &Path) -> BTreeMap<PathBuf, TreeEntrySnapshot> {
+        let mut snapshot = BTreeMap::new();
+        snapshot_tree_entry(root, root, &mut snapshot);
+        snapshot
+    }
+
+    fn snapshot_tree_entry(
+        root: &Path,
+        path: &Path,
+        snapshot: &mut BTreeMap<PathBuf, TreeEntrySnapshot>,
+    ) {
+        let metadata = fs::symlink_metadata(path).unwrap();
+        let relative_path = path.strip_prefix(root).unwrap().to_path_buf();
+        let sha256 = metadata.is_file().then(|| digest(&fs::read(path).unwrap()));
+        snapshot.insert(
+            relative_path,
+            TreeEntrySnapshot {
+                is_file: metadata.is_file(),
+                is_directory: metadata.is_dir(),
+                is_symlink: metadata.file_type().is_symlink(),
+                is_readonly: metadata.permissions().readonly(),
+                size: metadata.len(),
+                modified: metadata.modified().unwrap(),
+                sha256,
+            },
+        );
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path).unwrap() {
+                snapshot_tree_entry(root, &entry.unwrap().path(), snapshot);
+            }
+        }
     }
 
     #[test]
@@ -403,6 +449,39 @@ mod tests {
             report.requirements[0].sha256.as_deref(),
             Some(digest(bytes).as_str())
         );
+    }
+
+    #[test]
+    fn discovery_does_not_modify_a_synthetic_bios_tree() {
+        let directory = tempdir().unwrap();
+        let bytes = b"synthetic BIOS fixture";
+        fs::write(directory.path().join("firmware.bin"), bytes).unwrap();
+        fs::write(directory.path().join("unrelated.bin"), b"unrelated fixture").unwrap();
+        fs::create_dir(directory.path().join("nested-system")).unwrap();
+        fs::write(
+            directory.path().join("nested-system").join("ignored.bin"),
+            b"nested fixture",
+        )
+        .unwrap();
+        let service = service(
+            directory.path().to_path_buf(),
+            requirement(
+                "firmware.bin",
+                vec![BiosDigest::sha256(digest(bytes)).unwrap()],
+                Some(bytes.len() as u64),
+                BiosRequirementKind::Required,
+            ),
+        );
+
+        let before = snapshot_tree(directory.path());
+        let report = service.discover(None).unwrap();
+        let after = snapshot_tree(directory.path());
+
+        assert_eq!(
+            report.requirements[0].state,
+            BiosRequirementStatusState::PresentValid
+        );
+        assert_eq!(before, after);
     }
 
     #[test]
