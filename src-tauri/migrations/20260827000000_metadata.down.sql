@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS user_provider_selections;
+DROP TABLE IF EXISTS provider_user_accounts;
+DROP TABLE IF EXISTS provider_scheduler_state;
+DROP TABLE IF EXISTS metadata_jobs;
+DROP TABLE IF EXISTS provider_media_assets;
+DROP TABLE IF EXISTS provider_metadata;
+DROP TABLE IF EXISTS provider_match_candidates;
+DROP TABLE IF EXISTS provider_match_evidence;
+DROP TABLE IF EXISTS provider_matches;

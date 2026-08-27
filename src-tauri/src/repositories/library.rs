@@ -745,6 +745,64 @@ impl LibraryRepository {
         })
     }
 
+    /// Loads one game without materializing the library snapshot.
+    ///
+    /// Metadata processing works game by game, so it must never depend on reading the whole
+    /// library.
+    pub async fn game(&self, game_id: GameId) -> Result<Option<Game>, AppError> {
+        let row = sqlx::query(
+            "SELECT id, system_id, local_title, availability, created_at, updated_at \
+             FROM games WHERE id = ?",
+        )
+        .bind(game_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        row.as_ref().map(game_from_row).transpose()
+    }
+
+    /// Loads the content units of one game with their ordered file membership.
+    ///
+    /// This is the bounded read that metadata matching uses to obtain current M4 evidence.
+    pub async fn game_content_units(&self, game_id: GameId) -> Result<Vec<ContentUnit>, AppError> {
+        let unit_rows = sqlx::query(
+            "SELECT id, game_id, root_id, system_id, kind, local_title, primary_relative_path, \
+             fingerprint, availability, created_at, updated_at FROM content_units \
+             WHERE game_id = ? ORDER BY id ASC",
+        )
+        .bind(game_id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        let mut units = Vec::with_capacity(unit_rows.len());
+        for row in &unit_rows {
+            units.push(unit_from_row(row)?);
+        }
+
+        let membership_rows = sqlx::query(
+            "SELECT cuf.content_unit_id, cuf.ordinal, cuf.role, \
+             cf.id, cf.root_id, cf.relative_path, cf.size_bytes, cf.modified_at, cf.crc32, \
+             cf.md5, cf.sha1, cf.availability FROM content_unit_files cuf \
+             JOIN content_files cf ON cf.id = cuf.content_file_id \
+             JOIN content_units cu ON cu.id = cuf.content_unit_id \
+             WHERE cu.game_id = ? ORDER BY cuf.content_unit_id ASC, cuf.ordinal ASC",
+        )
+        .bind(game_id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        for row in membership_rows {
+            let unit_id = ContentUnitId(row.get("content_unit_id"));
+            let membership = membership_from_row(&row)?;
+            if let Some(unit) = units.iter_mut().find(|unit| unit.id == unit_id) {
+                unit.files.push(membership);
+            }
+        }
+
+        Ok(units)
+    }
+
     pub async fn get_library_snapshot(&self) -> Result<LibrarySnapshot, AppError> {
         let game_rows = sqlx::query(
             "SELECT id, system_id, local_title, availability, created_at, updated_at \

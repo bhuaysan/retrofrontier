@@ -1,9 +1,10 @@
 # RetroFrontier development
 
 M4 establishes the local library scanner, durable content model, root management,
-and system-readiness snapshot boundary. Metadata, library UI, core selection UI,
-and game launching remain later milestones and are intentionally not part of the
-local workflow yet.
+and system-readiness snapshot boundary. M5 adds provider-backed metadata
+enrichment behind a provider-neutral boundary. Library UI, core selection UI, and
+game launching remain later milestones and are intentionally not part of the local
+workflow yet.
 
 ## Prerequisites
 
@@ -77,6 +78,46 @@ cargo test --manifest-path src-tauri/Cargo.toml inspect_local_real_bios_director
 This test is ignored by default, is not part of CI, prints only filename/state/
 size/SHA-256, and uses explicit absolute overrides. It does not copy or modify
 the files. Do not add `BIOS/` files to Git with `git add -f`.
+
+## Metadata development credentials
+
+Metadata enrichment needs the ScreenScraper application credentials issued to
+RetroFrontier. Copy `.env.example` to `.env` — which is git-ignored — and fill in
+the values:
+
+```bash
+cp .env.example .env
+```
+
+The variables are also read from the process environment, so exporting them works
+too. Release builds do not read the file: they receive the same variables through
+protected build-time injection at compile time.
+
+A distributed desktop binary makes an application credential recoverable, so this
+is an application identity rather than a confidentiality boundary. Never commit
+real values, and never reuse another project's credential.
+
+The application starts and the local library works normally without credentials.
+Metadata enrichment then stays idle and `get_metadata_provider_status` reports
+that credentials are not configured.
+
+Optional personal ScreenScraper accounts are separate. On Linux the `keyring`
+crate talks to the Secret Service over D-Bus, so persisting an account needs a
+running provider such as gnome-keyring or KWallet; distribution packaging should
+recommend one. Its absence is not an error — RetroFrontier logs a warning and
+falls back to a session-only store, and the local library is unaffected.
+
+Rust stores personal accounts in the OS credential vault; SQLite holds only an opaque reference, and no read command
+returns a password. Tests never touch a real keychain: they inject an in-memory
+vault, and the same in-memory vault is the session-only fallback on a host with no
+usable credential store.
+
+Metadata tests require no network access, no credentials, and no keychain. The
+HTTP boundary, the provider, the vault, the clock, and the jitter source are all
+injectable, and all fixtures are synthetic or sanitized.
+
+Cached covers live under the OS-specific Tauri application-data directory in
+`metadata/media/`. Nothing is written beside user ROMs or into the source tree.
 
 ## Boundaries and conventions
 

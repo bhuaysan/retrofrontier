@@ -33,6 +33,9 @@ pub enum AppError {
 
     #[error("local game library is unavailable: {0}")]
     Library(String),
+
+    #[error("game metadata is unavailable: {0}")]
+    Metadata(String),
 }
 
 impl AppError {
@@ -47,6 +50,7 @@ impl AppError {
             Self::Bios(_) => "bios_unavailable",
             Self::BiosOverrideNotAllowed => "bios_override_disabled",
             Self::Library(_) => "library_unavailable",
+            Self::Metadata(_) => "metadata_unavailable",
         }
     }
 
@@ -65,6 +69,7 @@ impl AppError {
                 "BIOS path overrides are available only in development builds."
             }
             Self::Library(_) => "RetroFrontier could not access the local game library.",
+            Self::Metadata(_) => "RetroFrontier could not access local game metadata.",
         }
     }
 

@@ -34,6 +34,20 @@ Unsupported container representations are deferred rather than guessed. Provider
 evidence can change only provider-specific state and never local `Game`, `ContentUnit`, or
 `ContentFile` identity/availability.
 
+## Implementation status
+
+M5 implements this decision. `MetadataProvider` is the provider-neutral boundary,
+`ScreenScraperProvider` is the only implementation, and every provider-specific detail — endpoint
+construction, provider system identifiers, response parsing, media selection, quota extraction, HTTP
+status interpretation, credential injection, and URL redaction — stays inside that adapter.
+Application credentials come from an ignored local environment during development and from
+build-time injection for releases; optional personal credentials go through a `CredentialVault`
+abstraction backed by the OS keychain, with a session-only fallback and an injectable
+implementation for tests. Provider state, evidence, normalized metadata, media, jobs, quota, and
+user-owned decisions are persisted in separate tables that all reference `games (id)` restrictively.
+Automatic attachment requires agreeing returned content evidence; heuristic results remain
+candidates. Details are recorded in [`docs/METADATA.md`](../METADATA.md).
+
 ## Consequences
 
 M5 can proceed without waiting indefinitely for every provider-policy or container-format question.

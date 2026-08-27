@@ -21,3 +21,4 @@ Status values:
 - [ADR-010: GPL-3.0-or-later](ADR-010-project-license.md)
 - [ADR-011: Runtime activation pointer and filesystem recovery](ADR-011-runtime-activation-reference.md)
 - [ADR-012: Managed runtime trust and anti-rollback model](ADR-012-runtime-trust-model.md)
+- [ADR-013: SQLite write concurrency for background metadata writes](ADR-013-sqlite-write-concurrency.md)

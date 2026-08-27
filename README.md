@@ -6,11 +6,13 @@ The project aims for a zero-configuration experience: install RetroFrontier, add
 
 ## Status
 M1 application foundation, M2 managed-runtime foundations, M3 systems/cores/BIOS
-foundations, and M4 local library scanning are in place. The Rust scanner owns
-content-root bootstrap, recursive discovery, CUE/BIN, GDI, CHD, and M3U
-relationship resolution, hashing, durable reconciliation, and typed scan IPC.
-Metadata enrichment, visual library UI, and game launching remain later
-milestones.
+foundations, M4 local library scanning, and M5 metadata enrichment are in place.
+The Rust scanner owns content-root bootstrap, recursive discovery, CUE/BIN, GDI,
+CHD, and M3U relationship resolution, hashing, durable reconciliation, and typed
+scan IPC. Rust also owns metadata: a provider-neutral provider boundary with a
+ScreenScraper adapter, evidence-validated matching, a restart-safe job queue with
+dynamic quota handling, an offline-capable local cache, and one cached cover per
+game. The visual library UI and game launching remain later milestones.
 
 ## Stack
 - Tauri 2
@@ -63,7 +65,11 @@ Documents/RetroFrontier/
 External ROM directories can be added as read-only content roots.
 
 The M4 scanner contract and IPC event names are documented in
-[`docs/LIBRARY_SCANNER.md`](docs/LIBRARY_SCANNER.md).
+[`docs/LIBRARY_SCANNER.md`](docs/LIBRARY_SCANNER.md), and the M5 metadata
+architecture in [`docs/METADATA.md`](docs/METADATA.md).
+
+Cached provider covers live in the application data directory under
+`metadata/media/`, never beside your ROM or BIOS files.
 
 ## Project Documentation
 - [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md)
