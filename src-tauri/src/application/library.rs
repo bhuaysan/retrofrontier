@@ -1,15 +1,17 @@
 use crate::domain::library::{
-    roots_overlap, ContentRoot, GameFavorite, GameId, LibraryGameDetail, LibraryPage, LibraryQuery,
-    LibrarySnapshot, LibrarySummary, ScanIssue, ScanIssueKind, ScanIssuePage, ScanProgress,
-    ScanStatus, ScanSummary,
+    roots_overlap, ContentRoot, GameFavorite, GameId, LibraryGameDetail, LibraryMetadataMatchState,
+    LibraryPage, LibraryQuery, LibrarySnapshot, LibrarySummary, ScanIssue, ScanIssueKind,
+    ScanIssuePage, ScanProgress, ScanStatus, ScanSummary,
 };
 use crate::domain::metadata::MetadataProviderId;
 use crate::domain::system::{SystemCatalog, SystemId};
 use crate::error::AppError;
 use crate::repositories::library::LibraryRepository;
+use crate::repositories::metadata::MetadataRepository;
 use crate::services::library_scanner::{
     ScanEventSink, ScanService, LIBRARY_SCAN_COMPLETED_EVENT, LIBRARY_SCAN_PROGRESS_EVENT,
 };
+use crate::services::metadata_evidence::{evidence_is_current, MetadataEvidenceService};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::BTreeSet;
 use std::fs;
@@ -25,6 +27,8 @@ const WATCHER_DEBOUNCE: Duration = Duration::from_millis(250);
 #[derive(Clone)]
 pub struct LibraryApplicationService {
     repository: LibraryRepository,
+    metadata_repository: MetadataRepository,
+    evidence: MetadataEvidenceService,
     coordinator: Arc<ScanCoordinator>,
     status: Arc<Mutex<ScanStatus>>,
     watcher: Option<Arc<LibraryWatcher>>,
@@ -39,7 +43,9 @@ impl LibraryApplicationService {
         frontend_sink: Arc<dyn ScanEventSink>,
     ) -> Result<Self, AppError> {
         let managed_root = ensure_managed_root(&managed_root, &catalog)?;
-        let repository = LibraryRepository::new(pool);
+        let repository = LibraryRepository::new(pool.clone());
+        let metadata_repository = MetadataRepository::new(pool);
+        let evidence = MetadataEvidenceService::new(repository.clone());
         repository.upsert_managed_root(&managed_root).await?;
         repository.recover_interrupted_scan_runs().await?;
 
@@ -69,6 +75,8 @@ impl LibraryApplicationService {
 
         Ok(Self {
             repository,
+            metadata_repository,
+            evidence,
             coordinator,
             status,
             watcher,
@@ -165,9 +173,12 @@ impl LibraryApplicationService {
     }
 
     pub async fn query_library(&self, request: &LibraryQuery) -> Result<LibraryPage, AppError> {
-        self.repository
+        let mut page = self
+            .repository
             .query_library(request, MetadataProviderId::ScreenScraper)
-            .await
+            .await?;
+        self.validate_live_metadata_state(&mut page).await?;
+        Ok(page)
     }
 
     pub async fn get_library_summary(&self) -> Result<LibrarySummary, AppError> {
@@ -205,6 +216,45 @@ impl LibraryApplicationService {
             }
             if roots_overlap(&root.path, path) {
                 return Err(AppError::ContentRootOverlap);
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies M5's live-evidence read invariant to the bounded UI page.
+    ///
+    /// Match snapshots and current M4 evidence are each loaded in bulk. Stale items retain the
+    /// list query's cached metadata and cover because staleness changes trust, not last-known-good
+    /// data availability.
+    async fn validate_live_metadata_state(&self, page: &mut LibraryPage) -> Result<(), AppError> {
+        let game_ids: Vec<GameId> = page
+            .items
+            .iter()
+            .filter(|item| item.metadata_match_state == LibraryMetadataMatchState::Matched)
+            .map(|item| item.game_id)
+            .collect();
+        if game_ids.is_empty() {
+            return Ok(());
+        }
+
+        let stored = self
+            .metadata_repository
+            .load_match_evidence_for_games(&game_ids, MetadataProviderId::ScreenScraper)
+            .await?;
+        let current = self.evidence.current_evidence_for_games(&game_ids).await?;
+
+        for item in &mut page.items {
+            if item.metadata_match_state != LibraryMetadataMatchState::Matched {
+                continue;
+            }
+            let snapshot = stored.get(&item.game_id);
+            let current_evidence = current.get(&item.game_id).and_then(Option::as_ref);
+            if !evidence_is_current(
+                snapshot.and_then(|match_evidence| match_evidence.evidence.as_ref()),
+                snapshot.and_then(|match_evidence| match_evidence.match_type),
+                current_evidence,
+            ) {
+                item.metadata_match_state = LibraryMetadataMatchState::Stale;
             }
         }
         Ok(())

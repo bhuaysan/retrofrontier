@@ -117,10 +117,11 @@ HTTP boundary, the provider, the vault, the clock, and the jitter source are all
 injectable, and all fixtures are synthetic or sanitized.
 
 Cached covers live under the OS-specific Tauri application-data directory in
-`metadata/media/`. Nothing is written beside user ROMs or into the source tree.
-The future WebView receives an opaque `rfmedia://localhost/cover/<game-id>` reference. The native
-custom protocol resolves the durable cover row and validates cache containment and image content;
-the relative cache path is never serialized through IPC.
+`metadata/media/`. Nothing is written beside user ROMs or into the source tree. The future WebView
+receives an opaque target-specific reference: `rfmedia://localhost/cover/<game-id>` on Linux/macOS
+desktop or `http://rfmedia.localhost/cover/<game-id>` on Windows. The native custom protocol resolves
+the durable cover row and validates cache containment and image content; the relative cache path is
+never serialized through IPC.
 
 ## Boundaries and conventions
 

@@ -18,7 +18,8 @@ use crate::domain::metadata::{
 };
 use crate::domain::system::SystemId;
 use crate::error::AppError;
-use sqlx::{Row, SqlitePool};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
+use std::collections::BTreeMap;
 
 /// Non-secret record of an optional personal provider account.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +36,13 @@ pub struct StoredMetadata {
     pub cover: Option<MediaAsset>,
     pub user_selection: Option<UserProviderSelection>,
     pub jobs: Vec<MetadataJob>,
+}
+
+/// The match fields needed to apply the live-evidence read invariant to a bounded library page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredMatchEvidence {
+    pub match_type: Option<MatchType>,
+    pub evidence: Option<MatchEvidence>,
 }
 
 /// The values written when a provider relationship is accepted or updated.
@@ -113,6 +121,67 @@ impl MetadataRepository {
         provider_match.evidence = self.load_evidence(provider_match.id).await?;
         provider_match.candidates = self.load_candidates(provider_match.id).await?;
         Ok(Some(provider_match))
+    }
+
+    /// Loads match types and evidence for a bounded set of games in one query.
+    ///
+    /// This is intentionally separate from the full metadata read: the library list only needs the
+    /// evidence snapshot to validate matched rows and must not materialize provider payloads or
+    /// candidate state for every page item.
+    pub async fn load_match_evidence_for_games(
+        &self,
+        game_ids: &[GameId],
+        provider_id: MetadataProviderId,
+    ) -> Result<BTreeMap<GameId, StoredMatchEvidence>, AppError> {
+        if game_ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT pm.game_id AS match_game_id, pm.match_type, \
+             pme.game_id AS game_id, pme.content_unit_id, pme.system_id, \
+             pme.content_unit_kind, pme.content_file_id, pme.size_bytes, pme.crc32, pme.md5, \
+             pme.sha1, pme.fingerprint, pme.evidence_version \
+             FROM provider_matches pm \
+             LEFT JOIN provider_match_evidence pme ON pme.provider_match_id = pm.id \
+             WHERE pm.provider_id = ",
+        );
+        query.push_bind(provider_id.as_db());
+        query.push(" AND pm.game_id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for game_id in game_ids {
+                separated.push_bind(game_id.0);
+            }
+            separated.push_unseparated(") ORDER BY pm.game_id ASC");
+        }
+
+        let rows = query
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+        let mut matches = BTreeMap::new();
+        for row in rows {
+            let game_id = GameId(row.get("match_game_id"));
+            let evidence = row
+                .get::<Option<i64>, _>("content_unit_id")
+                .map(|_| evidence_from_row(&row))
+                .transpose()?;
+            matches.insert(
+                game_id,
+                StoredMatchEvidence {
+                    match_type: optional_enum(
+                        &row,
+                        "match_type",
+                        MatchType::from_db,
+                        "match type",
+                    )?,
+                    evidence,
+                },
+            );
+        }
+        Ok(matches)
     }
 
     async fn load_evidence(

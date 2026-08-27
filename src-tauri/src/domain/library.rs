@@ -337,11 +337,12 @@ pub struct LibrarySnapshot {
 /// The bounded, provider-neutral metadata state needed by a library list.
 ///
 /// This deliberately collapses the provider relationship to a small UI state. The full M5
-/// metadata state remains available through its existing game-specific command.
+/// metadata state remains available through its existing game-specific command. `Pending` covers
+/// both a game with no provider row yet and one with queued provider work; the list does not expose
+/// a separate `notRequested` state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LibraryMetadataMatchState {
-    NotRequested,
     Pending,
     Matched,
     NoMatch,
@@ -398,6 +399,12 @@ impl LibraryQuery {
 }
 
 /// Opaque reference understood by the native cached-media protocol. It is not a filesystem path.
+///
+/// Tauri's custom protocol origin is target-specific: desktop WebViews on Windows address the
+/// handler through its localhost HTTP origin, while Linux and macOS use the registered scheme.
+#[cfg(any(windows, target_os = "android"))]
+pub const CACHED_COVER_REFERENCE_PREFIX: &str = "http://rfmedia.localhost/cover/";
+#[cfg(not(any(windows, target_os = "android")))]
 pub const CACHED_COVER_REFERENCE_PREFIX: &str = "rfmedia://localhost/cover/";
 
 pub fn cached_cover_reference(game_id: GameId) -> String {
@@ -690,6 +697,7 @@ pub struct ScanIssue {
 #[serde(rename_all = "camelCase")]
 pub struct ScanIssuePage {
     pub issues: Vec<ScanIssue>,
+    pub scan_run_id: Option<ScanRunId>,
     pub total: u64,
     pub offset: u64,
     pub limit: u32,
@@ -790,7 +798,8 @@ pub fn catalog_managed_folder_names(catalog: &SystemCatalog) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::ScanAuthority;
+    use super::{cached_cover_reference, ScanAuthority};
+    use crate::domain::library::GameId;
 
     #[test]
     fn scan_authority_walks_to_an_enumerated_ancestor() {
@@ -811,5 +820,15 @@ mod tests {
 
         assert!(!authority.can_reconcile_file("foo/game.nes"));
         assert!(authority.can_reconcile_file("foobar/game.nes"));
+    }
+
+    #[test]
+    fn cached_cover_reference_uses_the_current_target_origin() {
+        let reference = cached_cover_reference(GameId(42));
+
+        #[cfg(any(windows, target_os = "android"))]
+        assert_eq!(reference, "http://rfmedia.localhost/cover/42");
+        #[cfg(not(any(windows, target_os = "android")))]
+        assert_eq!(reference, "rfmedia://localhost/cover/42");
     }
 }

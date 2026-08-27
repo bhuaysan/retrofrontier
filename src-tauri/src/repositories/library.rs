@@ -11,7 +11,7 @@ use crate::domain::library::{
 use crate::domain::metadata::MetadataProviderId;
 use crate::domain::system::SystemId;
 use crate::error::AppError;
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -349,19 +349,37 @@ impl LibraryRepository {
     ) -> Result<ScanIssuePage, AppError> {
         let limit = bounded_scan_issue_limit(requested_limit);
         let offset = sqlite_offset(offset)?;
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM scan_issues \
-             WHERE scan_run_id = (SELECT id FROM scan_runs ORDER BY id DESC LIMIT 1)",
+        let scan_run_id: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM scan_runs WHERE state IN ('completed', 'failed') \
+             ORDER BY id DESC LIMIT 1",
         )
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await
         .map_err(AppError::Database)?;
+        let Some(scan_run_id) = scan_run_id else {
+            return Ok(ScanIssuePage {
+                issues: Vec::new(),
+                scan_run_id: None,
+                total: 0,
+                offset: u64::try_from(offset).map_err(|_| {
+                    AppError::Library("scan issue offset could not be represented".to_owned())
+                })?,
+                limit,
+            });
+        };
+        let total: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM scan_issues WHERE scan_run_id = ?")
+                .bind(scan_run_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(AppError::Database)?;
         let rows = sqlx::query(
             "SELECT i.id, i.scan_run_id, i.root_id, i.kind, i.relative_path, i.related_path, \
              i.detail, i.created_at FROM scan_issues i \
-             WHERE i.scan_run_id = (SELECT id FROM scan_runs ORDER BY id DESC LIMIT 1) \
+             WHERE i.scan_run_id = ? \
              ORDER BY i.created_at DESC, i.id DESC LIMIT ? OFFSET ?",
         )
+        .bind(scan_run_id)
         .bind(i64::from(limit))
         .bind(offset)
         .fetch_all(&self.pool)
@@ -373,6 +391,7 @@ impl LibraryRepository {
                 .into_iter()
                 .map(scan_issue_from_row)
                 .collect::<Result<_, _>>()?,
+            scan_run_id: Some(ScanRunId(scan_run_id)),
             total: u64_value(total)?,
             offset: u64::try_from(offset).map_err(|_| {
                 AppError::Library("scan issue offset could not be represented".to_owned())
@@ -841,7 +860,7 @@ impl LibraryRepository {
     ) -> Result<LibraryPage, AppError> {
         let limit = request.bounded_limit();
         let offset = sqlite_offset(request.offset)?;
-        let search = normalized_filter(request.search.as_deref());
+        let search = normalized_search_filter(request.search.as_deref());
         let genre = normalized_filter(request.genre.as_deref());
         let region = normalized_filter(request.region.as_deref());
         let availability = request.availability.map(GameAvailability::as_db);
@@ -860,8 +879,8 @@ impl LibraryRepository {
                    AND (? IS NULL OR lower(COALESCE(md.genre, '')) = lower(?)) \
                    AND (? IS NULL OR lower(COALESCE(md.region, '')) = lower(?)) \
                    AND (? IS NULL OR g.availability = ?) \
-                   AND (? IS NULL OR lower(COALESCE(md.title, '')) LIKE '%' || lower(?) || '%' \
-                        OR lower(g.local_title) LIKE '%' || lower(?) || '%')"
+                   AND (? IS NULL OR lower(COALESCE(md.title, '')) LIKE '%' || lower(?) || '%' ESCAPE '\\' \
+                        OR lower(g.local_title) LIKE '%' || lower(?) || '%' ESCAPE '\\')"
             ),
             request,
             provider_id,
@@ -898,8 +917,8 @@ impl LibraryRepository {
                    AND (? IS NULL OR lower(COALESCE(md.genre, '')) = lower(?)) \
                    AND (? IS NULL OR lower(COALESCE(md.region, '')) = lower(?)) \
                    AND (? IS NULL OR g.availability = ?) \
-                   AND (? IS NULL OR lower(COALESCE(md.title, '')) LIKE '%' || lower(?) || '%' \
-                        OR lower(g.local_title) LIKE '%' || lower(?) || '%') \
+                   AND (? IS NULL OR lower(COALESCE(md.title, '')) LIKE '%' || lower(?) || '%' ESCAPE '\\' \
+                        OR lower(g.local_title) LIKE '%' || lower(?) || '%' ESCAPE '\\') \
                  ORDER BY lower(effective_sort_title) ASC, g.id ASC LIMIT ? OFFSET ?"
             ),
             request,
@@ -1051,41 +1070,86 @@ impl LibraryRepository {
     ///
     /// This is the bounded read that metadata matching uses to obtain current M4 evidence.
     pub async fn game_content_units(&self, game_id: GameId) -> Result<Vec<ContentUnit>, AppError> {
-        let unit_rows = sqlx::query(
-            "SELECT id, game_id, root_id, system_id, kind, local_title, primary_relative_path, \
-             fingerprint, availability, created_at, updated_at FROM content_units \
-             WHERE game_id = ? ORDER BY id ASC",
-        )
-        .bind(game_id.0)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(AppError::Database)?;
-        let mut units = Vec::with_capacity(unit_rows.len());
-        for row in &unit_rows {
-            units.push(unit_from_row(row)?);
+        let mut units = self.game_content_units_for_games(&[game_id]).await?;
+        Ok(units.remove(&game_id).unwrap_or_default())
+    }
+
+    /// Loads content units and memberships for several games with two bounded bulk reads.
+    ///
+    /// Metadata list validation uses this instead of reading each game's content separately. The
+    /// caller owns the page bound; this repository method never turns a page into an N+1 query.
+    pub async fn game_content_units_for_games(
+        &self,
+        game_ids: &[GameId],
+    ) -> Result<BTreeMap<GameId, Vec<ContentUnit>>, AppError> {
+        if game_ids.is_empty() {
+            return Ok(BTreeMap::new());
         }
 
-        let membership_rows = sqlx::query(
+        let mut unit_query = QueryBuilder::<Sqlite>::new(
+            "SELECT id, game_id, root_id, system_id, kind, local_title, primary_relative_path, \
+             fingerprint, availability, created_at, updated_at FROM content_units \
+             WHERE game_id IN (",
+        );
+        {
+            let mut separated = unit_query.separated(", ");
+            for game_id in game_ids {
+                separated.push_bind(game_id.0);
+            }
+            separated.push_unseparated(") ORDER BY game_id ASC, id ASC");
+        }
+        let unit_rows = unit_query
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+
+        let mut units_by_game = BTreeMap::<GameId, Vec<ContentUnit>>::new();
+        let mut unit_locations = BTreeMap::<ContentUnitId, (GameId, usize)>::new();
+        for row in &unit_rows {
+            let unit = unit_from_row(row)?;
+            let game_id = unit.game_id;
+            let units = units_by_game.entry(game_id).or_default();
+            let index = units.len();
+            unit_locations.insert(unit.id, (game_id, index));
+            units.push(unit);
+        }
+
+        let mut membership_query = QueryBuilder::<Sqlite>::new(
             "SELECT cuf.content_unit_id, cuf.ordinal, cuf.role, \
              cf.id, cf.root_id, cf.relative_path, cf.size_bytes, cf.modified_at, cf.crc32, \
              cf.md5, cf.sha1, cf.availability FROM content_unit_files cuf \
              JOIN content_files cf ON cf.id = cuf.content_file_id \
              JOIN content_units cu ON cu.id = cuf.content_unit_id \
-             WHERE cu.game_id = ? ORDER BY cuf.content_unit_id ASC, cuf.ordinal ASC",
-        )
-        .bind(game_id.0)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(AppError::Database)?;
-        for row in membership_rows {
+             WHERE cu.game_id IN (",
+        );
+        {
+            let mut separated = membership_query.separated(", ");
+            for game_id in game_ids {
+                separated.push_bind(game_id.0);
+            }
+            separated.push_unseparated(") ORDER BY cuf.content_unit_id ASC, cuf.ordinal ASC");
+        }
+        let membership_rows = membership_query
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+        for row in &membership_rows {
             let unit_id = ContentUnitId(row.get("content_unit_id"));
-            let membership = membership_from_row(&row)?;
-            if let Some(unit) = units.iter_mut().find(|unit| unit.id == unit_id) {
+            let Some((game_id, index)) = unit_locations.get(&unit_id).copied() else {
+                continue;
+            };
+            let membership = membership_from_row(row)?;
+            if let Some(unit) = units_by_game
+                .get_mut(&game_id)
+                .and_then(|units| units.get_mut(index))
+            {
                 unit.files.push(membership);
             }
         }
 
-        Ok(units)
+        Ok(units_by_game)
     }
 
     pub async fn get_library_snapshot(&self) -> Result<LibrarySnapshot, AppError> {
@@ -1717,7 +1781,9 @@ fn library_metadata_match_state(
     status: Option<String>,
 ) -> Result<LibraryMetadataMatchState, AppError> {
     match status.as_deref() {
-        None => Ok(LibraryMetadataMatchState::NotRequested),
+        // M5 uses `pending` for the absence of an accepted provider match, including work that
+        // has not been requested yet. Keep the list/detail projections on that same state.
+        None => Ok(LibraryMetadataMatchState::Pending),
         Some("pending") => Ok(LibraryMetadataMatchState::Pending),
         Some("matched") => Ok(LibraryMetadataMatchState::Matched),
         Some("no_match") => Ok(LibraryMetadataMatchState::NoMatch),
@@ -1740,6 +1806,15 @@ fn normalized_filter(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
+}
+
+fn normalized_search_filter(value: Option<&str>) -> Option<String> {
+    normalized_filter(value).map(|value| {
+        value
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    })
 }
 
 fn bounded_scan_issue_limit(requested: u32) -> u32 {
@@ -2065,6 +2140,13 @@ mod tests {
             .await
             .expect("missing game detail")
             .is_none());
+        let issues = repository
+            .list_latest_scan_issues_page(0, 0)
+            .await
+            .expect("empty scan issue page");
+        assert_eq!(issues.scan_run_id, None);
+        assert_eq!(issues.total, 0);
+        assert!(issues.issues.is_empty());
     }
 
     #[tokio::test]
@@ -2191,6 +2273,15 @@ mod tests {
                 .metadata_match_state,
             LibraryMetadataMatchState::Pending
         );
+        assert_eq!(
+            all.items
+                .iter()
+                .find(|item| item.game_id == GameId(6))
+                .unwrap()
+                .metadata_match_state,
+            LibraryMetadataMatchState::Pending,
+            "a game without a provider row uses the same pending state as queued work"
+        );
 
         let mut request = LibraryQuery {
             search: Some(" metadata ".to_owned()),
@@ -2298,6 +2389,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn library_search_treats_like_metacharacters_as_literal_text() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        for (game_id, title) in [
+            (1, "Literal % Title"),
+            (2, "Literal _ Title"),
+            (3, "abc"),
+            (4, "aXc"),
+            (5, "a_c"),
+            (6, r"slash\title"),
+        ] {
+            insert_game(
+                &pool,
+                game_id,
+                SystemId::Nes,
+                title,
+                GameAvailability::Available,
+            )
+            .await;
+        }
+
+        let mut request = LibraryQuery {
+            search: Some("%".to_owned()),
+            ..LibraryQuery::default()
+        };
+        let percent = repository
+            .query_library(&request, MetadataProviderId::ScreenScraper)
+            .await
+            .unwrap();
+        assert_eq!(percent.total, 1);
+        assert_eq!(ids(&percent), vec![1]);
+
+        request.search = Some("_".to_owned());
+        let underscore = repository
+            .query_library(&request, MetadataProviderId::ScreenScraper)
+            .await
+            .unwrap();
+        assert_eq!(underscore.total, 2);
+        assert_eq!(ids(&underscore), vec![5, 2]);
+
+        request.search = Some("a_c".to_owned());
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![5],
+            "an underscore in the query must not match an arbitrary character"
+        );
+
+        request.search = Some(r"slash\title".to_owned());
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![6],
+            "a backslash in the query must remain literal"
+        );
+
+        request.search = Some("abc".to_owned());
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![3],
+            "ordinary search text retains its existing semantics"
+        );
+    }
+
+    #[tokio::test]
     async fn favorites_are_durable_filtered_and_composed_with_cached_cover_state() {
         let (_directory, pool) = fixture().await;
         let repository = LibraryRepository::new(pool.clone());
@@ -2319,9 +2482,10 @@ mod tests {
             .pop()
             .unwrap();
         assert!(!default_item.favorite);
+        let expected_cover_ref = cached_cover_reference(GameId(1));
         assert_eq!(
             default_item.cover_ref.as_deref(),
-            Some("rfmedia://localhost/cover/1")
+            Some(expected_cover_ref.as_str())
         );
 
         repository.set_game_favorite(GameId(1), true).await.unwrap();
@@ -2602,5 +2766,60 @@ mod tests {
             .unwrap();
         assert_eq!(capped.limit, MAX_SCAN_ISSUE_PAGE_SIZE);
         assert_eq!(capped.issues.len(), MAX_SCAN_ISSUE_PAGE_SIZE as usize);
+
+        let running_run: i64 = sqlx::query_scalar(
+            "INSERT INTO scan_runs (state, started_at) VALUES ('running', ?) RETURNING id",
+        )
+        .bind(TEST_TIME + 2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO scan_issues (scan_run_id, kind, relative_path, created_at) \
+             VALUES (?, 'unreadable_path', 'running-issue', ?)",
+        )
+        .bind(running_run)
+        .bind(TEST_TIME + 30_000)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let during_new_run = repository
+            .list_latest_scan_issues_page(0, 50)
+            .await
+            .unwrap();
+        assert_eq!(
+            during_new_run.scan_run_id,
+            Some(ScanRunId(latest_run)),
+            "a running scan must not replace the latest persisted issue run"
+        );
+        assert_eq!(during_new_run.total, 205);
+        assert_eq!(during_new_run.issues.len(), 50);
+        assert!(during_new_run
+            .issues
+            .iter()
+            .all(|issue| issue.scan_run_id == Some(ScanRunId(latest_run))));
+
+        sqlx::query("UPDATE scan_runs SET state = 'completed', completed_at = ? WHERE id = ?")
+            .bind(TEST_TIME + 40_000)
+            .bind(running_run)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let completed_new_run = repository
+            .list_latest_scan_issues_page(0, 50)
+            .await
+            .unwrap();
+        assert_eq!(completed_new_run.scan_run_id, Some(ScanRunId(running_run)));
+        assert_eq!(completed_new_run.total, 1);
+        assert_eq!(completed_new_run.issues.len(), 1);
+        assert_eq!(
+            completed_new_run.issues[0].scan_run_id,
+            Some(ScanRunId(running_run))
+        );
+        assert_eq!(
+            completed_new_run.issues[0].relative_path.as_deref(),
+            Some("running-issue")
+        );
     }
 }

@@ -142,11 +142,13 @@ physical content files, hashes, or fingerprints. The existing full `get_library_
 the M4 diagnostic contract and is not the UI list path. Favorites live in the separate
 `game_user_state` table, so scanner reconciliation cannot overwrite them.
 
-The M6.1 UI list receives an opaque `rfmedia://localhost/cover/<game-id>` reference when the
-durable cover row is eligible. Rust resolves that identity through a narrow Tauri custom protocol,
-checks the app-owned metadata-media cache and image signature, and serves the bytes; React never
-receives or resolves a cache path. Metadata changes emit a minimal invalidation event only after
-their durable write, and the bounded scan-issue page is limited to the latest persisted scan run.
+The M6.1 UI list receives an opaque cached-cover reference when the durable cover row is eligible:
+`rfmedia://localhost/cover/<game-id>` on Linux/macOS desktop and
+`http://rfmedia.localhost/cover/<game-id>` on Windows. Rust generates the target-correct reference,
+resolves that identity through a narrow Tauri custom protocol, checks the app-owned metadata-media
+cache and image signature, and serves the bytes; React never receives or resolves a cache path.
+Metadata changes emit a minimal invalidation event only after their durable write, and the bounded
+scan-issue page is limited to one resolved persisted scan run.
 
 ### MetadataService
 
@@ -409,9 +411,12 @@ evidence affect provider state only and never mutate local library ownership or 
 [`docs/SCREENSCRAPER_SPIKE.md`](docs/SCREENSCRAPER_SPIKE.md) and ADR-007.
 
 The M6.1 metadata/UI boundary preserves the relative cache path only inside Rust persistence and
-native services. Serialized metadata assets expose an opaque media reference instead. The
-`metadata-state-changed` event carries only `gameId` and `providerId`; it is an invalidation signal,
-not a metadata data channel.
+native services. Serialized metadata assets expose an opaque media reference instead. The strongest
+media boundary is that the WebView supplies only an opaque game identity; path containment checks
+remain defence-in-depth against corrupted persisted cache paths. The `metadata-state-changed` event
+carries only `gameId` and `providerId`; it is a per-game invalidation signal, not a metadata data
+channel. Bulk consumers must debounce/coalesce events and refetch bounded visible/current state
+rather than refetching the whole library once per event.
 
 ## UI Architecture
 

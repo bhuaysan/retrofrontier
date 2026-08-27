@@ -9,8 +9,10 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
 
 import {
+  STABLE_IPC_ERROR_CODES,
   getLibraryGameDetail,
   getScanIssuePage,
+  normalizeIpcError,
   onMetadataStateChanged,
   queryLibrary,
   setGameFavorite,
@@ -75,5 +77,34 @@ describe('M6.1 IPC contracts', () => {
     expect(listen).toHaveBeenCalledWith('metadata-state-changed', expect.any(Function));
     expect(handler).toHaveBeenCalledWith({ gameId: 42, providerId: 'screenScraper' });
     expect(returnedUnlisten).toBe(unlisten);
+  });
+
+  it('pins the stable backend error codes while preserving unknown-code fallback', () => {
+    expect(STABLE_IPC_ERROR_CODES).toEqual([
+      'path_unavailable',
+      'storage_unavailable',
+      'database_unavailable',
+      'migration_failed',
+      'runtime_unavailable',
+      'catalog_invalid',
+      'bios_unavailable',
+      'bios_override_disabled',
+      'library_unavailable',
+      'content_root_invalid_path',
+      'content_root_unavailable',
+      'content_root_not_directory',
+      'content_root_overlap',
+      'content_root_invalid_operation',
+      'metadata_unavailable',
+    ]);
+
+    const futureError = normalizeIpcError({
+      code: 'future_backend_code',
+      message: 'Use the generic fallback.',
+    });
+    expect(futureError.code).toBe('future_backend_code');
+    expect(futureError.message).toBe('Use the generic fallback.');
+    const malformedError = normalizeIpcError(new Error('not an IPC payload'));
+    expect(malformedError.code).toBe('ipc_unavailable');
   });
 });

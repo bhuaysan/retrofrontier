@@ -126,6 +126,10 @@ impl Serialize for AppError {
 #[cfg(test)]
 mod tests {
     use super::AppError;
+    use crate::domain::runtime::RuntimeError;
+    use crate::services::bios::BiosError;
+    use sqlx::migrate::MigrateError;
+    use std::path::PathBuf;
 
     #[test]
     fn serializes_a_safe_ui_error_without_internal_details() {
@@ -164,5 +168,50 @@ mod tests {
                 .as_str()
                 .is_some_and(|message| { !message.contains("sql") && !message.contains("/tmp") }));
         }
+    }
+
+    #[test]
+    fn pins_the_complete_backend_ipc_error_code_set() {
+        let errors = [
+            AppError::PathResolution(String::new()),
+            AppError::Storage(std::io::Error::other("fixture")),
+            AppError::Database(sqlx::Error::RowNotFound),
+            AppError::Migration(MigrateError::VersionMissing(1)),
+            AppError::Runtime(RuntimeError::UnsupportedPlatform),
+            AppError::Catalog(String::new()),
+            AppError::Bios(BiosError::UnsafeRoot {
+                path: PathBuf::from("/fixture"),
+            }),
+            AppError::BiosOverrideNotAllowed,
+            AppError::Library(String::new()),
+            AppError::ContentRootInvalidPath,
+            AppError::ContentRootUnavailable,
+            AppError::ContentRootNotDirectory,
+            AppError::ContentRootOverlap,
+            AppError::ContentRootInvalidOperation,
+            AppError::Metadata(String::new()),
+        ];
+        let codes: Vec<_> = errors.iter().map(AppError::code).collect();
+
+        assert_eq!(
+            codes,
+            vec![
+                "path_unavailable",
+                "storage_unavailable",
+                "database_unavailable",
+                "migration_failed",
+                "runtime_unavailable",
+                "catalog_invalid",
+                "bios_unavailable",
+                "bios_override_disabled",
+                "library_unavailable",
+                "content_root_invalid_path",
+                "content_root_unavailable",
+                "content_root_not_directory",
+                "content_root_overlap",
+                "content_root_invalid_operation",
+                "metadata_unavailable",
+            ]
+        );
     }
 }

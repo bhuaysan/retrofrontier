@@ -1,6 +1,7 @@
 //! Narrow native delivery boundary for application-owned cached covers.
 //!
-//! A WebView receives an opaque `rfmedia://localhost/cover/<game-id>` reference. It never receives
+//! A WebView receives an opaque target-specific reference (`rfmedia://localhost/cover/<game-id>` on
+//! Linux/macOS desktop, `http://rfmedia.localhost/cover/<game-id>` on Windows). It never receives
 //! the persisted relative cache path, an absolute path, or a provider URL. The route is resolved
 //! back to the current durable media row and the cover cache performs the final containment and
 //! image validation checks before bytes leave Rust.
@@ -112,8 +113,14 @@ mod tests {
         app_error_status, cover_response, parse_cover_route, protocol_error_response,
         CACHED_COVER_PROTOCOL,
     };
+    use crate::adapters::database::Database;
+    use crate::adapters::metadata_paths::MetadataPaths;
     use crate::domain::library::GameId;
+    use crate::domain::metadata::{MediaAssetKind, MediaAssetState, MetadataProviderId};
+    use crate::repositories::metadata::{MediaAssetWrite, MetadataRepository};
     use crate::services::metadata_media::DeliveredCover;
+    use crate::services::metadata_provider::DownloadedMedia;
+    use tempfile::tempdir;
 
     #[test]
     fn only_positive_game_id_cover_routes_are_accepted() {
@@ -151,5 +158,66 @@ mod tests {
             protocol_error_response(app_error_status(super::CoverDeliveryError::NotFound));
         assert_eq!(missing.status(), 404);
         assert_eq!(missing.headers()["X-Content-Type-Options"], "nosniff");
+    }
+
+    #[tokio::test]
+    async fn durable_cached_media_is_delivered_as_valid_bytes_and_content_type() {
+        let directory = tempdir().expect("temporary directory");
+        let database = Database::open(directory.path().join("database.sqlite3"))
+            .await
+            .expect("database should open");
+        let game_id = GameId(1);
+        sqlx::query(
+            "INSERT INTO games (id, system_id, local_title, availability, created_at, updated_at) \
+             VALUES (?, 'nes', 'Synthetic Game', 'available', 1, 1)",
+        )
+        .bind(game_id.0)
+        .execute(database.pool())
+        .await
+        .expect("synthetic game should persist");
+
+        let paths = MetadataPaths::new(directory.path());
+        let cache = crate::services::metadata_media::CoverCache::new(paths.clone());
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        bytes.extend_from_slice(b"durable-synthetic-cover");
+        let media = DownloadedMedia {
+            content_type: Some("image/png".to_owned()),
+            bytes: bytes.clone(),
+        };
+        let published = cache
+            .publish(game_id, MetadataProviderId::ScreenScraper, &media)
+            .expect("synthetic cover should publish");
+        MetadataRepository::new(database.pool().clone())
+            .persist_media_asset(
+                &MediaAssetWrite {
+                    game_id,
+                    provider_id: MetadataProviderId::ScreenScraper,
+                    kind: MediaAssetKind::Cover,
+                    state: MediaAssetState::Cached,
+                    provider_media_type: None,
+                    region: None,
+                    cache_relative_path: Some(published.relative_path.clone()),
+                    content_type: Some(published.content_type.clone()),
+                    size_bytes: Some(published.size_bytes),
+                    content_sha256: Some(published.content_sha256.clone()),
+                    provider_crc32: None,
+                    provider_md5: None,
+                    provider_sha1: None,
+                    source_credit: None,
+                    last_failure: None,
+                    fetched_at: Some(1),
+                },
+                1,
+            )
+            .await
+            .expect("durable media row should persist");
+
+        let delivery = super::CachedCoverDelivery::new(database.pool().clone(), paths);
+        let delivered = delivery
+            .load_cover(game_id)
+            .await
+            .expect("durable cached cover should load");
+        assert_eq!(delivered.bytes, bytes);
+        assert_eq!(delivered.content_type, "image/png");
     }
 }

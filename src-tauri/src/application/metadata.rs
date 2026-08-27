@@ -25,6 +25,9 @@ use crate::domain::metadata::{
 use crate::error::AppError;
 use crate::repositories::library::LibraryRepository;
 use crate::repositories::metadata::{MediaAssetWrite, MetadataRepository, ProviderMatchWrite};
+use crate::services::metadata_evidence::{
+    effective_match_status, evidence_is_current, MetadataEvidenceService,
+};
 use crate::services::metadata_matching::{classify_deterministic_match, DeterministicOutcome};
 use crate::services::metadata_media::CoverCache;
 use crate::services::metadata_provider::{
@@ -193,6 +196,7 @@ impl ProviderCredentialSource for ProviderCredentialState {
 pub struct MetadataApplicationService {
     repository: MetadataRepository,
     library: LibraryRepository,
+    evidence: MetadataEvidenceService,
     provider: Arc<dyn MetadataProvider>,
     covers: Arc<CoverCache>,
     vault: Arc<dyn CredentialVault>,
@@ -232,6 +236,7 @@ impl MetadataApplicationService {
     ) -> Result<Self, AppError> {
         let repository = MetadataRepository::new(pool.clone());
         let library = LibraryRepository::new(pool);
+        let evidence = MetadataEvidenceService::new(library.clone());
         let provider_id = provider.provider_id();
         let covers = Arc::new(CoverCache::new(paths));
         covers.clean_partial_downloads();
@@ -263,6 +268,7 @@ impl MetadataApplicationService {
         Ok(Self {
             repository,
             library,
+            evidence,
             provider,
             covers,
             vault,
@@ -363,17 +369,12 @@ impl MetadataApplicationService {
             .provider_match
             .as_ref()
             .and_then(|provider_match| provider_match.evidence.as_ref());
-        let evidence_is_current = match (stored_evidence, match_type) {
-            (Some(stored_evidence), _) => current_evidence
-                .as_ref()
-                .is_some_and(|current| stored_evidence.agrees_with(current)),
-            (None, Some(match_type)) => !match_type.is_deterministic(),
-            (None, None) => true,
-        };
-
-        if status == ProviderMatchStatus::Matched && !evidence_is_current {
-            status = ProviderMatchStatus::Stale;
-        }
+        status = effective_match_status(
+            status,
+            match_type,
+            stored_evidence,
+            current_evidence.as_ref(),
+        );
         let deterministic = status == ProviderMatchStatus::Matched
             && match_type.is_some_and(MatchType::is_deterministic);
 
@@ -654,9 +655,11 @@ impl MetadataApplicationService {
                 continue;
             };
             let current = self.current_evidence(game_id).await?;
-            let agrees = current
-                .as_ref()
-                .is_some_and(|current| stored_evidence.agrees_with(current));
+            let agrees = evidence_is_current(
+                Some(stored_evidence),
+                provider_match.match_type,
+                current.as_ref(),
+            );
             if !agrees {
                 self.repository
                     .mark_match_stale(game_id, self.provider_id, now)
@@ -1346,9 +1349,11 @@ impl MetadataApplicationService {
         // so this becomes a re-identification instead.
         if let Some(stored_evidence) = provider_match.evidence.as_ref() {
             let current = self.current_evidence(game_id).await?;
-            let agrees = current
-                .as_ref()
-                .is_some_and(|current| stored_evidence.agrees_with(current));
+            let agrees = evidence_is_current(
+                Some(stored_evidence),
+                provider_match.match_type,
+                current.as_ref(),
+            );
             if !agrees {
                 let now = self.clock.now_ms();
                 self.repository
@@ -1415,9 +1420,11 @@ impl MetadataApplicationService {
         // re-identified rather than re-fetched, so a stale relationship is never re-trusted.
         if let Some(stored_evidence) = provider_match.evidence.as_ref() {
             let current = self.current_evidence(game_id).await?;
-            let agrees = current
-                .as_ref()
-                .is_some_and(|current| stored_evidence.agrees_with(current));
+            let agrees = evidence_is_current(
+                Some(stored_evidence),
+                provider_match.match_type,
+                current.as_ref(),
+            );
             if !agrees {
                 let now = self.clock.now_ms();
                 self.repository
@@ -1637,8 +1644,7 @@ impl MetadataApplicationService {
 
     /// Current M4 evidence for one game, or `None` when no unit qualifies.
     async fn current_evidence(&self, game_id: GameId) -> Result<Option<MatchEvidence>, AppError> {
-        let units = self.library.game_content_units(game_id).await?;
-        Ok(units.iter().find_map(|unit| evidence_for_unit(unit).ok()))
+        self.evidence.current_evidence(game_id).await
     }
 
     async fn ensure_game_exists(&self, game_id: GameId) -> Result<(), AppError> {
@@ -1774,9 +1780,13 @@ mod tests {
     use super::*;
     use crate::adapters::credentials::InMemoryCredentialVault;
     use crate::adapters::database::Database;
-    use crate::domain::library::ContentUnitKind;
+    use crate::application::library::LibraryApplicationService;
+    use crate::domain::library::{
+        cached_cover_reference, ContentUnitKind, LibraryMetadataMatchState, LibraryQuery,
+    };
     use crate::domain::metadata::{MetadataJobState, NormalizedMetadata};
-    use crate::domain::system::SystemId;
+    use crate::domain::system::{SystemCatalog, SystemId};
+    use crate::services::library_scanner::NoopScanEventSink;
     use crate::services::metadata_provider::{
         CandidateSearchRequest, DownloadedMedia, ProviderMediaLocator, ProviderResponse,
         ProviderResult, ProviderRomRecord,
@@ -2463,9 +2473,10 @@ mod tests {
             .is_cached(cover.cache_relative_path.as_deref().unwrap()));
         let serialized = serde_json::to_string(&cover).unwrap();
         assert!(!serialized.contains("cacheRelativePath"));
+        let expected_media_ref = cached_cover_reference(GameId(1));
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&serialized).unwrap()["mediaRef"],
-            "rfmedia://localhost/cover/1"
+            expected_media_ref
         );
         assert!(!serialized.contains("https://provider.invalid"));
         assert!(!serialized.contains(SHA1));
@@ -2843,6 +2854,32 @@ mod tests {
         let read_state = harness.state(game_id).await;
         assert_eq!(read_state.status, ProviderMatchStatus::Stale);
         assert!(!read_state.deterministic);
+
+        // The bounded M6 list must apply the same live check before the sweep persists stale.
+        let library_service = LibraryApplicationService::initialize(
+            harness.pool.clone(),
+            SystemCatalog::v1(),
+            harness._directory.path().join("library-ui-root"),
+            Arc::new(NoopScanEventSink),
+        )
+        .await
+        .expect("library service should initialize for the list read");
+        let list = library_service
+            .query_library(&LibraryQuery::default())
+            .await
+            .expect("library list should load stale evidence");
+        let item = list
+            .items
+            .iter()
+            .find(|item| item.game_id == game_id)
+            .expect("the matched game should be in the list");
+        assert_eq!(item.metadata_match_state, LibraryMetadataMatchState::Stale);
+        assert_eq!(item.metadata_title.as_deref(), Some("The Example Quest"));
+        assert_eq!(item.display_title, "The Example Quest");
+        let expected_cover_ref = cached_cover_reference(game_id);
+        assert_eq!(item.cover_ref.as_deref(), Some(expected_cover_ref.as_str()));
+        assert_eq!(read_state.status, ProviderMatchStatus::Stale);
+        drop(library_service);
 
         let stale = harness.service.revalidate_matches().await.unwrap();
         assert_eq!(stale, 1);

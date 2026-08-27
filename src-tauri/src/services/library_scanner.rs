@@ -1912,9 +1912,10 @@ mod tests {
     use crate::adapters::database::Database;
     use crate::domain::library::{
         ContentFileAvailability, ContentFileRole, ContentFormat, ContentRoot,
-        ContentRootAvailability, ContentUnitAvailability, ContentUnitKind, GameId, ScanCounters,
-        ScanIssueKind, ScanPhase, ScanProgress, ScanRunId, ScanRunState, ScanSummary,
+        ContentRootAvailability, ContentUnitAvailability, ContentUnitKind, GameId, LibraryQuery,
+        ScanCounters, ScanIssueKind, ScanPhase, ScanProgress, ScanRunId, ScanRunState, ScanSummary,
     };
+    use crate::domain::metadata::MetadataProviderId;
     use crate::domain::system::{SystemCatalog, SystemId};
     use crate::repositories::library::LibraryRepository;
     use std::collections::BTreeSet;
@@ -2594,6 +2595,11 @@ mod tests {
             .games[0]
             .game
             .id;
+        context
+            .repository
+            .set_game_favorite(original_game_id, true)
+            .await
+            .unwrap();
         write_fixture(&context.root, "game.m3u", b"disc.chd\n");
         context.scanner.scan_once().await.unwrap();
 
@@ -2616,6 +2622,16 @@ mod tests {
             unit.kind == ContentUnitKind::M3u
                 && unit.availability == ContentUnitAvailability::Available
         }));
+        let listed = context
+            .repository
+            .query_library(&LibraryQuery::default(), MetadataProviderId::ScreenScraper)
+            .await
+            .unwrap();
+        assert!(listed
+            .items
+            .iter()
+            .find(|item| item.game_id == original_game_id)
+            .is_some_and(|item| item.favorite));
     }
 
     #[tokio::test]
@@ -3232,6 +3248,11 @@ mod tests {
         let before_game = before.games[0].game.id;
         let before_unit = before.games[0].content_units[0].id;
         let before_file = before.games[0].content_units[0].files[0].file.id;
+        context
+            .repository
+            .set_game_favorite(before_game, true)
+            .await
+            .unwrap();
         fs::rename(
             PathBuf::from(&context.root.path).join("old.nes"),
             PathBuf::from(&context.root.path).join("new.nes"),
@@ -3251,6 +3272,16 @@ mod tests {
             after.games[0].content_units[0].files[0].file.relative_path,
             "new.nes"
         );
+        let listed = context
+            .repository
+            .query_library(&LibraryQuery::default(), MetadataProviderId::ScreenScraper)
+            .await
+            .unwrap();
+        assert!(listed
+            .items
+            .iter()
+            .find(|item| item.game_id == before_game)
+            .is_some_and(|item| item.favorite));
     }
 
     #[tokio::test]

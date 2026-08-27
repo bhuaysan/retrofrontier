@@ -196,14 +196,7 @@ export interface LibrarySnapshot {
 }
 
 export type LibraryMetadataMatchState =
-  | 'notRequested'
-  | 'pending'
-  | 'matched'
-  | 'noMatch'
-  | 'ambiguous'
-  | 'deferred'
-  | 'failed'
-  | 'stale';
+  'pending' | 'matched' | 'noMatch' | 'ambiguous' | 'deferred' | 'failed' | 'stale';
 
 /** M6.1's bounded title ordering. Additional sort orders require an explicit product decision. */
 export type LibrarySort = 'titleAsc';
@@ -317,6 +310,7 @@ export interface ScanIssuePageRequest {
 
 export interface ScanIssuePage {
   issues: ScanIssue[];
+  scanRunId: number | null;
   total: number;
   offset: number;
   limit: number;
@@ -568,15 +562,50 @@ export interface MetadataStateChanged {
   providerId: MetadataProviderId;
 }
 
+/** Stable codes currently emitted by the Rust `AppError` boundary. */
+export const STABLE_IPC_ERROR_CODES = [
+  'path_unavailable',
+  'storage_unavailable',
+  'database_unavailable',
+  'migration_failed',
+  'runtime_unavailable',
+  'catalog_invalid',
+  'bios_unavailable',
+  'bios_override_disabled',
+  'library_unavailable',
+  'content_root_invalid_path',
+  'content_root_unavailable',
+  'content_root_not_directory',
+  'content_root_overlap',
+  'content_root_invalid_operation',
+  'metadata_unavailable',
+] as const;
+
+export type StableIpcErrorCode = (typeof STABLE_IPC_ERROR_CODES)[number];
+export type ContentRootIpcErrorCode = Extract<
+  StableIpcErrorCode,
+  | 'content_root_invalid_path'
+  | 'content_root_unavailable'
+  | 'content_root_not_directory'
+  | 'content_root_overlap'
+  | 'content_root_invalid_operation'
+>;
+
+/**
+ * An unknown string remains valid so a newer native backend can be shown with a generic fallback
+ * until the frontend contract is updated.
+ */
+export type IpcErrorCode = StableIpcErrorCode | (string & {});
+
 export interface IpcErrorShape {
-  code: string;
+  code: IpcErrorCode;
   message: string;
 }
 
 export class IpcError extends Error implements IpcErrorShape {
-  readonly code: string;
+  readonly code: IpcErrorCode;
 
-  constructor(code: string, message: string) {
+  constructor(code: IpcErrorCode, message: string) {
     super(message);
     this.name = 'IpcError';
     this.code = code;

@@ -178,7 +178,10 @@ the later library UI:
 - `query_library` returns a page of lightweight list items. It supports normalized-title/local-title
   search, system, favorite, genre, region, and availability filters, with title-ascending ordering
   and a `gameId` tie-breaker. The default and hard maximum page size are both 60. The response also
-  includes the total matching count, requested offset, and effective limit.
+  includes the total matching count, requested offset, and effective limit. Search treats `\`, `%`,
+  and `_` literally through the repository's SQL `ESCAPE` clause. Case-insensitive matching uses
+  SQLite `lower()`, which is ASCII-oriented in the current configuration; full Unicode case folding
+  is a deferred search-quality item, not an M6.1 claim.
 - `get_library_summary` returns total games, favorite games, and counts grouped by system without
   materializing game rows in the frontend.
 - `get_library_game_detail` returns one game's local title, system, availability, favorite state,
@@ -186,14 +189,21 @@ the later library UI:
   and unit availability). It does not return physical-file membership or any hash/fingerprint.
 
 The list query composes normalized metadata title, release date, genre, region, coarse provider-match
-state, and an opaque cached-cover reference in Rust. It never joins physical content files. The
-`game_user_state` table owns the durable favorite boolean separately from scanner-owned `games`; a
-scan cannot reset it. Game deletion is intentionally restricted while user state exists.
+state, and an opaque cached-cover reference in Rust. It never joins physical content files. A matched
+row is also checked against the current M4 evidence in one bounded bulk validation pass; if the
+evidence changed, the list reports `stale` while retaining cached metadata and cover data. The M5
+detail read applies the same rule. With no accepted match, `pending` covers both not-yet-requested
+and queued work; `notRequested` is not a separate UI state. The `game_user_state` table owns the
+durable favorite boolean separately from scanner-owned `games`; a scan cannot reset it. Game deletion
+is intentionally restricted while user state exists.
 
 `get_scan_issue_page` is the bounded issue-read path for future UI rendering. It reports the total
-for the latest persisted scan run, uses a default limit of 50 and a hard maximum of 100, and orders
-by newest `created_at` with `id` as the tie-breaker. The legacy aggregate issue command remains
-available for the existing diagnostic contract and may also include transient watcher issues.
+and rows for one resolved persisted scan run, uses a default limit of 50 and a hard maximum of 100,
+and orders by newest `created_at` with `id` as the tie-breaker. By default the resolver selects the
+latest `completed` or `failed` run and does not switch to a newer `running` run; the response includes
+that run's `scanRunId`, or `null` with an empty page when no terminal run exists. The legacy aggregate
+issue command remains available for the existing diagnostic contract and may also include transient
+watcher issues.
 
 Root-management commands use safe typed error codes for invalid/unsafe paths, unavailable roots,
 non-directory paths, enabled-root overlap, and invalid operations. Raw filesystem and SQL details
