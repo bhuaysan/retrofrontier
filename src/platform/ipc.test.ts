@@ -14,6 +14,7 @@ import {
   getScanIssuePage,
   normalizeIpcError,
   onMetadataStateChanged,
+  openManagedRomFolder,
   queryLibrary,
   setGameFavorite,
 } from './ipc';
@@ -77,6 +78,15 @@ describe('M6.1 IPC contracts', () => {
     expect(listen).toHaveBeenCalledWith('metadata-state-changed', expect.any(Function));
     expect(handler).toHaveBeenCalledWith({ gameId: 42, providerId: 'screenScraper' });
     expect(returnedUnlisten).toBe(unlisten);
+  });
+
+  it('keeps managed-folder opening caller-independent', async () => {
+    invoke.mockResolvedValue(undefined);
+
+    await openManagedRomFolder();
+
+    expect(invoke).toHaveBeenCalledWith('open_managed_rom_folder');
+    expect(invoke.mock.calls[0]).toHaveLength(1);
   });
 
   it('pins the stable backend error codes while preserving unknown-code fallback', () => {

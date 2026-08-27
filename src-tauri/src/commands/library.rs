@@ -70,6 +70,13 @@ pub async fn add_external_content_root(
 }
 
 #[tauri::command]
+pub fn open_managed_rom_folder(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
+    let result = state.library().open_managed_rom_folder();
+    log_result(&result);
+    result
+}
+
+#[tauri::command]
 pub async fn remove_external_content_root(
     request: ContentRootRequest,
     state: tauri::State<'_, AppState>,

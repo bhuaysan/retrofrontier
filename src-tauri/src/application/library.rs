@@ -16,6 +16,8 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+#[cfg(any(target_os = "windows", target_os = "macos", unix))]
+use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -31,6 +33,7 @@ pub struct LibraryApplicationService {
     evidence: MetadataEvidenceService,
     coordinator: Arc<ScanCoordinator>,
     status: Arc<Mutex<ScanStatus>>,
+    managed_root: PathBuf,
     watcher: Option<Arc<LibraryWatcher>>,
     watcher_issues: Arc<Mutex<Vec<ScanIssue>>>,
 }
@@ -79,6 +82,7 @@ impl LibraryApplicationService {
             evidence,
             coordinator,
             status,
+            managed_root: PathBuf::from(managed_root),
             watcher,
             watcher_issues,
         })
@@ -103,6 +107,14 @@ impl LibraryApplicationService {
             .await?;
         self.refresh_watcher().await;
         Ok(root)
+    }
+
+    /// Opens the application-owned managed ROM root using the host file manager.
+    ///
+    /// The path is captured during bootstrap after `ensure_managed_root` has resolved it. The
+    /// frontend cannot provide or alter this path, and the process is started without a shell.
+    pub fn open_managed_rom_folder(&self) -> Result<(), AppError> {
+        open_managed_directory(&self.managed_root)
     }
 
     pub async fn remove_external_content_root(
@@ -602,6 +614,52 @@ fn ensure_directory(path: &Path, _label: &str) -> Result<(), AppError> {
     }
 }
 
+fn open_managed_directory(path: &Path) -> Result<(), AppError> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| AppError::ContentRootUnavailable)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(AppError::ContentRootUnavailable);
+    }
+    let canonical = fs::canonicalize(path).map_err(|_| AppError::ContentRootUnavailable)?;
+    if canonical != path {
+        return Err(AppError::ContentRootUnavailable);
+    }
+
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "macos",
+        all(unix, not(target_os = "macos"))
+    ))]
+    {
+        build_managed_directory_command(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| AppError::ContentRootUnavailable)
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    {
+        let _ = path;
+        Err(AppError::ContentRootUnavailable)
+    }
+}
+
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    all(unix, not(target_os = "macos"))
+))]
+fn build_managed_directory_command(path: &Path) -> Command {
+    #[cfg(target_os = "windows")]
+    let mut command = Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = Command::new("xdg-open");
+
+    command.arg(path);
+    command
+}
+
 fn normalize_configured_path(path: &str, _label: &str) -> Result<String, AppError> {
     let requested = PathBuf::from(path.trim());
     if !requested.is_absolute() {
@@ -728,6 +786,56 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn managed_folder_open_rejects_a_missing_directory_without_spawning() {
+        let directory = tempdir().unwrap();
+        let missing = directory.path().join("missing");
+
+        assert!(matches!(
+            super::open_managed_directory(&missing),
+            Err(AppError::ContentRootUnavailable)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_folder_open_rejects_a_symlink_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let target = directory.path().join("target");
+        let link = directory.path().join("managed");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert!(matches!(
+            super::open_managed_directory(&link),
+            Err(AppError::ContentRootUnavailable)
+        ));
+    }
+
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "macos",
+        all(unix, not(target_os = "macos"))
+    ))]
+    #[test]
+    fn managed_folder_opener_uses_one_fixed_argument_without_a_shell() {
+        use std::ffi::OsStr;
+
+        let path = Path::new("/tmp/RetroFrontier; --no-shell");
+        let command = super::build_managed_directory_command(path);
+        let args: Vec<&OsStr> = command.get_args().collect();
+
+        #[cfg(target_os = "windows")]
+        assert_eq!(command.get_program(), OsStr::new("explorer.exe"));
+        #[cfg(target_os = "macos")]
+        assert_eq!(command.get_program(), OsStr::new("open"));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert_eq!(command.get_program(), OsStr::new("xdg-open"));
+        assert_eq!(args, vec![path.as_os_str()]);
+    }
+
     #[tokio::test]
     async fn root_lifecycle_persists_external_hints_without_touching_content() {
         let directory = tempdir().unwrap();
@@ -747,6 +855,11 @@ mod tests {
         )
         .await
         .unwrap();
+
+        assert_eq!(
+            service.managed_root,
+            fs::canonicalize(directory.path().join("managed")).unwrap()
+        );
 
         let external = service
             .add_external_content_root(external_root.to_str().unwrap(), Some(SystemId::Nes))

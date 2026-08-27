@@ -678,6 +678,15 @@ export async function addExternalContentRoot(
   }
 }
 
+/** Opens only the Rust-resolved application-owned managed ROM folder. */
+export async function openManagedRomFolder(): Promise<void> {
+  try {
+    await invoke('open_managed_rom_folder');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
 export async function removeExternalContentRoot(request: ContentRootRequest): Promise<void> {
   try {
     await invoke('remove_external_content_root', { request });

@@ -171,6 +171,7 @@ pub fn run() {
     );
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .register_asynchronous_uri_scheme_protocol(
             CACHED_COVER_PROTOCOL,
             |_context, request, responder| {
@@ -212,6 +213,7 @@ pub fn run() {
             commands::systems::get_bios_status,
             commands::library::get_content_roots,
             commands::library::add_external_content_root,
+            commands::library::open_managed_rom_folder,
             commands::library::remove_external_content_root,
             commands::library::set_content_root_enabled,
             commands::library::rescan_library,
