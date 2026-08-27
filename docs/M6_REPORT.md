@@ -21,14 +21,15 @@
 
 - [x] M6.1 Backend Enablement
 - [x] M6.2 Shell / Empty Library / Scan UX
-- [ ] M6.3 Library Browsing
+- [ ] M6.3 Library Browsing — active
 - [ ] M6.4 Game Detail / Readiness
 - [ ] M6.5 Metadata UX / Settings
 - [ ] M6.6 Hardening / Accessibility / Documentation
 
-Current phase: M6.2 implementation and corrective pass complete; awaiting delta review before M6.3.
-Overall status: M6.1 is accepted as READY, and M6.2 is implementation complete with the
-adversarial corrective pass complete. M6.3 has not started.
+Current phase: M6.1 and M6.2 are complete and reviewed; M6.3 implementation is active from
+`28e20dab7c5d68e100555ac94f7f610b2583c728`.
+Overall status: M6.1 and M6.2 are accepted as READY. M6.3 design and implementation work is in
+progress; it is not complete and M6.4 has not started.
 
 ## C. M6.1 — Backend Enablement
 
@@ -279,7 +280,13 @@ review artifact remains unchanged. The focused corrections are:
 
 ## E. M6.3 — Library Browsing
 
-Not started. No implementation details are inferred here.
+Active. The approved design is recorded in
+`docs/superpowers/specs/2026-08-28-m6-3-library-browsing-design.md`. Implementation starts with the
+carried M6.2 DELTA-LOW-1 loading-ownership correction, then adds bounded query state, search,
+system/favorite filters, page controls, list-DTO GameCards, cached-cover fallback, coalesced visible
+metadata invalidation, and one refresh per completed scan run. Genre/region facet discovery is
+deferred because M6.1 exposes exact filters but no bounded aggregate option contract; M6.3 will not
+derive facets by downloading the library or add an unbounded analytics endpoint.
 
 ## F. M6.4 — Game Detail / Readiness
 
