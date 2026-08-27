@@ -272,6 +272,192 @@ export interface SetContentRootEnabledRequest extends ContentRootRequest {
   enabled: boolean;
 }
 
+export type MetadataProviderId = 'screenScraper';
+
+export type ProviderMatchStatus =
+  'pending' | 'matched' | 'noMatch' | 'ambiguous' | 'deferred' | 'failed' | 'stale';
+
+export type MatchType =
+  'deterministicSha1' | 'deterministicMd5' | 'deterministicCrc32' | 'heuristicUserConfirmed';
+
+export type UnsupportedContentReason =
+  | 'systemNotMapped'
+  | 'chdRepresentationUndefined'
+  | 'cueBinRepresentationUndefined'
+  | 'gdiRepresentationUndefined'
+  | 'playlistIsNotIdentity'
+  | 'containerRepresentationUndefined'
+  | 'missingContentEvidence'
+  | 'noPrimaryContentFile';
+
+export type ProviderFailureClass =
+  | 'invalidRequest'
+  | 'providerRestricted'
+  | 'developerAuthenticationFailed'
+  | 'userAuthenticationFailed'
+  | 'noMatch'
+  | 'providerUnavailable'
+  | 'clientRejected'
+  | 'capacityDeferred'
+  | 'dailyQuotaExceeded'
+  | 'negativeQuotaExceeded'
+  | 'transport'
+  | 'transientServer'
+  | 'malformedResponse'
+  | 'credentialsUnavailable'
+  | 'mediaUnavailable';
+
+export type MediaAssetKind = 'cover';
+export type MediaAssetState = 'cached' | 'missing' | 'failed';
+export type MetadataJobKind = 'identify' | 'refreshMetadata' | 'refreshCover';
+export type MetadataJobState = 'pending' | 'running' | 'deferred' | 'failed' | 'completed';
+export type UserAccountState = 'notConfigured' | 'configured' | 'invalid' | 'vaultUnavailable';
+
+/** Provider-independent metadata. Deliberately small; M6 renders from exactly these fields. */
+export interface NormalizedMetadata {
+  title: string;
+  sortTitle: string | null;
+  synopsis: string | null;
+  releaseDate: string | null;
+  developer: string | null;
+  publisher: string | null;
+  genre: string | null;
+  players: string | null;
+  region: string | null;
+}
+
+/** Where a normalized record came from, so attribution can be presented. */
+export interface MetadataProvenance {
+  providerId: MetadataProviderId;
+  providerGameId: string;
+  sourceCredit: string | null;
+  fetchedAt: number;
+}
+
+export interface ProviderMetadataRecord {
+  metadata: NormalizedMetadata;
+  provenance: MetadataProvenance;
+}
+
+/**
+ * The single cached primary cover. `cacheRelativePath` is a reference into the app-owned media
+ * cache; the frontend never resolves or owns filesystem paths itself.
+ */
+export interface MediaAsset {
+  gameId: number;
+  providerId: MetadataProviderId;
+  kind: MediaAssetKind;
+  state: MediaAssetState;
+  providerMediaType: string | null;
+  region: string | null;
+  cacheRelativePath: string | null;
+  contentType: string | null;
+  sizeBytes: number | null;
+  contentSha256: string | null;
+  providerCrc32: string | null;
+  providerMd5: string | null;
+  providerSha1: string | null;
+  sourceCredit: string | null;
+  lastFailure: ProviderFailureClass | null;
+  fetchedAt: number | null;
+  updatedAt: number;
+}
+
+/** A heuristic search suggestion. Never an accepted match. */
+export interface ProviderCandidate {
+  providerGameId: string;
+  title: string;
+  releaseDate: string | null;
+}
+
+export interface UserProviderSelection {
+  gameId: number;
+  providerId: MetadataProviderId;
+  providerGameId: string;
+  updatedAt: number;
+}
+
+export interface MetadataJob {
+  id: number;
+  gameId: number;
+  providerId: MetadataProviderId;
+  kind: MetadataJobKind;
+  state: MetadataJobState;
+  priority: number;
+  attempts: number;
+  lastFailure: ProviderFailureClass | null;
+  earliestNextAttemptAt: number | null;
+  claimedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface GameMetadataState {
+  gameId: number;
+  providerId: MetadataProviderId;
+  status: ProviderMatchStatus;
+  matchType: MatchType | null;
+  /** True only while a deterministic match still agrees with the current local content evidence. */
+  deterministic: boolean;
+  providerGameId: string | null;
+  providerRomId: string | null;
+  unsupportedReason: UnsupportedContentReason | null;
+  lastFailure: ProviderFailureClass | null;
+  lastCheckedAt: number | null;
+  metadata: ProviderMetadataRecord | null;
+  cover: MediaAsset | null;
+  candidates: ProviderCandidate[];
+  userSelection: UserProviderSelection | null;
+  jobs: MetadataJob[];
+}
+
+/** Provider quota as most recently reported by the provider itself. Every field may be absent. */
+export interface ProviderQuotaSnapshot {
+  maxThreads: number | null;
+  maxRequestsPerMinute: number | null;
+  maxRequestsPerDay: number | null;
+  maxNegativeRequestsPerDay: number | null;
+  requestsToday: number | null;
+  negativeRequestsToday: number | null;
+}
+
+export interface MetadataProviderStatus {
+  providerId: MetadataProviderId;
+  credentialsConfigured: boolean;
+  userAccount: UserAccountState;
+  userAccountName: string | null;
+  quota: ProviderQuotaSnapshot;
+  quotaObservedAt: number | null;
+  deferredUntil: number | null;
+  deferReason: ProviderFailureClass | null;
+  offline: boolean;
+  pendingJobs: number;
+  deferredJobs: number;
+  failedJobs: number;
+}
+
+/** Readable account state. There is deliberately no password field. */
+export interface ProviderAccountStatus {
+  configured: boolean;
+  state: UserAccountState;
+  username: string | null;
+}
+
+export interface GameMetadataRequest {
+  gameId: number;
+}
+
+export interface SelectMetadataCandidateRequest {
+  gameId: number;
+  providerGameId: string;
+}
+
+/** Write-only credential input. Nothing ever returns a password. */
+export interface SetProviderCredentialsRequest {
+  username: string;
+  password: string;
+}
+
 export const LIBRARY_SCAN_PROGRESS_EVENT = 'library-scan-progress';
 export const LIBRARY_SCAN_COMPLETED_EVENT = 'library-scan-completed';
 
@@ -425,6 +611,86 @@ export async function onLibraryScanCompleted(
     return await listen<ScanSummary>(LIBRARY_SCAN_COMPLETED_EVENT, (event) =>
       handler(event.payload),
     );
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function getGameMetadata(request: GameMetadataRequest): Promise<GameMetadataState> {
+  try {
+    return await invoke<GameMetadataState>('get_game_metadata', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function requestGameMetadata(request: GameMetadataRequest): Promise<void> {
+  try {
+    await invoke('request_game_metadata', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function refreshGameMetadata(request: GameMetadataRequest): Promise<void> {
+  try {
+    await invoke('refresh_game_metadata', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function getMetadataProviderStatus(): Promise<MetadataProviderStatus> {
+  try {
+    return await invoke<MetadataProviderStatus>('get_metadata_provider_status');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function selectGameMetadataCandidate(
+  request: SelectMetadataCandidateRequest,
+): Promise<void> {
+  try {
+    await invoke('select_game_metadata_candidate', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function clearGameMetadataCandidate(request: GameMetadataRequest): Promise<void> {
+  try {
+    await invoke('clear_game_metadata_candidate', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+/**
+ * Submits the optional personal provider account. Write-only: the password is handed straight to
+ * Rust, which persists it in the OS credential vault, and no read command ever returns it.
+ */
+export async function setMetadataProviderCredentials(
+  request: SetProviderCredentialsRequest,
+): Promise<void> {
+  try {
+    await invoke('set_metadata_provider_credentials', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function clearMetadataProviderCredentials(): Promise<void> {
+  try {
+    await invoke('clear_metadata_provider_credentials');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function getMetadataProviderAccount(): Promise<ProviderAccountStatus> {
+  try {
+    return await invoke<ProviderAccountStatus>('get_metadata_provider_account');
   } catch (error: unknown) {
     throw normalizeIpcError(error);
   }

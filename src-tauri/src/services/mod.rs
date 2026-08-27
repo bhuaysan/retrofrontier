@@ -1,2 +1,6 @@
 pub mod bios;
 pub mod library_scanner;
+pub mod metadata_matching;
+pub mod metadata_media;
+pub mod metadata_provider;
+pub mod metadata_queue;

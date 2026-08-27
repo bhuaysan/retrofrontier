@@ -2,6 +2,7 @@ mod app_info;
 pub mod bios;
 pub mod core;
 pub mod library;
+pub mod metadata;
 pub mod readiness;
 pub mod runtime;
 pub mod system;
