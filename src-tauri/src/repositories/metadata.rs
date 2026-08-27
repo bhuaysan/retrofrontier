@@ -603,6 +603,56 @@ impl MetadataRepository {
         Ok(result.rows_affected())
     }
 
+    /// Returns a specific set of claimed jobs to `pending`.
+    ///
+    /// Used when a scheduling round is abandoned part-way through: the jobs it claimed but never
+    /// reached must not stay `running` until the next process start.
+    pub async fn release_claimed_jobs(
+        &self,
+        job_ids: &[MetadataJobId],
+        now: UnixTimestamp,
+    ) -> Result<(), AppError> {
+        if job_ids.is_empty() {
+            return Ok(());
+        }
+        let mut transaction = self.pool.begin().await.map_err(AppError::Database)?;
+        for job_id in job_ids {
+            sqlx::query(
+                "UPDATE metadata_jobs SET state = 'pending', claimed_at = NULL, updated_at = ? \
+                 WHERE id = ? AND state = 'running'",
+            )
+            .bind(now)
+            .bind(job_id.0)
+            .execute(&mut *transaction)
+            .await
+            .map_err(AppError::Database)?;
+        }
+        transaction.commit().await.map_err(AppError::Database)?;
+        Ok(())
+    }
+
+    /// Returns jobs whose claim has outlived its lease to `pending`.
+    ///
+    /// Startup recovery cannot help a claim that leaks while the process keeps running — for
+    /// example when a storage failure abandons a scheduling round — so the worker re-arms expired
+    /// claims on every pass as well. The lease is far longer than any legitimate job takes.
+    pub async fn recover_expired_claims(
+        &self,
+        claimed_before: UnixTimestamp,
+        now: UnixTimestamp,
+    ) -> Result<u64, AppError> {
+        let result = sqlx::query(
+            "UPDATE metadata_jobs SET state = 'pending', claimed_at = NULL, updated_at = ? \
+             WHERE state = 'running' AND (claimed_at IS NULL OR claimed_at <= ?)",
+        )
+        .bind(now)
+        .bind(claimed_before)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn complete_job(
         &self,
         job_id: MetadataJobId,
@@ -721,16 +771,21 @@ impl MetadataRepository {
     }
 
     /// Games whose accepted match should be revalidated, in a bounded batch.
+    ///
+    /// `after_game_id` lets the caller walk the whole set one batch at a time instead of
+    /// re-examining the same lowest identifiers on every sweep.
     pub async fn matched_games(
         &self,
         provider_id: MetadataProviderId,
+        after_game_id: i64,
         limit: usize,
     ) -> Result<Vec<GameId>, AppError> {
         let rows = sqlx::query(
             "SELECT game_id FROM provider_matches WHERE provider_id = ? AND status = 'matched' \
-             ORDER BY game_id ASC LIMIT ?",
+             AND game_id > ? ORDER BY game_id ASC LIMIT ?",
         )
         .bind(provider_id.as_db())
+        .bind(after_game_id)
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await

@@ -294,6 +294,40 @@ mod tests {
     }
 
     #[test]
+    fn a_weaker_agreeing_hash_never_overrides_a_stronger_conflicting_one() {
+        // SHA-1 conflicts while MD5, CRC32, and the size all agree. The strongest comparable hash
+        // is the one that decides, so this must not be a match.
+        let mut rom = full_rom();
+        rom.sha1 = Some("1111111111111111111111111111111111111111".to_owned());
+        assert_eq!(
+            classify_deterministic_match(&evidence(), &record(Some(rom))),
+            DeterministicOutcome::Conflicting(EvidenceConflict::Sha1Mismatch),
+            "an agreeing CRC32 must never rescue a conflicting SHA-1"
+        );
+
+        // SHA-1 agrees but MD5 does not: the provider is describing different bytes either way.
+        let mut rom = full_rom();
+        rom.md5 = Some("22222222222222222222222222222222".to_owned());
+        assert_eq!(
+            classify_deterministic_match(&evidence(), &record(Some(rom))),
+            DeterministicOutcome::Conflicting(EvidenceConflict::Md5Mismatch),
+            "an agreeing SHA-1 must not suppress a conflicting MD5"
+        );
+
+        // MD5 agrees but CRC32 does not, with no SHA-1 comparable on either side.
+        let mut rom = full_rom();
+        rom.sha1 = None;
+        rom.crc32 = Some("33333333".to_owned());
+        let mut local = evidence();
+        local.sha1 = None;
+        assert_eq!(
+            classify_deterministic_match(&local, &record(Some(rom))),
+            DeterministicOutcome::Conflicting(EvidenceConflict::Crc32Mismatch),
+            "an agreeing MD5 must not suppress a conflicting CRC32"
+        );
+    }
+
+    #[test]
     fn a_size_mismatch_is_rejected_even_when_a_hash_agrees() {
         let mut rom = full_rom();
         rom.size_bytes = Some(1);

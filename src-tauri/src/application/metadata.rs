@@ -46,6 +46,12 @@ const USER_CREDENTIAL_VAULT_REFERENCE: &str = "screenscraper-user";
 /// Vault service name used for OS keychain entries.
 pub const CREDENTIAL_VAULT_SERVICE: &str = "RetroFrontier";
 
+/// How long a claim may stand before the worker treats it as leaked and re-arms the job.
+///
+/// Generously longer than any legitimate job: a job issues at most three provider calls, each
+/// bounded by the transport's 30 s request timeout.
+pub const JOB_CLAIM_LEASE_MS: i64 = 10 * 60 * 1_000;
+
 #[derive(Debug, Clone, Copy)]
 pub struct MetadataConfig {
     /// Upper bound on in-flight provider requests, further reduced by the provider's own limit.
@@ -82,7 +88,25 @@ impl ProcessedJobs {
 /// Outcome of one job, distinguishing provider failures from local storage failures.
 enum JobOutcome {
     Done,
+    /// The job could not be committed against current local state and must run again.
+    ///
+    /// Distinct from a provider failure: nothing is wrong with the provider, the local content
+    /// simply moved underneath the request, so no retry budget is spent.
+    Requeue,
     ProviderFailure(ProviderFailureClass),
+}
+
+/// What happened to the primary cover during one enrichment step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoverOutcome {
+    /// New bytes were validated and published.
+    Published,
+    /// The cached asset already matches the provider's advertised checksums.
+    Unchanged,
+    /// The provider holds no eligible front cover for this game.
+    ///
+    /// Kept apart from a failure: nothing went wrong, and retrying cannot change the answer.
+    NotOffered,
 }
 
 /// Live credential state shared by the provider adapter and the application service.
@@ -134,6 +158,14 @@ pub struct MetadataApplicationService {
     clock: Arc<dyn Clock>,
     jitter: Arc<dyn JitterSource>,
     minute_budget: MinuteBudget,
+    /// Latest provider-advertised per-minute maximum, or `-1` when the provider has reported none.
+    ///
+    /// Cached here so *every* provider request — identification, heuristic search, and media
+    /// download alike — is charged against the same rolling window without re-reading scheduler
+    /// state on each call.
+    minute_limit: std::sync::atomic::AtomicI64,
+    /// Rotating position of the revalidation sweep, so a library larger than one batch is covered.
+    revalidation_cursor: std::sync::atomic::AtomicI64,
     config: MetadataConfig,
     provider_id: MetadataProviderId,
     developer_credentials_configured: bool,
@@ -175,6 +207,8 @@ impl MetadataApplicationService {
 
         let developer_credentials_configured = credentials.developer().is_some();
 
+        let initial_state = repository.load_scheduler_state(provider_id).await?;
+
         let recovered = repository.recover_claimed_jobs(clock.now_ms()).await?;
         if recovered > 0 {
             tracing::info!(
@@ -193,6 +227,14 @@ impl MetadataApplicationService {
             clock,
             jitter,
             minute_budget: MinuteBudget::new(),
+            minute_limit: std::sync::atomic::AtomicI64::new(
+                initial_state
+                    .quota
+                    .max_requests_per_minute
+                    .filter(|maximum| *maximum > 0)
+                    .unwrap_or(-1),
+            ),
+            revalidation_cursor: std::sync::atomic::AtomicI64::new(0),
             config,
             provider_id,
             developer_credentials_configured,
@@ -205,6 +247,29 @@ impl MetadataApplicationService {
 
     pub fn covers(&self) -> &CoverCache {
         &self.covers
+    }
+
+    /// Records the provider's current per-minute maximum for later reservations.
+    fn set_minute_limit(&self, maximum: Option<i64>) {
+        self.minute_limit.store(
+            maximum.filter(|maximum| *maximum > 0).unwrap_or(-1),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    fn minute_limit(&self) -> Option<i64> {
+        let limit = self.minute_limit.load(std::sync::atomic::Ordering::SeqCst);
+        (limit > 0).then_some(limit)
+    }
+
+    /// Consumes one rolling-window slot for a provider request that is about to be issued.
+    ///
+    /// Every outbound provider call goes through here — identification, heuristic search, and
+    /// media download — so the provider's advertised per-minute maximum bounds the client as a
+    /// whole rather than only the identification path.
+    fn reserve_request_slot(&self) -> Result<(), UnixTimestamp> {
+        self.minute_budget
+            .reserve(self.clock.now_ms(), self.minute_limit())
     }
 
     // ------------------------------------------------------------------------------------ reads
@@ -231,12 +296,22 @@ impl MetadataApplicationService {
             .provider_match
             .as_ref()
             .and_then(|provider_match| provider_match.match_type);
-        let evidence_is_current = stored
+        // A match is only downgraded by evidence that actually disagrees. A deterministic match is
+        // always evidence-bound, so a missing snapshot there is itself a reason to distrust it; a
+        // user-confirmed pin on content that produces no comparable evidence (CHD, CUE/BIN, GDI,
+        // M3U, deferred containers) has nothing to go stale against and must not be reported as if
+        // it had.
+        let stored_evidence = stored
             .provider_match
             .as_ref()
-            .and_then(|provider_match| provider_match.evidence.as_ref())
-            .zip(current_evidence.as_ref())
-            .is_some_and(|(stored_evidence, current)| stored_evidence.agrees_with(current));
+            .and_then(|provider_match| provider_match.evidence.as_ref());
+        let evidence_is_current = match (stored_evidence, match_type) {
+            (Some(stored_evidence), _) => current_evidence
+                .as_ref()
+                .is_some_and(|current| stored_evidence.agrees_with(current)),
+            (None, Some(match_type)) => !match_type.is_deterministic(),
+            (None, None) => true,
+        };
 
         if status == ProviderMatchStatus::Matched && !evidence_is_current {
             status = ProviderMatchStatus::Stale;
@@ -486,11 +561,28 @@ impl MetadataApplicationService {
     /// cached metadata or the cover: the last-known-good data stays readable while the match is
     /// untrusted.
     pub async fn revalidate_matches(&self) -> Result<usize, AppError> {
+        use std::sync::atomic::Ordering;
+
         let now = self.clock.now_ms();
-        let games = self
+        let batch_size = self.config.batch_size.max(1);
+        let cursor = self.revalidation_cursor.load(Ordering::SeqCst);
+        let mut games = self
             .repository
-            .matched_games(self.provider_id, self.config.batch_size)
+            .matched_games(self.provider_id, cursor, batch_size)
             .await?;
+        // A short batch means the end of the set; the next sweep restarts from the beginning, so a
+        // library larger than one batch is covered in full rather than the same prefix forever.
+        if games.len() < batch_size {
+            self.revalidation_cursor.store(0, Ordering::SeqCst);
+            if cursor > 0 && games.is_empty() {
+                games = self
+                    .repository
+                    .matched_games(self.provider_id, 0, batch_size)
+                    .await?;
+            }
+        } else if let Some(last) = games.last() {
+            self.revalidation_cursor.store(last.0, Ordering::SeqCst);
+        }
         let mut stale = 0;
         for game_id in games {
             let Some(provider_match) = self
@@ -533,6 +625,8 @@ impl MetadataApplicationService {
             .load_scheduler_state(self.provider_id)
             .await?;
 
+        self.set_minute_limit(state.quota.max_requests_per_minute);
+
         let concurrency = match plan(
             &state,
             now,
@@ -555,12 +649,40 @@ impl MetadataApplicationService {
             .await?;
         let mut processed = ProcessedJobs::default();
 
-        for job in jobs {
+        for (index, job) in jobs.iter().enumerate() {
+            // A storage failure must not leave the rest of this batch claimed: hand the jobs this
+            // round will never reach back to the queue before the error propagates.
+            let outcome = self.process_claimed_job(job, &mut processed).await;
+            if let Err(error) = outcome {
+                let abandoned: Vec<_> = jobs[index..].iter().map(|job| job.id).collect();
+                if let Err(release_error) = self
+                    .repository
+                    .release_claimed_jobs(&abandoned, self.clock.now_ms())
+                    .await
+                {
+                    // The lease sweep in the next worker round is the backstop for this.
+                    tracing::error!(
+                        error = %release_error,
+                        jobs = abandoned.len(),
+                        "abandoned metadata jobs could not be released"
+                    );
+                }
+                return Err(error);
+            }
+        }
+
+        Ok(processed)
+    }
+
+    /// Runs one already-claimed job and records its disposition.
+    async fn process_claimed_job(
+        &self,
+        job: &MetadataJob,
+        processed: &mut ProcessedJobs,
+    ) -> Result<(), AppError> {
+        {
             // Each provider request must fit the rolling minute budget.
-            if let Err(next_slot) = self
-                .minute_budget
-                .reserve(self.clock.now_ms(), state.quota.max_requests_per_minute)
-            {
+            if let Err(next_slot) = self.reserve_request_slot() {
                 self.repository
                     .defer_job(
                         job.id,
@@ -572,18 +694,24 @@ impl MetadataApplicationService {
                     .await?;
                 processed.deferred += 1;
                 processed.wait_until = Some(next_slot);
-                continue;
+                return Ok(());
             }
 
-            match self.run_job(&job).await? {
+            match self.run_job(job).await? {
                 JobOutcome::Done => {
                     self.repository
                         .complete_job(job.id, self.clock.now_ms())
                         .await?;
                     processed.completed += 1;
                 }
+                JobOutcome::Requeue => {
+                    self.repository
+                        .release_claimed_jobs(&[job.id], self.clock.now_ms())
+                        .await?;
+                    processed.deferred += 1;
+                }
                 JobOutcome::ProviderFailure(failure) => {
-                    match self.apply_failure(&job, failure).await? {
+                    match self.apply_failure(job, failure).await? {
                         FailureAction::Retry { .. } | FailureAction::Defer { .. } => {
                             processed.deferred += 1
                         }
@@ -594,7 +722,26 @@ impl MetadataApplicationService {
             }
         }
 
-        Ok(processed)
+        Ok(())
+    }
+
+    /// Re-arms claims that outlived their lease.
+    ///
+    /// Startup recovery cannot reach a claim that leaks while the process keeps running, so the
+    /// worker sweeps for expired claims on every pass.
+    pub async fn recover_expired_claims(&self) -> Result<u64, AppError> {
+        let now = self.clock.now_ms();
+        let recovered = self
+            .repository
+            .recover_expired_claims(now.saturating_sub(JOB_CLAIM_LEASE_MS), now)
+            .await?;
+        if recovered > 0 {
+            tracing::warn!(
+                jobs = recovered,
+                "re-armed metadata jobs with an expired claim"
+            );
+        }
+        Ok(recovered)
     }
 
     async fn run_job(&self, job: &MetadataJob) -> Result<JobOutcome, AppError> {
@@ -817,7 +964,10 @@ impl MetadataApplicationService {
                     .search_candidates(game.system_id, &game.local_title)
                     .await
                 {
-                    Ok(candidates) => candidates,
+                    Ok(Some(candidates)) => candidates,
+                    // Postponed by the minute budget: run the job again rather than recording an
+                    // empty candidate set for a search that was never issued.
+                    Ok(None) => return Ok(JobOutcome::Requeue),
                     Err(failure) => return Ok(JobOutcome::ProviderFailure(failure)),
                 };
                 self.persist_unsupported(game_id, reason, &candidates)
@@ -849,8 +999,7 @@ impl MetadataApplicationService {
                 provider_rom_id,
             } => {
                 self.attach_match(game_id, &record, match_type, provider_rom_id, &evidence)
-                    .await?;
-                Ok(JobOutcome::Done)
+                    .await
             }
             DeterministicOutcome::Conflicting(conflict) => {
                 // Conflicting provider evidence is never resolved by preference or ordering.
@@ -873,7 +1022,8 @@ impl MetadataApplicationService {
                     .search_candidates(game.system_id, &game.local_title)
                     .await
                 {
-                    Ok(candidates) => candidates,
+                    Ok(Some(candidates)) => candidates,
+                    Ok(None) => return Ok(JobOutcome::Requeue),
                     Err(failure) => return Ok(JobOutcome::ProviderFailure(failure)),
                 };
                 self.persist_ambiguous(game_id, &candidates).await?;
@@ -905,17 +1055,23 @@ impl MetadataApplicationService {
         Err(first_reason.unwrap_or(UnsupportedContentReason::NoPrimaryContentFile))
     }
 
+    /// Heuristic title search.
+    ///
+    /// `Ok(None)` means the request was postponed by the rolling minute budget. That is
+    /// deliberately distinct from `Ok(Some(vec![]))` — "the provider suggested nothing" — because
+    /// persisting an empty candidate set for a search that never happened would silently discard
+    /// the work.
     async fn search_candidates(
         &self,
         system_id: crate::domain::system::SystemId,
         title: &str,
-    ) -> Result<Vec<ProviderCandidate>, ProviderFailureClass> {
+    ) -> Result<Option<Vec<ProviderCandidate>>, ProviderFailureClass> {
         if title.trim().is_empty() {
-            return Ok(Vec::new());
+            return Ok(Some(Vec::new()));
         }
-        if let Err(next_slot) = self.minute_budget.reserve(self.clock.now_ms(), None) {
+        if let Err(next_slot) = self.reserve_request_slot() {
             tracing::debug!(next_slot, "heuristic search postponed by the minute budget");
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let response = self
             .provider
@@ -926,15 +1082,21 @@ impl MetadataApplicationService {
             .await?;
         // Quota is recorded on a best-effort basis; a storage failure here must not lose the search.
         if let Some(quota) = response.quota {
+            self.set_minute_limit(quota.max_requests_per_minute);
             let _ = self
                 .repository
                 .update_quota(self.provider_id, &quota, self.clock.now_ms())
                 .await;
         }
-        Ok(response.value)
+        Ok(Some(response.value))
     }
 
     /// Persists an accepted match together with its metadata and cover.
+    ///
+    /// The provider round-trip happens with no transaction open, so the content may have been
+    /// replaced while the request was in flight. The evidence the answer was judged against is
+    /// therefore re-compared with the live evidence immediately before the commit: a deterministic
+    /// match is never written against a snapshot that has already been superseded.
     async fn attach_match(
         &self,
         game_id: GameId,
@@ -942,8 +1104,38 @@ impl MetadataApplicationService {
         match_type: MatchType,
         provider_rom_id: Option<String>,
         evidence: &MatchEvidence,
-    ) -> Result<(), AppError> {
+    ) -> Result<JobOutcome, AppError> {
         let now = self.clock.now_ms();
+        match self.current_evidence(game_id).await? {
+            Some(current) if evidence.agrees_with(&current) => {}
+            Some(_) => {
+                // The content moved underneath the request. Re-arm identification against the new
+                // evidence instead of committing a match bound to a superseded snapshot.
+                tracing::info!(
+                    game_id = %game_id,
+                    "local content changed while the provider request was in flight; re-identifying"
+                );
+                self.repository
+                    .mark_match_stale(game_id, self.provider_id, now)
+                    .await?;
+                return Ok(JobOutcome::Requeue);
+            }
+            None => {
+                // The unit no longer offers comparable evidence at all, so re-running would only
+                // repeat the same request. Record why and stop.
+                self.repository
+                    .mark_match_stale(game_id, self.provider_id, now)
+                    .await?;
+                self.persist_unsupported(
+                    game_id,
+                    UnsupportedContentReason::MissingContentEvidence,
+                    &[],
+                )
+                .await?;
+                return Ok(JobOutcome::Done);
+            }
+        }
+
         self.repository
             .persist_match(
                 &ProviderMatchWrite {
@@ -962,18 +1154,8 @@ impl MetadataApplicationService {
             .await?;
         self.persist_normalized(game_id, record).await?;
         // A cover failure must not undo a successful metadata attachment.
-        if let Err(failure) = self.store_cover(game_id, record).await {
-            self.repository
-                .record_media_failure(
-                    game_id,
-                    self.provider_id,
-                    MediaAssetKind::Cover,
-                    failure,
-                    self.clock.now_ms(),
-                )
-                .await?;
-        }
-        Ok(())
+        self.store_cover_for_match(game_id, record).await;
+        Ok(JobOutcome::Done)
     }
 
     /// Attaches a user-pinned provider game. Recorded as user-confirmed, never as hash-exact.
@@ -1012,17 +1194,7 @@ impl MetadataApplicationService {
             )
             .await?;
         self.persist_normalized(game_id, &record).await?;
-        if let Err(failure) = self.store_cover(game_id, &record).await {
-            self.repository
-                .record_media_failure(
-                    game_id,
-                    self.provider_id,
-                    MediaAssetKind::Cover,
-                    failure,
-                    self.clock.now_ms(),
-                )
-                .await?;
-        }
+        self.store_cover_for_match(game_id, &record).await;
         Ok(JobOutcome::Done)
     }
 
@@ -1167,6 +1339,25 @@ impl MetadataApplicationService {
             return Ok(JobOutcome::Done);
         };
 
+        // Same rule as a metadata refresh: a provider identity whose evidence no longer holds is
+        // re-identified rather than re-fetched, so a stale relationship is never re-trusted.
+        if let Some(stored_evidence) = provider_match.evidence.as_ref() {
+            let current = self.current_evidence(game_id).await?;
+            let agrees = current
+                .as_ref()
+                .is_some_and(|current| stored_evidence.agrees_with(current));
+            if !agrees {
+                let now = self.clock.now_ms();
+                self.repository
+                    .mark_match_stale(game_id, self.provider_id, now)
+                    .await?;
+                self.repository
+                    .enqueue_job(game_id, self.provider_id, MetadataJobKind::Identify, now)
+                    .await?;
+                return Ok(JobOutcome::Done);
+            }
+        }
+
         let record = match self
             .provider
             .fetch_game(game.system_id, &provider_game_id)
@@ -1180,7 +1371,22 @@ impl MetadataApplicationService {
         };
 
         match self.store_cover(game_id, &record).await {
-            Ok(()) => Ok(JobOutcome::Done),
+            Ok(CoverOutcome::Published) | Ok(CoverOutcome::Unchanged) => Ok(JobOutcome::Done),
+            // The provider holds no eligible cover. Retrying that up to the attempt limit would
+            // spend provider budget on an answer that cannot change, so the job finishes and the
+            // asset row records why.
+            Ok(CoverOutcome::NotOffered) => {
+                self.repository
+                    .record_media_failure(
+                        game_id,
+                        self.provider_id,
+                        MediaAssetKind::Cover,
+                        ProviderFailureClass::MediaUnavailable,
+                        self.clock.now_ms(),
+                    )
+                    .await?;
+                Ok(JobOutcome::Done)
+            }
             Err(failure) => Ok(JobOutcome::ProviderFailure(failure)),
         }
     }
@@ -1215,21 +1421,17 @@ impl MetadataApplicationService {
         &self,
         game_id: GameId,
         record: &ProviderGameRecord,
-    ) -> Result<(), ProviderFailureClass> {
+    ) -> Result<CoverOutcome, ProviderFailureClass> {
         let Some(cover) = record.primary_cover.as_ref() else {
-            return Err(ProviderFailureClass::MediaUnavailable);
+            return Ok(CoverOutcome::NotOffered);
         };
 
         // A cached cover whose provider checksums are unchanged does not need to be fetched again.
         if self.cover_is_unchanged(game_id, cover).await {
-            return Ok(());
+            return Ok(CoverOutcome::Unchanged);
         }
 
-        if self
-            .minute_budget
-            .reserve(self.clock.now_ms(), None)
-            .is_err()
-        {
+        if self.reserve_request_slot().is_err() {
             return Err(ProviderFailureClass::CapacityDeferred);
         }
         let media = self.provider.download_media(&cover.locator).await?.value;
@@ -1283,7 +1485,31 @@ impl MetadataApplicationService {
         {
             self.covers.remove(&previous_path);
         }
-        Ok(())
+        Ok(CoverOutcome::Published)
+    }
+
+    /// Publishes the cover for an accepted match, recording a marker if it could not be stored.
+    ///
+    /// A cover problem never undoes a successful metadata attachment.
+    async fn store_cover_for_match(&self, game_id: GameId, record: &ProviderGameRecord) {
+        let failure = match self.store_cover(game_id, record).await {
+            Ok(CoverOutcome::Published) | Ok(CoverOutcome::Unchanged) => return,
+            Ok(CoverOutcome::NotOffered) => ProviderFailureClass::MediaUnavailable,
+            Err(failure) => failure,
+        };
+        if let Err(error) = self
+            .repository
+            .record_media_failure(
+                game_id,
+                self.provider_id,
+                MediaAssetKind::Cover,
+                failure,
+                self.clock.now_ms(),
+            )
+            .await
+        {
+            tracing::warn!(error = %error, game_id = %game_id, "cover state could not be recorded");
+        }
     }
 
     /// True when the cached cover already matches the provider's advertised checksums.
@@ -1319,6 +1545,7 @@ impl MetadataApplicationService {
     async fn record_quota(&self, quota: Option<ProviderQuotaSnapshot>) -> Result<(), AppError> {
         let now = self.clock.now_ms();
         if let Some(quota) = quota {
+            self.set_minute_limit(quota.max_requests_per_minute);
             self.repository
                 .update_quota(self.provider_id, &quota, now)
                 .await?;
@@ -1442,6 +1669,7 @@ async fn run_worker_round(
     service: &MetadataApplicationService,
     batch: usize,
 ) -> Result<u64, AppError> {
+    service.recover_expired_claims().await?;
     service.revalidate_matches().await?;
     service.enqueue_missing_metadata().await?;
     let processed = service.process_ready_jobs(batch).await?;
@@ -1495,7 +1723,14 @@ mod tests {
         fetch: Mutex<VecDeque<ProviderResult<ProviderGameRecord>>>,
         media: Mutex<VecDeque<ProviderResult<DownloadedMedia>>>,
         calls: Mutex<Vec<&'static str>>,
+        /// Runs *inside* `identify_content`, so a test can change local content while the
+        /// provider request is genuinely in flight.
+        during_identify: Mutex<Option<InFlightHook>>,
     }
+
+    type InFlightHook = Box<
+        dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
+    >;
 
     impl FakeProvider {
         fn new() -> Arc<Self> {
@@ -1506,6 +1741,7 @@ mod tests {
                 fetch: Mutex::new(VecDeque::new()),
                 media: Mutex::new(VecDeque::new()),
                 calls: Mutex::new(Vec::new()),
+                during_identify: Mutex::new(None),
             })
         }
 
@@ -1517,6 +1753,7 @@ mod tests {
                 fetch: Mutex::new(VecDeque::new()),
                 media: Mutex::new(VecDeque::new()),
                 calls: Mutex::new(Vec::new()),
+                during_identify: Mutex::new(None),
             })
         }
 
@@ -1556,6 +1793,10 @@ mod tests {
             self.calls.lock().unwrap().clear();
         }
 
+        fn set_during_identify(&self, hook: InFlightHook) {
+            *self.during_identify.lock().unwrap() = Some(hook);
+        }
+
         /// Takes the next queued response, repeating the last one when the queue runs dry.
         fn next<T: Clone>(
             &self,
@@ -1589,6 +1830,15 @@ mod tests {
             &self,
             _request: &ContentIdentificationRequest,
         ) -> ProviderResult<ProviderGameRecord> {
+            let hook = self
+                .during_identify
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|hook| hook());
+            if let Some(hook) = hook {
+                hook.await;
+            }
             self.next(&self.identify, "identify")
         }
 
@@ -3707,5 +3957,756 @@ mod tests {
             }
         }
         dump
+    }
+
+    // ------------------------------------------------------- review regression tests (M5_REVIEW)
+
+    /// `HIGH-1`: every provider request is charged against the advertised per-minute maximum.
+    ///
+    /// One identification job can issue three calls — identify, the heuristic fallback, and a
+    /// media download. With a maximum of one request per minute only the first may go out.
+    #[tokio::test]
+    async fn the_advertised_minute_maximum_bounds_searches_and_media_downloads_too() {
+        let harness = Harness::new().await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+
+        // The provider reports a per-minute maximum of one alongside its answer.
+        let quota = ProviderQuotaSnapshot {
+            max_requests_per_minute: Some(1),
+            ..ProviderQuotaSnapshot::default()
+        };
+        MetadataRepository::new(harness.pool.clone())
+            .update_quota(
+                MetadataProviderId::ScreenScraper,
+                &quota,
+                harness.clock.now_ms(),
+            )
+            .await
+            .unwrap();
+
+        // No provider content record, so identification falls through to a heuristic search.
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(None, "Example Quest"),
+            Some(quota.clone()),
+        )));
+        harness.provider.queue_search(Ok(ProviderResponse::new(
+            vec![ProviderCandidate {
+                provider_game_id: "3".to_owned(),
+                title: "Example Quest".to_owned(),
+                release_date: None,
+            }],
+            None,
+        )));
+
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.service.process_ready_jobs(8).await.unwrap();
+
+        assert_eq!(
+            harness.provider.calls(),
+            vec!["identify"],
+            "the heuristic search must wait for a free minute slot instead of bypassing the budget"
+        );
+
+        // Hammering the scheduler inside the same window issues nothing further.
+        for _ in 0..5 {
+            harness.service.process_ready_jobs(8).await.unwrap();
+        }
+        assert_eq!(
+            harness.provider.call_count(),
+            1,
+            "no request of any kind may exceed the advertised per-minute maximum"
+        );
+
+        // Across ten simulated minutes the client still never outruns one request per minute.
+        for _ in 0..10 {
+            harness.clock.advance(61_000);
+            harness.service.process_ready_jobs(8).await.unwrap();
+        }
+        assert!(
+            harness.provider.call_count() <= 11,
+            "the rolling window must bound every provider request, got {}",
+            harness.provider.call_count()
+        );
+    }
+
+    /// `HIGH-1`: with room for two requests a minute, identification and its heuristic fallback
+    /// both go out — and a third request in the same window does not.
+    #[tokio::test]
+    async fn the_heuristic_fallback_runs_once_the_window_has_room_for_it() {
+        let harness = Harness::new().await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+        let quota = ProviderQuotaSnapshot {
+            max_requests_per_minute: Some(2),
+            ..ProviderQuotaSnapshot::default()
+        };
+        MetadataRepository::new(harness.pool.clone())
+            .update_quota(
+                MetadataProviderId::ScreenScraper,
+                &quota,
+                harness.clock.now_ms(),
+            )
+            .await
+            .unwrap();
+
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(None, "Example Quest"),
+            Some(quota),
+        )));
+        harness.provider.queue_search(Ok(ProviderResponse::new(
+            vec![ProviderCandidate {
+                provider_game_id: "3".to_owned(),
+                title: "Example Quest".to_owned(),
+                release_date: None,
+            }],
+            None,
+        )));
+
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.service.process_ready_jobs(8).await.unwrap();
+
+        assert_eq!(harness.provider.calls(), vec!["identify", "search"]);
+        let state = harness.state(game_id).await;
+        assert_eq!(state.status, ProviderMatchStatus::Ambiguous);
+        assert_eq!(state.candidates.len(), 1);
+        assert!(
+            !state.deterministic,
+            "a heuristic candidate is never deterministic"
+        );
+
+        // A second game in the same window gets nothing: the budget is already spent.
+        let other = insert_single_file_game(&harness.pool).await;
+        harness.service.request_enrichment(other).await.unwrap();
+        harness.provider.reset_calls();
+        harness.service.process_ready_jobs(8).await.unwrap();
+        assert!(
+            harness.provider.calls().is_empty(),
+            "the window is exhausted, so no further request may be issued"
+        );
+    }
+
+    /// `HIGH-1`: a cover download consumes a slot rather than bypassing the window.
+    #[tokio::test]
+    async fn a_cover_download_consumes_a_minute_slot() {
+        let harness = Harness::new().await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+        let quota = ProviderQuotaSnapshot {
+            max_requests_per_minute: Some(1),
+            ..ProviderQuotaSnapshot::default()
+        };
+        MetadataRepository::new(harness.pool.clone())
+            .update_quota(
+                MetadataProviderId::ScreenScraper,
+                &quota,
+                harness.clock.now_ms(),
+            )
+            .await
+            .unwrap();
+
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "Example Quest"),
+            Some(quota),
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("a"), None)));
+
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.service.process_ready_jobs(8).await.unwrap();
+
+        assert_eq!(
+            harness.provider.calls(),
+            vec!["identify"],
+            "the media download must not slip past the per-minute maximum"
+        );
+        // The match itself still committed; only the cover waits.
+        let state = harness.state(game_id).await;
+        assert_eq!(state.status, ProviderMatchStatus::Matched);
+        assert!(state.deterministic);
+    }
+
+    /// `HIGH-2`: a claim that leaks while the process keeps running is re-armed in-session.
+    #[tokio::test]
+    async fn a_claim_that_leaks_without_a_restart_is_recovered_by_the_lease_sweep() {
+        let harness = Harness::new().await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+        harness.service.request_enrichment(game_id).await.unwrap();
+
+        // A scheduling round claimed the job and then died before completing it. No restart.
+        sqlx::query("UPDATE metadata_jobs SET state = 'running', claimed_at = ?")
+            .bind(harness.clock.now_ms())
+            .execute(&harness.pool)
+            .await
+            .unwrap();
+
+        // Before the lease expires the job stays claimed, so a concurrent sweep cannot steal it.
+        assert_eq!(harness.service.recover_expired_claims().await.unwrap(), 0);
+        assert_eq!(
+            harness
+                .job(game_id, MetadataJobKind::Identify)
+                .await
+                .unwrap()
+                .state,
+            MetadataJobState::Running
+        );
+
+        harness.clock.advance(JOB_CLAIM_LEASE_MS + 1);
+        assert_eq!(
+            harness.service.recover_expired_claims().await.unwrap(),
+            1,
+            "a leaked claim must be re-armed without waiting for a process restart"
+        );
+        let recovered = harness
+            .job(game_id, MetadataJobKind::Identify)
+            .await
+            .unwrap();
+        assert_eq!(recovered.state, MetadataJobState::Pending);
+        assert_eq!(recovered.claimed_at, None);
+        assert_eq!(
+            recovered.attempts, 0,
+            "recovering a leaked claim must not spend the retry budget"
+        );
+    }
+
+    /// `MEDIUM-1`: content replaced while the request is in flight never becomes a trusted match.
+    #[tokio::test]
+    async fn content_replaced_during_an_in_flight_request_is_never_committed_as_matched() {
+        let harness = Harness::new().await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+
+        // The scanner replaces the bytes at the same path *while* the provider request runs. M4
+        // keeps the identifiers stable, so only the evidence moves.
+        let pool = harness.pool.clone();
+        harness.provider.set_during_identify(Box::new(move || {
+            let pool = pool.clone();
+            Box::pin(async move {
+                sqlx::query(
+                    "UPDATE content_files SET sha1 = '1111111111111111111111111111111111111111', \
+                     md5 = '22222222222222222222222222222222', crc32 = '33333333'",
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
+                sqlx::query("UPDATE content_units SET fingerprint = 'fingerprint-replaced'")
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            })
+        }));
+
+        // The provider answers about the *old* bytes, and its evidence agrees with the old snapshot.
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "Example Quest"),
+            None,
+        )));
+
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.service.process_ready_jobs(8).await.unwrap();
+
+        // Neither the API nor the raw row may claim an accepted match.
+        let state = harness.state(game_id).await;
+        assert_ne!(state.status, ProviderMatchStatus::Matched);
+        assert!(!state.deterministic);
+        let raw_status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM provider_matches WHERE game_id = ?")
+                .bind(game_id.0)
+                .fetch_optional(&harness.pool)
+                .await
+                .unwrap();
+        assert_ne!(
+            raw_status.as_deref(),
+            Some("matched"),
+            "a superseded evidence snapshot must never be committed as an accepted match"
+        );
+
+        // Identification is re-armed rather than completed, so the new bytes still get a chance.
+        let job = harness
+            .job(game_id, MetadataJobKind::Identify)
+            .await
+            .expect("the identification job should still exist");
+        assert_eq!(job.state, MetadataJobState::Pending);
+        assert_eq!(
+            job.attempts, 0,
+            "losing a race with the scanner must not spend the retry budget"
+        );
+
+        // The local library is untouched throughout.
+        let availability: String =
+            sqlx::query_scalar("SELECT availability FROM games WHERE id = ?")
+                .bind(game_id.0)
+                .fetch_one(&harness.pool)
+                .await
+                .unwrap();
+        assert_eq!(availability, "available");
+
+        // With the race over, the next round matches the *new* evidence normally.
+        harness
+            .provider
+            .set_during_identify(Box::new(|| Box::pin(async {})));
+        let mut replaced = matched_rom();
+        replaced.sha1 = Some("1111111111111111111111111111111111111111".to_owned());
+        replaced.md5 = Some("22222222222222222222222222222222".to_owned());
+        replaced.crc32 = Some("33333333".to_owned());
+        harness.provider.clear_queues();
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(replaced), "Example Quest"),
+            None,
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("replaced"), None)));
+        harness.drain(3).await;
+        let settled = harness.state(game_id).await;
+        assert_eq!(settled.status, ProviderMatchStatus::Matched);
+        assert!(settled.deterministic);
+    }
+
+    /// `MEDIUM-2`: a cover refresh on stale evidence re-identifies instead of re-trusting.
+    #[tokio::test]
+    async fn a_cover_refresh_on_stale_evidence_re_identifies_instead_of_re_fetching() {
+        let harness = Harness::new().await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "Example Quest"),
+            None,
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("original"), None)));
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.drain(4).await;
+        let original = harness.state(game_id).await;
+        assert_eq!(original.status, ProviderMatchStatus::Matched);
+        let original_cover = original.cover.clone().expect("a cover should be cached");
+
+        // A cover refresh is queued, and only then is the content replaced at the same path.
+        MetadataRepository::new(harness.pool.clone())
+            .enqueue_job(
+                game_id,
+                MetadataProviderId::ScreenScraper,
+                MetadataJobKind::RefreshCover,
+                harness.clock.now_ms(),
+            )
+            .await
+            .unwrap();
+        sqlx::query("UPDATE content_units SET fingerprint = 'fingerprint-replaced'")
+            .execute(&harness.pool)
+            .await
+            .unwrap();
+
+        harness.provider.reset_calls();
+        harness.provider.clear_queues();
+        harness.provider.queue_fetch(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "Example Quest"),
+            None,
+        )));
+        harness.provider.queue_media(Ok(ProviderResponse::new(
+            synthetic_png("replacement"),
+            None,
+        )));
+        harness.service.process_ready_jobs(8).await.unwrap();
+
+        assert!(
+            !harness.provider.calls().contains(&"fetch"),
+            "a cover refresh must not re-fetch a provider identity whose evidence no longer holds"
+        );
+        assert!(
+            !harness.provider.calls().contains(&"media"),
+            "no cover may be downloaded for a stale relationship"
+        );
+
+        // The match is stale, the last-known-good cover is untouched, and re-identification runs.
+        let state = harness.state(game_id).await;
+        assert_eq!(state.status, ProviderMatchStatus::Stale);
+        assert!(!state.deterministic);
+        assert_eq!(
+            state.cover.as_ref().and_then(|c| c.content_sha256.clone()),
+            original_cover.content_sha256,
+            "the last-known-good cover must survive"
+        );
+        assert!(harness
+            .job(game_id, MetadataJobKind::Identify)
+            .await
+            .is_some());
+    }
+
+    /// `MEDIUM-3`: revalidation rotates through a library larger than one batch.
+    #[tokio::test]
+    async fn revalidation_covers_more_matched_games_than_one_batch() {
+        let harness = Harness::new().await;
+        let repository = MetadataRepository::new(harness.pool.clone());
+        let batch = 25_usize; // matches the harness `MetadataConfig`.
+
+        // Every game is matched against evidence that no longer describes its content, so a sweep
+        // that reaches a game must mark it stale.
+        let mut games = Vec::new();
+        for index in 0..(batch * 2 + 3) {
+            let game_id = insert_game(
+                &harness.pool,
+                SystemId::Snes,
+                ContentUnitKind::SingleFile,
+                &format!("SNES/Game {index}.sfc"),
+                Some(SHA1),
+                Some(MD5),
+                Some(CRC32),
+                "fingerprint-1",
+            )
+            .await;
+            let mut evidence = MatchEvidence {
+                game_id,
+                content_unit_id: crate::domain::library::ContentUnitId(0),
+                system_id: SystemId::Snes,
+                content_unit_kind: ContentUnitKind::SingleFile,
+                content_file_id: None,
+                size_bytes: SIZE,
+                crc32: Some(CRC32.to_owned()),
+                md5: Some(MD5.to_owned()),
+                sha1: Some(SHA1.to_owned()),
+                fingerprint: Some("fingerprint-superseded".to_owned()),
+                evidence_version: crate::domain::metadata::EVIDENCE_SCHEMA_VERSION,
+            };
+            let units = harness
+                .service
+                .library
+                .game_content_units(game_id)
+                .await
+                .unwrap();
+            evidence.content_unit_id = units[0].id;
+            repository
+                .persist_match(
+                    &ProviderMatchWrite {
+                        game_id,
+                        provider_id: MetadataProviderId::ScreenScraper,
+                        status: ProviderMatchStatus::Matched,
+                        match_type: Some(MatchType::DeterministicSha1),
+                        provider_game_id: Some("3".to_owned()),
+                        provider_rom_id: Some("101".to_owned()),
+                        unsupported_reason: None,
+                        last_failure: None,
+                        evidence: Some(evidence),
+                    },
+                    harness.clock.now_ms(),
+                )
+                .await
+                .unwrap();
+            games.push(game_id);
+        }
+
+        // Sweep repeatedly; every matched game must eventually be reached.
+        for _ in 0..6 {
+            harness.service.revalidate_matches().await.unwrap();
+        }
+
+        let still_matched: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM provider_matches WHERE status = 'matched'")
+                .fetch_one(&harness.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            still_matched, 0,
+            "the sweep must rotate past its first batch instead of re-examining the same prefix"
+        );
+        assert_eq!(games.len(), batch * 2 + 3);
+    }
+
+    /// `MEDIUM-4`: a user pin on content that yields no comparable evidence is not reported stale.
+    #[tokio::test]
+    async fn a_user_pin_on_unsupported_content_is_not_reported_as_stale() {
+        let harness = Harness::new().await;
+        let game_id = insert_game(
+            &harness.pool,
+            SystemId::SegaDreamcast,
+            ContentUnitKind::Gdi,
+            "Dreamcast/Example.gdi",
+            Some(SHA1),
+            Some(MD5),
+            Some(CRC32),
+            "fingerprint-1",
+        )
+        .await;
+
+        harness.provider.queue_fetch(Ok(ProviderResponse::new(
+            game_record(None, "Example Quest"),
+            None,
+        )));
+        harness
+            .service
+            .select_provider_candidate(game_id, "3")
+            .await
+            .unwrap();
+        harness.drain(3).await;
+
+        let state = harness.state(game_id).await;
+        assert_eq!(
+            state.status,
+            ProviderMatchStatus::Matched,
+            "a freshly pinned provider game must not read back as stale"
+        );
+        assert_eq!(state.match_type, Some(MatchType::HeuristicUserConfirmed));
+        assert!(
+            !state.deterministic,
+            "a user pin is never deterministic evidence"
+        );
+        assert_eq!(
+            state
+                .user_selection
+                .map(|selection| selection.provider_game_id),
+            Some("3".to_owned())
+        );
+
+        // The read and the stored row agree, and a restart does not change either.
+        let raw_status: String =
+            sqlx::query_scalar("SELECT status FROM provider_matches WHERE game_id = ?")
+                .bind(game_id.0)
+                .fetch_one(&harness.pool)
+                .await
+                .unwrap();
+        assert_eq!(raw_status, "matched");
+    }
+
+    /// `MEDIUM-5`: "the provider has no cover" is an answer, not a retryable failure.
+    #[tokio::test]
+    async fn a_game_the_provider_has_no_cover_for_is_not_retried() {
+        let harness = Harness::new().await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "Example Quest"),
+            None,
+        )));
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.drain(3).await;
+
+        let mut record = game_record(Some(matched_rom()), "Example Quest");
+        record.primary_cover = None;
+        harness.provider.clear_queues();
+        harness
+            .provider
+            .queue_fetch(Ok(ProviderResponse::new(record, None)));
+        MetadataRepository::new(harness.pool.clone())
+            .enqueue_job(
+                game_id,
+                MetadataProviderId::ScreenScraper,
+                MetadataJobKind::RefreshCover,
+                harness.clock.now_ms(),
+            )
+            .await
+            .unwrap();
+        harness.provider.reset_calls();
+        harness.drain(6).await;
+
+        let job = harness
+            .job(game_id, MetadataJobKind::RefreshCover)
+            .await
+            .expect("the cover job should exist");
+        assert_eq!(
+            job.state,
+            MetadataJobState::Completed,
+            "an absent cover is a definitive answer, not a bounded-retry failure"
+        );
+        assert_eq!(
+            job.attempts, 0,
+            "an absent cover must not consume the retry budget"
+        );
+        assert_eq!(
+            harness
+                .provider
+                .calls()
+                .iter()
+                .filter(|call| **call == "fetch")
+                .count(),
+            1,
+            "the provider must be asked once, not once per retry attempt"
+        );
+
+        // The match and its metadata are unaffected.
+        let state = harness.state(game_id).await;
+        assert_eq!(state.status, ProviderMatchStatus::Matched);
+        assert!(state.metadata.is_some());
+    }
+
+    /// Re-running a job whose side effect already committed must be safe (crash-repeat idempotence).
+    #[tokio::test]
+    async fn re_running_a_job_after_its_side_effect_committed_produces_no_duplicate_state() {
+        let mut harness = Harness::new().await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "Example Quest"),
+            None,
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("original"), None)));
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.drain(4).await;
+
+        let before = harness.state(game_id).await;
+        assert_eq!(before.status, ProviderMatchStatus::Matched);
+        let before_cover = before.cover.clone().expect("a cover should be cached");
+
+        // The provider match committed, then the process died before the job was marked complete.
+        sqlx::query(
+            "UPDATE metadata_jobs SET state = 'running', claimed_at = ?, updated_at = ? \
+             WHERE kind = 'identify'",
+        )
+        .bind(harness.clock.now_ms())
+        .bind(harness.clock.now_ms())
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+
+        harness.restart().await;
+
+        // The job is runnable again and repeats the whole side effect.
+        harness.provider.clear_queues();
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "Example Quest"),
+            None,
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("original"), None)));
+        harness.drain(4).await;
+
+        // Exactly one relationship, one metadata row, one media row, and one job survive.
+        for (label, query) in [
+            ("provider_matches", "SELECT COUNT(*) FROM provider_matches"),
+            (
+                "provider_match_evidence",
+                "SELECT COUNT(*) FROM provider_match_evidence",
+            ),
+            (
+                "provider_metadata",
+                "SELECT COUNT(*) FROM provider_metadata",
+            ),
+            (
+                "provider_media_assets",
+                "SELECT COUNT(*) FROM provider_media_assets",
+            ),
+            (
+                "metadata_jobs",
+                "SELECT COUNT(*) FROM metadata_jobs WHERE kind = 'identify'",
+            ),
+        ] {
+            let count: i64 = sqlx::query_scalar(query)
+                .fetch_one(&harness.pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 1, "{label} must not be duplicated by a repeated job");
+        }
+
+        let after = harness.state(game_id).await;
+        assert_eq!(after.status, ProviderMatchStatus::Matched);
+        assert!(after.deterministic);
+        assert_eq!(
+            after.cover.and_then(|cover| cover.cache_relative_path),
+            before_cover.cache_relative_path,
+            "a repeated job must not orphan or duplicate the cached cover"
+        );
+        assert_eq!(
+            harness
+                .job(game_id, MetadataJobKind::Identify)
+                .await
+                .unwrap()
+                .state,
+            MetadataJobState::Completed
+        );
+    }
+
+    /// A crash between the cover's final rename and the database commit must not lose the cover.
+    ///
+    /// Window B of the publication sequence: the new bytes are already at the target path but the
+    /// row still describes the previous asset. The recorded cover must stay readable, and the next
+    /// refresh must reconcile the row rather than blanking it.
+    #[tokio::test]
+    async fn a_crash_between_the_cover_rename_and_the_row_commit_keeps_a_readable_cover() {
+        let mut harness = Harness::new().await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "Example Quest"),
+            None,
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("original"), None)));
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.drain(4).await;
+
+        let cached = harness
+            .state(game_id)
+            .await
+            .cover
+            .expect("a cover should be cached");
+        let relative_path = cached.cache_relative_path.clone().expect("a cache path");
+        let absolute = harness
+            .service
+            .covers()
+            .absolute_path(&relative_path)
+            .expect("the cover path should resolve");
+
+        // Simulate the crash window: new bytes are renamed into place, the row is not updated.
+        let replacement = synthetic_png("replacement-bytes");
+        std::fs::write(&absolute, &replacement.bytes).expect("crash-window write");
+        assert_ne!(
+            cached.content_sha256.as_deref().map(str::to_owned),
+            None,
+            "the pre-crash row records its own checksum"
+        );
+
+        harness.restart().await;
+
+        // Startup cleanup must not remove a published cover, and the state stays readable.
+        assert!(
+            absolute.is_file(),
+            "startup cleanup must not delete a cover"
+        );
+        let after_restart = harness.state(game_id).await;
+        let cover = after_restart
+            .cover
+            .expect("the last-known-good cover must remain readable after a crash");
+        assert_eq!(cover.state, MediaAssetState::Cached);
+        assert_eq!(
+            cover.cache_relative_path.as_deref(),
+            Some(relative_path.as_str())
+        );
+        assert_eq!(
+            after_restart.status,
+            ProviderMatchStatus::Matched,
+            "a media crash window must not disturb the provider relationship"
+        );
+
+        // A later refresh reconciles the row: the provider advertises different checksums, so the
+        // cover is fetched again and the row is rewritten rather than left inconsistent.
+        let mut record = game_record(Some(matched_rom()), "Example Quest");
+        if let Some(cover) = record.primary_cover.as_mut() {
+            cover.crc32 = Some("DEADBEEF".to_owned());
+        }
+        harness.provider.clear_queues();
+        harness
+            .provider
+            .queue_fetch(Ok(ProviderResponse::new(record, None)));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("refreshed"), None)));
+        MetadataRepository::new(harness.pool.clone())
+            .enqueue_job(
+                game_id,
+                MetadataProviderId::ScreenScraper,
+                MetadataJobKind::RefreshCover,
+                harness.clock.now_ms(),
+            )
+            .await
+            .unwrap();
+        harness.drain(4).await;
+
+        let refreshed = harness
+            .state(game_id)
+            .await
+            .cover
+            .expect("a cover should still be cached");
+        assert_eq!(refreshed.state, MediaAssetState::Cached);
+        assert_eq!(refreshed.provider_crc32.as_deref(), Some("DEADBEEF"));
+        assert!(harness
+            .service
+            .covers()
+            .is_cached(refreshed.cache_relative_path.as_deref().unwrap()));
     }
 }

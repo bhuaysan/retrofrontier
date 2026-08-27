@@ -8,13 +8,11 @@ use std::path::{Path, PathBuf};
 
 const METADATA_DIRECTORY: &str = "metadata";
 const MEDIA_DIRECTORY: &str = "media";
-const TEMPORARY_DIRECTORY: &str = "tmp";
 
 #[derive(Debug, Clone)]
 pub struct MetadataPaths {
     metadata_root: PathBuf,
     media_root: PathBuf,
-    temporary_root: PathBuf,
 }
 
 impl MetadataPaths {
@@ -22,7 +20,6 @@ impl MetadataPaths {
         let metadata_root = app_data_root.as_ref().join(METADATA_DIRECTORY);
         Self {
             media_root: metadata_root.join(MEDIA_DIRECTORY),
-            temporary_root: metadata_root.join(TEMPORARY_DIRECTORY),
             metadata_root,
         }
     }
@@ -35,12 +32,6 @@ impl MetadataPaths {
     /// database never depends on an absolute developer or user path.
     pub fn media_root(&self) -> &Path {
         &self.media_root
-    }
-
-    /// Directory for in-progress downloads, on the same filesystem as `media_root` so publication
-    /// can be a same-directory rename.
-    pub fn temporary_root(&self) -> &Path {
-        &self.temporary_root
     }
 
     /// Resolves a persisted relative media path.
@@ -79,7 +70,6 @@ mod tests {
 
         assert_eq!(paths.metadata_root(), Path::new("/app-data/metadata"));
         assert_eq!(paths.media_root(), Path::new("/app-data/metadata/media"));
-        assert_eq!(paths.temporary_root(), Path::new("/app-data/metadata/tmp"));
         assert_eq!(
             paths.resolve_media("covers/screenscraper/12.png"),
             Some(PathBuf::from(

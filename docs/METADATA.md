@@ -201,6 +201,10 @@ reading. This is deliberately not a general networking framework.
   process the same job twice.
 - Startup returns every `running` job to `pending`, so a crash mid-request cannot leave work
   claimed forever, and leftover partial cover downloads are deleted.
+- A claim also carries a 10 minute lease. If a scheduling round is abandoned part-way through — a
+  storage failure, for example — it hands its unprocessed jobs straight back to `pending`, and the
+  worker's lease sweep re-arms anything that still leaked. Recovery therefore does not depend on
+  restarting the process.
 - `MetadataWorker` starts exactly once, runs on the async runtime rather than the UI thread, and
   needs no frontend listener: progress lives in SQLite. It sleeps between rounds (250 ms when busy,
   60 s when idle, at most 300 s while deferred) and stops cleanly on request.
@@ -213,7 +217,12 @@ hard-coded.
 - `max_threads` caps concurrency and is never exceeded. With no reported value the scheduler allows
   one in-flight request.
 - The per-minute maximum drives a local rolling-window budget. Deciding to look for work only peeks
-  at the budget; issuing a request consumes a slot.
+  at the budget; issuing a request consumes a slot. *Every* outbound request is charged against the
+  same window — deterministic identification, the heuristic fallback search, and the cover download
+  alike — so a single job cannot exceed the advertised maximum by issuing several calls. Peek and
+  consume happen under one lock, so two operations can never both take the last slot.
+- A request the window cannot accommodate postpones the job rather than dropping the work: the job
+  returns to `pending` without spending a retry attempt, and nothing partial is persisted.
 - Daily and negative-lookup budgets are evaluated independently.
 - The last snapshot and any deferral are persisted, so both survive restart.
 - Absent quota information keeps the scheduler at its most conservative setting.
@@ -315,8 +324,15 @@ When the current evidence no longer agrees:
   reports `stale` immediately, before any sweep has run;
 - re-identification is enqueued for the next time the provider is reachable.
 
-A metadata refresh on stale evidence re-identifies instead of re-fetching the previous provider
-identity, so a provider ID whose evidence no longer holds is never silently re-trusted.
+Both refresh kinds behave the same way: a metadata refresh *and* a cover refresh on stale evidence
+re-identify instead of re-fetching the previous provider identity, so a provider ID whose evidence
+no longer holds is never silently re-trusted.
+
+The same rule applies at the commit boundary. A provider request is issued with no transaction open,
+so the content can be replaced while the answer is in flight. Before an accepted match is written,
+the evidence the answer was judged against is compared with the live evidence again; if they no
+longer agree the match is not committed, the relationship is marked stale, and identification runs
+again against the new evidence without spending a retry attempt.
 
 ## Normalized metadata
 
@@ -324,6 +340,10 @@ Deliberately small — what M6 needs to render a library entry, and nothing more
 
 `title`, `sort_title`, `synopsis`, `release_date`, `developer`, `publisher`, `genre`, `players`,
 `region`.
+
+Provider-controlled strings are bounded before they are stored (512 characters for the short
+fields, 8192 for the synopsis), far above any real value, so one malformed response cannot write
+megabytes per game.
 
 `sort_title` is a normalization of the provider's own title (a leading English article is moved to
 the end), not invented metadata. Region preference for localized values is `wor`, `us`, `eu`, `ss`,
@@ -350,8 +370,17 @@ Publication is atomic:
 5. rename over the target — the only way an existing cover is ever replaced;
 6. commit the database row, then delete a superseded file.
 
+Crash windows are bounded by design. A crash before the rename leaves a `.part` file, which startup
+cleanup removes. A crash after the rename but before the row commits leaves the cached path holding
+newer bytes than the row describes: the cover stays readable and the relationship is untouched, and
+the next refresh rewrites the row — when the new bytes needed a different extension, the superseded
+file is a tolerated unreferenced orphan rather than a correctness problem. A crash after the commit
+but before the old file is deleted leaves the same kind of harmless orphan. The last-known-good
+cover is never lost to a crash.
+
 Any failure leaves the previous cover in place and records a media failure marker without blanking
-the cached asset. A refresh whose provider checksums match the cached asset skips the download
+the cached asset. A provider that simply holds no eligible front cover is recorded as such and is
+*not* retried: it is an answer, not a transient fault. A refresh whose provider checksums match the cached asset skips the download
 entirely. A cover file that has disappeared from the cache is reported as `missing` without changing
 stored state or the match.
 
@@ -361,9 +390,12 @@ Covers live in the app-owned data directory only:
 
 ```text
 <app data>/metadata/
-├── media/covers/<provider>/<game id>.<ext>
-└── tmp/
+└── media/covers/<provider>/<game id>.<ext>
 ```
+
+An in-progress download is written as a hidden `.part` file *in the target directory*, not in a
+separate temporary tree, so publication is always a same-directory rename and can never cross a
+filesystem boundary.
 
 The database stores the path *relative* to the media root, and `MetadataPaths::resolve_media`
 refuses absolute paths and traversal, so a corrupted row cannot be turned into an arbitrary
@@ -397,7 +429,9 @@ previously deferred SQLite write-concurrency question. See
 [ADR-013](adr/ADR-013-sqlite-write-concurrency.md).
 
 The database opens with `journal_mode = WAL`, `synchronous = NORMAL`, a 10 s busy timeout, and
-foreign keys enforced. Writers stay short: every metadata write is a small transaction, job claiming
+foreign keys enforced. `synchronous`, `foreign_keys`, and `busy_timeout` are connection-local, so
+they are supplied through the connect options and therefore applied to every connection the pool
+opens; a regression test holds all of them open at once and checks each one. Writers stay short: every metadata write is a small transaction, job claiming
 is one transaction, and no provider request is ever made while a transaction is open. Worker
 concurrency is bounded by the provider's advertised thread count.
 

@@ -101,8 +101,13 @@ The application starts and the local library works normally without credentials.
 Metadata enrichment then stays idle and `get_metadata_provider_status` reports
 that credentials are not configured.
 
-Optional personal ScreenScraper accounts are separate. Rust stores them in the OS
-credential vault; SQLite holds only an opaque reference, and no read command
+Optional personal ScreenScraper accounts are separate. On Linux the `keyring`
+crate talks to the Secret Service over D-Bus, so persisting an account needs a
+running provider such as gnome-keyring or KWallet; distribution packaging should
+recommend one. Its absence is not an error — RetroFrontier logs a warning and
+falls back to a session-only store, and the local library is unaffected.
+
+Rust stores personal accounts in the OS credential vault; SQLite holds only an opaque reference, and no read command
 returns a password. Tests never touch a real keychain: they inject an in-memory
 vault, and the same in-memory vault is the session-only fallback on a host with no
 usable credential store.

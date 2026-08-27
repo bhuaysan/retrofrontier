@@ -23,6 +23,16 @@ CREATE TABLE IF NOT EXISTS provider_matches (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE (game_id, provider_id),
+    -- An accepted match must carry both the evidence class that justified it and the provider
+    -- identity it points at. Enforced here as well as in Rust so a hand-edited or corrupted row
+    -- can never be loaded as a trusted relationship.
+    CHECK (status != 'matched' OR (match_type IS NOT NULL AND provider_game_id IS NOT NULL)),
+    CHECK (unsupported_reason IS NULL OR unsupported_reason IN (
+        'system_not_mapped', 'chd_representation_undefined', 'cue_bin_representation_undefined',
+        'gdi_representation_undefined', 'playlist_is_not_identity',
+        'container_representation_undefined', 'missing_content_evidence',
+        'no_primary_content_file'
+    )),
     FOREIGN KEY (game_id) REFERENCES games (id) ON DELETE RESTRICT
 );
 
@@ -48,9 +58,14 @@ CREATE TABLE IF NOT EXISTS provider_match_evidence (
     )),
     evidence_version INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
+    -- Every stored snapshot must carry at least one comparable hash, or it could never be
+    -- revalidated against replaced content.
+    CHECK (crc32 IS NOT NULL OR md5 IS NOT NULL OR sha1 IS NOT NULL
+           OR match_type = 'heuristic_user_confirmed'),
     FOREIGN KEY (provider_match_id) REFERENCES provider_matches (id) ON DELETE CASCADE,
     FOREIGN KEY (game_id) REFERENCES games (id) ON DELETE RESTRICT,
-    FOREIGN KEY (content_unit_id) REFERENCES content_units (id) ON DELETE RESTRICT
+    FOREIGN KEY (content_unit_id) REFERENCES content_units (id) ON DELETE RESTRICT,
+    FOREIGN KEY (content_file_id) REFERENCES content_files (id) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_provider_match_evidence_unit
@@ -113,6 +128,8 @@ CREATE TABLE IF NOT EXISTS provider_media_assets (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (game_id, provider_id, kind),
+    -- A cached asset must name the file that backs it.
+    CHECK (state != 'cached' OR cache_relative_path IS NOT NULL),
     FOREIGN KEY (game_id) REFERENCES games (id) ON DELETE RESTRICT
 );
 

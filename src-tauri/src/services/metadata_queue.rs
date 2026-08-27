@@ -582,3 +582,96 @@ mod tests {
         assert_eq!(RandomJitter.jitter_ms(-5), 0);
     }
 }
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Two schedulers racing for the final slot: exactly one may consume it.
+    ///
+    /// `MinuteBudget::reserve` takes the lock, evicts, checks, and pushes as one critical section,
+    /// so a peek/consume interleaving cannot let both callers observe the same last slot.
+    #[test]
+    fn only_one_of_two_concurrent_operations_can_take_the_last_minute_slot() {
+        for _ in 0..200 {
+            let budget = Arc::new(MinuteBudget::new());
+            let now: UnixTimestamp = 1_700_000_000_000;
+            // Consume everything but one slot of a three-request minute.
+            budget.reserve(now, Some(3)).expect("first slot");
+            budget.reserve(now, Some(3)).expect("second slot");
+
+            // Both threads see a slot available if they only peek...
+            assert!(budget.availability(now, Some(3)).is_ok());
+
+            let granted = Arc::new(AtomicUsize::new(0));
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let budget = budget.clone();
+                    let granted = granted.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        if budget.reserve(now, Some(3)).is_ok() {
+                            granted.fetch_add(1, Ordering::SeqCst);
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("worker thread should not panic");
+            }
+
+            assert_eq!(
+                granted.load(Ordering::SeqCst),
+                1,
+                "two concurrent operations must not both consume the final minute slot"
+            );
+            assert_eq!(
+                budget.used(now),
+                3,
+                "the window must never exceed the maximum"
+            );
+        }
+    }
+
+    /// A provider-wide deferral appearing mid-round wins over local budget arithmetic.
+    #[test]
+    fn a_provider_deferral_outranks_an_available_minute_slot() {
+        let budget = MinuteBudget::new();
+        let now: UnixTimestamp = 1_700_000_000_000;
+        let mut state = ProviderSchedulerState::empty(
+            crate::domain::metadata::MetadataProviderId::ScreenScraper,
+        );
+        state.quota.max_requests_per_minute = Some(10);
+        assert!(matches!(
+            plan(&state, now, 4, &budget),
+            SchedulingDecision::Run { .. }
+        ));
+
+        state.deferred_until = Some(now + 60_000);
+        assert_eq!(
+            plan(&state, now, 4, &budget),
+            SchedulingDecision::WaitUntil(now + 60_000),
+            "a deferral that appears while scheduling must stop the round"
+        );
+    }
+
+    /// A shrinking advertised maximum takes effect against slots already spent in the window.
+    #[test]
+    fn a_lowered_maximum_applies_to_slots_already_consumed() {
+        let budget = MinuteBudget::new();
+        let now: UnixTimestamp = 1_700_000_000_000;
+        for _ in 0..5 {
+            budget
+                .reserve(now, Some(5))
+                .expect("slot within the old maximum");
+        }
+        assert!(
+            budget.reserve(now, Some(2)).is_err(),
+            "a reduced maximum must be honoured immediately, not from the next window"
+        );
+    }
+}

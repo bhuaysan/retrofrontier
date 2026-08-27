@@ -30,6 +30,16 @@ const LANGUAGE_PREFERENCE: &[&str] = &["en", "de"];
 /// Image content types accepted for a cached cover.
 pub const ACCEPTED_COVER_CONTENT_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp"];
 
+/// Ceiling for a short normalized field (title, developer, publisher, genre, players, region).
+///
+/// The response body is already capped by the transport, but nothing else bounds one field, and a
+/// provider-controlled string is stored verbatim in SQLite. These limits are far above any real
+/// value and exist only so one malformed response cannot store megabytes per game.
+const MAX_SHORT_FIELD_CHARS: usize = 512;
+
+/// Ceiling for the one long normalized field.
+const MAX_SYNOPSIS_CHARS: usize = 8_192;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MalformedResponse;
 
@@ -106,21 +116,32 @@ pub fn parse_game(response: &Value) -> Result<ProviderGameRecord, MalformedRespo
         }
     }
 
-    let title = regional_text(game.get("noms")).unwrap_or_else(|| provider_game_id.clone());
+    let title = bound(
+        regional_text(game.get("noms")).unwrap_or_else(|| provider_game_id.clone()),
+        MAX_SHORT_FIELD_CHARS,
+    );
     let metadata = NormalizedMetadata {
-        sort_title: Some(derive_sort_title(&title)),
+        sort_title: Some(bound(derive_sort_title(&title), MAX_SHORT_FIELD_CHARS)),
         title,
-        synopsis: localized_text(game.get("synopsis")),
-        release_date: regional_text(game.get("dates")),
+        synopsis: localized_text(game.get("synopsis"))
+            .map(|value| bound(value, MAX_SYNOPSIS_CHARS)),
+        release_date: regional_text(game.get("dates"))
+            .map(|value| bound(value, MAX_SHORT_FIELD_CHARS)),
         developer: text(game.pointer("/developpeur/text"))
-            .or_else(|| text(game.get("developpeur"))),
-        publisher: text(game.pointer("/editeur/text")).or_else(|| text(game.get("editeur"))),
-        genre: parse_genres(game.get("genres")),
-        players: text(game.pointer("/joueurs/text")).or_else(|| text(game.get("joueurs"))),
+            .or_else(|| text(game.get("developpeur")))
+            .map(|value| bound(value, MAX_SHORT_FIELD_CHARS)),
+        publisher: text(game.pointer("/editeur/text"))
+            .or_else(|| text(game.get("editeur")))
+            .map(|value| bound(value, MAX_SHORT_FIELD_CHARS)),
+        genre: parse_genres(game.get("genres")).map(|value| bound(value, MAX_SHORT_FIELD_CHARS)),
+        players: text(game.pointer("/joueurs/text"))
+            .or_else(|| text(game.get("joueurs")))
+            .map(|value| bound(value, MAX_SHORT_FIELD_CHARS)),
         region: matched_rom
             .as_ref()
             .and_then(|_| text(game.pointer("/rom/romregions")))
-            .or_else(|| first_region(game.get("noms"))),
+            .or_else(|| first_region(game.get("noms")))
+            .map(|value| bound(value, MAX_SHORT_FIELD_CHARS)),
     };
 
     Ok(ProviderGameRecord {
@@ -148,11 +169,15 @@ pub fn parse_candidates(response: &Value) -> Result<Vec<ProviderCandidate>, Malf
         .iter()
         .filter_map(|game| {
             let provider_game_id = text(game.get("id"))?;
-            let title = regional_text(game.get("noms")).unwrap_or_else(|| provider_game_id.clone());
+            let title = bound(
+                regional_text(game.get("noms")).unwrap_or_else(|| provider_game_id.clone()),
+                MAX_SHORT_FIELD_CHARS,
+            );
             Some(ProviderCandidate {
                 provider_game_id,
                 title,
-                release_date: regional_text(game.get("dates")),
+                release_date: regional_text(game.get("dates"))
+                    .map(|value| bound(value, MAX_SHORT_FIELD_CHARS)),
             })
         })
         .collect())
@@ -312,6 +337,14 @@ fn text(value: Option<&Value>) -> Option<String> {
         _ => return None,
     };
     (!value.is_empty()).then_some(value)
+}
+
+/// Truncates a provider-controlled string on a character boundary.
+fn bound(value: String, maximum_chars: usize) -> String {
+    match value.char_indices().nth(maximum_chars) {
+        Some((offset, _)) => value[..offset].to_owned(),
+        None => value,
+    }
 }
 
 /// Moves a leading English article to the end so M6 can sort naturally.

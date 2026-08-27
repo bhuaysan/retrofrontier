@@ -58,7 +58,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::Database;
+    use super::{Database, BUSY_TIMEOUT};
     use sqlx::migrate::Migrator;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::fs;
@@ -447,8 +447,9 @@ mod tests {
 
         let database = Database::open(&path).await.expect("M5 migration applies");
         sqlx::query(
-            "INSERT INTO provider_matches (game_id, provider_id, status, created_at, updated_at) \
-             VALUES (41, 'screenscraper', 'matched', 30, 30)",
+            "INSERT INTO provider_matches (game_id, provider_id, status, match_type, \
+             provider_game_id, created_at, updated_at) \
+             VALUES (41, 'screenscraper', 'matched', 'deterministic_sha1', '3', 30, 30)",
         )
         .execute(database.pool())
         .await
@@ -510,6 +511,71 @@ mod tests {
             .await
             .expect("foreign key enforcement should be readable");
         assert_eq!(foreign_keys, 1);
+    }
+
+    /// ADR-013 asserts the pragmas by test rather than assumption, so the assertion has to cover
+    /// the pool, not one arbitrary connection.
+    ///
+    /// `synchronous`, `foreign_keys`, and `busy_timeout` are connection-local settings: they are
+    /// supplied through `SqliteConnectOptions` and therefore applied every time the pool opens a
+    /// new connection. This holds every connection open simultaneously so each one is checked.
+    #[tokio::test]
+    async fn every_pooled_connection_carries_the_required_pragmas() {
+        let directory = tempdir().expect("temporary database directory should be created");
+        let database = Database::open(directory.path().join("retrofrontier.sqlite3"))
+            .await
+            .expect("database should open");
+        let pool = database.pool();
+
+        // Hold every connection at once so the checks cannot all land on the same one.
+        let mut connections = Vec::new();
+        for _ in 0..pool.options().get_max_connections() {
+            connections.push(pool.acquire().await.expect("a pooled connection"));
+        }
+        assert!(
+            connections.len() > 1,
+            "the pool must actually be multi-connection for this test to mean anything"
+        );
+
+        for (index, connection) in connections.iter_mut().enumerate() {
+            let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+                .fetch_one(&mut **connection)
+                .await
+                .expect("journal mode should be readable");
+            assert_eq!(
+                journal_mode.to_ascii_lowercase(),
+                "wal",
+                "connection {index} is not in WAL mode"
+            );
+
+            let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+                .fetch_one(&mut **connection)
+                .await
+                .expect("synchronous mode should be readable");
+            assert_eq!(
+                synchronous, 1,
+                "connection {index} is not synchronous=NORMAL"
+            );
+
+            let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+                .fetch_one(&mut **connection)
+                .await
+                .expect("foreign key enforcement should be readable");
+            assert_eq!(
+                foreign_keys, 1,
+                "connection {index} does not enforce foreign keys"
+            );
+
+            let busy_timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+                .fetch_one(&mut **connection)
+                .await
+                .expect("busy timeout should be readable");
+            assert_eq!(
+                busy_timeout,
+                BUSY_TIMEOUT.as_millis() as i64,
+                "connection {index} does not carry the busy timeout"
+            );
+        }
     }
 
     #[tokio::test]
