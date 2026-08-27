@@ -1,12 +1,14 @@
 # RetroFrontier Backlog
 
 ## Current Priority
+
 The project has completed its local-library foundation. Metadata-provider, launch, and UI work remain
 later milestones; runtime trust and core-policy research remain explicit release gates.
 
 ## M0 — Planning and Repository Foundation
 
 ### Documentation
+
 - [ ] Add `PROJECT_CONTEXT.md`
 - [ ] Add `PRODUCT.md`
 - [ ] Add `DOMAIN.md`
@@ -20,6 +22,7 @@ later milestones; runtime trust and core-policy research remain explicit release
 - [ ] Add `.gitignore`
 
 ### Git/GitHub
+
 - [ ] Create GitHub repository
 - [ ] Configure `main`
 - [ ] Enable squash merge
@@ -29,15 +32,18 @@ later milestones; runtime trust and core-policy research remain explicit release
 - [ ] Add CI after application scaffold exists
 
 ## M0.1 — Spike: Managed RetroArch Runtime
+
 **Model:** Luna Max implementation/research; Sol Max architecture/security review.
 
 Goal: prove RetroFrontier can download and run an isolated RetroArch runtime on:
+
 - [ ] Windows x86_64
 - [ ] macOS arm64
 - [ ] macOS x86_64
 - [x] Linux x86_64 (qualified with documented limitations; cross-distribution/device release gates remain)
 
 Validate:
+
 - [ ] approved runtime source
 - [ ] download
 - [ ] extract/install
@@ -55,6 +61,7 @@ Validate:
 Deliverable: spike report + architecture updates. No production updater required yet.
 
 Spike outcome:
+
 - Linux x86_64 extracted-AppImage/AppRun launch, synthetic core/content smoke test, explicit-path isolation, hostile-config test, and Linux lifecycle qualification: complete on Fedora 44; the documented distribution/device matrix remains a release gate.
 - Windows x86_64 portable artifact research: complete; real-device verification remains.
 - macOS arm64 and x86_64 artifact research: complete; real-device signing, quarantine, core-loading, and update verification remains.
@@ -62,28 +69,34 @@ Spike outcome:
 - macOS managed executable/core distribution remains a production security blocker pending a real Developer ID/notarization/library-validation proof. Windows and cross-distribution Linux support still require real platform experiments.
 
 ## M0.2 — Spike: ScreenScraper Authentication
+
 **Model:** Luna Max.
 
 Research:
+
 - [x] developer credential requirements
-- [ ] distribution/embedding rules
+- [x] distribution/embedding architecture decision
 - [x] user credential options
 - [x] request/thread limits and returned quota fields
-- [ ] client identification
-- [ ] cache/retry expectations
-- [ ] offline behavior
+- [x] client identification
+- [x] cache/retry expectations
+- [x] offline behavior
 
 Deliverable: documented authentication/provider decision.
 
-Research was executed on 2026-08-27 and is documented in
-[`docs/SCREENSCRAPER_SPIKE.md`](docs/SCREENSCRAPER_SPIKE.md). M0.2 remains open and **M5 is not
-ready**: public first-party material does not resolve production developer-credential distribution,
-proxy permission, metadata/media cache and attribution rights, or canonical CHD/CUE/GDI/M3U lookup
-semantics. Those questions require written ScreenScraper maintainer confirmation. A focused M4 M3U
-ownership/contested-move identity cleanup is also required before durable metadata is attached to
-`GameId`.
+Research was finalized on 2026-08-27 and is documented in
+[`docs/SCREENSCRAPER_SPIKE.md`](docs/SCREENSCRAPER_SPIKE.md). **M0.2 is complete and M5 is ready**
+for its constrained V1 scope. Current ES-DE demonstrates a recoverable application-credential,
+direct-client, local-cache precedent, but is not treated as ScreenScraper policy. RetroFrontier
+accepts direct Rust integration, build-time release credential injection, optional OS-vault user
+credentials, normalized metadata, one primary cover, source preservation, conservative quota
+probing, and evidence-bound stale-match revalidation as project decisions. Automatic CHD, CUE/BIN,
+GDI, M3U/multi-disc, and RVZ matching, broad media, provider-cache export, and exact M6 attribution
+presentation are explicitly non-blocking deferred capabilities. The pre-M5 identity cleanup is on
+`main`.
 
 ## M1 — Application Foundation
+
 **Model:** Luna Max.
 
 - [x] Scaffold Tauri 2
@@ -104,6 +117,7 @@ ownership/contested-move identity cleanup is also required before durable metada
 - [x] basic CI
 
 ## M2 — Managed Runtime Foundation
+
 **Model:** Luna Max implementation; Sol Max review for updater/security.
 
 - [x] runtime manifest schema
@@ -131,6 +145,7 @@ ownership/contested-move identity cleanup is also required before durable metada
 - [ ] finalize hosting/source model
 
 ## M3 — Systems, Cores, BIOS
+
 **Model:** Luna Max.
 
 - [x] system registry with stable identifiers and aliases
@@ -153,6 +168,7 @@ M3 review follow-up: complete. Systems/readiness now consumes one coherent
 verified runtime snapshot for status and verified core availability.
 
 Systems:
+
 - [x] NES
 - [x] SNES
 - [x] Nintendo 64
@@ -166,6 +182,7 @@ Systems:
 - [x] Nintendo GameCube
 
 ## M4 — Library Scanner
+
 **Model:** Luna Max.
 
 - [x] reuse one verified runtime snapshot for systems/readiness queries before production runtime artifacts or frequent refreshes (M3 MEDIUM-1)
@@ -214,7 +231,15 @@ The remaining M4 review performance, schema, IPC, watcher, startup, and large-sc
 remain deferred to their appropriate later milestone.
 
 ## M5 — Metadata
+
 **Model:** Luna Max.
+
+Constrained V1 scope: one ScreenScraper provider; direct Rust integration; RetroFrontier-owned
+application credentials; optional OS-vault user credentials; provider-aware persistent scheduling;
+dynamic quota/error handling; deterministic returned-evidence matching for supported single-file
+content; candidate-only heuristic search; normalized metadata; one primary cover; local offline
+cache; refresh; stale evidence revalidation; and provider state isolated from M4 local identity.
+Container-specific automatic matching and broad media scraping are not required for M5 completion.
 
 - [ ] MetadataProvider interface
 - [ ] ScreenScraper adapter
@@ -231,6 +256,7 @@ remain deferred to their appropriate later milestone.
 - [ ] metadata refresh
 
 ## M6 — Library UI
+
 **Model:** Luna Max.
 
 - [ ] navigation shell
@@ -247,6 +273,7 @@ remain deferred to their appropriate later milestone.
 - [ ] settings entry points
 
 ## M7 — RetroArch Launch
+
 **Model:** Luna Max.
 
 - [ ] RetroArchService
@@ -264,6 +291,7 @@ remain deferred to their appropriate later milestone.
 - [ ] normalized launch errors
 
 ## M8 — Controller and Focus
+
 **Model:** Luna Max.
 
 - [ ] semantic input actions
@@ -277,6 +305,7 @@ remain deferred to their appropriate later milestone.
 - [ ] regression tests
 
 ## M9 — Saves and Save States
+
 **Model:** Luna Max; Sol only for risky compatibility/migration design.
 
 - [ ] controlled save dirs
@@ -289,6 +318,7 @@ remain deferred to their appropriate later milestone.
 - [ ] compatibility warning/fallback design
 
 ## M10 — Packaging and V1
+
 **Model:** Luna Max implementation; Sol Max release-readiness review.
 
 - [ ] Windows packaging
@@ -306,6 +336,7 @@ remain deferred to their appropriate later milestone.
 - [ ] Sol architecture/security review
 
 ## Post-V1 Candidates
+
 - collections expansion
 - advanced statistics
 - metadata editor

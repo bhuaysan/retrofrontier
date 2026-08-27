@@ -1,7 +1,9 @@
 # RetroFrontier Architecture
 
 ## Goals
+
 Support:
+
 - Windows, macOS, and Linux desktop UI
 - fully isolated managed RetroArch runtime
 - safe local library scanning
@@ -14,9 +16,11 @@ Support:
 ## Technology Direction
 
 ### Desktop
+
 Tauri 2
 
 ### Frontend
+
 - React
 - TypeScript
 - Vite
@@ -24,15 +28,19 @@ Tauri 2
 - CSS driven by the existing RetroFrontier design tokens
 
 ### Backend
+
 Rust
 
 ### Persistence
+
 SQLite via `sqlx`
 
 ### Package manager
+
 pnpm
 
 ## Architectural Boundary
+
 React is the presentation layer. Rust is the application/native boundary.
 
 ```text
@@ -87,12 +95,14 @@ This is directional; do not create empty folders without need.
 ## Key Services
 
 ### LibraryService
+
 - library queries
 - game/content reconciliation
 - favorites
 - game detail aggregation
 
 ### ScanService
+
 - file discovery
 - managed-folder system hints
 - content relationship resolution
@@ -125,6 +135,7 @@ only schedule a debounced real scan; they never mutate rows directly. See
 contract.
 
 ### MetadataService
+
 - provider abstraction
 - lookup queue
 - normalized metadata
@@ -136,6 +147,7 @@ contract.
 Initial adapter: `ScreenScraperProvider`.
 
 ### RuntimeManager
+
 - detect managed runtime
 - install approved runtime
 - verify files
@@ -148,6 +160,7 @@ Initial adapter: `ScreenScraperProvider`.
 Never use a system `retroarch` from `PATH`.
 
 ### RetroArchService
+
 - build controlled launch context
 - select core
 - validate prerequisites
@@ -157,6 +170,7 @@ Never use a system `retroarch` from `PATH`.
 - normalize result
 
 ### BiosService
+
 - discover user BIOS files under the OS-resolved `Documents/RetroFrontier/BIOS` root
 - hash and validate against catalog identities when authoritative values exist
 - report missing, invalid, optional, and not-covered BIOS states
@@ -198,6 +212,7 @@ status query, typed library root/snapshot queries, and scan progress/completion 
 not inspect the filesystem, hash content, or query RuntimeManager.
 
 ### SaveService
+
 - resolve save directories
 - track save states
 - preserve user save/state data across runtime updates
@@ -206,6 +221,7 @@ not inspect the filesystem, hash content, or query RuntimeManager.
 ## Managed Paths
 
 ### User-visible
+
 ```text
 Documents/RetroFrontier/
 ├── ROMs/
@@ -224,6 +240,7 @@ Documents/RetroFrontier/
 ```
 
 ### Application data
+
 Use OS-appropriate app-data paths:
 
 ```text
@@ -247,6 +264,7 @@ RetroFrontier/
 Use platform path APIs; do not hard-code OS paths.
 
 ## Runtime Architecture
+
 RetroArch is downloaded after installation.
 
 Conceptual layout:
@@ -271,6 +289,7 @@ For Linux x86_64, the managed runtime artifact is an extracted RetroArch AppDir.
 The extracted AppDir is relocatable for its bundled libraries, not self-contained for Linux host services. The Linux launch adapter must validate host prerequisites and preserve the user's display/session environment while explicitly controlling RetroFrontier paths. glibc/ELF loader, libstdc++, desktop graphics (OpenGL/EGL/GBM/DRM and optionally Vulkan), display libraries, audio services, and udev/input device permissions remain host responsibilities. The Linux distribution and device matrix is a release gate; see `docs/spikes/LINUX_RUNTIME_QUALIFICATION.md`.
 
 Safe update:
+
 1. Resolve a Runtime Release through trusted update metadata.
 2. Download into a private, operation-specific staging directory.
 3. Verify trusted metadata, exact size, and SHA-256 before extraction.
@@ -298,9 +317,11 @@ RetroFrontier is single-instance per OS user in V1. An OS-backed runtime mutatio
 The Linux spike found that explicit core, save, and system directories alone are insufficient: core-info cache and core options also need explicit managed paths or disabling.
 
 ## Runtime Manifest
+
 Do not blindly download "latest".
 
 A RetroFrontier-controlled canonical release manifest defines approved components per platform/architecture, including:
+
 - runtime release
 - platform
 - architecture
@@ -317,9 +338,11 @@ The manifest and every downloadable component are immutable targets authenticate
 Installed runtimes do not expire merely because the device is offline. Expiration applies when discovering or downloading updates. Persisted trusted metadata versions, a monotonic release sequence, authenticated revocations, and an authenticated minimum-safe release sequence prevent replay and vulnerable rollback to the extent of the freshest metadata the client has received.
 
 ## RetroArch Isolation
+
 Every launch must use explicit RetroFrontier-controlled paths.
 
 Do not rely on:
+
 - system `PATH`
 - system config discovery
 - existing core directories
@@ -344,14 +367,28 @@ Content root
 Filesystem discovery and metadata enrichment are separate.
 
 ## Metadata Architecture
+
 Define a provider interface at the application/domain boundary. Provider-specific responses are normalized before reaching the UI.
 
-Credential handling for ScreenScraper remains a research item.
+ScreenScraper V1 is a direct Rust adapter with no RetroFrontier cloud proxy. Release application
+credentials are build-time injected outside source control and are treated as recoverable
+application credentials. Optional personal credentials remain Rust-owned in the OS vault/keychain;
+SQLite and ordinary read IPC contain no secret.
+
+M5 persists replaceable normalized metadata, provider/source identity, evidence-bound match state,
+provider-aware jobs/quota deferrals, and one primary local cover. It avoids raw authenticated
+response and credential-bearing URL persistence, broad media scraping, bundling, and redistribution.
+Automatic matching requires agreeing returned ROM evidence; heuristic name results remain
+candidates. Unsupported container representations are deferred. Provider failures and changed M4
+evidence affect provider state only and never mutate local library ownership or availability. See
+[`docs/SCREENSCRAPER_SPIKE.md`](docs/SCREENSCRAPER_SPIKE.md) and ADR-007.
 
 ## UI Architecture
+
 Implement the existing design system with project-owned primitives rather than replacing it with a large generic component framework.
 
 Likely primitives include:
+
 - PixelButton
 - PixelToggle
 - PixelSelect
@@ -365,7 +402,9 @@ Likely primitives include:
 Names are not contractual.
 
 ## Input Architecture
+
 Map hardware input to semantic actions:
+
 - NavigateUp
 - NavigateDown
 - NavigateLeft
@@ -377,12 +416,15 @@ Map hardware input to semantic actions:
 - Menu
 
 ## Database
+
 SQLite migrations are authoritative. Repositories hide SQL from the rest of the application.
 
 Avoid giant repository/command modules.
 
 ## Error Handling
+
 Normalize errors into actionable states:
+
 - runtime unavailable/damaged
 - download unavailable
 - unsupported content
@@ -392,7 +434,9 @@ Normalize errors into actionable states:
 - external content missing
 
 ## Testing
+
 Rust unit tests:
+
 - domain rules
 - parsers
 - runtime manifest validation
@@ -400,17 +444,20 @@ Rust unit tests:
 - content relationships
 
 Rust integration tests:
+
 - SQLite repositories
 - migrations
 - scanner reconciliation
 - runtime staging/verification using synthetic fixtures
 
 Frontend tests:
+
 - focus/navigation
 - state rendering
 - key library interactions
 
 Cross-platform smoke tests before V1:
+
 - runtime install
 - runtime launch
 - core load
@@ -420,7 +467,9 @@ Cross-platform smoke tests before V1:
 - return after emulator exit
 
 ## Security Boundaries
+
 Security-sensitive:
+
 - runtime downloads
 - manifest authenticity
 - integrity verification
@@ -432,13 +481,13 @@ Security-sensitive:
 These areas trigger focused Sol Max review.
 
 ## Open Architecture Decisions
+
 1. Portable/runtime distribution per OS.
 2. TUF client implementation and production key-custody ceremony.
 3. Runtime Release hosting/control and redistribution model.
-4. ScreenScraper credential strategy.
-5. Final default-core matrix/version policy.
-6. Filesystem watcher implementation.
-7. Save-state rollback/compatibility behavior.
-8. macOS Developer ID, notarization, quarantine, and core library-validation proof.
-9. Windows Authenticode/Smart App Control and pointer-durability proof.
-10. Linux cross-distribution/device release matrix and packaging validation after the extracted-AppImage/AppRun qualification.
+4. Final default-core matrix/version policy.
+5. Filesystem watcher implementation.
+6. Save-state rollback/compatibility behavior.
+7. macOS Developer ID, notarization, quarantine, and core library-validation proof.
+8. Windows Authenticode/Smart App Control and pointer-durability proof.
+9. Linux cross-distribution/device release matrix and packaging validation after the extracted-AppImage/AppRun qualification.
