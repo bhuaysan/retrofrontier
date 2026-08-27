@@ -288,6 +288,15 @@ metadata invalidation, and one refresh per completed scan run. Genre/region face
 deferred because M6.1 exposes exact filters but no bounded aggregate option contract; M6.3 will not
 derive facets by downloading the library or add an unbounded analytics endpoint.
 
+### Carried M6.2 correction
+
+- Corrected DELTA-LOW-1 before introducing M6.3 query state. Scan issue refresh and load-more
+  indicators now have operation-scoped owners in addition to the shared response version, so a
+  superseded request cannot clear loading state owned by a newer operation while stale data and
+  errors remain rejected.
+- Added a focused overlapping-refresh regression in `AppShell.test.tsx`: the older refresh resolves
+  first, the newer refresh retains its loading indicator, and only the newest operation releases it.
+
 ## F. M6.4 — Game Detail / Readiness
 
 Not started. No implementation details are inferred here.

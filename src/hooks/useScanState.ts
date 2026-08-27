@@ -44,6 +44,8 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
   const handledCompletionRunId = useRef<number | null>(null);
   const statusRequestStarted = useRef(false);
   const issueRequestVersion = useRef(0);
+  const issueLoadingOwner = useRef(0);
+  const issueLoadingMoreOwner = useRef(0);
 
   const [status, setStatus] = useState<ScanStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
@@ -64,6 +66,7 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
   const refreshIssues = useCallback(async () => {
     const requestVersion = issueRequestVersion.current + 1;
     issueRequestVersion.current = requestVersion;
+    issueLoadingOwner.current = requestVersion;
     if (mounted.current) {
       setIssueLoading(true);
       setIssueError(null);
@@ -82,7 +85,7 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
         setIssueError(normalizeIpcError(reason));
       }
     } finally {
-      if (mounted.current) {
+      if (mounted.current && issueLoadingOwner.current === requestVersion) {
         setIssueLoading(false);
       }
     }
@@ -167,6 +170,7 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
     const expectedOffset = issuePage.issues.length;
     const requestVersion = issueRequestVersion.current + 1;
     issueRequestVersion.current = requestVersion;
+    issueLoadingMoreOwner.current = requestVersion;
     setIssueLoadingMore(true);
     setIssueLoadMoreError(null);
 
@@ -196,7 +200,7 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
         setIssueLoadMoreError(normalizeIpcError(reason));
       }
     } finally {
-      if (mounted.current) {
+      if (mounted.current && issueLoadingMoreOwner.current === requestVersion) {
         setIssueLoadingMore(false);
       }
     }

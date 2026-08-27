@@ -659,6 +659,73 @@ describe('AppShell M6.2 shell and library states', () => {
     );
   });
 
+  it('keeps refresh loading owned by the newest overlapping issue request', async () => {
+    let resolveOlderRefresh: ((page: unknown) => void) | undefined;
+    let resolveNewerRefresh: ((page: unknown) => void) | undefined;
+    let issuePageCall = 0;
+    const page = {
+      issues: [
+        {
+          id: 30,
+          scanRunId: 9,
+          rootId: 1,
+          kind: 'unreadablePath',
+          relativePath: 'newest.nes',
+          relatedPath: null,
+          detail: 'newest issue page',
+          createdAt: 1,
+        },
+      ],
+      scanRunId: 9,
+      total: 1,
+      offset: 0,
+      limit: 50,
+    };
+    mocks.getScanIssuePage.mockImplementation(() => {
+      issuePageCall += 1;
+      return new Promise((resolve) => {
+        if (issuePageCall === 1) resolveOlderRefresh = resolve;
+        else resolveNewerRefresh = resolve;
+      });
+    });
+
+    render(<AppShell />);
+    await waitFor(() => expect(resolveOlderRefresh).toBeDefined());
+
+    act(() =>
+      mocks.completedHandlers.forEach((handler) =>
+        handler({
+          runId: 9,
+          state: 'completed',
+          counters: {
+            rootsDiscovered: 1,
+            rootsCompleted: 1,
+            filesDiscovered: 1,
+            filesProcessed: 1,
+            filesHashed: 1,
+            bytesHashed: 0,
+            issuesFound: 1,
+          },
+          durationMs: 1000,
+        }),
+      ),
+    );
+    await waitFor(() => expect(resolveNewerRefresh).toBeDefined());
+    expect(screen.getByText(/reading saved issues/i)).toBeInTheDocument();
+
+    await act(async () => {
+      resolveOlderRefresh?.({ ...page, issues: [] });
+    });
+
+    expect(screen.getByText(/reading saved issues/i)).toBeInTheDocument();
+
+    await act(async () => {
+      resolveNewerRefresh?.(page);
+    });
+    expect(await screen.findByText('newest issue page')).toBeInTheDocument();
+    expect(screen.queryByText(/reading saved issues/i)).not.toBeInTheDocument();
+  });
+
   it('keeps the shell available when the bounded issue page fails', async () => {
     mocks.getScanIssuePage.mockRejectedValue(
       new mocks.IpcError('library_unavailable', 'internal issue-store detail'),
