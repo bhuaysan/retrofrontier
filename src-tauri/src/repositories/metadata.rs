@@ -1148,6 +1148,7 @@ fn media_asset_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<MediaAsset, App
         provider_media_type: row.get("provider_media_type"),
         region: row.get("region"),
         cache_relative_path: row.get("cache_relative_path"),
+        media_ref: None,
         content_type: row.get("content_type"),
         size_bytes: row
             .get::<Option<i64>, _>("size_bytes")

@@ -34,6 +34,21 @@ pub enum AppError {
     #[error("local game library is unavailable: {0}")]
     Library(String),
 
+    #[error("the content-root path is invalid or unsafe")]
+    ContentRootInvalidPath,
+
+    #[error("the content root is unavailable")]
+    ContentRootUnavailable,
+
+    #[error("the content-root path is not a directory")]
+    ContentRootNotDirectory,
+
+    #[error("the content root overlaps another enabled root")]
+    ContentRootOverlap,
+
+    #[error("the content-root operation is invalid")]
+    ContentRootInvalidOperation,
+
     #[error("game metadata is unavailable: {0}")]
     Metadata(String),
 }
@@ -50,6 +65,11 @@ impl AppError {
             Self::Bios(_) => "bios_unavailable",
             Self::BiosOverrideNotAllowed => "bios_override_disabled",
             Self::Library(_) => "library_unavailable",
+            Self::ContentRootInvalidPath => "content_root_invalid_path",
+            Self::ContentRootUnavailable => "content_root_unavailable",
+            Self::ContentRootNotDirectory => "content_root_not_directory",
+            Self::ContentRootOverlap => "content_root_overlap",
+            Self::ContentRootInvalidOperation => "content_root_invalid_operation",
             Self::Metadata(_) => "metadata_unavailable",
         }
     }
@@ -69,6 +89,15 @@ impl AppError {
                 "BIOS path overrides are available only in development builds."
             }
             Self::Library(_) => "RetroFrontier could not access the local game library.",
+            Self::ContentRootInvalidPath => {
+                "That content-root path is invalid or uses an unsafe path form."
+            }
+            Self::ContentRootUnavailable => "That content root is currently unavailable.",
+            Self::ContentRootNotDirectory => "That content-root path is not a directory.",
+            Self::ContentRootOverlap => "That content root overlaps another enabled content root.",
+            Self::ContentRootInvalidOperation => {
+                "That content-root operation is not valid for the selected root."
+            }
             Self::Metadata(_) => "RetroFrontier could not access local game metadata.",
         }
     }
@@ -109,5 +138,31 @@ mod tests {
             "RetroFrontier could not access its local database."
         );
         assert!(!serialized.to_string().contains("RowNotFound"));
+    }
+
+    #[test]
+    fn content_root_errors_use_stable_safe_codes_and_messages() {
+        for (error, code) in [
+            (
+                AppError::ContentRootInvalidPath,
+                "content_root_invalid_path",
+            ),
+            (AppError::ContentRootUnavailable, "content_root_unavailable"),
+            (
+                AppError::ContentRootNotDirectory,
+                "content_root_not_directory",
+            ),
+            (AppError::ContentRootOverlap, "content_root_overlap"),
+            (
+                AppError::ContentRootInvalidOperation,
+                "content_root_invalid_operation",
+            ),
+        ] {
+            let serialized = serde_json::to_value(error).expect("root errors should serialize");
+            assert_eq!(serialized["code"], code);
+            assert!(serialized["message"]
+                .as_str()
+                .is_some_and(|message| { !message.contains("sql") && !message.contains("/tmp") }));
+        }
     }
 }

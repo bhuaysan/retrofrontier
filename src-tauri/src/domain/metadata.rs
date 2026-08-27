@@ -380,8 +380,9 @@ impl MediaAssetState {
 
 /// The single V1 primary cover asset for one game and provider.
 ///
-/// `cache_relative_path` is relative to the app-owned media cache root so the database never
-/// depends on an absolute developer or user path, and never stores a provider URL.
+/// `cache_relative_path` is an internal persistence value relative to the app-owned media cache
+/// root. It is deliberately skipped during IPC serialization; the application exposes only the
+/// opaque native media reference after it has checked that the file is readable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaAsset {
@@ -391,7 +392,9 @@ pub struct MediaAsset {
     pub state: MediaAssetState,
     pub provider_media_type: Option<String>,
     pub region: Option<String>,
+    #[serde(skip)]
     pub cache_relative_path: Option<String>,
+    pub media_ref: Option<String>,
     pub content_type: Option<String>,
     pub size_bytes: Option<u64>,
     pub content_sha256: Option<String>,

@@ -27,11 +27,15 @@ use application::AppState;
 use application::{
     LibraryApplicationService, MetadataApplicationService, MetadataConfig, MetadataWorker,
     ProviderCredentialState, RuntimeApplicationService, RuntimeManager, SystemsApplicationService,
-    TauriScanEventSink,
+    TauriMetadataStateEventSink, TauriScanEventSink,
 };
 use domain::system::SystemCatalog;
 use repositories::settings::SettingsRepository;
 use services::bios::BiosService;
+use services::media_delivery::{
+    app_error_status, cover_response, parse_cover_route, protocol_error_response,
+    CachedCoverDelivery, CACHED_COVER_PROTOCOL,
+};
 use services::metadata_provider::MetadataProvider;
 use services::metadata_queue::{RandomJitter, SystemClock};
 use std::sync::Arc;
@@ -74,7 +78,11 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
 
     let runtime_service = RuntimeApplicationService::new(runtime.clone());
 
-    let metadata = initialize_metadata(&app_data_dir, database.pool().clone())?;
+    let metadata = initialize_metadata(app, &app_data_dir, database.pool().clone())?;
+    let media_delivery = Arc::new(CachedCoverDelivery::new(
+        database.pool().clone(),
+        MetadataPaths::new(&app_data_dir),
+    ));
     let metadata_worker = Arc::new(MetadataWorker::new(metadata.clone()));
     metadata_worker.start();
 
@@ -85,6 +93,7 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
         instance_lock,
         library,
         metadata,
+        media_delivery,
         metadata_worker,
     ))
 }
@@ -95,6 +104,7 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
 /// builds receive them through build-time injection. A build without credentials still starts: the
 /// provider then reports that credentials are unavailable and the local library is unaffected.
 fn initialize_metadata(
+    app: &tauri::AppHandle,
     app_data_dir: &std::path::Path,
     pool: sqlx::SqlitePool,
 ) -> Result<Arc<MetadataApplicationService>, error::AppError> {
@@ -146,7 +156,9 @@ fn initialize_metadata(
         Arc::new(RandomJitter),
         MetadataConfig::default(),
     ))?;
-    Ok(Arc::new(service))
+    Ok(Arc::new(service.with_event_sink(Arc::new(
+        TauriMetadataStateEventSink::new(app.clone()),
+    ))))
 }
 
 pub fn run() {
@@ -159,6 +171,31 @@ pub fn run() {
     );
 
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol(
+            CACHED_COVER_PROTOCOL,
+            |_context, request, responder| {
+                let app = _context.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let response = if request.method().as_str() != "GET" {
+                        protocol_error_response(405)
+                    } else if let Some(game_id) = parse_cover_route(request.uri().path()) {
+                        let delivery = app
+                            .try_state::<AppState>()
+                            .map(|state| state.media_delivery().clone());
+                        match delivery {
+                            Some(delivery) => match delivery.load_cover(game_id).await {
+                                Ok(cover) => cover_response(cover),
+                                Err(error) => protocol_error_response(app_error_status(error)),
+                            },
+                            None => protocol_error_response(503),
+                        }
+                    } else {
+                        protocol_error_response(404)
+                    };
+                    responder.respond(response);
+                });
+            },
+        )
         .setup(|app| {
             let state = initialize_state(app.handle()).map_err(|source| {
                 source.log();
@@ -180,7 +217,12 @@ pub fn run() {
             commands::library::rescan_library,
             commands::library::get_scan_status,
             commands::library::get_scan_issues,
+            commands::library::get_scan_issue_page,
             commands::library::get_library_snapshot,
+            commands::library::query_library,
+            commands::library::get_library_summary,
+            commands::library::get_library_game_detail,
+            commands::library::set_game_favorite,
             commands::metadata::get_game_metadata,
             commands::metadata::request_game_metadata,
             commands::metadata::refresh_game_metadata,

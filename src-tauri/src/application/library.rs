@@ -1,7 +1,9 @@
 use crate::domain::library::{
-    roots_overlap, ContentRoot, LibrarySnapshot, ScanIssue, ScanIssueKind, ScanProgress,
+    roots_overlap, ContentRoot, GameFavorite, GameId, LibraryGameDetail, LibraryPage, LibraryQuery,
+    LibrarySnapshot, LibrarySummary, ScanIssue, ScanIssueKind, ScanIssuePage, ScanProgress,
     ScanStatus, ScanSummary,
 };
+use crate::domain::metadata::MetadataProviderId;
 use crate::domain::system::{SystemCatalog, SystemId};
 use crate::error::AppError;
 use crate::repositories::library::LibraryRepository;
@@ -114,9 +116,7 @@ impl LibraryApplicationService {
                 .repository
                 .content_root(root_id)
                 .await?
-                .ok_or_else(|| {
-                    AppError::Library("the requested content root does not exist".to_owned())
-                })?;
+                .ok_or(AppError::ContentRootInvalidOperation)?;
             self.ensure_no_enabled_overlap(&root.path, Some(root_id))
                 .await?;
         }
@@ -152,6 +152,44 @@ impl LibraryApplicationService {
         Ok(issues)
     }
 
+    /// Bounded latest-run issue query for future M6 rendering. Transient watcher diagnostics stay
+    /// on the legacy aggregate command above; persisted scan issues have stable database ordering.
+    pub async fn get_scan_issue_page(
+        &self,
+        offset: u64,
+        limit: u32,
+    ) -> Result<ScanIssuePage, AppError> {
+        self.repository
+            .list_latest_scan_issues_page(offset, limit)
+            .await
+    }
+
+    pub async fn query_library(&self, request: &LibraryQuery) -> Result<LibraryPage, AppError> {
+        self.repository
+            .query_library(request, MetadataProviderId::ScreenScraper)
+            .await
+    }
+
+    pub async fn get_library_summary(&self) -> Result<LibrarySummary, AppError> {
+        self.repository.get_library_summary().await
+    }
+
+    pub async fn get_library_game_detail(
+        &self,
+        game_id: GameId,
+    ) -> Result<Option<LibraryGameDetail>, AppError> {
+        self.repository.get_library_game_detail(game_id).await
+    }
+
+    pub async fn set_game_favorite(
+        &self,
+        game_id: GameId,
+        favorite: bool,
+    ) -> Result<GameFavorite, AppError> {
+        self.repository.set_game_favorite(game_id, favorite).await?;
+        Ok(GameFavorite { game_id, favorite })
+    }
+
     pub async fn get_library_snapshot(&self) -> Result<LibrarySnapshot, AppError> {
         self.repository.get_library_snapshot().await
     }
@@ -166,10 +204,7 @@ impl LibraryApplicationService {
                 continue;
             }
             if roots_overlap(&root.path, path) {
-                return Err(AppError::Library(format!(
-                    "content root overlaps enabled root {}",
-                    root.path
-                )));
+                return Err(AppError::ContentRootOverlap);
             }
         }
         Ok(())
@@ -483,9 +518,7 @@ fn add_watcher_issue_from_path(sender: &Sender<WatcherMessage>, path: &str, deta
 
 fn ensure_managed_root(path: &Path, catalog: &SystemCatalog) -> Result<String, AppError> {
     if !path.is_absolute() {
-        return Err(AppError::Library(
-            "managed ROM root must be an absolute path".to_owned(),
-        ));
+        return Err(AppError::ContentRootInvalidPath);
     }
     ensure_directory(path, "managed ROM root")?;
     for system in catalog.systems() {
@@ -494,20 +527,23 @@ fn ensure_managed_root(path: &Path, catalog: &SystemCatalog) -> Result<String, A
             "managed system ROM folder",
         )?;
     }
-    let canonical = fs::canonicalize(path).map_err(AppError::Storage)?;
-    canonical.to_str().map(str::to_owned).ok_or_else(|| {
-        AppError::Library("managed ROM root is not representable as UTF-8".to_owned())
-    })
+    let canonical = fs::canonicalize(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppError::ContentRootUnavailable
+        } else {
+            AppError::Storage(error)
+        }
+    })?;
+    canonical
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| AppError::ContentRootInvalidPath)
 }
 
-fn ensure_directory(path: &Path, label: &str) -> Result<(), AppError> {
+fn ensure_directory(path: &Path, _label: &str) -> Result<(), AppError> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(AppError::Library(format!(
-            "{label} may not be a symbolic link"
-        ))),
-        Ok(metadata) if !metadata.is_dir() => {
-            Err(AppError::Library(format!("{label} is not a directory")))
-        }
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(AppError::ContentRootInvalidPath),
+        Ok(metadata) if !metadata.is_dir() => Err(AppError::ContentRootNotDirectory),
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir_all(path).map_err(AppError::Storage)
@@ -516,39 +552,37 @@ fn ensure_directory(path: &Path, label: &str) -> Result<(), AppError> {
     }
 }
 
-fn normalize_configured_path(path: &str, label: &str) -> Result<String, AppError> {
+fn normalize_configured_path(path: &str, _label: &str) -> Result<String, AppError> {
     let requested = PathBuf::from(path.trim());
     if !requested.is_absolute() {
-        return Err(AppError::Library(format!(
-            "{label} must be an absolute path"
-        )));
+        return Err(AppError::ContentRootInvalidPath);
     }
     if requested
         .components()
         .any(|component| matches!(component, Component::ParentDir))
     {
-        return Err(AppError::Library(format!(
-            "{label} may not contain parent-directory traversal"
-        )));
+        return Err(AppError::ContentRootInvalidPath);
     }
 
     let normalized = match fs::symlink_metadata(&requested) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err(AppError::Library(format!(
-                "{label} may not be a symbolic link"
-            )));
+            return Err(AppError::ContentRootInvalidPath);
         }
-        Ok(metadata) if !metadata.is_dir() => {
-            return Err(AppError::Library(format!("{label} is not a directory")));
-        }
-        Ok(_) => fs::canonicalize(&requested).map_err(AppError::Storage)?,
+        Ok(metadata) if !metadata.is_dir() => return Err(AppError::ContentRootNotDirectory),
+        Ok(_) => fs::canonicalize(&requested).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                AppError::ContentRootUnavailable
+            } else {
+                AppError::Storage(error)
+            }
+        })?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => requested,
         Err(error) => return Err(AppError::Storage(error)),
     };
     normalized
         .to_str()
         .map(str::to_owned)
-        .ok_or_else(|| AppError::Library(format!("{label} is not representable as UTF-8")))
+        .ok_or(AppError::ContentRootInvalidPath)
 }
 
 fn now_timestamp() -> i64 {
@@ -560,12 +594,18 @@ fn now_timestamp() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_managed_root, ScanRequest, ScanSchedule};
+    use super::{
+        ensure_directory, ensure_managed_root, normalize_configured_path, ScanRequest, ScanSchedule,
+    };
     use crate::adapters::database::Database;
-    use crate::domain::library::ContentRootAvailability;
+    use crate::domain::library::{
+        ContentRootAvailability, ContentRootId, ContentRootKind, LibraryQuery,
+    };
     use crate::domain::system::{SystemCatalog, SystemId};
+    use crate::error::AppError;
     use crate::services::library_scanner::NoopScanEventSink;
     use std::fs;
+    use std::path::Path;
     use std::sync::Arc;
     use tempfile::tempdir;
 
@@ -607,6 +647,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn content_root_paths_return_granular_safe_errors() {
+        let directory = tempdir().unwrap();
+        let file = directory.path().join("not-a-directory");
+        fs::write(&file, b"fixture").unwrap();
+
+        assert!(matches!(
+            normalize_configured_path("relative/root", "test root"),
+            Err(AppError::ContentRootInvalidPath)
+        ));
+        assert!(matches!(
+            normalize_configured_path(
+                directory.path().join("../outside").to_str().unwrap(),
+                "test root"
+            ),
+            Err(AppError::ContentRootInvalidPath)
+        ));
+        assert!(matches!(
+            normalize_configured_path(file.to_str().unwrap(), "test root"),
+            Err(AppError::ContentRootNotDirectory)
+        ));
+        assert!(matches!(
+            ensure_directory(&file, "test root"),
+            Err(AppError::ContentRootNotDirectory)
+        ));
+        assert!(matches!(
+            ensure_managed_root(Path::new("relative/root"), &SystemCatalog::v1()),
+            Err(AppError::ContentRootInvalidPath)
+        ));
+    }
+
     #[tokio::test]
     async fn root_lifecycle_persists_external_hints_without_touching_content() {
         let directory = tempdir().unwrap();
@@ -642,10 +713,31 @@ mod tests {
         assert_eq!(service.get_content_roots().await.unwrap().len(), 2);
 
         let nested = external_root.join("nested");
-        assert!(service
-            .add_external_content_root(nested.to_str().unwrap(), None)
+        assert!(matches!(
+            service
+                .add_external_content_root(nested.to_str().unwrap(), None)
+                .await,
+            Err(AppError::ContentRootOverlap)
+        ));
+
+        let managed_id = service
+            .get_content_roots()
             .await
-            .is_err());
+            .unwrap()
+            .into_iter()
+            .find(|root| root.kind == ContentRootKind::Managed)
+            .unwrap()
+            .id;
+        assert!(matches!(
+            service.remove_external_content_root(managed_id).await,
+            Err(AppError::ContentRootInvalidOperation)
+        ));
+        assert!(matches!(
+            service
+                .set_content_root_enabled(ContentRootId(99_999), false)
+                .await,
+            Err(AppError::ContentRootInvalidOperation)
+        ));
 
         let summary = service.rescan_library().await.unwrap();
         assert_eq!(
@@ -654,6 +746,26 @@ mod tests {
         );
         assert!(!service.get_scan_status().running);
         assert_eq!(service.get_library_snapshot().await.unwrap().games.len(), 1);
+        let game_id = service
+            .query_library(&LibraryQuery::default())
+            .await
+            .unwrap()
+            .items
+            .first()
+            .unwrap()
+            .game_id;
+        service.set_game_favorite(game_id, true).await.unwrap();
+        service.rescan_library().await.unwrap();
+        assert!(
+            service
+                .query_library(&LibraryQuery::default())
+                .await
+                .unwrap()
+                .items
+                .first()
+                .unwrap()
+                .favorite
+        );
 
         service
             .set_content_root_enabled(external.id, false)

@@ -134,6 +134,20 @@ only schedule a debounced real scan; they never mutate rows directly. See
 [`docs/LIBRARY_SCANNER.md`](docs/LIBRARY_SCANNER.md) for the reconciliation and relationship
 contract.
 
+M6.1 adds a separate UI read boundary to `LibraryApplicationService`: `query_library` returns a
+hard-bounded page of list projections, `get_library_summary` returns aggregate counts, and
+`get_library_game_detail` returns one local-content projection. These queries join normalized
+metadata, provider state, cached-media identity, and user-owned favorite state without joining
+physical content files, hashes, or fingerprints. The existing full `get_library_snapshot` remains
+the M4 diagnostic contract and is not the UI list path. Favorites live in the separate
+`game_user_state` table, so scanner reconciliation cannot overwrite them.
+
+The M6.1 UI list receives an opaque `rfmedia://localhost/cover/<game-id>` reference when the
+durable cover row is eligible. Rust resolves that identity through a narrow Tauri custom protocol,
+checks the app-owned metadata-media cache and image signature, and serves the bytes; React never
+receives or resolves a cache path. Metadata changes emit a minimal invalidation event only after
+their durable write, and the bounded scan-issue page is limited to the latest persisted scan run.
+
 ### MetadataService
 
 - provider abstraction
@@ -393,6 +407,11 @@ Automatic matching requires agreeing returned ROM evidence; heuristic name resul
 candidates. Unsupported container representations are deferred. Provider failures and changed M4
 evidence affect provider state only and never mutate local library ownership or availability. See
 [`docs/SCREENSCRAPER_SPIKE.md`](docs/SCREENSCRAPER_SPIKE.md) and ADR-007.
+
+The M6.1 metadata/UI boundary preserves the relative cache path only inside Rust persistence and
+native services. Serialized metadata assets expose an opaque media reference instead. The
+`metadata-state-changed` event carries only `gameId` and `providerId`; it is an invalidation signal,
+not a metadata data channel.
 
 ## UI Architecture
 

@@ -273,6 +273,14 @@ visible attribution presentation, which belongs to M6.
 
 **Model:** Luna Max.
 
+- [x] M6.1 backend enablement: bounded library queries, summaries, local detail, favorites, issue
+  pages, typed root errors, cached-cover delivery, and metadata invalidation contracts
+- [ ] M6.2 shell / empty library / scan UX
+- [ ] M6.3 library browsing
+- [ ] M6.4 game detail / readiness
+- [ ] M6.5 metadata UX / settings
+- [ ] M6.6 hardening / accessibility / documentation
+
 - [ ] navigation shell
 - [ ] empty state
 - [ ] library UI

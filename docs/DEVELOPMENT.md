@@ -2,9 +2,9 @@
 
 M4 establishes the local library scanner, durable content model, root management,
 and system-readiness snapshot boundary. M5 adds provider-backed metadata
-enrichment behind a provider-neutral boundary. Library UI, core selection UI, and
-game launching remain later milestones and are intentionally not part of the local
-workflow yet.
+enrichment behind a provider-neutral boundary. M6.1 adds bounded backend/IPC
+contracts for the future library UI; visual library UI, core selection UI, and
+game launching remain later milestones.
 
 ## Prerequisites
 
@@ -118,6 +118,9 @@ injectable, and all fixtures are synthetic or sanitized.
 
 Cached covers live under the OS-specific Tauri application-data directory in
 `metadata/media/`. Nothing is written beside user ROMs or into the source tree.
+The future WebView receives an opaque `rfmedia://localhost/cover/<game-id>` reference. The native
+custom protocol resolves the durable cover row and validates cache containment and image content;
+the relative cache path is never serialized through IPC.
 
 ## Boundaries and conventions
 
@@ -141,6 +144,11 @@ replace if the IPC surface becomes large.
 `code` plus user-facing `message` to Tauri callers. The tracing subscriber is
 configured for development output and can gain an application-data file layer
 later without changing command or service code.
+
+M6.1 keeps the UI-facing library contracts in the same manually mirrored boundary: Rust DTOs use
+`serde(rename_all = "camelCase")`, and `src/platform/ipc.ts` mirrors the bounded list, summary,
+detail, favorite, scan-issue-page, and metadata-invalidation shapes. No frontend state or query
+logic is implemented in this slice.
 
 ## Design tokens
 

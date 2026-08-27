@@ -1,6 +1,7 @@
-# RetroFrontier metadata (M5)
+# RetroFrontier metadata (M5 and M6.1 boundary)
 
-This document describes the metadata implementation that ships with M5. It is an implementation
+This document describes the metadata implementation that ships with M5 and the M6.1 boundary that
+allows the later library UI to consume it. It is an implementation
 record, not new research. The provider evidence, ES-DE precedent, project decisions, and residual
 risks behind these choices are recorded in [`SCREENSCRAPER_SPIKE.md`](SCREENSCRAPER_SPIKE.md) and
 [ADR-007](adr/ADR-007-metadata-provider.md); nothing here upgrades a research finding into a
@@ -21,8 +22,9 @@ M5 adds provider-backed enrichment on top of the M4 local library:
 - optional personal provider credentials in the OS credential vault;
 - a thin typed IPC surface.
 
-M5 adds no library UI. It does not implement broad media scraping, a metadata editor, arbitrary
-manual metadata entry, provider-cache export, or additional providers.
+M5 adds no visual library UI. M6.1 adds only the native/IPC boundaries that a later UI can consume;
+it does not implement broad media scraping, a metadata editor, arbitrary manual metadata entry,
+provider-cache export, or additional providers.
 
 ## Layering
 
@@ -402,6 +404,17 @@ refuses absolute paths and traversal, so a corrupted row cannot be turned into a
 filesystem read. Nothing is ever written beside user ROMs, inside managed ROM roots, inside BIOS
 roots, or into source-controlled paths.
 
+### WebView delivery boundary (M6.1)
+
+The UI never receives the persisted `cache_relative_path`. A bounded library item or readable
+metadata state exposes only an opaque `rfmedia://localhost/cover/<game-id>` reference. The Tauri
+custom protocol accepts only a positive local game ID, loads the current cached cover row in Rust,
+then reuses the cover cache's lexical/canonical containment and PNG/JPEG/WebP validation before
+returning bytes. Traversal, absolute paths, symlinks that leave the cache, missing files, unsupported
+types, and invalid content produce safe protocol failures. The CSP allows only the `rfmedia` scheme
+and its Tauri Windows localhost origin; no generic file-serving route exists. Provider URLs and
+credentials never cross this boundary.
+
 ## Offline behaviour
 
 Offline is a first-class state, observable as repeated transport failure.
@@ -453,8 +466,13 @@ no provider logic, SQL, filesystem access, or retry behaviour.
 | `get_metadata_provider_account`        | Configured yes/no, state, account name — never a password     |
 
 The DTOs have no field for a developer credential, a password, a raw provider payload, an
-authenticated URL, or a SQL/domain internal. The cover is exposed as a cache-relative reference;
-React never resolves or owns filesystem paths.
+authenticated URL, or a SQL/domain internal. The cover is exposed as an opaque native media
+reference; React never resolves or owns filesystem paths.
+
+Metadata changes that affect visible game state emit `metadata-state-changed` after the relevant
+database write. Its payload is only `{ gameId, providerId }`; it is an invalidation signal, and the
+future UI refetches the bounded library/detail or existing metadata state rather than treating the
+event as a data source.
 
 ## Testing
 
