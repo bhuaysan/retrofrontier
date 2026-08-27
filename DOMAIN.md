@@ -1,14 +1,17 @@
 # RetroFrontier Domain Model
 
 ## Purpose
+
 This document defines the core domain language for RetroFrontier. The model must avoid treating a game as a single filesystem path.
 
 ## Core Concepts
 
 ### System
+
 An emulated platform supported by RetroFrontier.
 
 Owns configuration such as:
+
 - stable identifier
 - display name
 - managed ROM folder name
@@ -33,9 +36,11 @@ core, missing required BIOS, invalid BIOS, or an identity not covered by the
 catalog remain inspectable.
 
 ### Game
+
 A logical library entry presented to the user.
 
 May contain:
+
 - title
 - sort title
 - system
@@ -51,9 +56,11 @@ May contain:
 A Game is not a filesystem file.
 
 ### Content Unit
+
 A playable representation associated with a Game.
 
 May represent:
+
 - a single ROM file
 - a CHD image
 - a CUE/BIN set
@@ -64,9 +71,11 @@ May represent:
 A Game may have more than one Content Unit, for example different regions or revisions.
 
 ### Content File
+
 A physical file on disk that belongs to a Content Unit.
 
 Examples:
+
 - `.sfc`
 - `.gba`
 - `.cue`
@@ -77,6 +86,7 @@ Examples:
 - `.rvz`
 
 Conceptual fields:
+
 - content unit
 - content root
 - relative/canonical path
@@ -87,13 +97,16 @@ Conceptual fields:
 - availability status
 
 ### Content Root
+
 A directory scanned by RetroFrontier.
 
 Kinds:
+
 - managed ROM root
 - external ROM root
 
 Conceptual fields:
+
 - path
 - kind
 - enabled
@@ -101,22 +114,27 @@ Conceptual fields:
 - last scan timestamp
 
 ### Disc
+
 An ordered disc within a multi-disc Content Unit.
 
 The persistence model may use playlist ordering where appropriate, but the domain must preserve disc ordering.
 
 ### Metadata Record
+
 Metadata obtained from a provider.
 
 Provider-specific payloads must not leak throughout the application.
 
 ### Media Asset
+
 Local cached artwork/media associated with a Game, such as cover, screenshot, logo, or background.
 
 ### Core
+
 A RetroArch/libretro core available to the managed runtime.
 
 Tracks:
+
 - stable identifier
 - libretro/core name
 - display name
@@ -129,9 +147,11 @@ from an authenticated managed runtime can become available; system-installed
 cores, arbitrary user paths, and user downloads are outside the V1 model.
 
 ### BIOS Requirement
+
 A known firmware requirement for a System or Core.
 
 Tracks:
+
 - expected filename(s)
 - accepted hashes and known size where authoritative
 - required/optional status
@@ -142,14 +162,17 @@ BIOS files remain user-owned data and are never downloaded, executed, or
 modified by RetroFrontier.
 
 ### BIOS File
+
 A user-supplied local firmware file discovered by RetroFrontier.
 
 RetroFrontier must not download copyrighted BIOS files.
 
 ### Runtime Release
+
 A RetroFrontier-approved set of emulation-runtime components.
 
 May include:
+
 - RetroArch version
 - core versions
 - support assets
@@ -159,9 +182,11 @@ May include:
 - compatibility constraints
 
 ### Runtime Installation
+
 The locally installed managed runtime.
 
 Possible states:
+
 - not installed
 - installing
 - ready
@@ -172,20 +197,25 @@ Possible states:
 - rollback available
 
 ### Play Session
+
 A recorded game execution with game/content/core/runtime/time/exit information.
 
 ### Save Data
+
 Normal emulator-managed persistent save data such as SRAM or memory-card data.
 
 Save Data is user data and must survive runtime replacement.
 
 ### Save State
+
 An emulator snapshot associated with a game.
 
 Track core and runtime versions because compatibility is not guaranteed across versions.
 
 ### Game Override
+
 Optional per-game launch configuration such as:
+
 - core override
 - video behavior
 - aspect/integer scaling
@@ -220,6 +250,7 @@ RuntimeRelease
 ```
 
 ## Domain Rules
+
 1. A Game must never be identified solely by an absolute file path.
 2. Removing a file must not automatically delete user metadata without reconciliation.
 3. Runtime replacement must not delete ROMs, BIOS files, saves, states, metadata, or the database.
@@ -233,9 +264,14 @@ RuntimeRelease
 11. A logical `GameId` may be preserved across content ownership or reconciliation changes only
     when exact content evidence establishes one predecessor game. Ambiguous ownership is retained
     as history and reported; it is never guessed.
+12. Metadata-provider state is downstream of local-library identity. Provider failure, no-match,
+    ambiguity, deferral, or stale evidence must not delete/hide a Game, change local availability,
+    or alter Game/ContentUnit/ContentFile identity or ownership.
 
 ## Identification Inputs
+
 May combine:
+
 - managed-folder system context
 - extension/content-format knowledge
 - filename
@@ -249,6 +285,7 @@ May combine:
 Exact matching rules remain an implementation task.
 
 ## Persistence
+
 SQLite is the store. M4 introduces the normalized schema through a forward/down migration rather
 than mirroring UI components. `content_roots` persist managed and external roots; `games`,
 `content_units`, and `content_files` keep logical, launchable, and physical identities distinct;
