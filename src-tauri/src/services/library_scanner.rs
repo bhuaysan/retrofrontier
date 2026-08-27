@@ -1912,7 +1912,7 @@ mod tests {
     use crate::adapters::database::Database;
     use crate::domain::library::{
         ContentFileAvailability, ContentFileRole, ContentFormat, ContentRoot,
-        ContentRootAvailability, ContentUnitAvailability, ContentUnitKind, ScanCounters,
+        ContentRootAvailability, ContentUnitAvailability, ContentUnitKind, GameId, ScanCounters,
         ScanIssueKind, ScanPhase, ScanProgress, ScanRunId, ScanRunState, ScanSummary,
     };
     use crate::domain::system::{SystemCatalog, SystemId};
@@ -1973,10 +1973,85 @@ mod tests {
         }
     }
 
+    async fn reopen_persistence_and_scanner(
+        context: &TestContext,
+    ) -> (Database, LibraryRepository, ScanService) {
+        context._database.pool().close().await;
+        let database = Database::open(context._directory.path().join("database.sqlite3"))
+            .await
+            .expect("test database should reopen");
+        let repository = LibraryRepository::new(database.pool().clone());
+        let scanner = ScanService::new(
+            repository.clone(),
+            SystemCatalog::v1(),
+            Arc::new(CollectingSink::default()),
+        );
+        (database, repository, scanner)
+    }
+
     fn write_fixture(root: &ContentRoot, relative_path: &str, contents: &[u8]) {
         let path = PathBuf::from(&root.path).join(relative_path);
         fs::create_dir_all(path.parent().unwrap()).expect("fixture parent should exist");
         fs::write(path, contents).expect("fixture file should be written");
+    }
+
+    async fn perform_contested_move(
+        context: &TestContext,
+        first: &str,
+        second: &str,
+    ) -> (BTreeSet<GameId>, GameId) {
+        for prefix in [first, second] {
+            write_fixture(&context.root, &format!("{prefix}.chd"), &[7, 8, 9]);
+            let playlist = format!("{prefix}.chd\n");
+            write_fixture(&context.root, &format!("{prefix}.m3u"), playlist.as_bytes());
+            context.scanner.scan_once().await.unwrap();
+        }
+
+        let before = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(before.games.len(), 2);
+        let predecessor_game_ids: BTreeSet<_> =
+            before.games.iter().map(|game| game.game.id).collect();
+        let predecessor_file_ids: BTreeSet<_> = before
+            .games
+            .iter()
+            .flat_map(|game| &game.content_units)
+            .flat_map(|unit| &unit.files)
+            .filter(|member| member.file.relative_path.ends_with(".chd"))
+            .map(|member| member.file.id)
+            .collect();
+        assert_eq!(predecessor_file_ids.len(), 2);
+
+        for prefix in [first, second] {
+            fs::remove_file(PathBuf::from(&context.root.path).join(format!("{prefix}.m3u")))
+                .unwrap();
+            fs::remove_file(PathBuf::from(&context.root.path).join(format!("{prefix}.chd")))
+                .unwrap();
+        }
+        write_fixture(&context.root, "moved.chd", &[7, 8, 9]);
+        context.scanner.scan_once().await.unwrap();
+
+        let after = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(after.games.len(), 3);
+        let available: Vec<_> = after
+            .games
+            .iter()
+            .filter(|game| {
+                game.game.availability == crate::domain::library::GameAvailability::Available
+            })
+            .collect();
+        assert_eq!(available.len(), 1);
+        let moved_game_id = available[0].game.id;
+        assert!(!predecessor_game_ids.contains(&moved_game_id));
+        assert_eq!(available[0].content_units.len(), 1);
+        assert!(!predecessor_file_ids.contains(&available[0].content_units[0].files[0].file.id));
+        assert!(context
+            .repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .iter()
+            .any(|issue| issue.kind == ScanIssueKind::AmbiguousReconciliation));
+        (predecessor_game_ids, moved_game_id)
     }
 
     #[test]
@@ -2278,6 +2353,269 @@ mod tests {
         assert_eq!(unit.files[2].file.relative_path, "disc-1.chd");
         assert_eq!(unit.files[1].ordinal, 1);
         assert_eq!(unit.files[2].ordinal, 2);
+    }
+
+    #[tokio::test]
+    async fn adding_one_disc_m3u_preserves_the_standalone_game_identity() {
+        let context = test_context(Some(SystemId::PlayStation)).await;
+        write_fixture(&context.root, "disc.chd", &[1, 2, 3]);
+
+        context.scanner.scan_once().await.unwrap();
+        let before = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(before.games.len(), 1);
+        let original_game_id = before.games[0].game.id;
+        let original_unit_id = before.games[0].content_units[0].id;
+        let original_file_id = before.games[0].content_units[0].files[0].file.id;
+        let original_hashes = (
+            before.games[0].content_units[0].files[0].file.crc32.clone(),
+            before.games[0].content_units[0].files[0].file.md5.clone(),
+            before.games[0].content_units[0].files[0].file.sha1.clone(),
+        );
+        let original_fingerprint = before.games[0].content_units[0].fingerprint.clone();
+
+        write_fixture(&context.root, "game.m3u", b"disc.chd\n");
+        context.scanner.scan_once().await.unwrap();
+
+        let after = context.repository.get_library_snapshot().await.unwrap();
+        let available_games: Vec<_> = after
+            .games
+            .iter()
+            .filter(|game| {
+                game.game.availability == crate::domain::library::GameAvailability::Available
+            })
+            .collect();
+        assert_eq!(after.games.len(), 1);
+        assert_eq!(available_games.len(), 1);
+        assert_eq!(available_games[0].game.id, original_game_id);
+        assert_eq!(available_games[0].content_units.len(), 2);
+        let historical_unit = available_games[0]
+            .content_units
+            .iter()
+            .find(|unit| unit.id == original_unit_id)
+            .unwrap();
+        assert_eq!(
+            historical_unit.availability,
+            ContentUnitAvailability::Incomplete
+        );
+        assert_eq!(historical_unit.fingerprint, original_fingerprint);
+        let playlist_unit = available_games[0]
+            .content_units
+            .iter()
+            .find(|unit| unit.kind == ContentUnitKind::M3u)
+            .unwrap();
+        let absorbed_disc = playlist_unit
+            .files
+            .iter()
+            .find(|member| member.file.relative_path == "disc.chd")
+            .unwrap();
+        assert_eq!(absorbed_disc.file.id, original_file_id);
+        assert_eq!(
+            (
+                absorbed_disc.file.crc32.clone(),
+                absorbed_disc.file.md5.clone(),
+                absorbed_disc.file.sha1.clone(),
+            ),
+            original_hashes
+        );
+    }
+
+    #[tokio::test]
+    async fn adding_m3u_for_multiple_units_under_one_game_preserves_that_game() {
+        let context = test_context(Some(SystemId::PlayStation)).await;
+        write_fixture(&context.root, "disc-a.chd", &[1, 2, 3]);
+        write_fixture(&context.root, "disc-b.chd", &[1, 2, 3]);
+        context.scanner.scan_once().await.unwrap();
+
+        let before = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(before.games.len(), 1);
+        assert_eq!(before.games[0].content_units.len(), 2);
+        let original_game_id = before.games[0].game.id;
+
+        write_fixture(&context.root, "game.m3u", b"disc-a.chd\ndisc-b.chd\n");
+        context.scanner.scan_once().await.unwrap();
+
+        let after = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(after.games.len(), 1);
+        assert_eq!(after.games[0].game.id, original_game_id);
+        assert!(after.games[0]
+            .content_units
+            .iter()
+            .any(|unit| unit.kind == ContentUnitKind::M3u));
+        assert!(context
+            .repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .iter()
+            .all(|issue| issue.kind != ScanIssueKind::AmbiguousReconciliation));
+    }
+
+    #[tokio::test]
+    async fn adding_m3u_for_different_predecessor_games_refuses_identity_transfer() {
+        let context = test_context(Some(SystemId::PlayStation)).await;
+        write_fixture(&context.root, "disc-a.chd", &[1]);
+        write_fixture(&context.root, "disc-b.chd", &[2]);
+        context.scanner.scan_once().await.unwrap();
+
+        let before = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(before.games.len(), 2);
+        let predecessor_ids: BTreeSet<_> = before.games.iter().map(|game| game.game.id).collect();
+
+        write_fixture(&context.root, "game.m3u", b"disc-a.chd\ndisc-b.chd\n");
+        context.scanner.scan_once().await.unwrap();
+
+        let after = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(after.games.len(), 3);
+        assert!(predecessor_ids
+            .iter()
+            .all(|game_id| after.games.iter().any(|game| game.game.id == *game_id)));
+        let available: Vec<_> = after
+            .games
+            .iter()
+            .filter(|game| {
+                game.game.availability == crate::domain::library::GameAvailability::Available
+            })
+            .collect();
+        assert_eq!(available.len(), 1);
+        assert!(!predecessor_ids.contains(&available[0].game.id));
+        assert_eq!(available[0].content_units.len(), 1);
+        assert_eq!(available[0].content_units[0].kind, ContentUnitKind::M3u);
+        assert!(context
+            .repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .iter()
+            .any(|issue| {
+                issue.kind == ScanIssueKind::AmbiguousReconciliation
+                    && issue.relative_path.as_deref() == Some("game.m3u")
+            }));
+
+        let decided_game_id = available[0].game.id;
+        context.scanner.scan_once().await.unwrap();
+        let repeated = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(repeated.games.len(), 3);
+        assert_eq!(
+            repeated
+                .games
+                .iter()
+                .find(|game| {
+                    game.game.availability == crate::domain::library::GameAvailability::Available
+                })
+                .unwrap()
+                .game
+                .id,
+            decided_game_id
+        );
+        assert!(context
+            .repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .iter()
+            .all(|issue| issue.kind != ScanIssueKind::AmbiguousReconciliation));
+    }
+
+    #[tokio::test]
+    async fn new_m3u_without_predecessor_uses_normal_game_creation() {
+        let context = test_context(Some(SystemId::PlayStation)).await;
+        write_fixture(&context.root, "game.m3u", b"disc.chd\n");
+        write_fixture(&context.root, "disc.chd", &[1, 2, 3]);
+
+        context.scanner.scan_once().await.unwrap();
+
+        let snapshot = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(snapshot.games.len(), 1);
+        assert_eq!(snapshot.games[0].content_units.len(), 1);
+        assert_eq!(
+            snapshot.games[0].content_units[0].kind,
+            ContentUnitKind::M3u
+        );
+        assert!(context
+            .repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .iter()
+            .all(|issue| issue.kind != ScanIssueKind::AmbiguousReconciliation));
+    }
+
+    #[tokio::test]
+    async fn successful_m3u_transfer_is_stable_across_repeated_scan_and_restart() {
+        let context = test_context(Some(SystemId::PlayStation)).await;
+        write_fixture(&context.root, "disc.chd", &[1, 2, 3]);
+        context.scanner.scan_once().await.unwrap();
+        let original_game_id = context
+            .repository
+            .get_library_snapshot()
+            .await
+            .unwrap()
+            .games[0]
+            .game
+            .id;
+        write_fixture(&context.root, "game.m3u", b"disc.chd\n");
+        context.scanner.scan_once().await.unwrap();
+        context.scanner.scan_once().await.unwrap();
+
+        let before_restart = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(before_restart.games.len(), 1);
+        assert_eq!(before_restart.games[0].game.id, original_game_id);
+        let unit_ids: BTreeSet<_> = before_restart.games[0]
+            .content_units
+            .iter()
+            .map(|unit| unit.id)
+            .collect();
+
+        let (_database, repository, scanner) = reopen_persistence_and_scanner(&context).await;
+        scanner.scan_once().await.unwrap();
+        let after_restart = repository.get_library_snapshot().await.unwrap();
+        assert_eq!(after_restart.games.len(), 1);
+        assert_eq!(after_restart.games[0].game.id, original_game_id);
+        assert_eq!(
+            after_restart.games[0]
+                .content_units
+                .iter()
+                .map(|unit| unit.id)
+                .collect::<BTreeSet<_>>(),
+            unit_ids
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_and_readding_transferred_m3u_keeps_the_game_identity() {
+        let context = test_context(Some(SystemId::PlayStation)).await;
+        write_fixture(&context.root, "disc.chd", &[1, 2, 3]);
+        context.scanner.scan_once().await.unwrap();
+        let original_game_id = context
+            .repository
+            .get_library_snapshot()
+            .await
+            .unwrap()
+            .games[0]
+            .game
+            .id;
+        write_fixture(&context.root, "game.m3u", b"disc.chd\n");
+        context.scanner.scan_once().await.unwrap();
+
+        fs::remove_file(PathBuf::from(&context.root.path).join("game.m3u")).unwrap();
+        context.scanner.scan_once().await.unwrap();
+        let without_playlist = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(without_playlist.games.len(), 1);
+        assert_eq!(without_playlist.games[0].game.id, original_game_id);
+        assert!(without_playlist.games[0].content_units.iter().any(|unit| {
+            unit.kind == ContentUnitKind::Chd
+                && unit.availability == ContentUnitAvailability::Available
+        }));
+
+        write_fixture(&context.root, "game.m3u", b"disc.chd\n");
+        context.scanner.scan_once().await.unwrap();
+        let readded = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(readded.games.len(), 1);
+        assert_eq!(readded.games[0].game.id, original_game_id);
+        assert!(readded.games[0].content_units.iter().any(|unit| {
+            unit.kind == ContentUnitKind::M3u
+                && unit.availability == ContentUnitAvailability::Available
+        }));
     }
 
     #[tokio::test]
@@ -2932,21 +3270,31 @@ mod tests {
         let snapshot = context.repository.get_library_snapshot().await.unwrap();
         assert_eq!(snapshot.games.len(), 1);
         assert_eq!(snapshot.games[0].game.id, original_game_id);
-        assert_eq!(snapshot.games[0].content_units.len(), 2);
+        assert_eq!(snapshot.games[0].content_units.len(), 3);
         let units = &snapshot.games[0].content_units;
-        let file_ids: BTreeSet<_> = units
+        let available_units: Vec<_> = units
+            .iter()
+            .filter(|unit| unit.availability == ContentUnitAvailability::Available)
+            .collect();
+        assert_eq!(available_units.len(), 2);
+        assert!(units.iter().any(|unit| {
+            unit.id == original_unit_id && unit.availability == ContentUnitAvailability::Missing
+        }));
+        let file_ids: BTreeSet<_> = available_units
             .iter()
             .flat_map(|unit| unit.files.iter().map(|member| member.file.id))
             .collect();
         assert_eq!(file_ids.len(), 2);
-        assert!(units.iter().all(|unit| {
+        assert!(available_units.iter().all(|unit| {
             unit.primary_relative_path == unit.files[0].file.relative_path
                 && unit
                     .files
                     .iter()
                     .any(|member| member.file.relative_path == unit.primary_relative_path)
         }));
-        assert!(units.iter().any(|unit| unit.id == original_unit_id));
+        assert!(available_units
+            .iter()
+            .all(|unit| unit.id != original_unit_id));
         let issues = context.repository.list_latest_scan_issues().await.unwrap();
         assert!(issues
             .iter()
@@ -2960,13 +3308,14 @@ mod tests {
                 .content_units
                 .iter()
                 .map(|unit| unit.id)
-                .collect::<Vec<_>>(),
-            units.iter().map(|unit| unit.id).collect::<Vec<_>>()
+                .collect::<BTreeSet<_>>(),
+            units.iter().map(|unit| unit.id).collect::<BTreeSet<_>>()
         );
         assert_eq!(
             repeated.games[0]
                 .content_units
                 .iter()
+                .filter(|unit| unit.availability == ContentUnitAvailability::Available)
                 .flat_map(|unit| unit.files.iter().map(|member| member.file.id))
                 .collect::<BTreeSet<_>>(),
             file_ids
@@ -3029,6 +3378,101 @@ mod tests {
             .unwrap()
             .iter()
             .any(|issue| issue.kind == ScanIssueKind::AmbiguousReconciliation));
+    }
+
+    #[tokio::test]
+    async fn contested_move_between_different_games_remains_unresolved_after_restart() {
+        let context = test_context(Some(SystemId::PlayStation)).await;
+        let (predecessor_game_ids, moved_game_id) =
+            perform_contested_move(&context, "copy-a", "copy-b").await;
+
+        let (_database, repository, scanner) = reopen_persistence_and_scanner(&context).await;
+        scanner.scan_once().await.unwrap();
+        let restarted = repository.get_library_snapshot().await.unwrap();
+        assert_eq!(restarted.games.len(), 3);
+        assert!(predecessor_game_ids
+            .iter()
+            .all(|game_id| restarted.games.iter().any(|game| game.game.id == *game_id)));
+        let available: Vec<_> = restarted
+            .games
+            .iter()
+            .filter(|game| {
+                game.game.availability == crate::domain::library::GameAvailability::Available
+            })
+            .collect();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].game.id, moved_game_id);
+        assert!(repository
+            .list_latest_scan_issues()
+            .await
+            .unwrap()
+            .iter()
+            .all(|issue| issue.kind != ScanIssueKind::AmbiguousReconciliation));
+    }
+
+    #[tokio::test]
+    async fn contested_move_is_independent_of_predecessor_insertion_order() {
+        let forward = test_context(Some(SystemId::PlayStation)).await;
+        let (forward_predecessors, forward_result) =
+            perform_contested_move(&forward, "copy-a", "copy-b").await;
+        assert_eq!(forward_predecessors.len(), 2);
+        assert!(!forward_predecessors.contains(&forward_result));
+
+        let reverse = test_context(Some(SystemId::PlayStation)).await;
+        let (reverse_predecessors, reverse_result) =
+            perform_contested_move(&reverse, "copy-b", "copy-a").await;
+        assert_eq!(reverse_predecessors.len(), 2);
+        assert!(!reverse_predecessors.contains(&reverse_result));
+
+        let forward_snapshot = forward.repository.get_library_snapshot().await.unwrap();
+        let reverse_snapshot = reverse.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(forward_snapshot.games.len(), reverse_snapshot.games.len());
+        assert_eq!(
+            forward_snapshot
+                .games
+                .iter()
+                .filter(|game| {
+                    game.game.availability == crate::domain::library::GameAvailability::Available
+                })
+                .count(),
+            reverse_snapshot
+                .games
+                .iter()
+                .filter(|game| {
+                    game.game.availability == crate::domain::library::GameAvailability::Available
+                })
+                .count()
+        );
+    }
+
+    #[tokio::test]
+    async fn same_path_replacement_updates_evidence_without_duplicate_identity() {
+        let context = test_context(Some(SystemId::Nes)).await;
+        write_fixture(&context.root, "game.nes", &[1, 2, 3]);
+        context.scanner.scan_once().await.unwrap();
+        let before = context.repository.get_library_snapshot().await.unwrap();
+        let game_id = before.games[0].game.id;
+        let unit_id = before.games[0].content_units[0].id;
+        let file_id = before.games[0].content_units[0].files[0].file.id;
+        let old_sha1 = before.games[0].content_units[0].files[0].file.sha1.clone();
+        let old_fingerprint = before.games[0].content_units[0].fingerprint.clone();
+
+        write_fixture(&context.root, "game.nes", &[9, 8, 7, 6]);
+        context.scanner.scan_once().await.unwrap();
+        let after = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(after.games.len(), 1);
+        assert_eq!(after.games[0].game.id, game_id);
+        assert_eq!(after.games[0].content_units.len(), 1);
+        assert_eq!(after.games[0].content_units[0].id, unit_id);
+        assert_eq!(after.games[0].content_units[0].files[0].file.id, file_id);
+        assert_ne!(after.games[0].content_units[0].files[0].file.sha1, old_sha1);
+        assert_ne!(after.games[0].content_units[0].fingerprint, old_fingerprint);
+
+        context.scanner.scan_once().await.unwrap();
+        let repeated = context.repository.get_library_snapshot().await.unwrap();
+        assert_eq!(repeated.games.len(), 1);
+        assert_eq!(repeated.games[0].game.id, game_id);
+        assert_eq!(repeated.games[0].content_units.len(), 1);
     }
 
     #[tokio::test]

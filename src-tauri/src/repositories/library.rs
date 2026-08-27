@@ -338,38 +338,57 @@ impl LibraryRepository {
         let mut files_by_path = existing_by_path.clone();
         let mut file_ids_by_path = BTreeMap::<String, ContentFileId>::new();
         let mut seen_file_ids = BTreeSet::new();
-        let mut used_existing_file_ids = BTreeSet::new();
-        let mut consumed_move_identities = BTreeSet::new();
         let mut generated_issues = Vec::new();
         let discovered_paths: BTreeSet<_> = snapshot
             .files
             .iter()
             .map(|file| file.relative_path.as_str())
             .collect();
+        let mut move_candidates_by_path = BTreeMap::<String, Vec<ContentFileId>>::new();
+        let mut discovered_matches_by_candidate = BTreeMap::<ContentFileId, usize>::new();
+        for file in &snapshot.files {
+            if existing_by_path.contains_key(&file.relative_path) {
+                continue;
+            }
+            let candidates: Vec<_> = existing_files
+                .iter()
+                .filter(|candidate| {
+                    (candidate.availability == ContentFileAvailability::Missing
+                        || !discovered_paths.contains(candidate.relative_path.as_str()))
+                        && hashes_match_file(candidate, file)
+                })
+                .map(|candidate| candidate.id)
+                .collect();
+            for candidate_id in &candidates {
+                *discovered_matches_by_candidate
+                    .entry(*candidate_id)
+                    .or_default() += 1;
+            }
+            move_candidates_by_path.insert(file.relative_path.clone(), candidates);
+        }
+        let existing_file_ids: BTreeSet<_> = existing_files.iter().map(|file| file.id).collect();
 
         for file in &snapshot.files {
             let file_id = if let Some(existing) = files_by_path.get(&file.relative_path).cloned() {
                 update_file(&mut transaction, &existing, file, now).await?;
                 let updated = existing.updated_from_scanned(file);
                 put_live_file(&mut files_by_id, &mut files_by_path, updated);
-                used_existing_file_ids.insert(existing.id);
                 existing.id
             } else {
-                let candidates: Vec<_> = files_by_id
-                    .values()
-                    .filter(|candidate| {
-                        !used_existing_file_ids.contains(&candidate.id)
-                            && (candidate.availability == ContentFileAvailability::Missing
-                                || !discovered_paths.contains(candidate.relative_path.as_str()))
-                            && hashes_match_file(candidate, file)
-                    })
-                    .cloned()
-                    .collect();
-                if candidates.len() == 1 {
-                    let candidate = candidates
-                        .into_iter()
-                        .next()
-                        .expect("one file candidate exists");
+                let candidate_ids = move_candidates_by_path
+                    .get(&file.relative_path)
+                    .expect("move candidates were collected for every new path");
+                let unique_candidate =
+                    (candidate_ids.len() == 1)
+                        .then(|| candidate_ids[0])
+                        .filter(|candidate_id| {
+                            discovered_matches_by_candidate.get(candidate_id) == Some(&1)
+                        });
+                if let Some(candidate_id) = unique_candidate {
+                    let candidate = files_by_id
+                        .get(&candidate_id)
+                        .cloned()
+                        .expect("move candidate exists");
                     update_file_path_and_content(
                         &mut transaction,
                         &candidate,
@@ -378,17 +397,16 @@ impl LibraryRepository {
                         now,
                     )
                     .await?;
-                    used_existing_file_ids.insert(candidate.id);
-                    if let Some(identity) = file_identity(file) {
-                        consumed_move_identities.insert(identity);
-                    }
                     let updated = candidate.updated_from_scanned_at_path(file, &file.relative_path);
                     put_live_file(&mut files_by_id, &mut files_by_path, updated);
                     candidate.id
                 } else {
-                    let consumed_match = file_identity(file)
-                        .is_some_and(|identity| consumed_move_identities.contains(&identity));
-                    if candidates.len() > 1 || consumed_match {
+                    let contested_candidate = candidate_ids
+                        .first()
+                        .and_then(|candidate_id| discovered_matches_by_candidate.get(candidate_id));
+                    if candidate_ids.len() > 1
+                        || contested_candidate.is_some_and(|count| *count > 1)
+                    {
                         generated_issues.push(ScanIssue {
                             id: None,
                             scan_run_id: Some(run_id),
@@ -396,11 +414,11 @@ impl LibraryRepository {
                             kind: ScanIssueKind::AmbiguousReconciliation,
                             relative_path: Some(file.relative_path.clone()),
                             related_path: None,
-                            detail: Some(if candidates.len() > 1 {
+                            detail: Some(if candidate_ids.len() > 1 {
                                 "more than one missing file has the same content fingerprint"
                                     .to_owned()
                             } else {
-                                "one existing file identity matched more than one discovered path"
+                                "one previous file identity matches more than one discovered path"
                                     .to_owned()
                             }),
                             created_at: now,
@@ -515,16 +533,36 @@ impl LibraryRepository {
                     });
                 }
 
-                let duplicate_game = scanned_unit.fingerprint.as_ref().and_then(|fingerprint| {
-                    let entries = known_fingerprints.get(fingerprint)?;
-                    let game_ids: BTreeSet<_> = entries.iter().map(|(_, game)| *game).collect();
-                    if game_ids.len() == 1 {
-                        Some(*game_ids.first().expect("one game id exists"))
+                let fingerprint_game_ids: BTreeSet<_> = scanned_unit
+                    .fingerprint
+                    .as_ref()
+                    .and_then(|fingerprint| known_fingerprints.get(fingerprint))
+                    .into_iter()
+                    .flatten()
+                    .map(|(_, game_id)| *game_id)
+                    .collect();
+                let predecessor_game_ids =
+                    if scanned_unit.kind == ContentUnitKind::M3u && matching_existing.is_empty() {
+                        m3u_predecessor_game_ids(
+                            scanned_unit,
+                            &member_ids,
+                            &existing_file_ids,
+                            &existing_units,
+                        )
                     } else {
-                        None
-                    }
-                });
-                if duplicate_game.is_some() {
+                        BTreeSet::new()
+                    };
+                let game_evidence: BTreeSet<_> = fingerprint_game_ids
+                    .union(&predecessor_game_ids)
+                    .copied()
+                    .collect();
+                let identity_is_ambiguous = fingerprint_game_ids.len() > 1
+                    || predecessor_game_ids.len() > 1
+                    || game_evidence.len() > 1;
+                let reconciled_game = (!identity_is_ambiguous && game_evidence.len() == 1)
+                    .then(|| *game_evidence.first().expect("one game id exists"));
+
+                if fingerprint_game_ids.len() == 1 && !identity_is_ambiguous {
                     generated_issues.push(ScanIssue {
                         id: None,
                         scan_run_id: Some(run_id),
@@ -538,14 +576,8 @@ impl LibraryRepository {
                         ),
                         created_at: now,
                     });
-                } else if scanned_unit.fingerprint.is_some()
-                    && known_fingerprints.contains_key(
-                        scanned_unit
-                            .fingerprint
-                            .as_ref()
-                            .expect("fingerprint exists"),
-                    )
-                {
+                }
+                if identity_is_ambiguous {
                     generated_issues.push(ScanIssue {
                         id: None,
                         scan_run_id: Some(run_id),
@@ -553,15 +585,23 @@ impl LibraryRepository {
                         kind: ScanIssueKind::AmbiguousReconciliation,
                         relative_path: Some(scanned_unit.primary_relative_path.clone()),
                         related_path: None,
-                        detail: Some(
+                        detail: Some(if predecessor_game_ids.len() > 1 {
+                            "playlist content belongs to more than one previous logical game"
+                                .to_owned()
+                        } else if !predecessor_game_ids.is_empty()
+                            && !fingerprint_game_ids.is_empty()
+                        {
+                            "playlist ownership and exact fingerprint evidence identify different logical games"
+                                .to_owned()
+                        } else {
                             "an exact content fingerprint belongs to more than one logical game"
-                                .to_owned(),
-                        ),
+                                .to_owned()
+                        }),
                         created_at: now,
                     });
                 }
 
-                let game_id = if let Some(game_id) = duplicate_game {
+                let game_id = if let Some(game_id) = reconciled_game {
                     game_id
                 } else {
                     insert_game(
@@ -857,24 +897,6 @@ fn put_live_file(
     files_by_path.insert(file.relative_path.clone(), file);
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct FileIdentity {
-    size_bytes: u64,
-    crc32: String,
-    md5: String,
-    sha1: String,
-}
-
-fn file_identity(file: &crate::domain::library::ScannedFile) -> Option<FileIdentity> {
-    let hashes = file.hashes.as_ref()?;
-    Some(FileIdentity {
-        size_bytes: file.size_bytes,
-        crc32: hashes.crc32.clone(),
-        md5: hashes.md5.clone(),
-        sha1: hashes.sha1.clone(),
-    })
-}
-
 #[derive(Debug, Clone)]
 struct ExistingMembership {
     file_id: ContentFileId,
@@ -889,6 +911,37 @@ struct ExistingUnit {
     primary_relative_path: String,
     fingerprint: Option<String>,
     members: Vec<ExistingMembership>,
+}
+
+fn m3u_predecessor_game_ids(
+    scanned_unit: &crate::domain::library::ScannedUnit,
+    member_ids: &[ContentFileId],
+    existing_file_ids: &BTreeSet<ContentFileId>,
+    existing_units: &[ExistingUnit],
+) -> BTreeSet<GameId> {
+    let mut predecessor_game_ids = BTreeSet::new();
+    for (_, file_id) in scanned_unit
+        .members
+        .iter()
+        .zip(member_ids)
+        .filter(|(member, file_id)| {
+            member.role != ContentFileRole::Playlist && existing_file_ids.contains(file_id)
+        })
+    {
+        let member_game_ids: BTreeSet<_> = existing_units
+            .iter()
+            .filter_map(|unit| {
+                (unit.system_id == scanned_unit.system_id
+                    && unit.members.iter().any(|member| member.file_id == *file_id))
+                .then_some(unit.game_id)
+            })
+            .collect();
+        if member_game_ids.is_empty() {
+            return BTreeSet::new();
+        }
+        predecessor_game_ids.extend(member_game_ids);
+    }
+    predecessor_game_ids
 }
 
 fn existing_unit_is_authoritative(

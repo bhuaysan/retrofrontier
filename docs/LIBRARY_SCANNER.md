@@ -126,10 +126,25 @@ available. Games and their user-facing history are not deleted. A temporarily un
 partially scanned root does not mark the undiscovered remainder missing.
 
 A move is preserved only when exactly one old file has an exact content fingerprint and the unit
-relationship remains compatible. If multiple candidates match, a new identity is retained and an
-`ambiguousReconciliation` issue is emitted. Exact duplicate copies remain separate physical units;
-when the fingerprint-to-game match is unambiguous they share one provisional game, and no copy is
-deleted or cleaned. Filename/title normalization is never used to merge content.
+relationship remains compatible. The one-to-one decision is computed across all old candidates and
+new paths before any move is applied. If an old identity has several possible destinations, or a
+new path has several possible predecessors, no candidate is selected: a new physical identity is
+retained and an `ambiguousReconciliation` issue is emitted. Exact duplicate copies remain separate
+physical units; when the fingerprint-to-game match is unambiguous they share one provisional game,
+and no copy is deleted or cleaned. Filename/title normalization is never used to merge content.
+
+When a newly discovered M3U takes ownership of content that prior standalone units surfaced, its
+non-playlist member `ContentFileId` values are resolved through persisted unit membership. If that
+evidence and any exact unit-fingerprint evidence identify exactly one previous `GameId`, the new
+M3U unit is attached to that game. The historical standalone units remain; they are not deleted to
+hide the ownership change. If member ownership names multiple games or conflicts with exact
+fingerprint evidence, the games remain distinct, a new game owns the playlist, and an
+`ambiguousReconciliation` issue explains the contested playlist path. An unchanged follow-up scan
+reuses the decided M3U unit and does not repeat the one-time ownership decision.
+
+Replacing bytes at the same persisted path continues to preserve `ContentFileId`, `ContentUnitId`,
+and `GameId` while updating hashes and the unit fingerprint. M5 match evidence must be bound to
+those hashes/fingerprint and made stale when they change; that metadata behavior is outside M4.
 
 Before M5 metadata, a new unit's local title is its primary descriptor/file stem. Existing local
 titles and identities survive ordinary reconciliation.

@@ -195,6 +195,13 @@ BOM/CRLF handling, unquoted CUE filenames, preserved Windows separators, and har
 text. These are scanner behavior clarifications, not a new milestone or a change to the normalized
 Game/ContentUnit/ContentFile model.
 
+The pre-M5 identity cleanup preserves a prior `GameId` when new M3U ownership is proven by persisted
+content membership to have exactly one logical predecessor. Contested playlist ownership remains
+separate and produces an explicit reconciliation issue. Move matching now requires a complete
+one-to-one candidate relationship instead of allowing enumeration order to award an old file
+identity. Same-path byte replacement retains local IDs and updates hashes/fingerprints; stale
+provider-match handling remains M5 work.
+
 The remaining M4 review performance, schema, IPC, watcher, startup, and large-scale follow-ups
 remain deferred to their appropriate later milestone.
 
