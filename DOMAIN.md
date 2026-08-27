@@ -230,6 +230,9 @@ RuntimeRelease
 8. BIOS validation should produce a user-actionable state rather than a cryptic launch failure.
 9. Launching resolves an explicit managed runtime, core, content unit, and configuration.
 10. Provider-specific metadata identifiers remain behind a provider abstraction.
+11. A logical `GameId` may be preserved across content ownership or reconciliation changes only
+    when exact content evidence establishes one predecessor game. Ambiguous ownership is retained
+    as history and reported; it is never guessed.
 
 ## Identification Inputs
 May combine:
@@ -265,3 +268,11 @@ physical copies under one provisional game. Ambiguous matches create a new physi
 an inspectable issue. A transient hash read failure degrades availability but preserves previously
 verified file hashes and the unit fingerprint for later reconciliation. Local titles are derived
 from the primary path only when a unit is first created; M5 metadata matching is separate.
+
+When a newly discovered M3U absorbs files from prior standalone units, persisted file membership
+may transfer the new playlist representation to the prior `GameId` only if every applicable owner
+resolves to the same game and exact fingerprint evidence does not conflict. Multiple predecessor
+games remain distinct, the playlist receives a new game, and reconciliation records the ambiguity.
+Move identity follows the same rule in both directions: one prior file and one discovered path may
+reuse physical identity, while contested candidates receive new identities without an ordering
+tie-break.

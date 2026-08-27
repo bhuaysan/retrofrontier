@@ -111,6 +111,13 @@ absence reconciliation is granular and cannot infer deletion from an unreadable 
 `scan_issues` tables. SQL remains behind `LibraryRepository`; Tauri commands expose only typed
 application use cases and snapshots.
 
+Reconciliation preserves `GameId` across ownership changes only when persisted content-file
+memberships and exact fingerprints identify one logical predecessor. A new M3U may therefore
+replace standalone surfacing under that predecessor game, but multiple predecessor games produce
+an explicit ambiguity and a new game rather than a guessed merge. Move candidates are evaluated as
+a complete one-to-one relationship before mutation, so filesystem, insertion, and SQLite row order
+cannot decide identity.
+
 The managed root is bootstrapped from the OS document directory and the static catalog's explicit
 managed-folder names. External roots are read-only to automatic maintenance. Filesystem watchers
 only schedule a debounced real scan; they never mutate rows directly. See
