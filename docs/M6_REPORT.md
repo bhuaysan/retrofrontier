@@ -9,7 +9,7 @@
   `9a1a1e3d8c38633c1c82bc95293c6a6024e94e93`; no rebase was required.
 - Original M6.1 implementation commits remain `1cdf5a2` and `e7f3df8`; they were not rewritten.
 - Final corrective-pass HEAD: `59b10effa6afd80addf5b53ef7a684bfc4e3bccf`
-- M6.2 implementation commit: pending final verification and commit.
+- M6.2 implementation commit: `8a74438158f221464a972fb89c7774aa2e48f2c3`
 - Merged to main: No
 - Pushed: No
 - Pre-existing untracked files: `M3_REVIEW.md`, `M4_REVIEW.md`, `M4_REVIEW_2.md`,
@@ -139,8 +139,9 @@ M6.2. Not merged or pushed.
 
 ## D. M6.2 — Shell / Empty Library / Scan UX
 
-Implementation started from `59b10effa6afd80addf5b53ef7a684bfc4e3bccf` and is complete within the
-M6.2 boundary. M6.3 remains explicitly out of scope.
+Implementation started from `59b10effa6afd80addf5b53ef7a684bfc4e3bccf`, was committed as
+`8a74438158f221464a972fb89c7774aa2e48f2c3`, and is complete within the M6.2 boundary. M6.3
+remains explicitly out of scope.
 
 ### Application shell and routes
 
