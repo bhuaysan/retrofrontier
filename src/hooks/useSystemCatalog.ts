@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { getSystems, normalizeIpcError, type IpcError, type SystemId } from '../platform/ipc';
 
@@ -7,44 +7,48 @@ export interface SystemLabel {
   displayName: string;
 }
 
-const FALLBACK_SYSTEMS: SystemLabel[] = [
-  { id: 'nes', displayName: 'Nintendo Entertainment System' },
-  { id: 'snes', displayName: 'Super Nintendo Entertainment System' },
-  { id: 'nintendo_64', displayName: 'Nintendo 64' },
-  { id: 'game_boy', displayName: 'Game Boy' },
-  { id: 'game_boy_color', displayName: 'Game Boy Color' },
-  { id: 'game_boy_advance', displayName: 'Game Boy Advance' },
-  { id: 'mega_drive', displayName: 'Mega Drive' },
-  { id: 'playstation', displayName: 'PlayStation' },
-  { id: 'sega_saturn', displayName: 'Sega Saturn' },
-  { id: 'sega_dreamcast', displayName: 'Sega Dreamcast' },
-  { id: 'nintendo_gamecube', displayName: 'Nintendo GameCube' },
-];
-
 export function useSystemCatalog() {
   const mounted = useRef(true);
-  const [systems, setSystems] = useState<SystemLabel[]>(FALLBACK_SYSTEMS);
+  const [systems, setSystems] = useState<SystemLabel[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<IpcError | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (mounted.current) {
+      setSystems([]);
+      setLoading(true);
+      setError(null);
+    }
+
+    try {
+      const response = await getSystems();
+      const nextSystems = response.systems.map(({ id, displayName }) => ({ id, displayName }));
+      if (mounted.current) {
+        setSystems(nextSystems);
+        setError(null);
+      }
+      return nextSystems;
+    } catch (reason: unknown) {
+      if (mounted.current) {
+        setSystems([]);
+        setError(normalizeIpcError(reason));
+      }
+      return null;
+    } finally {
+      if (mounted.current) {
+        setLoading(false);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     mounted.current = true;
-    getSystems()
-      .then((response) => {
-        if (mounted.current) {
-          setSystems(response.systems.map(({ id, displayName }) => ({ id, displayName })));
-          setError(null);
-        }
-      })
-      .catch((reason: unknown) => {
-        if (mounted.current) {
-          setError(normalizeIpcError(reason));
-        }
-      });
+    void Promise.resolve().then(() => refresh());
 
     return () => {
       mounted.current = false;
     };
-  }, []);
+  }, [refresh]);
 
-  return { systems, error };
+  return { systems, loading, error, refresh };
 }

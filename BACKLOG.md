@@ -2,8 +2,9 @@
 
 ## Current Priority
 
-The project has completed its local-library foundation. Metadata-provider, launch, and UI work remain
-later milestones; runtime trust and core-policy research remain explicit release gates.
+The project has completed its local-library foundation and the M6.2 shell/empty/scan UX slice.
+M6.3 browsing, metadata UX, launch, and later UI work remain; runtime trust and core-policy research
+remain explicit release gates.
 
 ## M0 — Planning and Repository Foundation
 
@@ -275,14 +276,14 @@ visible attribution presentation, which belongs to M6.
 
 - [x] M6.1 backend enablement: bounded library queries, summaries, local detail, favorites, issue
   pages, typed root errors, cached-cover delivery, and metadata invalidation contracts
-- [ ] M6.2 shell / empty library / scan UX
+- [x] M6.2 shell / empty library / scan UX (implementation and corrective pass complete; awaiting delta review)
 - [ ] M6.3 library browsing
 - [ ] M6.4 game detail / readiness
 - [ ] M6.5 metadata UX / settings
 - [ ] M6.6 hardening / accessibility / documentation
 
-- [ ] navigation shell
-- [ ] empty state
+- [x] navigation shell
+- [x] empty state
 - [ ] library UI
 - [ ] GameCard
 - [ ] search
@@ -291,8 +292,8 @@ visible attribution presentation, which belongs to M6.
 - [ ] game details
 - [ ] runtime readiness
 - [ ] BIOS readiness
-- [ ] scan progress/issues
-- [ ] settings entry points
+- [x] scan progress/issues
+- [x] settings entry points
 
 ## M7 — RetroArch Launch
 

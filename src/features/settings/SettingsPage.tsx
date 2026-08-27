@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
@@ -56,6 +56,8 @@ function RootCard({
   onStartRemoval,
   onCancelRemoval,
   onConfirmRemoval,
+  removeTriggerRef,
+  confirmationButtonRef,
 }: {
   root: ContentRoot;
   systems: SystemLabel[];
@@ -66,6 +68,8 @@ function RootCard({
   onStartRemoval: () => void;
   onCancelRemoval: () => void;
   onConfirmRemoval: () => void;
+  removeTriggerRef?: (node: HTMLButtonElement | null) => void;
+  confirmationButtonRef?: (node: HTMLButtonElement | null) => void;
 }) {
   const managed = root.kind === 'managed';
   const enabled = root.enabled && root.availability !== 'disabled';
@@ -96,8 +100,15 @@ function RootCard({
         {managed ? (
           <span className="root-protected">Managed content is never removed by RetroFrontier.</span>
         ) : removalPending ? (
-          <div className="root-confirm-actions" role="group" aria-label={`Remove ${root.path}`}>
-            <span>Remove this root from RetroFrontier? Files stay on disk.</span>
+          <div
+            className="root-confirm-actions"
+            role="alertdialog"
+            aria-modal="false"
+            aria-labelledby={`remove-root-title-${root.id}`}
+          >
+            <span id={`remove-root-title-${root.id}`}>
+              Remove this root from RetroFrontier? Files stay on disk.
+            </span>
             <PixelButton
               type="button"
               variant="secondary"
@@ -106,7 +117,12 @@ function RootCard({
             >
               CANCEL
             </PixelButton>
-            <PixelButton type="button" disabled={busy} onClick={onConfirmRemoval}>
+            <PixelButton
+              ref={confirmationButtonRef}
+              type="button"
+              disabled={busy}
+              onClick={onConfirmRemoval}
+            >
               REMOVE ROOT
             </PixelButton>
           </div>
@@ -115,7 +131,13 @@ function RootCard({
             <PixelButton type="button" variant="secondary" disabled={busy} onClick={onToggle}>
               {enabled ? 'DISABLE ROOT' : 'ENABLE ROOT'}
             </PixelButton>
-            <PixelButton type="button" variant="secondary" disabled={busy} onClick={onStartRemoval}>
+            <PixelButton
+              ref={removeTriggerRef}
+              type="button"
+              variant="secondary"
+              disabled={busy}
+              onClick={onStartRemoval}
+            >
               REMOVE ROOT
             </PixelButton>
           </>
@@ -141,10 +163,29 @@ export function SettingsPage({
 }: SettingsPageProps) {
   const [pendingOperation, setPendingOperation] = useState<RootOperation | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<number | null>(null);
+  const [removalFocusTarget, setRemovalFocusTarget] = useState<
+    { kind: 'trigger'; rootId: number } | { kind: 'heading' } | null
+  >(null);
   const [actionError, setActionError] = useState<IpcError | null>(null);
   const [lastOperation, setLastOperation] = useState<RootOperation | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
+  const rootsHeading = useRef<HTMLHeadingElement>(null);
+  const confirmationButton = useRef<HTMLButtonElement>(null);
+  const removeTriggers = useRef(new Map<number, HTMLButtonElement>());
   const managedRoot = roots.find((root) => root.kind === 'managed');
+
+  useEffect(() => {
+    if (pendingRemoval !== null) {
+      confirmationButton.current?.focus();
+      return;
+    }
+
+    if (removalFocusTarget?.kind === 'trigger') {
+      removeTriggers.current.get(removalFocusTarget.rootId)?.focus();
+    } else if (removalFocusTarget?.kind === 'heading') {
+      rootsHeading.current?.focus();
+    }
+  }, [pendingRemoval, removalFocusTarget]);
 
   const runOperation = async (operation: RootOperation, callback: () => Promise<unknown>) => {
     setPendingOperation(operation);
@@ -155,8 +196,14 @@ export function SettingsPage({
       if (operation.kind === 'toggle' || operation.kind === 'remove') {
         await refreshSummary();
       }
+      if (operation.kind === 'remove') {
+        setRemovalFocusTarget({ kind: 'heading' });
+      }
     } catch (reason: unknown) {
       setActionError(normalizeIpcError(reason));
+      if (operation.kind === 'remove') {
+        setRemovalFocusTarget({ kind: 'trigger', rootId: operation.rootId });
+      }
     } finally {
       setPendingOperation(null);
       if (operation.kind === 'add') {
@@ -237,7 +284,9 @@ export function SettingsPage({
 
       <section className="settings-panel" aria-labelledby="roots-heading">
         <div className="panel-heading">
-          <h2 id="roots-heading">CONTENT ROOTS</h2>
+          <h2 id="roots-heading" ref={rootsHeading} tabIndex={-1}>
+            CONTENT ROOTS
+          </h2>
           <span aria-hidden="true" />
           <span className="panel-meta">{rootsLoading ? 'CHECKING' : `${roots.length} ROOTS`}</span>
         </div>
@@ -260,13 +309,33 @@ export function SettingsPage({
               busy={pendingOperation !== null}
               removalPending={pendingRemoval === root.id}
               onOpen={root.kind === 'managed' ? runOpen : undefined}
+              removeTriggerRef={(node) => {
+                if (node) {
+                  removeTriggers.current.set(root.id, node);
+                } else {
+                  removeTriggers.current.delete(root.id);
+                }
+              }}
+              confirmationButtonRef={
+                pendingRemoval === root.id
+                  ? (node) => {
+                      confirmationButton.current = node;
+                    }
+                  : undefined
+              }
               onToggle={() =>
                 void runOperation({ kind: 'toggle', rootId: root.id, enabled: !root.enabled }, () =>
                   updateRootEnabled(root.id, !root.enabled),
                 )
               }
-              onStartRemoval={() => setPendingRemoval(root.id)}
-              onCancelRemoval={() => setPendingRemoval(null)}
+              onStartRemoval={() => {
+                setRemovalFocusTarget(null);
+                setPendingRemoval(root.id);
+              }}
+              onCancelRemoval={() => {
+                setRemovalFocusTarget({ kind: 'trigger', rootId: root.id });
+                setPendingRemoval(null);
+              }}
               onConfirmRemoval={() => {
                 setPendingRemoval(null);
                 void runOperation({ kind: 'remove', rootId: root.id }, () =>

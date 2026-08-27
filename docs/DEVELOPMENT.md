@@ -3,8 +3,9 @@
 M4 establishes the local library scanner, durable content model, root management,
 and system-readiness snapshot boundary. M5 adds provider-backed metadata
 enrichment behind a provider-neutral boundary. M6.1 adds bounded backend/IPC
-contracts for the future library UI; visual library UI, core selection UI, and
-game launching remain later milestones.
+contracts, and M6.2 adds the library shell, empty/setup state, scan UX, and
+root-management entry points. M6.3 will add library browsing; core selection UI
+and game launching remain later milestones.
 
 ## Prerequisites
 
@@ -25,8 +26,9 @@ pnpm tauri:dev
 ```
 
 `pnpm dev` starts the Vite frontend by itself for browser-level work. Native
-IPC is only available inside the Tauri window, so the shell reports an IPC
-availability state when opened as a plain browser page.
+IPC is only available inside the Tauri window; a plain browser page cannot
+complete native reads or actions and is therefore not a supported native
+integration environment.
 
 The foundation build intentionally has bundling disabled. This verifies the
 desktop executable without claiming a Windows, macOS, or Linux release package.
@@ -148,8 +150,9 @@ later without changing command or service code.
 
 M6.1 keeps the UI-facing library contracts in the same manually mirrored boundary: Rust DTOs use
 `serde(rename_all = "camelCase")`, and `src/platform/ipc.ts` mirrors the bounded list, summary,
-detail, favorite, scan-issue-page, and metadata-invalidation shapes. No frontend state or query
-logic is implemented in this slice.
+detail, favorite, scan-issue-page, and metadata-invalidation shapes. M6.2 adds frontend state and
+query orchestration for the shell, roots, scan UX, and saved issues; library browsing query
+consumption remains M6.3.
 
 ## Design tokens
 

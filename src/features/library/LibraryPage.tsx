@@ -22,6 +22,7 @@ import type { SystemLabel } from '../../hooks/useSystemCatalog';
 import type { ScanStateModel } from '../../hooks/useScanState';
 import { RootActionError } from '../settings/RootActionError';
 import { rootAvailabilityLabel } from './rootLabels';
+import { systemAccent } from './systemAccents';
 
 interface LibraryPageProps {
   summary: LibrarySummary | null;
@@ -38,20 +39,6 @@ interface LibraryPageProps {
   onOpenManagedFolder: () => Promise<void>;
   onManageRoots: () => void;
 }
-
-const SYSTEM_ACCENTS: Record<SystemId, string> = {
-  nes: 'var(--accent)',
-  snes: 'var(--accent-2)',
-  nintendo_64: 'var(--accent-3)',
-  game_boy: 'var(--accent-4)',
-  game_boy_color: 'var(--accent-4)',
-  game_boy_advance: 'var(--accent-4)',
-  mega_drive: 'var(--accent-3)',
-  playstation: 'var(--accent-5)',
-  sega_saturn: 'var(--accent-6)',
-  sega_dreamcast: 'var(--accent-6)',
-  nintendo_gamecube: 'var(--accent-2)',
-};
 
 const ISSUE_COPY: Record<ScanIssue['kind'], { label: string; description: string }> = {
   rootUnavailable: {
@@ -315,9 +302,11 @@ function ScanProgressPanel({ progress }: { progress: ScanProgress | null }) {
         <span aria-hidden="true" />
         <span className="panel-meta">{progress ? `RUN #${progress.runId}` : 'STARTING'}</span>
       </div>
-      <div className="scan-phase-row" role="status" aria-live="polite" aria-atomic="true">
-        <strong>{phaseLabel}</strong>
-        <span>
+      <div className="scan-phase-row">
+        <strong role="status" aria-live="polite">
+          {phaseLabel}
+        </strong>
+        <span aria-hidden="true">
           {progress ? `${number(progress.counters.filesProcessed)} PROCESSED` : 'NO COUNTERS YET'}
         </span>
       </div>
@@ -554,7 +543,7 @@ function PopulatedLibraryState({
           <div className="system-count" key={system.systemId}>
             <span
               className="system-swatch"
-              style={{ background: SYSTEM_ACCENTS[system.systemId] }}
+              style={{ background: systemAccent(system.systemId) }}
               aria-hidden="true"
             />
             <span>{systemName(system.systemId, systems)}</span>

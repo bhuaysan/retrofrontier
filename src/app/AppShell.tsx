@@ -1,33 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
 
+import { InlineError } from '../components/ui/InlineError';
 import { PixelRow } from '../components/ui/PixelRow';
 import { useContentRoots } from '../hooks/useContentRoots';
 import { useLibrarySummary } from '../hooks/useLibrarySummary';
 import { useScanState } from '../hooks/useScanState';
 import { useSystemCatalog } from '../hooks/useSystemCatalog';
 import { pickExternalContentRoot } from '../platform/folderPicker';
-import { openManagedRomFolder, type SystemId } from '../platform/ipc';
+import { openManagedRomFolder } from '../platform/ipc';
 import { LibraryPage } from '../features/library/LibraryPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
+import { systemAccent } from '../features/library/systemAccents';
 import { useRoute } from './routes';
 
 type Theme = 'dark' | 'light';
 
 const THEME_STORAGE_KEY = 'retrofrontier.theme';
-
-const SYSTEM_ACCENTS: Record<SystemId, string> = {
-  nes: 'var(--accent)',
-  snes: 'var(--accent-2)',
-  nintendo_64: 'var(--accent-3)',
-  game_boy: 'var(--accent-4)',
-  game_boy_color: 'var(--accent-4)',
-  game_boy_advance: 'var(--accent-4)',
-  mega_drive: 'var(--accent-3)',
-  playstation: 'var(--accent-5)',
-  sega_saturn: 'var(--accent-6)',
-  sega_dreamcast: 'var(--accent-6)',
-  nintendo_gamecube: 'var(--accent-2)',
-};
 
 function initialTheme(): Theme {
   return window.localStorage.getItem(THEME_STORAGE_KEY) === 'light' ? 'light' : 'dark';
@@ -183,6 +171,19 @@ export function AppShell() {
           <h2 id="systems-heading" className="sidebar-label">
             // SYSTEMS
           </h2>
+          {systemCatalog.loading && (
+            <p className="sidebar-catalog-status loading-inline" role="status">
+              CHECKING SYSTEM CATALOG…
+            </p>
+          )}
+          {systemCatalog.error && (
+            <InlineError
+              title="SYSTEM CATALOG UNAVAILABLE"
+              message="RetroFrontier could not load the supported systems. No system rows are shown; try again."
+              actionLabel="RETRY SYSTEMS"
+              onAction={() => void systemCatalog.refresh()}
+            />
+          )}
           <ul className="pixel-row-list">
             <PixelRow
               label="All systems"
@@ -196,7 +197,7 @@ export function AppShell() {
                 key={system.id}
                 label={system.displayName}
                 count={systemCounts.get(system.id) ?? 0}
-                accent={SYSTEM_ACCENTS[system.id]}
+                accent={systemAccent(system.id)}
               />
             ))}
           </ul>

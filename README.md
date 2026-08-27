@@ -12,10 +12,10 @@ CHD, and M3U relationship resolution, hashing, durable reconciliation, and typed
 scan IPC. Rust also owns metadata: a provider-neutral provider boundary with a
 ScreenScraper adapter, evidence-validated matching, a restart-safe job queue with
 dynamic quota handling, an offline-capable local cache, and one cached cover per
-game. The visual library UI and game launching remain later milestones.
-M6.1 now also provides the bounded library-query, summary, local-detail, favorite,
-scan-issue, and cached-cover IPC foundations that the visual library UI will consume;
-the UI itself is intentionally not part of this slice.
+game. M6.2 adds the library shell, empty/setup state, scan UX, and root-management
+entry points. M6.3 browsing and game launching remain later milestones.
+M6.1 provides the bounded library-query, summary, local-detail, favorite, scan-issue,
+and cached-cover IPC foundations consumed by the current shell and future browsing UI.
 
 ## Stack
 - Tauri 2

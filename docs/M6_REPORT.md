@@ -2,18 +2,19 @@
 
 ## A. Repository State
 
-- Starting corrective-pass HEAD: `e7f3df8bb76c48d3c98ca8b2bea77ee28f79faf0`
+- Starting corrective-pass HEAD: `2708746847e7ad7086f33c5b88e127ce5b1fda23`
 - Starting M6.2 HEAD: `59b10effa6afd80addf5b53ef7a684bfc4e3bccf`
 - Branch: `feat/m6-library-ui`
 - Main comparison at start: local `main` and `origin/main` were both
   `9a1a1e3d8c38633c1c82bc95293c6a6024e94e93`; no rebase was required.
 - Original M6.1 implementation commits remain `1cdf5a2` and `e7f3df8`; they were not rewritten.
-- Final corrective-pass HEAD: `59b10effa6afd80addf5b53ef7a684bfc4e3bccf`
+- Final corrective-pass HEAD: the single corrective commit created from the starting corrective-pass HEAD; see the final repository handoff for its exact ID.
 - M6.2 implementation commit: `8a74438158f221464a972fb89c7774aa2e48f2c3`
+- M6.2 corrective commit: `fix(ui): address M6.2 adversarial review findings`
 - Merged to main: No
 - Pushed: No
 - Pre-existing untracked files: `M3_REVIEW.md`, `M4_REVIEW.md`, `M4_REVIEW_2.md`,
-  `M4_REVIEW_3.md`, `M5_REVIEW.md`, `M6_1_REVIEW.md`, `M6_1_DELTA_REVIEW.md`,
+  `M4_REVIEW_3.md`, `M5_REVIEW.md`, `M6_1_REVIEW.md`, `M6_1_DELTA_REVIEW.md`, `M6_2_REVIEW.md`,
   `docs/M5_IMPLEMENTATION_REPORT.md`
 
 ## B. Overall M6 Status
@@ -25,9 +26,9 @@
 - [ ] M6.5 Metadata UX / Settings
 - [ ] M6.6 Hardening / Accessibility / Documentation
 
-Current phase: M6.2 Shell / Empty Library / Scan UX complete; awaiting review before M6.3
-Overall status: M6.1 implementation, adversarial review, corrective pass, and delta review are
-complete; M6.1 is accepted as READY and M6.2 implementation is complete within its defined scope.
+Current phase: M6.2 implementation and corrective pass complete; awaiting delta review before M6.3.
+Overall status: M6.1 is accepted as READY, and M6.2 is implementation complete with the
+adversarial corrective pass complete. M6.3 has not started.
 
 ## C. M6.1 — Backend Enablement
 
@@ -128,7 +129,7 @@ Focused and full Rust/frontend/release verification for the corrective pass is r
 - `metadata-state-changed` remains per-game by contract. M6.3 must debounce/coalesce bulk invalidations
   and refetch bounded visible/current state instead of the entire library per event; that logic is
   intentionally not implemented here.
-- M6.2 and later UI work is intentionally not started.
+- M6.3 and later UI work is intentionally not started.
 
 ### Review status
 
@@ -151,8 +152,9 @@ remains explicitly out of scope.
 - Added the small typed route/history layer in `src/app/routes.ts`. `/library` and `/settings`
   use `pushState`/`popstate`, normalize unknown initial paths to `/library`, and preserve browser
   back/forward behavior. No routing dependency was added.
-- System rows use the bounded summary counts and the existing systems contract only for labels.
-  They are visibly inert until M6.3 owns system filtering; no fake filter behavior is present.
+- System rows use the backend-owned systems catalog for labels and the bounded summary for counts.
+  Catalog loading and failure are shown honestly, with retry and no fabricated fallback rows. The
+  rows remain visibly inert until M6.3 owns system filtering; no fake filter behavior is present.
 
 ### Components and root handling
 
@@ -165,7 +167,9 @@ remains explicitly out of scope.
 - The managed root path is displayed from the content-root response. `open_managed_rom_folder` is
   a narrow Rust command with no caller-provided path; Rust resolves the canonical managed root,
   rejects missing/non-directory/symlink replacement, and starts the platform file manager without a
-  shell. Failure maps to the existing safe content-root-unavailable error.
+  shell. Failure maps to the existing safe content-root-unavailable error. The platform opener
+  executable names remain an accepted PATH/CWD-resolution follow-up rather than a claimed absolute
+  executable guarantee.
 - Added the official `@tauri-apps/plugin-dialog` / `tauri-plugin-dialog` 2.7.2 dependency. The
   picker requests one directory only (`directory: true`, `multiple: false`) and treats cancellation
   as normal. The capability is limited to `dialog:allow-open`; Rust still owns path validation,
@@ -177,8 +181,10 @@ remains explicitly out of scope.
 ### Scan state and UX
 
 - Added `useScanState`, which registers both scan event listeners before querying initial status and
-  saved issues. It uses an event-version guard for startup races, mounted guards for async work,
-  late-listener cleanup, request-version guards for issue refreshes, and no polling/timers.
+  saved issues. It uses an event-version guard for startup races, mounted guards for async request
+  work, effect-local disposal for late listeners, request-version guards for authoritative issue
+  result/error writes, and no polling/timers. Each issue request releases its own loading flag even
+  when a newer request supersedes its result; terminal same-run progress is ignored.
 - Initial status and saved-issue loading are explicit. Progress events update only the scan panel;
   counters and phase labels come directly from M4 DTOs. Progress is indeterminate during discovery
   and becomes determinate only after discovery has supplied a meaningful file denominator. There is
@@ -200,13 +206,46 @@ remains explicitly out of scope.
   and system counts. It does not query the full M4 snapshot and does not fabricate GameCards,
   covers, search, filters, favorites, or pagination.
 
+### Corrective pass after adversarial review
+
+The complete adversarial review in `M6_2_REVIEW.md` was performed before this corrective pass; the
+review artifact remains unchanged. The focused corrections are:
+
+- HIGH-1: `loadMoreIssues` and `refreshIssues` still use request versions to guard authoritative
+  issue-page result and error writes, but each request's `finally` now releases its own loading flag
+  whenever the component is mounted. A superseded response cannot overwrite a newer page and cannot
+  strand either issue loading state.
+- LOW-1: scan-listener registration uses an effect-local disposal flag. A listener that resolves
+  after effect teardown is immediately unregistered; a live registration is retained for normal
+  cleanup. The component-level mounted guard remains for request/state work.
+- LOW-2: progress for a run already handled as terminal is ignored, so late same-run progress cannot
+  resurrect the running UI or trigger another summary/issue refresh.
+- MEDIUM-2: the frontend no longer has a fabricated systems fallback. It shows a checking state
+  while `getSystems` is pending, exposes a retryable catalog error, and renders only the backend
+  catalog on success. The shared frontend accent map contains presentation colors only and returns a
+  safe default accent for unknown future IDs.
+- MEDIUM-1: the scan live region announces phase/status only. The visual processed-file counter is
+  outside the live region and is hidden from assistive technology, with no frontend throttling.
+- MEDIUM-3: root-removal confirmation uses alert-dialog semantics, moves focus to the destructive
+  confirmation control, restores focus to the original Remove Root trigger on cancel, and moves focus
+  to the roots heading after successful removal.
+- MEDIUM-4: native opener executable resolution is an accepted follow-up. The implementation uses
+  `explorer.exe`, `open`, and `xdg-open` as host-resolved executable names without a shell; the report
+  makes no absolute-path claim, records that Windows/macOS were not runtime-validated, and requires
+  revisiting resolution before Windows packaging/release if unresolved.
+- Documentation drift was corrected in `README.md`, `docs/DEVELOPMENT.md`, `BACKLOG.md`, and this
+  report. No nonexistent visual anti-pattern detector is claimed as verification; any design check
+  is manual.
+
 ### Tests and design coverage
 
 - Frontend coverage is in `src/app/AppShell.test.tsx`, `src/features/settings/RootActionError.test.tsx`,
   `src/platform/folderPicker.test.ts`, and `src/platform/ipc.test.ts`. It covers navigation/history,
   managed-root actions, picker cancellation/selection, all typed root-error messages, scan loading/
-  progress/completion/race/cleanup behavior, bounded issue paging/failure/context, and the populated
-  transitional state.
+  progress/completion/race/cleanup behavior, superseded issue loading teardown, late listener
+  registration cleanup, post-completion progress, scan live-region semantics, catalog loading/
+  success/failure/retry/unknown-ID behavior, root-removal confirmation focus, bounded issue paging/
+  failure/context, and the populated transitional state.
 - Rust coverage adds managed-path resolution, missing-directory/symlink rejection, and fixed
   command/no-shell argument assertions. No large backend feature or domain rule was added for this
   UI slice.
@@ -226,6 +265,15 @@ remains explicitly out of scope.
 - Issue remediation, duplicate repair, system assignment, file movement/deletion, metadata/provider
   settings, core/video/controller/save settings, full browsing, and game details remain deferred to
   their milestones.
+- Native managed-folder opening intentionally keeps the platform executable names `explorer.exe`,
+  `open`, and `xdg-open`; they are resolved by the host process rather than by an absolute path.
+  The existing safety boundary remains: no caller-provided path, no shell, one validated canonical
+  directory argument, and no broad opener capability. Windows/macOS runtime and packaging were not
+  exercised; executable resolution must be revisited before Windows packaging/release if unresolved.
+- Accepted LOW follow-ups remain intentionally untouched: stale-running recovery control, frontend-
+  authored error copy, duplicate scan-start retry guarding, opener-specific unavailable copy,
+  heading/anchor cleanup, minor scan-status wording, Unix child reaping, and an inert-system
+  explanation tooltip.
 - Verification was performed on Linux x86_64. Conditional opener code is compiled for desktop
   targets by Rust configuration, but Windows/macOS packaging was not exercised in this environment.
 
@@ -257,7 +305,8 @@ Not started. No implementation details are inferred here.
 - React still has no SQLite, filesystem enumeration, scanner, provider, credential, or runtime
   access. M6.2 UI state consumes summary/root/scan contracts only.
 - The native dialog is the official Tauri dialog plugin with only `dialog:allow-open`. Managed-folder
-  opening accepts no frontend path and uses fixed platform commands with an argument, never a shell.
+  opening accepts no frontend path and passes one validated canonical directory to the host-resolved
+  platform opener, never a shell. Absolute executable resolution remains an accepted follow-up.
 - No copyrighted fixture, commercial ROM, BIOS, runtime binary, secret, or generated build artifact
   was added. The one new dependency and capability change are documented in section D.
 - No ADR was added: this is a focused UI integration using existing application boundaries; the
@@ -274,12 +323,13 @@ controls, were intentionally omitted.
 
 ## K. Test Coverage
 
-The frontend suite has 24 synthetic/local tests across four files and covers the M6.2 shell, route
+The frontend suite has 32 synthetic/local tests across four files and covers the M6.2 shell, route
 history, summary-driven empty/populated states, root actions and taxonomy fallbacks, native picker
-shape/cancellation, scan event races/progress/completion/refetch cadence/listener cleanup, bounded
-issue paging and terminal-run context, and issue-page failure. Rust adds three native opener tests
-and all existing M4/M5/M6.1 tests remain passing. No live ScreenScraper or copyrighted fixture is
-used.
+shape/cancellation, scan event races/progress/completion/refetch cadence/listener cleanup, superseded
+issue loading teardown, late listener registration, post-completion progress, live-region semantics,
+system catalog loading/failure/retry/unknown-ID behavior, removal-confirmation focus, bounded issue
+paging and terminal-run context, and issue-page failure. Rust adds three native opener tests and all
+existing M4/M5/M6.1 tests remain passing. No live ScreenScraper or copyrighted fixture is used.
 
 ## L. Deferred Beyond M6
 
@@ -294,20 +344,22 @@ used.
 - `pnpm typecheck` — PASS (`tsc -b --pretty false`).
 - `pnpm lint` — PASS (`eslint .`).
 - `pnpm format:check` — PASS (all checked files use Prettier code style).
-- `pnpm test` — PASS (4 test files, 24 tests).
-- `pnpm build` — PASS (`vite build`, 43 modules transformed).
+- `pnpm test` — PASS (4 test files, 32 tests).
+- `pnpm build` — PASS (`vite build`, 44 modules transformed).
 - `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — PASS.
 - `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` —
   PASS.
-- `cargo test --manifest-path src-tauri/Cargo.toml` — PASS (305 passed, 1 ignored, 0 failed;
-  306 tests discovered).
-- `cargo build --manifest-path src-tauri/Cargo.toml --release` — PASS (release application built).
+- `cargo test --manifest-path src-tauri/Cargo.toml` — PASS (306 library tests run: 305 passed,
+  1 ignored, 0 failed; main and doc-test binaries had 0 tests).
+- `cargo build --manifest-path src-tauri/Cargo.toml --release` — PASS (release application built;
+  26.29 seconds).
 - `pnpm tauri:build` — PASS (Tauri release application built at
-  `src-tauri/target/release/retrofrontier`).
+  `src-tauri/target/release/retrofrontier`; frontend transformed 44 modules).
 - `git diff --check` — PASS.
-- Visual anti-pattern detector — PASS with one design-preserving warning for the structural
-  sidebar border in `src/styles/index.css`; it matches the B1 shell handoff and was retained.
+- Manual design inspection — PASS against the relevant M6 design handoff artifacts; the existing
+  structural sidebar border was retained because it is part of the B1 shell treatment. No automated
+  anti-pattern detector is claimed.
 
 ## N. Current M6 Verdict
 
-`M6.2 IMPLEMENTATION COMPLETE — ready for review before M6.3`
+`M6.2 status: implementation complete, corrective pass complete, awaiting delta review`

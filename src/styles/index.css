@@ -164,6 +164,10 @@ a:focus-visible {
   letter-spacing: 2px;
 }
 
+.sidebar-catalog-status {
+  margin: 0 4px;
+}
+
 .pixel-row-list {
   display: flex;
   flex-direction: column;
@@ -978,6 +982,10 @@ a:focus-visible {
   color: var(--accent-6);
   font-size: 14px;
   line-height: 1.4;
+}
+
+.root-confirm-actions[role='alertdialog'] {
+  flex-basis: 100%;
 }
 
 .settings-panel-actions {

@@ -82,7 +82,7 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
         setIssueError(normalizeIpcError(reason));
       }
     } finally {
-      if (mounted.current && issueRequestVersion.current === requestVersion) {
+      if (mounted.current) {
         setIssueLoading(false);
       }
     }
@@ -110,6 +110,10 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
   );
 
   const handleProgress = useCallback((progress: ScanProgress) => {
+    if (handledCompletionRunId.current === progress.runId) {
+      return;
+    }
+
     eventVersion.current += 1;
     if (!mounted.current) {
       return;
@@ -192,7 +196,7 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
         setIssueLoadMoreError(normalizeIpcError(reason));
       }
     } finally {
-      if (mounted.current && issueRequestVersion.current === requestVersion) {
+      if (mounted.current) {
         setIssueLoadingMore(false);
       }
     }
@@ -229,39 +233,40 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
 
   useEffect(() => {
     mounted.current = true;
+    let disposed = false;
     let progressUnlisten: (() => void) | undefined;
     let completedUnlisten: (() => void) | undefined;
 
     const progressSubscription = onLibraryScanProgress(handleProgress)
       .then((unlisten) => {
-        if (mounted.current) {
+        if (!disposed) {
           progressUnlisten = unlisten;
         } else {
           unlisten();
         }
       })
       .catch((reason: unknown) => {
-        if (mounted.current) {
+        if (!disposed) {
           setEventError(normalizeIpcError(reason));
         }
       });
 
     const completedSubscription = onLibraryScanCompleted(handleCompleted)
       .then((unlisten) => {
-        if (mounted.current) {
+        if (!disposed) {
           completedUnlisten = unlisten;
         } else {
           unlisten();
         }
       })
       .catch((reason: unknown) => {
-        if (mounted.current) {
+        if (!disposed) {
           setEventError(normalizeIpcError(reason));
         }
       });
 
     void Promise.allSettled([progressSubscription, completedSubscription]).then(() => {
-      if (!mounted.current) {
+      if (disposed) {
         return;
       }
       void refreshStatus();
@@ -269,6 +274,7 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
     });
 
     return () => {
+      disposed = true;
       mounted.current = false;
       progressUnlisten?.();
       completedUnlisten?.();
