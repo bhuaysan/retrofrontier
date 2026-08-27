@@ -14,7 +14,10 @@ Labels in this report have strict meanings:
 
 ## 1. Executive conclusion
 
-**M5 READY: YES**
+**M5 READY: YES** — and M5 is now implemented on this basis. This spike remains a research record:
+its labels keep their original meanings, and nothing below has been rewritten into a stronger
+provider guarantee than the evidence supports. The implementation is documented separately in
+[`METADATA.md`](METADATA.md).
 
 ScreenScraper can technically return the game fields and media links M5 needs. Its Web API accepts
 hash-and-size evidence, returns provider game and ROM identifiers, exposes quota counters,
@@ -983,3 +986,26 @@ candidate-only heuristics, normalized metadata, one primary cover, offline cache
 evidence revalidation, and strict isolation from M4 library state.
 
 **M5 READY: YES**
+
+## 39. Implementation outcome
+
+M5 shipped the constrained V1 described in Sections 29 to 38. The delivered behaviour matches those
+decisions; see [`METADATA.md`](METADATA.md) for the implementation contract, and note the following
+clarifications that implementation forced:
+
+- The eligible set for automatic deterministic matching is an **allowlist**, not a denylist. Section
+  34's single-file row is honoured for cartridge extensions and for the GameCube ISO representation
+  the provider system list confirms. PlayStation, Saturn, and Dreamcast single-file images
+  (`.iso`, `.pbp`, `.cdi`, a bare `.bin` track) and GameCube `.gcm` are deferred alongside RVZ,
+  because no first-party material establishes them as a canonical lookup representation. This is more
+  conservative than Section 34 required and can be relaxed per row without changing M4 or the
+  matching contract.
+- A 404 hash miss is recorded as a deterministic negative answer and does **not** trigger an
+  automatic title search, per Section 12. Heuristic candidates therefore arise from unsupported
+  container representations and from responses that return no comparable content evidence.
+- Section 10's `maxdownloadspeed` is not used as a scheduling input. Media downloads are bounded by
+  size and by the same concurrency and rolling-minute budget as metadata requests.
+- No opt-in live provider test was added. Section 30's live-test allowance remains available and
+  unexercised; every shipped test uses synthetic or sanitized fixtures and a fake provider.
+- The maintainer questions in Section 31 remain open. None of them blocked implementation, and each
+  can narrow or widen a deferred capability later.

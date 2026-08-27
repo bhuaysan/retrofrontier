@@ -241,19 +241,33 @@ content; candidate-only heuristic search; normalized metadata; one primary cover
 cache; refresh; stale evidence revalidation; and provider state isolated from M4 local identity.
 Container-specific automatic matching and broad media scraping are not required for M5 completion.
 
-- [ ] MetadataProvider interface
-- [ ] ScreenScraper adapter
-- [ ] request queue
-- [ ] rate-limit handling
-- [ ] retry/backoff
-- [ ] local cache
-- [ ] failed/deferred state
-- [ ] offline behavior
-- [ ] game matching
-- [ ] normalized metadata
-- [ ] cover/media download
-- [ ] media cache
-- [ ] metadata refresh
+- [x] MetadataProvider interface
+- [x] ScreenScraper adapter
+- [x] request queue
+- [x] rate-limit handling
+- [x] retry/backoff
+- [x] local cache
+- [x] failed/deferred state
+- [x] offline behavior
+- [x] game matching
+- [x] normalized metadata
+- [x] cover/media download
+- [x] media cache
+- [x] metadata refresh
+
+M5 is implemented. The provider boundary is provider-neutral, the ScreenScraper adapter owns every
+provider-specific detail, and `metadata_jobs` plus `provider_scheduler_state` make the queue and its
+quota deferrals restart-safe. Deterministic matching covers ordinary single-file ROM content and
+requires agreeing returned evidence; heuristic results stay candidates. Normalized metadata,
+provider identity, evidence, and one primary cover persist separately, and changed M4 evidence marks
+a match stale while retaining the last-known-good snapshot. Optional personal credentials live in the
+OS credential vault behind an injectable abstraction; SQLite holds only an opaque reference. The
+previously deferred SQLite write-concurrency item is resolved by ADR-013 (WAL, busy timeout, short
+writers). See [`docs/METADATA.md`](docs/METADATA.md).
+
+Deliberately not in M5: automatic deterministic matching for CHD, CUE/BIN, GDI, M3U/multi-disc, RVZ,
+and disc-system single-file images; broad media scraping; portable provider-cache export; and the
+visible attribution presentation, which belongs to M6.
 
 ## M6 — Library UI
 

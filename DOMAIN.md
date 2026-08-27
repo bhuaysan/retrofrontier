@@ -125,9 +125,32 @@ Metadata obtained from a provider.
 
 Provider-specific payloads must not leak throughout the application.
 
+M5 models this as a provider-neutral set of concepts, all downstream of local identity:
+
+- `ProviderIdentity` — the provider's own game and content identifiers for a local `GameId`. It is a
+  replaceable relationship and never becomes a `GameId`.
+- `MatchEvidence` — the content unit, system, kind, hashes, size, unit fingerprint, and evidence
+  schema version that justified the relationship. Local identifiers alone prove nothing, because M4
+  keeps them stable across same-path byte replacement.
+- `MatchType` — which evidence carried the agreement, or that a user confirmed it manually.
+- `NormalizedMetadata` — the small provider-independent V1 field set: title, sort title, synopsis,
+  release date, developer, publisher, genre, players, region.
+- `MetadataProvenance` — provider identity, provider game ID, available source credit, fetch time.
+- `MetadataJob` — persistent provider intent with state, attempts, failure class, and next attempt.
+- `ProviderFailureClass` and `ProviderQuotaSnapshot` — typed failure and dynamic quota vocabulary.
+- `UserProviderSelection` — a user-owned pinned provider game, stored apart from provider-derived
+  data so a refresh can never overwrite a user decision.
+
+Provider-specific state is one of `pending`, `matched`, `no_match`, `ambiguous`, `deferred`,
+`failed`, or `stale`.
+
 ### Media Asset
 
 Local cached artwork/media associated with a Game, such as cover, screenshot, logo, or background.
+
+V1 caches exactly one primary front cover per game and provider, with its provider media type,
+region, provider checksums, source credit, and an app-owned cache-relative path. Downloaded media is
+never stored beside user ROMs, in managed ROM or BIOS roots, or in source-controlled paths.
 
 ### Core
 
@@ -267,6 +290,12 @@ RuntimeRelease
 12. Metadata-provider state is downstream of local-library identity. Provider failure, no-match,
     ambiguity, deferral, or stale evidence must not delete/hide a Game, change local availability,
     or alter Game/ContentUnit/ContentFile identity or ownership.
+13. A provider relationship is trusted only while the evidence snapshot that established it still
+    agrees with current content. When it stops agreeing, the local game, its availability, the
+    last-known-good metadata, and the cached cover are all retained, and the relationship becomes
+    stale rather than being deleted or silently kept.
+14. Provider-derived data is replaceable and user-owned decisions are not. A provider refresh may
+    overwrite normalized metadata and media, and may never overwrite a user-owned record.
 
 ## Identification Inputs
 
@@ -305,6 +334,16 @@ physical copies under one provisional game. Ambiguous matches create a new physi
 an inspectable issue. A transient hash read failure degrades availability but preserves previously
 verified file hashes and the unit fingerprint for later reconciliation. Local titles are derived
 from the primary path only when a unit is first created; M5 metadata matching is separate.
+
+M5 adds metadata tables alongside this schema without altering it: `provider_matches` and
+`provider_match_evidence` hold provider identity and the evidence bound to it,
+`provider_match_candidates` records heuristic suggestions, `provider_metadata` holds the replaceable
+normalized record, `provider_media_assets` holds the one primary cover, `metadata_jobs` is the
+restart-safe queue, `provider_scheduler_state` holds the dynamic quota snapshot and deferral,
+`provider_user_accounts` holds a non-secret opaque reference to an optional personal account, and
+`user_provider_selections` holds user-owned decisions. Every one of them references `games (id)`
+with restrictive delete behaviour, and none stores a credential value, an authenticated provider URL,
+or a raw provider payload.
 
 When a newly discovered M3U absorbs files from prior standalone units, persisted file membership
 may transfer the new playlist representation to the prior `GameId` only if every applicable owner

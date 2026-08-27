@@ -113,6 +113,15 @@ where it is.
 - local library remains usable offline
 - provider extensibility
 
+V1 enriches ordinary single-file ROM content automatically, and only when the provider returns
+content evidence that agrees with what RetroFrontier hashed locally. Title-based results are offered
+as suggestions and never attach on their own, so a wrong game is not silently presented as a match.
+Disc containers (CHD, CUE/BIN, GDI, M3U playlists, GameCube RVZ) are deliberately left to suggestions
+until their identity rules are established. One front cover is cached per game; broader artwork,
+videos, and manuals are not part of V1. Metadata never affects whether a game appears or can be
+launched, and a game whose metadata later goes stale keeps its last known title and cover while it is
+re-checked.
+
 ### Runtime
 - download managed RetroArch runtime
 - verify runtime

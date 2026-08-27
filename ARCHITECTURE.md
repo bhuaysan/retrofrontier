@@ -146,6 +146,15 @@ contract.
 
 Initial adapter: `ScreenScraperProvider`.
 
+M5 implements this as `MetadataApplicationService` plus a provider-neutral `MetadataProvider` trait,
+a `MetadataRepository`, a persistent `metadata_jobs` queue with provider-aware scheduling, an
+app-owned cover cache, and thin metadata commands. Deterministic matching requires an unambiguous
+system mapping and returned provider content evidence that agrees with the current M4 hashes, size,
+and unit fingerprint; heuristic title results stay candidates. Provider state is bound to a versioned
+evidence snapshot, so same-path content replacement marks a match stale instead of silently keeping
+it trusted. The metadata repository writes to no M4 table. See
+[`docs/METADATA.md`](docs/METADATA.md) for the implementation contract.
+
 ### RuntimeManager
 
 - detect managed runtime
@@ -255,6 +264,8 @@ RetroFrontier/
 ├── runtime-user/
 ├── database/
 ├── metadata/
+│   ├── media/
+│   └── tmp/
 ├── saves/
 ├── states/
 ├── screenshots/
@@ -376,7 +387,7 @@ application credentials. Optional personal credentials remain Rust-owned in the 
 SQLite and ordinary read IPC contain no secret.
 
 M5 persists replaceable normalized metadata, provider/source identity, evidence-bound match state,
-provider-aware jobs/quota deferrals, and one primary local cover. It avoids raw authenticated
+provider-aware jobs/quota deferrals, and one primary local cover in `metadata/media/`. It avoids raw authenticated
 response and credential-bearing URL persistence, broad media scraping, bundling, and redistribution.
 Automatic matching requires agreeing returned ROM evidence; heuristic name results remain
 candidates. Unsupported container representations are deferred. Provider failures and changed M4
@@ -420,6 +431,11 @@ Map hardware input to semantic actions:
 SQLite migrations are authoritative. Repositories hide SQL from the rest of the application.
 
 Avoid giant repository/command modules.
+
+Because M5 adds background metadata writes alongside interactive library operations, the pool opens
+with WAL journaling, `NORMAL` synchronous mode, a busy timeout, and enforced foreign keys, and every
+writer stays short. No provider request is issued while a transaction is open. ADR-013 records the
+decision and its trade-offs.
 
 ## Error Handling
 
@@ -483,6 +499,7 @@ These areas trigger focused Sol Max review.
 ## Open Architecture Decisions
 
 1. Portable/runtime distribution per OS.
+   (SQLite write concurrency is resolved by ADR-013.)
 2. TUF client implementation and production key-custody ceremony.
 3. Runtime Release hosting/control and redistribution model.
 4. Final default-core matrix/version policy.

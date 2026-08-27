@@ -82,6 +82,13 @@ boundary. Optional personal user credentials use the OS vault/keychain. V1 cache
 metadata and one primary cover, preserves source attribution information, and defers unsupported
 container auto-matching rather than guessing.
 
+M5 implements that model: a provider-neutral `MetadataProvider` boundary with a ScreenScraper
+adapter, deterministic matching for ordinary single-file ROM content validated against returned
+provider evidence, candidate-only heuristic search, a restart-safe provider-aware job queue with
+dynamic quota handling, evidence-bound stale-match revalidation, one cached primary cover, and a thin
+typed IPC surface. Provider failure and stale evidence change provider state only; they never touch
+local library identity or availability. See [`docs/METADATA.md`](docs/METADATA.md).
+
 ## Preferred Technology Stack
 
 - Tauri 2
@@ -169,5 +176,6 @@ The project is in planning and foundation setup.
 Do not begin broad feature implementation until product, domain, architecture, ADRs, and the initial backlog are sufficiently defined.
 
 The remaining foundation investigation is managed portable RetroArch/runtime distribution across
-all V1 platforms. The ScreenScraper authentication spike is complete; its constrained V1 decision
-is ready for M5 implementation.
+all V1 platforms. The ScreenScraper authentication spike is complete and M5 Metadata is implemented
+on that constrained V1 decision. Library UI presentation, including visible provider attribution,
+remains M6 work.
