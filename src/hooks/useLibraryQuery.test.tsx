@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { LibraryPage } from '../platform/ipc';
+import type { LibraryPage, LibraryQueryRequest } from '../platform/ipc';
 import { useLibraryQuery } from './useLibraryQuery';
 
 const mocks = vi.hoisted(() => {
@@ -139,6 +139,163 @@ describe('useLibraryQuery', () => {
 
     act(() => result.current.previousPage());
     await waitFor(() => expect(result.current.page?.offset).toBe(60));
+  });
+
+  it('keeps a requested page authoritative when metadata invalidation overlaps navigation', async () => {
+    vi.useFakeTimers();
+    const navigation = deferred<LibraryPage>();
+    const invalidationRefresh = deferred<LibraryPage>();
+    let metadataHandler:
+      ((event: { gameId: number; providerId: 'screenScraper' }) => void) | undefined;
+    let page60Requests = 0;
+    const unlisten = vi.fn();
+    const pageOne = pageWith('Page one', 0, 61);
+
+    mocks.queryLibrary.mockImplementation((request: LibraryQueryRequest) => {
+      if (request.offset === 60) {
+        page60Requests += 1;
+        return page60Requests === 1 ? navigation.promise : invalidationRefresh.promise;
+      }
+      return Promise.resolve(pageOne);
+    });
+    mocks.onMetadataStateChanged.mockImplementation(async (handler) => {
+      metadataHandler = handler;
+      return unlisten;
+    });
+
+    const { result } = renderHook(() => useLibraryQuery({ enabled: true }));
+    await act(async () => Promise.resolve());
+    await act(async () => Promise.resolve());
+    expect(result.current.page).toEqual(pageOne);
+
+    act(() => result.current.nextPage());
+    await act(async () => Promise.resolve());
+    expect(mocks.queryLibrary).toHaveBeenNthCalledWith(2, {
+      sort: 'titleAsc',
+      offset: 60,
+    });
+
+    act(() => metadataHandler?.({ gameId: 1, providerId: 'screenScraper' }));
+    await act(async () => vi.advanceTimersByTimeAsync(180));
+    expect(mocks.queryLibrary).toHaveBeenNthCalledWith(3, {
+      sort: 'titleAsc',
+      offset: 60,
+    });
+
+    await act(async () => invalidationRefresh.resolve(pageWith('Metadata-refreshed page', 60, 61)));
+    await act(async () => navigation.resolve(pageWith('Stale navigation page', 60, 61)));
+
+    expect(
+      result.current.page?.items.map(({ gameId, displayTitle }) => ({ gameId, displayTitle })),
+    ).toEqual([{ gameId: 1, displayTitle: 'Metadata-refreshed page' }]);
+    expect(result.current.page?.offset).toBe(60);
+    expect(result.current.pageLoading).toBe(false);
+    expect(result.current.refreshing).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('does not revive the previous query when a filter changes during invalidation debounce', async () => {
+    vi.useFakeTimers();
+    const filteredPage = deferred<LibraryPage>();
+    let metadataHandler:
+      ((event: { gameId: number; providerId: 'screenScraper' }) => void) | undefined;
+    const unlisten = vi.fn();
+    mocks.queryLibrary.mockResolvedValueOnce(firstPage).mockReturnValueOnce(filteredPage.promise);
+    mocks.onMetadataStateChanged.mockImplementation(async (handler) => {
+      metadataHandler = handler;
+      return unlisten;
+    });
+
+    const { result } = renderHook(() => useLibraryQuery({ enabled: true }));
+    await act(async () => Promise.resolve());
+    await act(async () => Promise.resolve());
+    expect(result.current.page).toEqual(firstPage);
+
+    act(() => metadataHandler?.({ gameId: 1, providerId: 'screenScraper' }));
+    act(() => result.current.setSystemId('snes'));
+    await act(async () => Promise.resolve());
+    expect(mocks.queryLibrary).toHaveBeenNthCalledWith(2, {
+      systemId: 'snes',
+      sort: 'titleAsc',
+      offset: 0,
+    });
+
+    await act(async () => vi.advanceTimersByTimeAsync(180));
+    expect(mocks.queryLibrary).toHaveBeenCalledTimes(2);
+
+    await act(async () => filteredPage.resolve(pageWith('SNES result')));
+    expect(result.current.page?.items[0].displayTitle).toBe('SNES result');
+  });
+
+  it('keeps the committed page and allows ordinary Next after page-forward failure', async () => {
+    const error = new mocks.IpcError('database_unavailable', 'Page query failed.');
+    const pageOne = pageWith('Page one', 0, 61);
+    const pageTwo = pageWith('Page two', 60, 61);
+    mocks.queryLibrary
+      .mockResolvedValueOnce(pageOne)
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce(pageTwo)
+      .mockResolvedValueOnce(pageOne);
+    const { result } = renderHook(() => useLibraryQuery({ enabled: true }));
+    await waitFor(() => expect(result.current.page).toEqual(pageOne));
+
+    act(() => result.current.nextPage());
+    await waitFor(() => expect(mocks.queryLibrary).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.error?.code).toBe('database_unavailable'));
+
+    expect(
+      result.current.page?.items.map(({ gameId, displayTitle }) => ({ gameId, displayTitle })),
+    ).toEqual([{ gameId: 1, displayTitle: 'Page one' }]);
+    expect(result.current.page?.offset).toBe(0);
+    expect(result.current.pageLoading).toBe(false);
+    expect(mocks.queryLibrary).toHaveBeenNthCalledWith(2, {
+      sort: 'titleAsc',
+      offset: 60,
+    });
+
+    act(() => result.current.nextPage());
+    await waitFor(() => expect(mocks.queryLibrary).toHaveBeenCalledTimes(3));
+    expect(mocks.queryLibrary).toHaveBeenNthCalledWith(3, {
+      sort: 'titleAsc',
+      offset: 60,
+    });
+    await waitFor(() => expect(result.current.page).toEqual(pageTwo));
+    expect(
+      result.current.page?.items.map(({ gameId, displayTitle }) => ({ gameId, displayTitle })),
+    ).toEqual([{ gameId: 1, displayTitle: 'Page two' }]);
+
+    act(() => result.current.previousPage());
+    await waitFor(() => expect(result.current.page).toEqual(pageOne));
+    expect(
+      result.current.page?.items.map(({ gameId, displayTitle }) => ({ gameId, displayTitle })),
+    ).toEqual([{ gameId: 1, displayTitle: 'Page one' }]);
+    expect(mocks.queryLibrary).toHaveBeenNthCalledWith(4, {
+      sort: 'titleAsc',
+      offset: 0,
+    });
+  });
+
+  it('retries a failed page-forward at its failed target', async () => {
+    const error = new mocks.IpcError('database_unavailable', 'Page query failed.');
+    const pageOne = pageWith('Page one', 0, 61);
+    const pageTwo = pageWith('Page two', 60, 61);
+    mocks.queryLibrary
+      .mockResolvedValueOnce(pageOne)
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce(pageTwo);
+    const { result } = renderHook(() => useLibraryQuery({ enabled: true }));
+    await waitFor(() => expect(result.current.page).toEqual(pageOne));
+
+    act(() => result.current.nextPage());
+    await waitFor(() => expect(result.current.error?.code).toBe('database_unavailable'));
+
+    await act(async () => result.current.retry());
+    expect(mocks.queryLibrary).toHaveBeenNthCalledWith(3, {
+      sort: 'titleAsc',
+      offset: 60,
+    });
+    expect(result.current.page).toEqual(pageTwo);
+    expect(result.current.error).toBeNull();
   });
 
   it('recovers to the last valid page when the total shrinks', async () => {

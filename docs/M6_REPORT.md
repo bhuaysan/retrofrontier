@@ -2,20 +2,21 @@
 
 ## A. Repository State
 
-- Starting corrective-pass HEAD: `2708746847e7ad7086f33c5b88e127ce5b1fda23`
+- Starting corrective-pass HEAD: `2da7788680507907bc74fec360c3083eadfbed93`
 - Starting M6.2 HEAD: `59b10effa6afd80addf5b53ef7a684bfc4e3bccf`
 - Branch: `feat/m6-library-ui`
 - Main comparison at start: local `main` and `origin/main` were both
   `9a1a1e3d8c38633c1c82bc95293c6a6024e94e93`; no rebase was required.
 - Original M6.1 implementation commits remain `1cdf5a2` and `e7f3df8`; they were not rewritten.
-- Final corrective-pass HEAD: the single corrective commit created from the starting corrective-pass HEAD; see the final repository handoff for its exact ID.
+- Final corrective-pass HEAD: the single focused corrective commit created from the starting
+  corrective-pass HEAD; see the final repository handoff for its exact ID.
 - M6.2 implementation commit: `8a74438158f221464a972fb89c7774aa2e48f2c3`
 - M6.2 corrective commit: `fix(ui): address M6.2 adversarial review findings`
 - Merged to main: No
 - Pushed: No
 - Pre-existing untracked files: `M3_REVIEW.md`, `M4_REVIEW.md`, `M4_REVIEW_2.md`,
   `M4_REVIEW_3.md`, `M5_REVIEW.md`, `M6_1_REVIEW.md`, `M6_1_DELTA_REVIEW.md`, `M6_2_REVIEW.md`,
-  `M6_2_DELTA_REVIEW.md`, `docs/M5_IMPLEMENTATION_REPORT.md`
+  `M6_2_DELTA_REVIEW.md`, `M6_3_REVIEW.md`, `docs/M5_IMPLEMENTATION_REPORT.md`
 
 ## B. Overall M6 Status
 
@@ -28,8 +29,8 @@
 
 Current phase: M6.1 and M6.2 are complete and reviewed; M6.3 implementation started from
 `28e20dab7c5d68e100555ac94f7f610b2583c728` and is complete for review.
-Overall status: M6.1 and M6.2 are accepted as READY. M6.3 implementation and verification are
-complete; M6.4 has not started.
+Overall status: M6.1 and M6.2 are accepted as READY. M6.3 implementation, adversarial review, and
+the focused corrective pass are complete; M6.3 is awaiting delta review. M6.4 has not started.
 
 ## C. M6.1 — Backend Enablement
 
@@ -303,14 +304,43 @@ and `docs/superpowers/plans/2026-08-28-m6-3-library-browsing.md`.
   download, per-card metadata call, per-card detail call, provider request, or unbounded accumulation
   was added. Title ascending is the only exposed sort because it is the only supported backend sort.
 - Query identity includes the debounced literal search, backend system ID, favorites-only flag,
-  title sort, and offset. Search/filter changes reset offset to zero. Previous/next controls replace
-  the page rather than append it. A total that shrinks below the current offset redirects to the last
-  valid page without installing the invalid empty offset.
+  title sort, and the requested offset. Search/filter changes issue an offset-zero request. The
+  committed rendered page is the authoritative pagination position; previous/next controls derive
+  from it and replace the page rather than append it. A total that shrinks below the requested offset
+  redirects to the last valid page without installing the invalid empty offset.
 - A monotonic result generation rejects stale data and stale errors. Initial, refresh, and page
   loading channels have independent operation owners, so an older operation cannot release loading
-  owned by a newer same-channel request. Favorite completions read the latest committed query
-  callback and page/filter state, so a held mutation cannot restore a superseded query identity.
-  Unmount invalidates active work.
+  owned by a newer same-channel request. A private latest-query ref carries the current logical
+  request target for refreshes and retries, while a target is not treated as committed until its
+  successful page becomes authoritative. Favorite completions read the latest query callback and
+  target, so a held mutation cannot restore a superseded query identity. Unmount invalidates active
+  work.
+
+### Corrective pass after the M6.3 adversarial review
+
+`M6_3_REVIEW.md` completed the M6.3 adversarial review with 0 CRITICAL, 0 HIGH, 5 MEDIUM, 11 LOW,
+and 3 INFO findings. The review marked M6.3 `READY FOR M6.4`; MEDIUM-1 and MEDIUM-2 were corrected
+before M6.4 because they affect the foundational `useLibraryQuery` state boundary. MEDIUM-3 through
+MEDIUM-5 and LOW-1 through LOW-11 remain documented deferrals for later hardening.
+
+- MEDIUM-1: metadata invalidation now invokes the latest query callback with the latest logical
+  request target rather than reading the obsolete rendered-page offset. A navigation to offset 60
+  therefore remains the target when a visible metadata event arrives during the request. Query
+  identity changes update the callback/target ref before the invalidation timer can resurrect an old
+  filter.
+- MEDIUM-2: the rendered `page.offset` is the committed position. Page navigation requests are
+  issued directly from that page, and a failed page-forward leaves the page unchanged while the
+  failed target remains available to the dedicated retry. Ordinary Next derives from the still-
+  authoritative page and reissues the target normally; Back also derives only from the committed
+  page. No requested offset is committed before a successful response.
+- The existing monotonic generation still arbitrates navigation, invalidation, query, favorite,
+  and scan operations. Stale success/error paths remain unable to replace page state or errors, and
+  operation-scoped loading owners still release only their own channel work.
+- Exact corrective regression tests:
+  - `keeps a requested page authoritative when metadata invalidation overlaps navigation`
+  - `does not revive the previous query when a filter changes during invalidation debounce`
+  - `keeps the committed page and allows ordinary Next after page-forward failure`
+  - `retries a failed page-forward at its failed target`
 
 ### Search, filters, and states
 
@@ -352,10 +382,11 @@ and `docs/superpowers/plans/2026-08-28-m6-3-library-browsing.md`.
   favorites-only resets a later page exactly once or refreshes page zero, so the removed card leaves
   coherently without mixing offsets. The success continuation reads the latest committed query
   identity, preventing a delayed write from overwriting a newer search/system/filter/page.
-- `metadata-state-changed` is consumed as invalidation only. An effect-owned set deduplicates visible
-  game IDs and a 180 ms timer coalesces a burst into one current-page refetch. Off-page IDs cause no
-  immediate work. Cleanup clears the timer/set and unregisters normally or immediately after late
-  async registration.
+- `metadata-state-changed` is consumed as invalidation only. Visible game IDs schedule one trailing
+  180 ms timer, while off-page IDs cause no immediate work. The timer uses the latest logical query
+  target and query callback, so it cannot replace an in-flight navigation with the old rendered-page
+  offset. Cleanup clears the timer/set and unregisters normally or immediately after late async
+  registration.
 - `useScanState` continues to deduplicate command/event terminal runs. AppShell passes only the newly
   handled terminal run ID to the query hook, producing one bounded refresh per completed run. Scan
   progress has no query-hook input and never refreshes the library page.
@@ -386,7 +417,8 @@ and `docs/superpowers/plans/2026-08-28-m6-3-library-browsing.md`.
   filter reset, total shrink, 200 ms literal search debounce, stale result/error/loading races,
   unmount, favorite on/off/failure/duplicate suppression/favorites-page reset, a held favorite write
   completing after a system-filter change, visible/off-page metadata cadence/deduplication/timer/
-  listener cleanup, and terminal scan-run identity.
+  listener cleanup, terminal scan-run identity, invalidation during page navigation, query identity
+  changes during invalidation debounce, failed page-forward recovery, and retry at the failed target.
 - Added GameCard coverage for title fallback, system/year/list metadata, favorite semantics/pending,
   local unavailability, independent metadata failure, stale presentation, lazy opaque covers, 404
   fallback, missing-cover C4 placeholder, long titles, and changed cover references.
@@ -401,6 +433,9 @@ and `docs/superpowers/plans/2026-08-28-m6-3-library-browsing.md`.
   M8 controller/on-screen-keyboard behavior, and later milestones were not implemented.
 - Genre/region facet discovery is deferred as described above. Existing accepted M6.2 LOWs other
   than required DELTA-LOW-1 remain untouched.
+- The remaining M6.3 MEDIUM findings (light-theme contrast, the library section heading, and
+  favorite-button focus custody) and all 11 M6.3 LOW findings remain deferred; they do not affect
+  the corrected pagination/query-state contract and do not block M6.4.
 
 ## F. M6.4 — Game Detail / Readiness
 
@@ -450,14 +485,16 @@ existing B1 3 px black structural sidebar divider as a side-tab heuristic; it wa
 
 ## K. Test Coverage
 
-The frontend suite has 64 synthetic/local tests across six files. M6.3 additions cover initial/error/
-retry query state, multiple/final pages, filter reset, total shrink, literal debounced search, stale
-result/error/loading races, active-request unmount, favorites, duplicate writes, held-write/current-
-filter ownership, filtered-page removal, visible metadata invalidation cadence/lifecycle, terminal
-scan identity including empty-to-populated transition, real grid integration, system IDs/counts,
-search/no-results/clear, card semantics, title/cover fallbacks, availability, and stale metadata.
-Existing M6.2/root/IPC tests and all Rust tests remain passing. No live ScreenScraper or copyrighted
-fixture is used.
+The frontend suite has 68 synthetic/local tests across six files. M6.3 additions cover initial/
+error/retry query state, multiple/final pages, filter reset, total shrink, literal debounced search,
+stale result/error/loading races, active-request unmount, favorites, duplicate writes, held-write/
+current-filter ownership, filtered-page removal, visible metadata invalidation cadence/lifecycle,
+terminal scan identity including empty-to-populated transition, real grid integration, system IDs/
+counts, search/no-results/clear, card semantics, title/cover fallbacks, availability, and stale
+metadata. The corrective pass adds deferred regressions for invalidation during navigation, query
+identity changes during invalidation debounce, failed page-forward recovery with ordinary Next and
+Back, and dedicated retry at the failed target. Existing M6.2/root/IPC tests and all Rust tests
+remain passing. No live ScreenScraper or copyrighted fixture is used.
 
 ## L. Deferred Beyond M6
 
@@ -472,26 +509,28 @@ fixture is used.
 
 ## M. Final Verification
 
-- `pnpm typecheck` — PASS (`tsc -b --pretty false`).
-- `pnpm lint` — PASS (`eslint .`).
-- `pnpm format:check` — PASS (all checked files use Prettier code style).
-- `pnpm test` — PASS (6 test files, 64 tests).
-- `pnpm build` — PASS (`vite build`, 47 modules transformed).
-- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — PASS.
-- `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` —
-  PASS.
-- `cargo test --manifest-path src-tauri/Cargo.toml` — PASS (306 library tests run: 305 passed,
-  1 ignored, 0 failed; main and doc-test binaries had 0 tests).
-- `cargo build --manifest-path src-tauri/Cargo.toml --release` — PASS (release application built;
-  most recent incremental verification finished in 0.26 seconds).
-- `pnpm tauri:build` — PASS (Tauri release application built at
-  `src-tauri/target/release/retrofrontier`; frontend transformed 47 modules; Rust release build
-  finished in 24.98 seconds).
-- `git diff --check` — PASS.
-- Manual design inspection — PASS as a static source/DOM/CSS inspection against B1/B2/B3/B5/C4/A6
-  at the requested desktop sizes and both themes; no rendered screenshot claim is made. The detector
-  result and retained structural sidebar divider are documented in sections E/J.
+The corrective pass verification was run on the final working tree after the hook and report
+changes:
+
+- `pnpm vitest run src/hooks/useLibraryQuery.test.tsx` — PASS — 1 file, 22 tests.
+- `pnpm typecheck` — PASS — `tsc -b --pretty false`, exit 0.
+- `pnpm lint` — PASS — `eslint .`, exit 0.
+- `pnpm format:check` — PASS — all configured files use Prettier formatting, exit 0.
+- `pnpm test` — PASS — 6 files, 68 tests, exit 0.
+- `pnpm build` — PASS — TypeScript and Vite build; 47 modules transformed, exit 0.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — PASS — exit 0.
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings`
+  — PASS — release-free dev profile finished without warnings, exit 0.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — PASS — 305 passed, 0 failed, 1 ignored;
+  frontend-independent Rust test command exit 0.
+- `cargo build --manifest-path src-tauri/Cargo.toml --release` — PASS — optimized release profile,
+  exit 0.
+- `pnpm tauri:build` — PASS — frontend build and release application build completed at
+  `src-tauri/target/release/retrofrontier`, exit 0.
+- `git diff --check` — PASS — no whitespace errors, exit 0.
+
+No screenshot or visual verification was required for this state-only corrective pass.
 
 ## N. Current M6 Verdict
 
-`M6.3 IMPLEMENTATION COMPLETE — ready for review before M6.4`
+`implementation complete, adversarial review complete, corrective pass complete, awaiting delta review`

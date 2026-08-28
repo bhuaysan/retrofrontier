@@ -58,13 +58,18 @@ export function useLibraryQuery({
   const pageLoadingOwner = useRef(0);
   const favoritePendingRef = useRef(new Set<number>());
   const lastScanCompletionRunId = useRef<number | null>(null);
+  // `page`/`pageRef` is the committed rendered position. The target is the latest logical
+  // request position used by retries and bounded refreshes; it is not committed until success.
+  const latestQueryState = useRef({ favoritesOnly: false, targetOffset: 0 });
+  const latestRunQuery = useRef<
+    (requestedOffset?: number, requestedChannel?: LoadingChannel) => Promise<void>
+  >(async () => {});
   const favoriteCommittedHandler = useRef(onFavoriteCommitted);
 
   const [searchInput, setSearchInputState] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [systemId, setSystemIdState] = useState<SystemId | null>(null);
   const [favoritesOnly, setFavoritesOnlyState] = useState(false);
-  const [offset, setOffset] = useState(0);
   const [page, setPage] = useState<LibraryPage | null>(null);
   // The browser is only mounted for a populated summary, but `enabled` can turn
   // true after that summary resolves. Start owned by the initial-load channel so
@@ -91,9 +96,13 @@ export function useLibraryQuery({
   }, []);
 
   const runQuery = useCallback(
-    async (requestedOffset = offset, requestedChannel?: LoadingChannel) => {
+    async (
+      requestedOffset = latestQueryState.current.targetOffset,
+      requestedChannel?: LoadingChannel,
+    ) => {
       if (!enabled) return;
 
+      latestQueryState.current.targetOffset = requestedOffset;
       const generation = requestGeneration.current + 1;
       requestGeneration.current = generation;
       const currentPage = pageRef.current;
@@ -127,12 +136,15 @@ export function useLibraryQuery({
             nextPage.offset >= nextPage.total
           ) {
             const effectiveLimit = Math.max(1, nextPage.limit);
-            setOffset(Math.floor((nextPage.total - 1) / effectiveLimit) * effectiveLimit);
+            void latestRunQuery.current(
+              Math.floor((nextPage.total - 1) / effectiveLimit) * effectiveLimit,
+              'page',
+            );
             return;
           }
+          latestQueryState.current.targetOffset = nextPage.offset;
           pageRef.current = nextPage;
           setPage(nextPage);
-          setOffset(nextPage.offset);
           setError(null);
         }
       } catch (reason: unknown) {
@@ -147,15 +159,13 @@ export function useLibraryQuery({
         if (mounted.current && ownsLoading) setChannelLoading(channel, false);
       }
     },
-    [debouncedSearch, enabled, favoritesOnly, offset, setChannelLoading, systemId],
+    [debouncedSearch, enabled, favoritesOnly, setChannelLoading, systemId],
   );
-  const latestRunQuery = useRef(runQuery);
-  const latestFavoriteQueryState = useRef({ favoritesOnly, offset });
 
   useLayoutEffect(() => {
     latestRunQuery.current = runQuery;
-    latestFavoriteQueryState.current = { favoritesOnly, offset };
-  }, [favoritesOnly, offset, runQuery]);
+    latestQueryState.current = { favoritesOnly, targetOffset: 0 };
+  }, [favoritesOnly, runQuery]);
 
   useEffect(() => {
     mounted.current = true;
@@ -168,51 +178,54 @@ export function useLibraryQuery({
   useEffect(() => {
     if (searchInput === debouncedSearch) return;
     const timer = window.setTimeout(() => {
-      setOffset(0);
+      latestQueryState.current.targetOffset = 0;
       setDebouncedSearch(searchInput);
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [debouncedSearch, searchInput]);
 
   useEffect(() => {
-    if (enabled) void runQuery(offset);
-  }, [enabled, offset, runQuery]);
+    if (enabled) void runQuery(0);
+  }, [enabled, runQuery]);
 
   const setSearchInput = useCallback((value: string) => setSearchInputState(value), []);
   const clearSearch = useCallback(() => {
     setSearchInputState('');
     setDebouncedSearch('');
-    setOffset(0);
+    latestQueryState.current.targetOffset = 0;
   }, []);
   const setSystemId = useCallback((value: SystemId | null) => {
     setSystemIdState(value);
-    setOffset(0);
+    latestQueryState.current.targetOffset = 0;
   }, []);
   const setFavoritesOnly = useCallback((value: boolean) => {
     setFavoritesOnlyState(value);
-    setOffset(0);
+    latestQueryState.current.targetOffset = 0;
   }, []);
   const resetQuery = useCallback(() => {
     setSearchInputState('');
     setDebouncedSearch('');
     setSystemIdState(null);
     setFavoritesOnlyState(false);
-    setOffset(0);
+    latestQueryState.current.targetOffset = 0;
   }, []);
 
   const previousPage = useCallback(() => {
     const current = pageRef.current;
     if (!current || current.offset <= 0 || pageLoading) return;
-    setOffset(Math.max(0, current.offset - current.limit));
-  }, [pageLoading]);
+    void runQuery(Math.max(0, current.offset - current.limit), 'page');
+  }, [pageLoading, runQuery]);
 
   const nextPage = useCallback(() => {
     const current = pageRef.current;
     if (!current || current.offset + current.items.length >= current.total || pageLoading) return;
-    setOffset(current.offset + current.limit);
-  }, [pageLoading]);
+    void runQuery(current.offset + current.limit, 'page');
+  }, [pageLoading, runQuery]);
 
-  const retry = useCallback(() => runQuery(offset), [offset, runQuery]);
+  const retry = useCallback(
+    () => latestRunQuery.current(latestQueryState.current.targetOffset),
+    [],
+  );
 
   const toggleFavorite = useCallback(async (item: LibraryListItem) => {
     if (favoritePendingRef.current.has(item.gameId)) return;
@@ -222,16 +235,10 @@ export function useLibraryQuery({
     try {
       await setGameFavorite({ gameId: item.gameId, favorite: !item.favorite });
       if (!mounted.current) return;
-      const currentQuery = latestFavoriteQueryState.current;
+      const currentQuery = latestQueryState.current;
       const resetFilteredPage =
-        currentQuery.favoritesOnly && item.favorite && currentQuery.offset !== 0;
-      if (resetFilteredPage) setOffset(0);
-      else {
-        await latestRunQuery.current(
-          currentQuery.favoritesOnly && item.favorite ? 0 : currentQuery.offset,
-          'refresh',
-        );
-      }
+        currentQuery.favoritesOnly && item.favorite && currentQuery.targetOffset !== 0;
+      await latestRunQuery.current(resetFilteredPage ? 0 : currentQuery.targetOffset, 'refresh');
       await favoriteCommittedHandler.current?.();
     } catch (reason: unknown) {
       if (mounted.current) setFavoriteError(normalizeIpcError(reason));
@@ -246,8 +253,8 @@ export function useLibraryQuery({
     if (lastScanCompletionRunId.current === scanCompletionRunId) return;
     lastScanCompletionRunId.current = scanCompletionRunId;
     if (pageRef.current === null) return;
-    void runQuery(offset, 'refresh');
-  }, [enabled, offset, runQuery, scanCompletionRunId]);
+    void latestRunQuery.current(latestQueryState.current.targetOffset, 'refresh');
+  }, [enabled, runQuery, scanCompletionRunId]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -263,7 +270,7 @@ export function useLibraryQuery({
         timer = undefined;
         if (disposed || affectedIds.size === 0) return;
         affectedIds.clear();
-        void runQuery(pageRef.current?.offset ?? 0, 'refresh');
+        void latestRunQuery.current(latestQueryState.current.targetOffset, 'refresh');
       }, METADATA_INVALIDATION_DEBOUNCE_MS);
     })
       .then((nextUnlisten) => {
