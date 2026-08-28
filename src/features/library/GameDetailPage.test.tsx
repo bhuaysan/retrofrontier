@@ -168,14 +168,41 @@ describe('GameDetailPage', () => {
     expect(within(content).getByText('PlayStation/Ridge Racer.m3u')).toBeInTheDocument();
     expect(within(content).getAllByText('CONTENT ROOT #2')).toHaveLength(2);
 
+    // The fixture mixes one available and one incomplete unit, so the overall claim must stay
+    // negative even though the game-level availability is `available` and every system
+    // requirement is satisfied.
     const readiness = screen.getByRole('region', { name: /emulation readiness/i });
-    expect(within(readiness).getByText('EMULATION READY')).toBeInTheDocument();
-    expect(within(readiness).getAllByText('AVAILABLE')).toHaveLength(4);
+    expect(within(readiness).getByText('INCOMPLETE CONTENT')).toBeInTheDocument();
+    expect(
+      within(readiness).queryByText('EMULATION REQUIREMENTS SATISFIED'),
+    ).not.toBeInTheDocument();
+    expect(within(readiness).getByText('PARTIALLY AVAILABLE')).toBeInTheDocument();
+    expect(within(readiness).getAllByText('AVAILABLE')).toHaveLength(3);
     expect(within(readiness).queryByText('NOT REQUIRED')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /launch|play/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/save state/i)).not.toBeInTheDocument();
     expect(screen.queryByText('provider-id-hidden')).not.toBeInTheDocument();
     expect(screen.queryByText('must-not-render')).not.toBeInTheDocument();
+  });
+
+  it('claims the approved positive readiness only when every content unit is available', () => {
+    renderDetail(
+      detailModel({
+        localDetail: {
+          ...localDetail,
+          contentUnits: localDetail.contentUnits.map((unit) => ({
+            ...unit,
+            availability: 'available' as const,
+          })),
+        },
+      }),
+    );
+
+    const readiness = screen.getByRole('region', { name: /emulation readiness/i });
+    expect(within(readiness).getByText('EMULATION REQUIREMENTS SATISFIED')).toBeInTheDocument();
+    expect(within(readiness).queryByText('EMULATION READY')).not.toBeInTheDocument();
+    expect(within(readiness).queryByText('PARTIALLY AVAILABLE')).not.toBeInTheDocument();
+    expect(within(readiness).getAllByText('AVAILABLE')).toHaveLength(4);
   });
 
   it('retains cached normalized metadata and cover while marking stale state', () => {

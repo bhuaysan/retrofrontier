@@ -190,14 +190,15 @@ function ReadinessSection({
   onRetryReadiness: () => void;
 }) {
   const availability = detail?.availability ?? null;
+  const contentUnits = detail?.contentUnits ?? [];
   const overall = readinessLoading
     ? {
         tone: 'unknown' as const,
         label: 'CHECKING READINESS',
         detail: 'Reading the current runtime, core, and BIOS snapshot…',
       }
-    : getOverallReadiness(availability, systemStatus);
-  const rows = getReadinessRows(availability, systemStatus);
+    : getOverallReadiness(availability, systemStatus, contentUnits);
+  const rows = getReadinessRows(availability, systemStatus, contentUnits);
 
   return (
     <section

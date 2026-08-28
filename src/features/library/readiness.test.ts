@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SystemStatus } from '../../platform/ipc';
+import type {
+  ContentUnitAvailability,
+  LibraryContentUnitSummary,
+  SystemStatus,
+} from '../../platform/ipc';
 import { getReadinessRows, getOverallReadiness } from './readiness';
 
 function systemStatus(overrides: Partial<SystemStatus> = {}): SystemStatus {
@@ -45,9 +49,23 @@ function systemStatus(overrides: Partial<SystemStatus> = {}): SystemStatus {
   };
 }
 
+function contentUnits(...availabilities: ContentUnitAvailability[]): LibraryContentUnitSummary[] {
+  return availabilities.map((availability, index) => ({
+    unitId: index + 1,
+    rootId: 1,
+    kind: 'singleFile',
+    localTitle: `Disc ${index + 1}`,
+    primaryRelativePath: `disc-${index + 1}.chd`,
+    fileCount: 1,
+    availability,
+  }));
+}
+
+const AVAILABLE_UNITS = contentUnits('available');
+
 describe('readiness presentation projection', () => {
   it('keeps local content, runtime, core, and BIOS as separate rows', () => {
-    const rows = getReadinessRows('available', systemStatus());
+    const rows = getReadinessRows('available', systemStatus(), AVAILABLE_UNITS);
 
     expect(rows.map(({ id, tone }) => ({ id, tone }))).toEqual([
       { id: 'localContent', tone: 'ready' },
@@ -60,8 +78,8 @@ describe('readiness presentation projection', () => {
   });
 
   it('prioritizes unavailable local content over an otherwise ready environment', () => {
-    const rows = getReadinessRows('unavailable', systemStatus());
-    const overall = getOverallReadiness('unavailable', systemStatus());
+    const rows = getReadinessRows('unavailable', systemStatus(), AVAILABLE_UNITS);
+    const overall = getOverallReadiness('unavailable', systemStatus(), AVAILABLE_UNITS);
 
     expect(rows[0]).toMatchObject({ id: 'localContent', tone: 'missing', status: 'MISSING' });
     expect(overall).toMatchObject({ tone: 'missing', label: 'MISSING CONTENT' });
@@ -108,8 +126,8 @@ describe('readiness presentation projection', () => {
         ],
       },
     });
-    const rows = getReadinessRows('available', status);
-    const overall = getOverallReadiness('available', status);
+    const rows = getReadinessRows('available', status, AVAILABLE_UNITS);
+    const overall = getOverallReadiness('available', status, AVAILABLE_UNITS);
 
     expect(rows.find(({ id }) => id === 'runtime')).toMatchObject({
       tone: 'unavailable',
@@ -128,8 +146,8 @@ describe('readiness presentation projection', () => {
   });
 
   it('returns an unknown projection when the system snapshot is unavailable', () => {
-    const rows = getReadinessRows('available', null);
-    const overall = getOverallReadiness('available', null);
+    const rows = getReadinessRows('available', null, AVAILABLE_UNITS);
+    const overall = getOverallReadiness('available', null, AVAILABLE_UNITS);
 
     expect(rows.map(({ id, tone }) => ({ id, tone }))).toEqual([
       { id: 'localContent', tone: 'ready' },
@@ -145,7 +163,9 @@ describe('readiness presentation projection', () => {
       bios: { policy: 'notRequired', ready: true, requirements: [] },
     });
 
-    expect(getReadinessRows('available', status).find(({ id }) => id === 'bios')).toMatchObject({
+    expect(
+      getReadinessRows('available', status, AVAILABLE_UNITS).find(({ id }) => id === 'bios'),
+    ).toMatchObject({
       tone: 'ready',
       status: 'NOT REQUIRED',
     });
@@ -173,9 +193,44 @@ describe('readiness presentation projection', () => {
       },
     });
 
-    expect(getReadinessRows('available', status).find(({ id }) => id === 'bios')).toMatchObject({
+    expect(
+      getReadinessRows('available', status, AVAILABLE_UNITS).find(({ id }) => id === 'bios'),
+    ).toMatchObject({
       tone: 'ready',
       status: 'OPTIONAL',
     });
+  });
+
+  it('does not claim positive readiness when one content unit is missing', () => {
+    const mixed = contentUnits('available', 'missing');
+    const rows = getReadinessRows('available', systemStatus(), mixed);
+    const overall = getOverallReadiness('available', systemStatus(), mixed);
+
+    expect(rows[0]).toMatchObject({
+      id: 'localContent',
+      tone: 'missing',
+      status: 'PARTIALLY AVAILABLE',
+    });
+    expect(overall).toMatchObject({ tone: 'missing', label: 'INCOMPLETE CONTENT' });
+    expect(overall.label).not.toBe('EMULATION REQUIREMENTS SATISFIED');
+  });
+
+  it('does not claim positive readiness when one content unit is incomplete', () => {
+    const mixed = contentUnits('available', 'incomplete');
+
+    expect(getOverallReadiness('available', systemStatus(), mixed)).toMatchObject({
+      tone: 'missing',
+      label: 'INCOMPLETE CONTENT',
+    });
+  });
+
+  it('uses the approved positive label when every unit is available and requirements are met', () => {
+    const overall = getOverallReadiness(
+      'available',
+      systemStatus(),
+      contentUnits('available', 'available'),
+    );
+
+    expect(overall).toMatchObject({ tone: 'ready', label: 'EMULATION REQUIREMENTS SATISFIED' });
   });
 });

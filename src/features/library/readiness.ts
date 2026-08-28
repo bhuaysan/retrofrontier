@@ -1,6 +1,7 @@
 import type {
   BiosRequirementStatus,
   GameAvailability,
+  LibraryContentUnitSummary,
   ReadinessReason,
   RuntimeState,
   SystemStatus,
@@ -186,8 +187,28 @@ function biosRow(status: SystemStatus | null): ReadinessRow {
   };
 }
 
-function localContentRow(availability: GameAvailability | null): ReadinessRow {
+// Game-level availability is true when at least one content unit is available, so it cannot stand
+// in for "all local content is present". The per-unit availability the backend already normalized
+// is the authoritative input for that distinction; this is presentation over M4 state, not a second
+// readiness policy.
+function hasIncompleteContent(contentUnits: readonly LibraryContentUnitSummary[]): boolean {
+  return contentUnits.some((unit) => unit.availability !== 'available');
+}
+
+function localContentRow(
+  availability: GameAvailability | null,
+  contentUnits: readonly LibraryContentUnitSummary[],
+): ReadinessRow {
   if (availability === 'available') {
+    if (hasIncompleteContent(contentUnits)) {
+      return {
+        id: 'localContent',
+        label: 'LOCAL CONTENT',
+        tone: 'missing',
+        status: 'PARTIALLY AVAILABLE',
+        detail: 'Some of the associated local content is incomplete or missing.',
+      };
+    }
     return {
       id: 'localContent',
       label: 'LOCAL CONTENT',
@@ -219,8 +240,14 @@ function unknownRow(id: ReadinessRowId, label: string, detail: string): Readines
 export function getReadinessRows(
   availability: GameAvailability | null,
   status: SystemStatus | null,
+  contentUnits: readonly LibraryContentUnitSummary[],
 ): ReadinessRow[] {
-  return [localContentRow(availability), runtimeRow(status), coreRow(status), biosRow(status)];
+  return [
+    localContentRow(availability, contentUnits),
+    runtimeRow(status),
+    coreRow(status),
+    biosRow(status),
+  ];
 }
 
 function reasonDetail(reason: ReadinessReason): string {
@@ -243,12 +270,21 @@ function reasonDetail(reason: ReadinessReason): string {
 export function getOverallReadiness(
   availability: GameAvailability | null,
   status: SystemStatus | null,
+  contentUnits: readonly LibraryContentUnitSummary[],
 ): OverallReadiness {
   if (availability === 'unavailable') {
     return {
       tone: 'missing',
       label: 'MISSING CONTENT',
       detail: 'The local content must be available before this game can be considered ready.',
+    };
+  }
+  if (availability === 'available' && hasIncompleteContent(contentUnits)) {
+    return {
+      tone: 'missing',
+      label: 'INCOMPLETE CONTENT',
+      detail:
+        'Some local content for this game is incomplete or missing. The remaining requirements are listed below.',
     };
   }
   if (availability === null || status === null) {
@@ -261,7 +297,7 @@ export function getOverallReadiness(
   if (status.readiness.ready) {
     return {
       tone: 'ready',
-      label: 'EMULATION READY',
+      label: 'EMULATION REQUIREMENTS SATISFIED',
       detail: 'Local content and the current system requirements are satisfied.',
     };
   }
