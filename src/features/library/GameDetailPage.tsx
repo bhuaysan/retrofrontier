@@ -3,7 +3,7 @@ import { useEffect, useRef, type CSSProperties } from 'react';
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
 import { PixelArrow } from '../../components/ui/PixelIcon';
-import { getMetadataAction, metadataStateCopy } from './metadataActions';
+import { getMetadataAction, hasSelectableCandidates, metadataStateCopy } from './metadataActions';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
 import type {
   GameMetadataState,
@@ -285,7 +285,7 @@ function MetadataCandidates({
   detail: GameDetailModel;
   metadataState: GameMetadataState;
 }) {
-  if (metadataState.status !== 'ambiguous' || metadataState.candidates.length === 0) {
+  if (!hasSelectableCandidates(metadataState)) {
     return metadataState.status === 'ambiguous' ? (
       <p className="game-detail-empty-copy">
         No provider candidates were returned. Search again when the provider is available; local
@@ -296,6 +296,16 @@ function MetadataCandidates({
 
   const selectedProviderGameId = metadataState.userSelection?.providerGameId ?? null;
   const selecting = detail.metadataActionKind === 'select';
+  const description =
+    metadataState.unsupportedReason !== null
+      ? 'Automatic identification is not available for this content. Choose a provider candidate below to resolve it manually.'
+      : metadataState.status === 'deferred'
+        ? 'Provider work is deferred, but these candidates remain available for manual resolution.'
+        : metadataState.status === 'failed'
+          ? 'Automatic provider work did not complete, but these candidates remain available for manual resolution.'
+          : metadataState.status === 'stale'
+            ? 'The previous provider match needs revalidation; these candidates remain available for manual resolution.'
+            : 'These provider candidates are available for manual resolution. Choose one to confirm the provider match.';
 
   return (
     <div
@@ -313,6 +323,7 @@ function MetadataCandidates({
           {metadataState.candidates.length === 1 ? 'OPTION' : 'OPTIONS'}
         </span>
       </div>
+      <p className="game-detail-empty-copy">{description}</p>
       <ul aria-label="Metadata candidates" className="metadata-candidate-list">
         {metadataState.candidates.map((candidate, index) => {
           const selected = selectedProviderGameId === candidate.providerGameId;
@@ -358,7 +369,9 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
   const wasActionPending = useRef(false);
   const metadataState = detail.metadata;
   const normalized = metadataState?.metadata?.metadata ?? null;
-  const stateCopy = metadataState ? metadataStateCopy(metadataState.status) : null;
+  const stateCopy = metadataState
+    ? metadataStateCopy(metadataState.status, metadataState.unsupportedReason)
+    : null;
   const action = getMetadataAction(metadataState);
   const pendingLabel = metadataOperationPendingLabel(detail.metadataActionKind);
   const failureCopy = metadataFailureCopy(metadataState?.lastFailure ?? null);

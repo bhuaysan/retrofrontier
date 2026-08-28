@@ -50,12 +50,40 @@ const LIVE_JOB_STATES: ReadonlySet<GameMetadataState['jobs'][number]['state']> =
   'deferred',
 ]);
 
-export function metadataStateCopy(status: GameMetadataState['status']): MetadataStateCopy {
+/**
+ * Candidate rows are authoritative manual-resolution suggestions unless an accepted match is
+ * current. The backend keeps suggestion rows when a match is persisted, so a matched state must
+ * not surface those historical rows as another choice.
+ */
+export function hasSelectableCandidates(state: GameMetadataState | null): boolean {
+  return state !== null && state.status !== 'matched' && state.candidates.length > 0;
+}
+
+export function metadataStateCopy(
+  status: GameMetadataState['status'],
+  unsupportedReason: GameMetadataState['unsupportedReason'] = null,
+): MetadataStateCopy {
+  if (status === 'deferred' && unsupportedReason !== null) {
+    return {
+      label: 'METADATA DEFERRED',
+      description:
+        'Automatic identification is not available for this content. Choose a provider candidate below when one is available.',
+    };
+  }
   return STATE_COPY[status];
 }
 
 export function getMetadataAction(state: GameMetadataState | null): MetadataAction | null {
   if (!state || state.jobs.some((job) => LIVE_JOB_STATES.has(job.state))) {
+    return null;
+  }
+
+  // A capability gate cannot be changed by repeating the same automatic identification request.
+  // Deferred/failed states with persisted candidates already have the meaningful manual path.
+  if (
+    state.unsupportedReason !== null ||
+    (hasSelectableCandidates(state) && (state.status === 'deferred' || state.status === 'failed'))
+  ) {
     return null;
   }
 

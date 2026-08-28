@@ -315,57 +315,62 @@ describe('useGameDetail', () => {
     expect(result.current.metadataActionPending).toBe(false);
   });
 
-  it('suppresses duplicate candidate selection and refetches the selected state', async () => {
-    const selection = deferred<void>();
-    const ambiguous = {
-      ...metadata,
-      status: 'ambiguous' as const,
-      providerGameId: null,
-      providerRomId: null,
-      metadata: null,
-      candidates: [
-        { providerGameId: 'candidate-a', title: 'Candidate A', releaseDate: '1994-01-01' },
-        { providerGameId: 'candidate-b', title: 'Candidate B', releaseDate: null },
-      ],
-    };
-    const selected = {
-      ...metadata,
-      userSelection: {
+  it.each(['ambiguous', 'deferred', 'failed'] as const)(
+    'uses the existing selection command and authoritative reread from %s state',
+    async (status) => {
+      const selection = deferred<void>();
+      const candidateState = {
+        ...metadata,
+        status,
+        providerGameId: null,
+        providerRomId: null,
+        metadata: null,
+        unsupportedReason: status === 'deferred' ? ('chdRepresentationUndefined' as const) : null,
+        lastFailure: status === 'failed' ? ('transientServer' as const) : null,
+        candidates: [
+          { providerGameId: 'candidate-a', title: 'Candidate A', releaseDate: '1994-01-01' },
+          { providerGameId: 'candidate-b', title: 'Candidate B', releaseDate: null },
+        ],
+      };
+      const selected = {
+        ...metadata,
+        userSelection: {
+          gameId: 7,
+          providerId: 'screenScraper' as const,
+          providerGameId: 'candidate-b',
+          updatedAt: 3,
+        },
+      };
+      mocks.getGameMetadata.mockResolvedValueOnce(candidateState).mockResolvedValueOnce(selected);
+      mocks.selectGameMetadataCandidate.mockReturnValue(selection.promise);
+      const { result } = renderHook(() => useGameDetail({ enabled: true, gameId: 7 }));
+
+      await waitFor(() => expect(result.current.metadata).toEqual(candidateState));
+      let first: Promise<void>;
+      let second: Promise<void>;
+      act(() => {
+        first = result.current.selectMetadataCandidate('candidate-b');
+        second = result.current.selectMetadataCandidate('candidate-b');
+      });
+
+      expect(mocks.selectGameMetadataCandidate).toHaveBeenCalledTimes(1);
+      expect(result.current.metadataActionPending).toBe(true);
+      expect(result.current.metadataActionKind).toBe('select');
+
+      await act(async () => {
+        selection.resolve();
+        await Promise.all([first!, second!]);
+      });
+
+      expect(mocks.selectGameMetadataCandidate).toHaveBeenCalledWith({
         gameId: 7,
-        providerId: 'screenScraper' as const,
         providerGameId: 'candidate-b',
-        updatedAt: 3,
-      },
-    };
-    mocks.getGameMetadata.mockResolvedValueOnce(ambiguous).mockResolvedValueOnce(selected);
-    mocks.selectGameMetadataCandidate.mockReturnValue(selection.promise);
-    const { result } = renderHook(() => useGameDetail({ enabled: true, gameId: 7 }));
-
-    await waitFor(() => expect(result.current.metadata).toEqual(ambiguous));
-    let first: Promise<void>;
-    let second: Promise<void>;
-    act(() => {
-      first = result.current.selectMetadataCandidate('candidate-b');
-      second = result.current.selectMetadataCandidate('candidate-b');
-    });
-
-    expect(mocks.selectGameMetadataCandidate).toHaveBeenCalledTimes(1);
-    expect(result.current.metadataActionPending).toBe(true);
-    expect(result.current.metadataActionKind).toBe('select');
-
-    await act(async () => {
-      selection.resolve();
-      await Promise.all([first!, second!]);
-    });
-
-    expect(mocks.selectGameMetadataCandidate).toHaveBeenCalledWith({
-      gameId: 7,
-      providerGameId: 'candidate-b',
-    });
-    expect(mocks.getGameMetadata).toHaveBeenCalledTimes(2);
-    expect(result.current.metadata).toEqual(selected);
-    expect(result.current.metadataActionKind).toBeNull();
-  });
+      });
+      expect(mocks.getGameMetadata).toHaveBeenCalledTimes(2);
+      expect(result.current.metadata).toEqual(selected);
+      expect(result.current.metadataActionKind).toBeNull();
+    },
+  );
 
   it('clears only the user selection and leaves the resulting state to the backend', async () => {
     const selected = {

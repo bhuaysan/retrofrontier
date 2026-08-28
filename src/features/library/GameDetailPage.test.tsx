@@ -312,6 +312,49 @@ describe('GameDetailPage', () => {
     expect(selectMetadataCandidate).toHaveBeenCalledWith('candidate-a');
   });
 
+  it.each([
+    ['deferred', 'chdRepresentationUndefined', 'CHD content'] as const,
+    ['failed', null, 'metadata could not be enriched'] as const,
+  ])(
+    'renders persisted candidates for %s state and keeps manual selection reachable',
+    (status, unsupportedReason, stateCopy) => {
+      const selectMetadataCandidate = vi.fn().mockResolvedValue(undefined);
+      const state: GameMetadataState = {
+        ...metadata,
+        status,
+        matchType: null,
+        providerGameId: null,
+        providerRomId: null,
+        unsupportedReason,
+        lastFailure: status === 'failed' ? 'transientServer' : null,
+        metadata: null,
+        candidates: [
+          { providerGameId: 'candidate-a', title: 'Deferred Candidate', releaseDate: null },
+          { providerGameId: 'candidate-b', title: 'Second Candidate', releaseDate: '1994-01-01' },
+        ],
+      };
+
+      renderDetail(detailModel({ metadata: state, selectMetadataCandidate }));
+
+      const list = screen.getByRole('list', { name: 'Metadata candidates' });
+      expect(
+        within(list)
+          .getAllByRole('heading', { level: 4 })
+          .map((heading) => heading.textContent),
+      ).toEqual(['Deferred Candidate', 'Second Candidate']);
+      expect(screen.getByText(new RegExp(stateCopy, 'i'))).toBeInTheDocument();
+      if (unsupportedReason !== null) {
+        expect(screen.queryByText(/provider work is deferred/i)).not.toBeInTheDocument();
+      }
+      expect(screen.queryByRole('button', { name: 'TRY METADATA AGAIN' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'RETRY METADATA' })).not.toBeInTheDocument();
+      expect(screen.queryByText(/%|confidence|score/i)).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /select second candidate/i }));
+      expect(selectMetadataCandidate).toHaveBeenCalledWith('candidate-b');
+    },
+  );
+
   it('shows truthful in-flight feedback while a candidate choice is being applied', () => {
     const ambiguousMetadata: GameMetadataState = {
       ...metadata,
@@ -380,6 +423,54 @@ describe('GameDetailPage', () => {
     expect(screen.getByText(/no provider candidates were returned/i)).toBeInTheDocument();
     expect(screen.queryByRole('list', { name: 'Metadata candidates' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /select candidate/i })).not.toBeInTheDocument();
+  });
+
+  it.each(['deferred', 'failed'] as const)(
+    'does not create an empty candidate picker for %s state',
+    (status) => {
+      renderDetail(detailModel({ metadata: { ...metadata, status, candidates: [] } }));
+
+      expect(screen.queryByRole('list', { name: 'Metadata candidates' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /select candidate/i })).not.toBeInTheDocument();
+    },
+  );
+
+  it('renders persisted candidates for stale state while keeping revalidation available', () => {
+    renderDetail(
+      detailModel({
+        metadata: {
+          ...metadata,
+          status: 'stale',
+          candidates: [
+            { providerGameId: 'stale-a', title: 'Stale Candidate A', releaseDate: null },
+            { providerGameId: 'stale-b', title: 'Stale Candidate B', releaseDate: '1995-01-01' },
+          ],
+        },
+      }),
+    );
+
+    expect(screen.getByRole('list', { name: 'Metadata candidates' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'CHOOSE A METADATA MATCH' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'REVALIDATE METADATA' })).toBeInTheDocument();
+    expect(screen.getByText('Stale Candidate A')).toBeInTheDocument();
+    expect(screen.getByText('Stale Candidate B')).toBeInTheDocument();
+    expect(screen.queryByText(/confidence|score|%/i)).not.toBeInTheDocument();
+  });
+
+  it('does not render historical candidate rows after an accepted match', () => {
+    renderDetail(
+      detailModel({
+        metadata: {
+          ...metadata,
+          candidates: [
+            { providerGameId: 'historical-a', title: 'Historical Candidate', releaseDate: null },
+          ],
+        },
+      }),
+    );
+
+    expect(screen.queryByRole('list', { name: 'Metadata candidates' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Historical Candidate')).not.toBeInTheDocument();
   });
 
   it('represents an existing user selection and clears only that provider choice', () => {

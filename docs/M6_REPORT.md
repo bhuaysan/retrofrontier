@@ -11,6 +11,7 @@
 - Main comparison at start: local `main` and `origin/main` were both
   `9a1a1e3d8c38633c1c82bc95293c6a6024e94e93`; no rebase was required.
 - Original M6.1 implementation commits remain `1cdf5a2` and `e7f3df8`; they were not rewritten.
+- M6.5 corrective-pass starting HEAD: `dbbf7bb5047c5c024861b79cfe9048f0742d49b0`.
 - Final M6.4 HEAD: recorded after the focused implementation commit in the final repository
   handoff below.
 - Final M6.5 implementation and documentation commit is recorded in the final repository handoff
@@ -34,8 +35,9 @@
 
 Current phase: M6.1, M6.2, and M6.3 are complete. M6.3's adversarial review found 0 CRITICAL and
 0 HIGH findings; its focused corrective pass is complete and was not reopened for M6.4.
-M6.4 implementation and its runtime corrective pass are complete. M6.5 implementation is complete
-on `feat/m6-library-ui` and is awaiting adversarial review before M6.6.
+M6.4 implementation and its runtime corrective pass are complete. M6.5 implementation and its
+adversarial corrective pass are complete on `feat/m6-library-ui`; it is awaiting focused delta
+review before M6.6.
 
 ## C. M6.1 — Backend Enablement
 
@@ -608,15 +610,15 @@ The account projection represents all current M5 states:
 The existing backend semantics determine the buttons. The page preserves normalized data and cover
 while a command or authoritative reread is pending.
 
-| Metadata state | Primary UI action   | Behavior                                                                                              |
-| -------------- | ------------------- | ----------------------------------------------------------------------------------------------------- |
-| `pending`      | Request metadata    | Uses `request_game_metadata`; suppressed when a live job is present.                                  |
-| `matched`      | Refresh metadata    | Uses `refresh_game_metadata`; last-known-good data remains visible.                                   |
-| `stale`        | Revalidate metadata | Uses the M5 refresh path, which re-identifies stale evidence rather than trusting an old provider ID. |
-| `noMatch`      | Try metadata again  | Reuses the backend request path; no candidate is fabricated.                                          |
-| `ambiguous`    | Search again        | Reuses the backend request path and shows the returned candidate panel when candidates exist.         |
-| `deferred`     | Try metadata again  | Uses the existing backend scheduler/defer policy; React does not calculate timing.                    |
-| `failed`       | Retry metadata      | Uses the supported request path and leaves current data intact if it fails.                           |
+| Metadata state | Primary UI action                                                                                       | Behavior                                                                                                                    |
+| -------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `pending`      | Request metadata                                                                                         | Uses `request_game_metadata`; suppressed when a live job is present.                                                       |
+| `matched`      | Refresh metadata                                                                                         | Uses `refresh_game_metadata`; last-known-good data remains visible and historical candidate rows stay hidden.              |
+| `stale`        | Revalidate metadata                                                                                      | Uses the M5 refresh path, which re-identifies stale evidence rather than trusting an old provider ID.                      |
+| `noMatch`      | Try metadata again                                                                                        | Reuses the backend request path; no candidate is fabricated.                                                               |
+| `ambiguous`    | Search again                                                                                              | Reuses the backend request path; an existing candidate panel is also available for direct manual resolution.               |
+| `deferred`     | None for a capability gate or existing candidates; try again only for a provider deferral without rows | Capability-gated content and persisted manual candidates do not get another automatic request; provider policy stays native. |
+| `failed`       | None when candidates exist; retry only when no candidates are available                                  | Existing candidates are the recovery path; retry remains available only when there is no manual choice to make.            |
 
 Live `pending`, `running`, or `deferred` jobs suppress duplicate primary requests. Mutation failure
 is shown with fixed safe copy and leaves the prior metadata state, normalized record, and cover
@@ -628,12 +630,44 @@ M3U/playlist, other container representations, missing identity evidence, unmapp
 offline, authentication, and media-cache conditions do not imply that local content is missing or
 that a playable game has become unavailable. ZIP/archive support was not added.
 
-### Ambiguity and user-owned selection
+### Candidate lifecycle and user-owned selection
 
-For `ambiguous` metadata with candidates, the detail page renders an inline bounded group in the
-backend's returned order. Each row contains only the safe candidate title, release date when
-present, ordinal position, and an explicit SELECT control. It does not display provider IDs,
-confidence percentages, similarity scores, raw responses, or a frontend-resorted order.
+The M5 lifecycle was verified against the application and repository code rather than inferred from
+frontend labels:
+
+- An insufficient deterministic response calls `persist_ambiguous`, which upserts the stable
+  provider match and replaces candidates in provider ordinal order.
+- An unsupported representation searches for suggestions, then `persist_unsupported` writes
+  `deferred` plus `unsupportedReason` and replaces candidates. The current capability-gated cases
+  include CHD, CUE/BIN, GDI, M3U/playlist, and RVZ/GCM or other unsupported container
+  representations, as well as unmapped systems and missing identity evidence.
+- A provider failure is handled by `record_identification_failure`: non-matched relationships can
+  become `deferred` or `failed`, while `persist_match` keeps the stable `(game, provider)` row and
+  does not replace its existing candidate rows. A transient failure can therefore demote an
+  ambiguous result without discarding its manual choices.
+- Stale marking is a status-only repository update, so candidate rows remain present there too.
+- Selecting a candidate uses the existing `select_game_metadata_candidate` command. The stored
+  user selection makes the next identification short-circuit to the chosen provider record and
+  attach `heuristic_user_confirmed`. Clearing selection removes only the user-owned pin, emits no
+  metadata event in M5, and the UI performs an authoritative reread. Accepted `matched` states can
+  retain candidate rows physically, but those rows are historical and are not shown as choices.
+
+The final presentation invariant is `hasSelectableCandidates`: the metadata DTO must have a
+non-empty candidate array and its current status must not be `matched`. This keeps candidate
+availability data-driven, reaches `ambiguous`, `deferred`, `failed`, `stale`, and other unresolved
+states when the DTO carries rows, and avoids inventing a picker for empty arrays. `matched` is the
+explicit historical-row exception because M5 leaves candidate rows intact after an accepted match.
+The candidate list remains inline, bounded, and in backend-returned order. Each row contains only
+the safe candidate title, release date when present, ordinal position, and an explicit SELECT
+control. It does not display provider IDs, confidence percentages, similarity scores, raw responses,
+or a frontend-resorted order.
+
+Capability-gated `deferred` states describe manual resolution and have no automatic retry action.
+`deferred` or `failed` states with candidates likewise have no repeated provider request action; the
+candidate panel is the meaningful recovery path. A provider-originated `deferred` state with no
+capability reason and no candidates retains the existing retry, and a `failed` state without
+candidates retains its retry. `ambiguous` keeps SEARCH AGAIN as an optional provider search because
+the backend can issue a new search, while direct candidate selection remains available.
 
 When M5 returns `userSelection`, the page labels the association USER-CONFIRMED MATCH and offers
 FORGET PROVIDER CHOICE. Clear means “forget RetroFrontier's manual provider choice”; it does not
@@ -679,11 +713,13 @@ Focused frontend coverage was added for provider/account status mapping, bounded
 StrictMode effect replay, write-only credential submission, fake-secret redaction, password clearing,
 save-field locking, duplicate credential mutation suppression, unmount safety, all seven metadata
 states and action mappings, live-region semantics, cached-data preservation, request/refresh failure,
-ordered candidates, absent candidates, candidate selection, selection failure, current user
-selection, clear selection/failure, event invalidation, duplicate metadata actions, route changes
-during mutation, and post-mutation focus. Settings integration coverage verifies that root management
-remains visible under provider failure and that offline/quota copy does not leak timestamps or
-internal codes. Existing M6.2–M6.4 and Rust suites remain in scope.
+ordered candidates, candidates in ambiguous/deferred/failed/stale states, capability-gated deferred
+copy, empty candidate sets, historical candidates after a match, candidate selection from deferred
+and failed state, selection failure, current user selection, clear selection/failure, event invalidation,
+duplicate metadata actions, route changes during mutation, and post-mutation focus. Settings
+integration coverage verifies that root management remains visible under provider failure and that
+offline/quota copy does not leak timestamps or internal codes. Existing M6.2–M6.4 and Rust suites
+remain in scope.
 
 The security review found no production credential readback or new backend capability. The password
 is submitted only to `set_metadata_provider_credentials`, held only by the current form/mutation
@@ -692,6 +728,34 @@ Read DTOs have no password field. Developer/application credentials cross no fro
 DTOs are safe display projections; provider IDs are used only as opaque command arguments/React keys.
 No authenticated URL, raw provider response, hash/fingerprint, filesystem capability, or broad
 Tauri permission was added.
+
+### M6.5 adversarial corrective pass
+
+The M6.5 adversarial review found 0 CRITICAL, 1 HIGH, 6 MEDIUM, 6 LOW, and 9 INFO findings. This
+pass fixed only HIGH-1 and its inseparable MEDIUM-1 companion; the review artifact remains
+unchanged. HIGH-1 was verified as a frontend reachability defect: `GameDetailPage` previously
+rendered `MetadataCandidates` only for `status === 'ambiguous'`, even though the M5 DTO can carry
+persisted candidates after an unsupported-content `deferred` result or after failure demotes an
+existing relationship to `deferred`/`failed`. MEDIUM-1 was the matching action defect: the page
+offered `TRY METADATA AGAIN` for capability-gated deferred content even though the same backend
+capability gate would repeat and spend provider search capacity.
+
+The correction is frontend-only. `hasSelectableCandidates` derives one presentation decision from
+the authoritative metadata DTO: non-empty candidates and a non-`matched` current status. The
+detail page now exposes ordered candidates for `ambiguous`, `deferred`, and `failed` when present,
+keeps empty deferred/failed states free of a fake picker, and hides candidate rows retained as
+historical data after `matched`. `deferred` with a non-null `unsupportedReason` suppresses the
+automatic request action; `deferred`/`failed` with candidates suppress repeated automatic recovery;
+provider-deferred `deferred` without candidates and `failed` without candidates retain their
+existing retry paths. No backend command, candidate ordering, provider policy, quota calculation,
+credential flow, mutation path, or M6.6 work changed.
+
+The targeted regressions cover ambiguous, deferred, failed, and stale candidate visibility; deferred
+and failed empty states; all current unsupported-content reason values; capability-gated copy; manual
+selection and opaque provider-ID forwarding; backend order preservation; historical matched rows;
+and the no-confidence-score contract. Backend lifecycle tests were also run for unsupported
+container handling, ambiguous candidate persistence, user-confirmed selection/refresh, and the
+unsupported-content user-pin stale guard. No real provider quota or credentials were used.
 
 ## H. M6.6 — Hardening / Accessibility / Documentation
 
@@ -777,9 +841,10 @@ in scope. No live ScreenScraper or copyrighted fixture is used.
 - Accepted M6.2/M6.3/M6.4 non-blocking review debt remains deferred to M6.6 where applicable.
 - Existing documented non-blocking M5/M4 observations that are not correctness dependencies of M6.1.
 
-## M. Final Verification
+## M. M6.5 Implementation Verification (before adversarial corrective pass)
 
-Final M6.5 verification is recorded here after the implementation and documentation changes:
+The original M6.5 implementation verification is retained here for historical context. The
+corrective-pass verification is recorded in section Q below:
 
 - `pnpm typecheck` — PASS — `tsc -b --pretty false`, exit 0.
 - `pnpm lint` — PASS — `eslint .`, exit 0.
@@ -962,7 +1027,7 @@ migration or data deletion was performed as part of this pass.
 The synthetic fixture was removed from the managed ROM directory after verification. No
 runtime-generated user data is committed.
 
-### Corrective-pass verification
+### M6.4 corrective-pass verification
 
 - `pnpm typecheck` — PASS — exit 0.
 - `pnpm lint` — PASS — exit 0.
@@ -983,15 +1048,58 @@ performed, so the watcher event-kind behaviour on FSEvents and ReadDirectoryChan
 from the `notify` backends rather than observed; neither backend emits `Access` events, so the
 filter cannot suppress a real change there.
 
-## O. Remaining Deferrals After the Corrective Pass
+## O. Remaining Deferrals After the M6.5 Corrective Pass
 
-Deferred to M6.6, unchanged by this pass: MEDIUM-2 runtime-trust predicate duplication, MEDIUM-4
-focus restoration, MEDIUM-5 light-theme contrast, MEDIUM-7 missing regression suite, and LOW-1
-through LOW-5. Background scanline visual fidelity is recorded as a new M6.6 visual-fidelity
-follow-up and was deliberately not touched here. Accepted M6.2/M6.3 debt is unchanged. M6.5 adds
-no scan trigger or catalog refresh path, so the corrected idle-watcher and sidebar-stability
-behavior remains intact.
+This pass intentionally leaves the non-blocking M6.5 review findings for the focused delta review
+and/or M6.6: MEDIUM-2 expired provider deferral copy, MEDIUM-3 unvalidated personal-account copy,
+MEDIUM-4 section-wide candidate pending state, MEDIUM-5 permanent-failure retry semantics,
+MEDIUM-6 priority race/security regression coverage, LOW-1 mutation generation ownership, LOW-2
+clear-account availability, LOW-3 field-level credential associations, LOW-4 quota recency copy,
+LOW-5 unreachable provider-deferral copy, and LOW-6 ambiguous empty-copy duplication. INFO-1 through
+INFO-9 remain observations, not corrective-pass blockers. Existing M6.2/M6.3/M6.4 debt also stays
+deferred. M6.6 still owns cross-screen visual/accessibility/hardening work, including card polish,
+scanline fidelity, contrast, focus custody/return focus, and the remaining regression-suite debt.
+No M6.6 implementation began here; the corrected pass adds no scan trigger or catalog refresh path.
 
 ## P. Current M6 Verdict
 
-`M6.5 IMPLEMENTATION COMPLETE — ready for adversarial review before M6.6`
+`M6.5 CORRECTIVE PASS COMPLETE — ready for focused delta review before M6.6`
+
+## Q. M6.5 Adversarial Corrective-Pass Verification
+
+The corrective pass made no Rust production change, no TypeScript DTO/IPC change, no credential
+change, and no M6.6 change. The focused tests and final checks were run from corrective-pass
+starting HEAD `dbbf7bb5047c5c024861b79cfe9048f0742d49b0`:
+
+- `pnpm exec vitest run src/features/library/metadataActions.test.ts src/features/library/GameDetailPage.test.tsx src/hooks/useGameDetail.test.tsx` — PASS — 3 files, 82 tests, exit 0.
+- `pnpm typecheck` — PASS — `tsc -b --pretty false`, exit 0.
+- `pnpm lint` — PASS — `eslint .`, exit 0.
+- `pnpm format:check` — PASS — all matched files use Prettier code style, exit 0.
+- `pnpm test` — PASS — 16 files, 207 tests, exit 0.
+- `pnpm build` — PASS — TypeScript build and Vite build; 54 modules transformed, exit 0.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — PASS — no output, exit 0.
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` — PASS — dev profile finished without warnings, exit 0.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — PASS — 309 tests run; 308 passed, 0 failed, 1 ignored, exit 0.
+- `cargo build --manifest-path src-tauri/Cargo.toml --release` — PASS — optimized release build finished, exit 0.
+- `pnpm tauri:build` — PASS — frontend and release application build completed at `src-tauri/target/release/retrofrontier`, exit 0.
+- `git diff --check` — PASS — no whitespace errors, exit 0.
+
+### Manual sanity result
+
+- `pnpm tauri:dev` first failed in the sandbox with `listen EPERM` on `127.0.0.1:1420`, exit 1.
+- The approved retry reached native startup but exited 101 because another RetroFrontier instance
+  owned `/home/ben/.local/share/com.retrofrontier.desktop/runtime/locks/application.lock`.
+- An isolated temporary-data retry reached native startup but its temporary XDG config could not
+  resolve Documents (`path_unavailable`), exit 101. After preserving the existing read-only XDG
+  config, the native app initialized but the requested Vite server reported `Port 1420 is already
+  in use`, exit 1. The port owner was confirmed read-only as the pre-existing `node ... vite.js`
+  process (PID 211594); it was not killed or modified.
+- An isolated native smoke run against that existing Vite server started successfully, reconciled
+  the managed runtime as `NotInstalled`, initialized application storage, started the metadata
+  worker with no credentials, produced no further output during the observation window, and was
+  stopped with Ctrl-C. No provider action, candidate request, credential, quota, ROM, BIOS, or
+  runtime mutation was used.
+- Live candidate DTO inspection was not practical because the isolated database had no game record
+  and the existing Vite/native instance could not be displaced safely. Synthetic DTO/state
+  visibility, action hierarchy, candidate order, and selection/reread behavior are covered by the
+  focused DOM/projection/hook regressions above. Settings/provider and scan paths were not changed.

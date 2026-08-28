@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { GameMetadataState } from '../../platform/ipc';
-import { getMetadataAction, metadataStateCopy } from './metadataActions';
+import { getMetadataAction, hasSelectableCandidates, metadataStateCopy } from './metadataActions';
 
 function metadataState(
   status: GameMetadataState['status'],
   jobs: GameMetadataState['jobs'] = [],
+  overrides: Partial<GameMetadataState> = {},
 ): GameMetadataState {
   return {
     gameId: 7,
@@ -23,8 +24,14 @@ function metadataState(
     candidates: [],
     userSelection: null,
     jobs,
+    ...overrides,
   };
 }
+
+const candidates: GameMetadataState['candidates'] = [
+  { providerGameId: 'candidate-a', title: 'Candidate A', releaseDate: null },
+  { providerGameId: 'candidate-b', title: 'Candidate B', releaseDate: '1994-01-01' },
+];
 
 describe('metadata action projection', () => {
   it.each([
@@ -70,6 +77,64 @@ describe('metadata action projection', () => {
 
   it('returns no action when the metadata read has not produced a state', () => {
     expect(getMetadataAction(null)).toBeNull();
+  });
+
+  it.each(['deferred', 'failed'] as const)(
+    'makes manual candidates the recovery path for %s instead of another provider request',
+    (status) => {
+      expect(getMetadataAction(metadataState(status, [], { candidates }))).toBeNull();
+    },
+  );
+
+  it.each([
+    'systemNotMapped',
+    'chdRepresentationUndefined',
+    'cueBinRepresentationUndefined',
+    'gdiRepresentationUndefined',
+    'playlistIsNotIdentity',
+    'containerRepresentationUndefined',
+    'missingContentEvidence',
+    'noPrimaryContentFile',
+  ] as const)(
+    'does not offer automatic retry for capability-gated deferred state: %s',
+    (reason) => {
+      expect(
+        getMetadataAction(metadataState('deferred', [], { unsupportedReason: reason })),
+      ).toBeNull();
+    },
+  );
+
+  it('keeps the provider retry available for a deferred state without candidates or a capability gate', () => {
+    expect(getMetadataAction(metadataState('deferred'))).toEqual({
+      kind: 'request',
+      label: 'TRY METADATA AGAIN',
+      pendingLabel: 'REQUESTING METADATA',
+    });
+  });
+
+  it('describes a capability-gated deferred state as manual resolution', () => {
+    expect(metadataStateCopy('deferred', 'chdRepresentationUndefined')).toEqual({
+      label: 'METADATA DEFERRED',
+      description:
+        'Automatic identification is not available for this content. Choose a provider candidate below when one is available.',
+    });
+  });
+});
+
+describe('metadata candidate presentation decision', () => {
+  it.each(['ambiguous', 'deferred', 'failed', 'stale'] as const)(
+    'treats persisted candidates as selectable for %s state',
+    (status) => {
+      expect(hasSelectableCandidates(metadataState(status, [], { candidates }))).toBe(true);
+    },
+  );
+
+  it.each(['deferred', 'failed'] as const)('rejects an empty %s candidate set', (status) => {
+    expect(hasSelectableCandidates(metadataState(status))).toBe(false);
+  });
+
+  it('does not treat historical candidates on an accepted match as selectable', () => {
+    expect(hasSelectableCandidates(metadataState('matched', [], { candidates }))).toBe(false);
   });
 });
 
