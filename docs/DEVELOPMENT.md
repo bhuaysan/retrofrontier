@@ -9,7 +9,10 @@ browsing, debounced search, system/favorite filters, page controls, favorites,
 cached covers, and coalesced metadata invalidation. Core selection UI and game
 launching remain later milestones. M6.4 adds bounded game detail, normalized
 metadata, content-unit presentation, and display of the existing Rust-authoritative
-system readiness snapshot.
+system readiness snapshot. M6.5 adds bounded provider/account status settings,
+write-only optional account credentials, metadata request/refresh actions, and
+ordered candidate selection. Local library and cached metadata remain usable when
+the provider is offline.
 
 ## Prerequisites
 
@@ -114,7 +117,9 @@ recommend one. Its absence is not an error — RetroFrontier logs a warning and
 falls back to a session-only store, and the local library is unaffected.
 
 Rust stores personal accounts in the OS credential vault; SQLite holds only an opaque reference, and no read command
-returns a password. Tests never touch a real keychain: they inject an in-memory
+returns a password. The M6.5 Settings form submits credentials through the narrow
+write-only command, clears its password field after the command settles, and never
+renders or logs the password. Tests never touch a real keychain: they inject an in-memory
 vault, and the same in-memory vault is the session-only fallback on a host with no
 usable credential store.
 

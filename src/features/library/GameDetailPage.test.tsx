@@ -123,9 +123,16 @@ function detailModel(overrides: Partial<GameDetailModel> = {}): GameDetailModel 
     metadataError: null,
     favoritePending: false,
     favoriteError: null,
+    metadataActionPending: false,
+    metadataActionKind: null,
+    metadataActionError: null,
     refresh: vi.fn().mockResolvedValue(undefined),
     retryLocal: vi.fn().mockResolvedValue(undefined),
     retryMetadata: vi.fn().mockResolvedValue(undefined),
+    requestMetadata: vi.fn().mockResolvedValue(undefined),
+    refreshMetadata: vi.fn().mockResolvedValue(undefined),
+    selectMetadataCandidate: vi.fn().mockResolvedValue(undefined),
+    clearMetadataSelection: vi.fn().mockResolvedValue(undefined),
     toggleFavorite: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -155,6 +162,8 @@ describe('GameDetailPage', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Ridge Racer' })).toBeInTheDocument();
     expect(screen.getByText('PlayStation')).toBeInTheDocument();
     expect(screen.getByText('A fast arcade racing game.')).toBeInTheDocument();
+    const metadataPanel = screen.getByRole('region', { name: /normalized metadata/i });
+    expect(within(metadataPanel).getByRole('status')).toHaveTextContent('METADATA MATCHED');
     expect(screen.getAllByText('Namco')).toHaveLength(2);
     expect(screen.getByText('1994-12-03')).toBeInTheDocument();
     expect(
@@ -238,7 +247,7 @@ describe('GameDetailPage', () => {
       'src',
       'rfmedia://localhost/cover/7',
     );
-    expect(screen.getByText(/revalidation is needed/i)).toBeInTheDocument();
+    expect(screen.getByText(/while it is revalidated/i)).toBeInTheDocument();
   });
 
   it.each([
@@ -257,6 +266,159 @@ describe('GameDetailPage', () => {
       expect(screen.getByText(/Ridge Racer Local/)).toBeInTheDocument();
     },
   );
+
+  it.each([
+    ['pending', 'REQUEST METADATA'],
+    ['matched', 'REFRESH METADATA'],
+    ['stale', 'REVALIDATE METADATA'],
+    ['noMatch', 'TRY METADATA AGAIN'],
+    ['ambiguous', 'SEARCH AGAIN'],
+    ['deferred', 'TRY METADATA AGAIN'],
+    ['failed', 'RETRY METADATA'],
+  ] as const)('offers the supported metadata action for %s', (status, label) => {
+    renderDetail(detailModel({ metadata: { ...metadata, status } }));
+
+    expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
+  });
+
+  it('renders ordered provider candidates without inventing confidence or exposing provider IDs', () => {
+    const selectMetadataCandidate = vi.fn().mockResolvedValue(undefined);
+    const ambiguousMetadata: GameMetadataState = {
+      ...metadata,
+      status: 'ambiguous',
+      metadata: null,
+      providerGameId: null,
+      providerRomId: null,
+      candidates: [
+        { providerGameId: 'candidate-a', title: 'Zelda Candidate', releaseDate: '1986-02-21' },
+        { providerGameId: 'candidate-b', title: 'Another Zelda', releaseDate: null },
+      ],
+    };
+
+    renderDetail(detailModel({ metadata: ambiguousMetadata, selectMetadataCandidate }));
+
+    const list = screen.getByRole('list', { name: 'Metadata candidates' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    expect(
+      within(list)
+        .getAllByRole('heading', { level: 4 })
+        .map((heading) => heading.textContent),
+    ).toEqual(['Zelda Candidate', 'Another Zelda']);
+    expect(screen.queryByText(/%|confidence|score/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('candidate-a')).not.toBeInTheDocument();
+    expect(screen.queryByText('candidate-b')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /select zelda candidate/i }));
+    expect(selectMetadataCandidate).toHaveBeenCalledWith('candidate-a');
+  });
+
+  it('shows truthful in-flight feedback while a candidate choice is being applied', () => {
+    const ambiguousMetadata: GameMetadataState = {
+      ...metadata,
+      status: 'ambiguous',
+      metadata: null,
+      providerGameId: null,
+      providerRomId: null,
+      candidates: [{ providerGameId: 'candidate-a', title: 'Zelda Candidate', releaseDate: null }],
+    };
+
+    renderDetail(
+      detailModel({
+        metadata: ambiguousMetadata,
+        metadataActionPending: true,
+        metadataActionKind: 'select',
+      }),
+    );
+
+    expect(screen.getByRole('button', { name: /selecting zelda candidate/i })).toHaveTextContent(
+      'SELECTING…',
+    );
+    const metadataPanel = screen.getByRole('region', { name: /normalized metadata/i });
+    expect(within(metadataPanel).getAllByRole('status')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ textContent: expect.stringContaining('SELECTING MATCH') }),
+      ]),
+    );
+  });
+
+  it('returns focus to the metadata section after a metadata mutation settles', () => {
+    const initial = detailModel();
+    const view = renderDetail(initial);
+    const heading = screen.getByRole('heading', { name: 'NORMALIZED METADATA' });
+
+    view.rerender(
+      <GameDetailPage
+        detail={detailModel({ metadataActionPending: true })}
+        gameId={7}
+        onBackToLibrary={vi.fn()}
+        onRetryReadiness={vi.fn()}
+        readinessError={null}
+        systemStatus={systemStatus()}
+      />,
+    );
+    view.rerender(
+      <GameDetailPage
+        detail={detailModel()}
+        gameId={7}
+        onBackToLibrary={vi.fn()}
+        onRetryReadiness={vi.fn()}
+        readinessError={null}
+        systemStatus={systemStatus()}
+      />,
+    );
+
+    expect(document.activeElement).toBe(heading);
+  });
+
+  it('does not create a candidate picker when the backend returns no candidates', () => {
+    renderDetail(
+      detailModel({
+        metadata: { ...metadata, status: 'ambiguous', candidates: [] },
+      }),
+    );
+
+    expect(screen.getByText(/no provider candidates were returned/i)).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Metadata candidates' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /select candidate/i })).not.toBeInTheDocument();
+  });
+
+  it('represents an existing user selection and clears only that provider choice', () => {
+    const clearMetadataSelection = vi.fn().mockResolvedValue(undefined);
+    const selectedMetadata: GameMetadataState = {
+      ...metadata,
+      matchType: 'heuristicUserConfirmed',
+      userSelection: {
+        gameId: 7,
+        providerId: 'screenScraper',
+        providerGameId: 'provider-id-hidden',
+        updatedAt: 4,
+      },
+    };
+
+    renderDetail(detailModel({ metadata: selectedMetadata, clearMetadataSelection }));
+
+    expect(screen.getByText('USER-CONFIRMED MATCH')).toBeInTheDocument();
+    expect(screen.getByText(/forget.*provider choice/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'FORGET PROVIDER CHOICE' }));
+    expect(clearMetadataSelection).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('provider-id-hidden')).not.toBeInTheDocument();
+  });
+
+  it('keeps cached metadata visible and redacts metadata action failures', () => {
+    const actionError = {
+      code: 'metadata_unavailable',
+      message: 'https://provider.invalid?password=fake-secret-never-render',
+    } as never;
+
+    renderDetail(detailModel({ metadataActionError: actionError }));
+
+    expect(screen.getByText('A fast arcade racing game.')).toBeInTheDocument();
+    expect(screen.getByText('METADATA ACTION FAILED')).toBeInTheDocument();
+    expect(screen.getByText(/cached metadata remains unchanged/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/provider\.invalid|fake-secret-never-render/i),
+    ).not.toBeInTheDocument();
+  });
 
   it('keeps local detail visible when metadata fails and exposes an independent retry', () => {
     const retryMetadata = vi.fn().mockResolvedValue(undefined);

@@ -18,9 +18,11 @@ entry points. M6.3 adds bounded local library browsing with debounced search,
 system and favorite filters, page controls, authoritative favorite mutations,
 cached covers, and offline-safe cover fallbacks. M6.4 adds semantic game detail,
 normalized metadata presentation, local content-unit summaries, and Rust-authoritative
-runtime/core/BIOS readiness information without launch behavior. M7 owns launching.
-M6.1 provides the bounded library-query, summary, local-detail, favorite, scan-issue,
-and cached-cover IPC foundations consumed by the current UI.
+runtime/core/BIOS readiness information without launch behavior. M6.5 adds metadata/provider
+status and optional account settings, write-only credential submission, game metadata request/
+refresh actions, and ordered candidate resolution while preserving local-first offline behavior.
+M7 owns launching. M6.1 provides the bounded library-query, summary, local-detail, favorite,
+scan-issue, cached-cover, and metadata-invalidation IPC foundations consumed by the current UI.
 
 ## Stack
 

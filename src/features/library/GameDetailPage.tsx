@@ -1,13 +1,17 @@
 import { useEffect, useRef, type CSSProperties } from 'react';
 
 import { InlineError } from '../../components/ui/InlineError';
+import { PixelButton } from '../../components/ui/PixelButton';
 import { PixelArrow } from '../../components/ui/PixelIcon';
+import { getMetadataAction, metadataStateCopy } from './metadataActions';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
 import type {
   GameMetadataState,
   IpcError,
   LibraryGameDetail,
+  ProviderFailureClass,
   SystemStatus,
+  UnsupportedContentReason,
 } from '../../platform/ipc';
 import { GameCover } from './GameCover';
 import { PixelStar } from './GameCard';
@@ -23,40 +27,6 @@ interface GameDetailPageProps {
   onRetryReadiness: () => void;
   onBackToLibrary: () => void;
 }
-
-const METADATA_STATE_COPY: Record<
-  GameMetadataState['status'],
-  { label: string; description: string }
-> = {
-  pending: {
-    label: 'METADATA PENDING',
-    description: 'Metadata lookup is still in progress. Local game information remains available.',
-  },
-  matched: {
-    label: 'METADATA MATCHED',
-    description: 'Normalized metadata is associated with this local game.',
-  },
-  noMatch: {
-    label: 'NO METADATA MATCH',
-    description: 'No provider match is available. This local game remains usable in the library.',
-  },
-  ambiguous: {
-    label: 'MATCH REVIEW NEEDED',
-    description: 'More than one metadata match needs review. No candidate was chosen here.',
-  },
-  deferred: {
-    label: 'METADATA DEFERRED',
-    description: 'Metadata lookup is deferred. Try again later from the metadata workflow.',
-  },
-  failed: {
-    label: 'METADATA UNAVAILABLE',
-    description: 'Metadata could not be enriched. Local game information remains available.',
-  },
-  stale: {
-    label: 'METADATA STALE',
-    description: 'Showing last-known-good metadata; revalidation is needed.',
-  },
-};
 
 function contentKindLabel(kind: LibraryGameDetail['contentUnits'][number]['kind']) {
   switch (kind) {
@@ -83,6 +53,70 @@ function formatFileCount(fileCount: number) {
 
 function toneClass(tone: ReadinessTone) {
   return `readiness-status readiness-status--${tone}`;
+}
+
+function metadataFailureCopy(failure: ProviderFailureClass | null) {
+  switch (failure) {
+    case 'capacityDeferred':
+      return 'Provider capacity is temporarily deferred. Cached metadata remains visible.';
+    case 'dailyQuotaExceeded':
+      return 'The provider daily quota is temporarily deferred. Cached metadata remains visible.';
+    case 'negativeQuotaExceeded':
+      return 'The provider no-match quota is temporarily deferred. Cached metadata remains visible.';
+    case 'providerRestricted':
+      return 'Provider access is temporarily deferred. Cached metadata remains visible.';
+    case 'providerUnavailable':
+    case 'transport':
+    case 'transientServer':
+      return 'The metadata provider is unavailable. Cached metadata remains visible.';
+    case 'developerAuthenticationFailed':
+    case 'credentialsUnavailable':
+      return 'The metadata provider is not configured for this build. Local content remains usable.';
+    case 'userAuthenticationFailed':
+      return 'The optional personal provider account needs attention. Local content remains usable.';
+    case 'mediaUnavailable':
+      return 'Metadata is available, but the provider cover could not be cached.';
+    default:
+      return null;
+  }
+}
+
+function unsupportedContentCopy(reason: UnsupportedContentReason | null) {
+  switch (reason) {
+    case 'systemNotMapped':
+      return 'This system is not mapped to the current metadata provider.';
+    case 'chdRepresentationUndefined':
+      return 'CHD content is playable locally, but this representation is not automatically identified.';
+    case 'cueBinRepresentationUndefined':
+      return 'CUE / BIN content is playable locally, but this representation is not automatically identified.';
+    case 'gdiRepresentationUndefined':
+      return 'GDI content is playable locally, but this representation is not automatically identified.';
+    case 'playlistIsNotIdentity':
+      return 'A playlist is not used as provider identity. Its local content remains available.';
+    case 'containerRepresentationUndefined':
+      return 'This container representation is not automatically identified by the provider.';
+    case 'missingContentEvidence':
+      return 'The local content does not have enough identification evidence for automatic lookup.';
+    case 'noPrimaryContentFile':
+      return 'The local content has no primary file for automatic provider lookup.';
+    default:
+      return null;
+  }
+}
+
+function metadataOperationPendingLabel(kind: GameDetailModel['metadataActionKind']) {
+  switch (kind) {
+    case 'request':
+      return 'REQUESTING METADATA';
+    case 'refresh':
+      return 'UPDATING METADATA';
+    case 'select':
+      return 'SELECTING MATCH';
+    case 'clear':
+      return 'FORGETTING PROVIDER CHOICE';
+    default:
+      return 'UPDATING METADATA';
+  }
 }
 
 function BackToLibrary({ onBackToLibrary }: { onBackToLibrary: () => void }) {
@@ -244,17 +278,120 @@ function ReadinessSection({
   );
 }
 
+function MetadataCandidates({
+  detail,
+  metadataState,
+}: {
+  detail: GameDetailModel;
+  metadataState: GameMetadataState;
+}) {
+  if (metadataState.status !== 'ambiguous' || metadataState.candidates.length === 0) {
+    return metadataState.status === 'ambiguous' ? (
+      <p className="game-detail-empty-copy">
+        No provider candidates were returned. Search again when the provider is available; local
+        content is unchanged.
+      </p>
+    ) : null;
+  }
+
+  const selectedProviderGameId = metadataState.userSelection?.providerGameId ?? null;
+  const selecting = detail.metadataActionKind === 'select';
+
+  return (
+    <div
+      aria-labelledby="metadata-candidate-heading"
+      className="metadata-candidate-panel"
+      role="group"
+    >
+      <div className="metadata-candidate-heading">
+        <div>
+          <span className="game-detail-kicker">ORDERED PROVIDER RESULTS</span>
+          <h3 id="metadata-candidate-heading">CHOOSE A METADATA MATCH</h3>
+        </div>
+        <span className="game-detail-panel-meta">
+          {metadataState.candidates.length}{' '}
+          {metadataState.candidates.length === 1 ? 'OPTION' : 'OPTIONS'}
+        </span>
+      </div>
+      <ul aria-label="Metadata candidates" className="metadata-candidate-list">
+        {metadataState.candidates.map((candidate, index) => {
+          const selected = selectedProviderGameId === candidate.providerGameId;
+          const date = candidate.releaseDate
+            ? `RELEASED ${candidate.releaseDate}`
+            : 'RELEASE DATE UNKNOWN';
+          return (
+            <li
+              className={`metadata-candidate${selected ? ' metadata-candidate--selected' : ''}`}
+              key={`${candidate.providerGameId}-${index}`}
+            >
+              <div className="metadata-candidate-copy">
+                <span className="metadata-candidate-index">
+                  {String(index + 1).padStart(2, '0')}
+                </span>
+                <div>
+                  <h4>{candidate.title}</h4>
+                  <span>{date}</span>
+                </div>
+              </div>
+              <PixelButton
+                aria-busy={selecting}
+                aria-pressed={selected}
+                aria-label={`${selecting ? 'Selecting' : 'Select'} ${candidate.title} candidate ${index + 1}`}
+                className="metadata-candidate-action"
+                disabled={detail.metadataActionPending}
+                onClick={() => void detail.selectMetadataCandidate(candidate.providerGameId)}
+                type="button"
+                variant={selected ? 'primary' : 'secondary'}
+              >
+                {selecting ? 'SELECTING…' : selected ? 'SELECTED' : 'SELECT'}
+              </PixelButton>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function MetadataSection({ detail }: { detail: GameDetailModel }) {
+  const metadataHeading = useRef<HTMLHeadingElement>(null);
+  const wasActionPending = useRef(false);
   const metadataState = detail.metadata;
   const normalized = metadataState?.metadata?.metadata ?? null;
-  const stateCopy = metadataState ? METADATA_STATE_COPY[metadataState.status] : null;
+  const stateCopy = metadataState ? metadataStateCopy(metadataState.status) : null;
+  const action = getMetadataAction(metadataState);
+  const pendingLabel = metadataOperationPendingLabel(detail.metadataActionKind);
+  const failureCopy = metadataFailureCopy(metadataState?.lastFailure ?? null);
+  const unsupportedCopy = unsupportedContentCopy(metadataState?.unsupportedReason ?? null);
+  const userConfirmed =
+    metadataState?.userSelection !== null && metadataState?.userSelection !== undefined;
+
+  const runMetadataAction = () => {
+    if (!action) return;
+    if (action.kind === 'request') void detail.requestMetadata();
+    else void detail.refreshMetadata();
+  };
+
+  const stateDescription =
+    metadataState?.status === 'ambiguous' && metadataState.candidates.length === 0
+      ? 'No provider candidates are available. Search again without changing local content.'
+      : stateCopy?.description;
+
+  useEffect(() => {
+    if (wasActionPending.current && !detail.metadataActionPending) {
+      metadataHeading.current?.focus();
+    }
+    wasActionPending.current = detail.metadataActionPending;
+  }, [detail.metadataActionPending]);
 
   return (
     <section aria-labelledby="metadata-heading" className="game-detail-panel game-detail-metadata">
       <div className="game-detail-panel-heading">
         <div>
           <span className="game-detail-kicker">ENRICHMENT</span>
-          <h2 id="metadata-heading">NORMALIZED METADATA</h2>
+          <h2 id="metadata-heading" ref={metadataHeading} tabIndex={-1}>
+            NORMALIZED METADATA
+          </h2>
         </div>
         {stateCopy ? <span className="game-detail-panel-meta">{stateCopy.label}</span> : null}
       </div>
@@ -266,17 +403,74 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
           onAction={() => void detail.retryMetadata()}
         />
       )}
+      {detail.metadataActionError ? (
+        <InlineError
+          title="METADATA ACTION FAILED"
+          message="The metadata action could not be completed. Cached metadata remains unchanged; try again when the provider is available."
+        />
+      ) : null}
       {detail.metadataLoading && !metadataState ? (
         <p className="game-detail-inline-status" role="status">
           READING NORMALIZED METADATA…
         </p>
       ) : null}
       {stateCopy ? (
-        <div className={`metadata-state-callout metadata-state-callout--${metadataState?.status}`}>
+        <div
+          aria-live="polite"
+          className={`metadata-state-callout metadata-state-callout--${metadataState?.status}`}
+          role="status"
+        >
           <strong>{stateCopy.label}</strong>
-          <p>{stateCopy.description}</p>
+          <p>{stateDescription}</p>
+          {failureCopy ? <p className="metadata-state-detail">{failureCopy}</p> : null}
+          {unsupportedCopy ? <p className="metadata-state-detail">{unsupportedCopy}</p> : null}
         </div>
       ) : null}
+      {metadataState && action ? (
+        <div className="metadata-action-row">
+          <PixelButton
+            aria-busy={detail.metadataActionPending}
+            disabled={detail.metadataActionPending || detail.metadataLoading}
+            onClick={runMetadataAction}
+            type="button"
+            variant="secondary"
+          >
+            {detail.metadataActionPending ? pendingLabel : action.label}
+          </PixelButton>
+          {detail.metadataActionPending ? (
+            <span className="game-detail-inline-status" role="status">
+              {pendingLabel}…
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {detail.metadataActionPending && !action ? (
+        <p className="game-detail-inline-status" role="status">
+          {pendingLabel}…
+        </p>
+      ) : null}
+      {metadataState?.jobs.some((job) => ['pending', 'running', 'deferred'].includes(job.state)) ? (
+        <p className="game-detail-inline-status" role="status">
+          METADATA WORK IS ALREADY QUEUED. LOCAL CONTENT REMAINS AVAILABLE.
+        </p>
+      ) : null}
+      {userConfirmed ? (
+        <div className="metadata-selection-summary">
+          <div>
+            <strong>USER-CONFIRMED MATCH</strong>
+            <p>RetroFrontier will keep this provider choice until you forget it.</p>
+          </div>
+          <PixelButton
+            disabled={detail.metadataActionPending}
+            onClick={() => void detail.clearMetadataSelection()}
+            type="button"
+            variant="secondary"
+          >
+            FORGET PROVIDER CHOICE
+          </PixelButton>
+        </div>
+      ) : null}
+      {metadataState ? <MetadataCandidates detail={detail} metadataState={metadataState} /> : null}
       {normalized ? (
         <>
           {normalized.synopsis ? (
@@ -324,7 +518,8 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
           </dl>
           {metadataState?.metadata?.provenance.sourceCredit ? (
             <p className="game-detail-provenance">
-              SOURCE CREDIT · {metadataState.metadata.provenance.sourceCredit}
+              {userConfirmed ? 'USER-CONFIRMED MATCH · ' : ''}SOURCE CREDIT ·{' '}
+              {metadataState.metadata.provenance.sourceCredit}
             </p>
           ) : null}
         </>

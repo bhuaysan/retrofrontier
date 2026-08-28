@@ -45,6 +45,10 @@ const mocks = vi.hoisted(() => {
     getLibraryGameDetail: vi.fn(),
     getGameMetadata: vi.fn(),
     setGameFavorite: vi.fn(),
+    getMetadataProviderStatus: vi.fn(),
+    getMetadataProviderAccount: vi.fn(),
+    setMetadataProviderCredentials: vi.fn(),
+    clearMetadataProviderCredentials: vi.fn(),
     getScanStatus: vi.fn(),
     getScanIssuePage: vi.fn(),
     getSystems: vi.fn(),
@@ -72,6 +76,10 @@ vi.mock('../platform/ipc', () => ({
   getLibraryGameDetail: mocks.getLibraryGameDetail,
   getGameMetadata: mocks.getGameMetadata,
   setGameFavorite: mocks.setGameFavorite,
+  getMetadataProviderStatus: mocks.getMetadataProviderStatus,
+  getMetadataProviderAccount: mocks.getMetadataProviderAccount,
+  setMetadataProviderCredentials: mocks.setMetadataProviderCredentials,
+  clearMetadataProviderCredentials: mocks.clearMetadataProviderCredentials,
   getScanStatus: mocks.getScanStatus,
   getScanIssuePage: mocks.getScanIssuePage,
   getSystems: mocks.getSystems,
@@ -135,6 +143,34 @@ const systemsResponse = {
 };
 
 const inactiveStatus = { running: false, progress: null, lastResult: null };
+
+const metadataProviderStatus = {
+  providerId: 'screenScraper' as const,
+  credentialsConfigured: true,
+  userAccount: 'notConfigured' as const,
+  userAccountName: null,
+  quota: {
+    maxThreads: 1,
+    maxRequestsPerMinute: 60,
+    maxRequestsPerDay: 1000,
+    maxNegativeRequestsPerDay: 100,
+    requestsToday: 0,
+    negativeRequestsToday: 0,
+  },
+  quotaObservedAt: null,
+  deferredUntil: null,
+  deferReason: null,
+  offline: false,
+  pendingJobs: 0,
+  deferredJobs: 0,
+  failedJobs: 0,
+};
+
+const metadataProviderAccount = {
+  configured: false,
+  state: 'notConfigured' as const,
+  username: null,
+};
 
 const populatedLibraryPage: LibraryPage = {
   items: [
@@ -243,6 +279,10 @@ function setupDefaults() {
     mocks.getLibraryGameDetail,
     mocks.getGameMetadata,
     mocks.setGameFavorite,
+    mocks.getMetadataProviderStatus,
+    mocks.getMetadataProviderAccount,
+    mocks.setMetadataProviderCredentials,
+    mocks.clearMetadataProviderCredentials,
     mocks.getScanStatus,
     mocks.getScanIssuePage,
     mocks.getSystems,
@@ -260,6 +300,10 @@ function setupDefaults() {
   mocks.getLibraryGameDetail.mockResolvedValue(populatedGameDetail);
   mocks.getGameMetadata.mockResolvedValue(populatedGameMetadata);
   mocks.setGameFavorite.mockResolvedValue({ gameId: 1, favorite: true });
+  mocks.getMetadataProviderStatus.mockResolvedValue(metadataProviderStatus);
+  mocks.getMetadataProviderAccount.mockResolvedValue(metadataProviderAccount);
+  mocks.setMetadataProviderCredentials.mockResolvedValue(undefined);
+  mocks.clearMetadataProviderCredentials.mockResolvedValue(undefined);
   mocks.getContentRoots.mockResolvedValue([managedRoot]);
   mocks.getSystems.mockResolvedValue(systemsResponse);
   mocks.getScanStatus.mockResolvedValue(inactiveStatus);

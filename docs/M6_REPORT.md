@@ -2,6 +2,8 @@
 
 ## A. Repository State
 
+- Starting M6.5 HEAD: `c6bbf747465ffa5d98cbef6a47bcb4f85ecec624`
+- Starting M6.5 commit: recorded M6.4 runtime corrective pass on `feat/m6-library-ui`.
 - Starting M6.4 HEAD: `622614298c010ca6aa3a38c8f80624019f338bd8`
 - Starting commit: `fix(library-ui): stabilize M6.3 pagination refresh state`
 - Starting M6.2 HEAD: `59b10effa6afd80addf5b53ef7a684bfc4e3bccf`
@@ -11,6 +13,8 @@
 - Original M6.1 implementation commits remain `1cdf5a2` and `e7f3df8`; they were not rewritten.
 - Final M6.4 HEAD: recorded after the focused implementation commit in the final repository
   handoff below.
+- Final M6.5 implementation and documentation commit is recorded in the final repository handoff
+  below; it contains the complete M6.5 code and tests.
 - M6.2 implementation commit: `8a74438158f221464a972fb89c7774aa2e48f2c3`
 - M6.2 corrective commit: `fix(ui): address M6.2 adversarial review findings`
 - Merged to main: No
@@ -25,12 +29,13 @@
 - [x] M6.2 Shell / Empty Library / Scan UX
 - [x] M6.3 Library Browsing
 - [x] M6.4 Game Detail / Readiness
-- [ ] M6.5 Metadata UX / Settings
+- [x] M6.5 Metadata UX / Settings
 - [ ] M6.6 Hardening / Accessibility / Documentation
 
 Current phase: M6.1, M6.2, and M6.3 are complete. M6.3's adversarial review found 0 CRITICAL and
 0 HIGH findings; its focused corrective pass is complete and was not reopened for M6.4.
-M6.4 implementation is complete on `feat/m6-library-ui` and is awaiting review before M6.5.
+M6.4 implementation and its runtime corrective pass are complete. M6.5 implementation is complete
+on `feat/m6-library-ui` and is awaiting adversarial review before M6.6.
 
 ## C. M6.1 — Backend Enablement
 
@@ -429,13 +434,13 @@ MEDIUM-5 and LOW-1 through LOW-11 remain documented deferrals for later hardenin
 
 ### Deferrals
 
-- M6.5 metadata/settings workflows, M6.6 final hardening, M7 play data,
-  M8 controller/on-screen-keyboard behavior, and later milestones were not implemented.
+- M6.6 final hardening, M7 play data, M8 controller/on-screen-keyboard behavior, and later
+  milestones were not implemented in this section.
 - Genre/region facet discovery is deferred as described above. Existing accepted M6.2 LOWs other
   than required DELTA-LOW-1 remain untouched.
 - The remaining M6.3 MEDIUM findings (light-theme contrast, the library section heading, and
   favorite-button focus custody) and all 11 M6.3 LOW findings remain deferred; they do not affect
-  the corrected pagination/query-state contract and do not block M6.4.
+  the corrected pagination/query-state contract or the M6.5 metadata workflows.
 
 ## F. M6.4 — Game Detail / Readiness
 
@@ -479,7 +484,8 @@ it for display; it does not infer core policy, BIOS substitution, runtime trust,
   internals, or runtime filesystem paths.
 - Favorite mutation reuses `set_game_favorite`, does not optimistically invent a state, updates the
   detail from the authoritative response, and refreshes the bounded library summary. No launch,
-  save-state, controller, or metadata candidate-selection control was added.
+  save-state, or controller control was added in M6.4; M6.5 adds metadata actions and candidate
+  selection in the separate enrichment section.
 
 ### State separation and presentation
 
@@ -534,28 +540,185 @@ it for display; it does not infer core policy, BIOS substitution, runtime trust,
 
 ## G. M6.5 — Metadata UX / Settings
 
-Not started. No implementation details are inferred here.
+M6.5 is implemented on top of the existing M5 metadata/application contracts. No Rust production
+API, migration, Tauri command, permission, provider adapter, scheduler rule, or credential-vault
+change was needed. The implementation stops at metadata enrichment and does not change local
+library identity, content availability, emulation readiness, runtime/core state, ROM files, or
+global library-card presentation.
+
+### Frontend architecture and M5 commands
+
+- `useMetadataProvider` owns one bounded `get_metadata_provider_status` read and one bounded
+  `get_metadata_provider_account` read for the Settings route. It keeps provider and account
+  failures independent, supports explicit retry, guards late reads on unmount/generation and React
+  effect replay, and exposes only the safe account projection to the page.
+- `MetadataProviderPanel` extends the existing Settings page after CONTENT ROOTS. It presents
+  provider availability, normalized quota/job summaries, the four account states, and a compact
+  write-only personal-account form whose fields lock during a save. Root management remains visible
+  and independently usable if either metadata read fails.
+- `useGameDetail` adds a keyed metadata-operation channel to its existing local/metadata/favorite
+  channels. `MetadataSection` adds state-appropriate actions, safe failure copy, user-selection
+  presentation, and a bounded candidate panel. Candidates are fetched only as part of the open
+  game's existing `get_game_metadata` response; they are never added to list cards or queried for
+  the library grid.
+- `metadataActions.ts` is a pure state/action projection. It does not calculate quota timing,
+  provider matching, confidence, retry policy, or job scheduling. A live pending/running/deferred
+  metadata job suppresses a duplicate primary action.
+
+The UI reuses all nine existing M5 workflows through the TypeScript IPC wrappers:
+
+| UI workflow                          | Existing command                      |
+| ------------------------------------ | ------------------------------------- |
+| Read one game's metadata             | `get_game_metadata`                   |
+| Request initial/retry identification | `request_game_metadata`               |
+| Refresh/revalidate a known game      | `refresh_game_metadata`               |
+| Read provider/quota/job state        | `get_metadata_provider_status`        |
+| Select one ordered candidate         | `select_game_metadata_candidate`      |
+| Forget a manual provider choice      | `clear_game_metadata_candidate`       |
+| Submit optional personal account     | `set_metadata_provider_credentials`   |
+| Remove optional personal account     | `clear_metadata_provider_credentials` |
+| Read safe account state/name         | `get_metadata_provider_account`       |
+
+### Provider status and account UX
+
+`get_metadata_provider_status` is translated into a small status surface rather than a diagnostics
+dump:
+
+- `credentialsConfigured: false` is shown as application provider configuration unavailable. The
+  personal account form explicitly cannot configure RetroFrontier's developer credentials.
+- `offline: true` is shown as PROVIDER OFFLINE while cached metadata remains available.
+- `capacityDeferred`, `dailyQuotaExceeded`, `negativeQuotaExceeded`, and `providerRestricted` have
+  distinct deferred copy. The UI does not calculate a countdown or expose raw HTTP/status codes.
+- The normalized quota snapshot shows only reported daily/no-match counters when present. Pending,
+  deferred, and failed job counts are summarized as user-facing background work; queue IDs,
+  attempts, timestamps, endpoints, and scheduler internals are not rendered.
+- Provider-status IPC failure is a section-level retryable error. It does not blank CONTENT ROOTS,
+  the rest of Settings, or the local library.
+
+The account projection represents all current M5 states:
+
+- `notConfigured`: optional account is absent, not an application failure.
+- `configured`: only the safe username returned by Rust is shown.
+- `invalid`: the personal account needs attention without exposing the rejected secret.
+- `vaultUnavailable`: secure account storage cannot persist the account; save is disabled until the
+  native storage boundary is available.
+
+### Game metadata state/action matrix
+
+The existing backend semantics determine the buttons. The page preserves normalized data and cover
+while a command or authoritative reread is pending.
+
+| Metadata state | Primary UI action   | Behavior                                                                                              |
+| -------------- | ------------------- | ----------------------------------------------------------------------------------------------------- |
+| `pending`      | Request metadata    | Uses `request_game_metadata`; suppressed when a live job is present.                                  |
+| `matched`      | Refresh metadata    | Uses `refresh_game_metadata`; last-known-good data remains visible.                                   |
+| `stale`        | Revalidate metadata | Uses the M5 refresh path, which re-identifies stale evidence rather than trusting an old provider ID. |
+| `noMatch`      | Try metadata again  | Reuses the backend request path; no candidate is fabricated.                                          |
+| `ambiguous`    | Search again        | Reuses the backend request path and shows the returned candidate panel when candidates exist.         |
+| `deferred`     | Try metadata again  | Uses the existing backend scheduler/defer policy; React does not calculate timing.                    |
+| `failed`       | Retry metadata      | Uses the supported request path and leaves current data intact if it fails.                           |
+
+Live `pending`, `running`, or `deferred` jobs suppress duplicate primary requests. Mutation failure
+is shown with fixed safe copy and leaves the prior metadata state, normalized record, and cover
+untouched. A success never synthesizes `matched`; the next state comes from `get_game_metadata` and
+`metadata-state-changed`.
+
+Unsupported-content and provider-failure classes use truthful normalized copy. CHD, CUE/BIN, GDI,
+M3U/playlist, other container representations, missing identity evidence, unmapped systems, quota,
+offline, authentication, and media-cache conditions do not imply that local content is missing or
+that a playable game has become unavailable. ZIP/archive support was not added.
+
+### Ambiguity and user-owned selection
+
+For `ambiguous` metadata with candidates, the detail page renders an inline bounded group in the
+backend's returned order. Each row contains only the safe candidate title, release date when
+present, ordinal position, and an explicit SELECT control. It does not display provider IDs,
+confidence percentages, similarity scores, raw responses, or a frontend-resorted order.
+
+When M5 returns `userSelection`, the page labels the association USER-CONFIRMED MATCH and offers
+FORGET PROVIDER CHOICE. Clear means “forget RetroFrontier's manual provider choice”; it does not
+delete provider metadata, local content, ROM files, or the game. The command result is followed by
+one bounded authoritative metadata read because the clear operation itself has no durable metadata
+event. Selection and clear both suppress duplicate submissions, show pending state, and leave the
+previous authoritative state intact on failure.
+
+### Events, refetches, and race safety
+
+- The existing `metadata-state-changed` subscription remains the invalidation authority. It is
+  scoped to the open game, coalesced with the existing 180 ms trailing debounce, and cleaned up on
+  unmount or late registration.
+- A successful request, refresh, or candidate selection performs at most one bounded same-game
+  authoritative reread for responsive feedback. Clear uses the same bounded reread because M5 does
+  not emit an event for deleting the user selection. Background worker writes still arrive through
+  `metadata-state-changed`; the page never constructs metadata from an event payload.
+- A keyed operation channel and generation guards prevent a completion for game A from changing
+  game B after navigation or unmount. A current authoritative reread clears stale mutation-error
+  copy, so the newest backend state wins when an event overlaps a command completion.
+- Settings credential writes use a synchronous mutation guard, clear the password after success (and
+  on failure), refresh account/provider state authoritatively, and do not commit state after unmount.
+  Account-clear confirmation returns focus to its trigger; a successful clear falls back to the
+  account heading if the trigger disappears.
+- Provider, account, and game metadata state surfaces use polite live-region semantics so async
+  status changes are announced without turning the whole Settings or Game Detail page into an
+  error surface.
+- No polling, countdown timer, full-library metadata fetch, candidate N+1, metadata scan trigger,
+  or competing metadata event architecture was added. Metadata writes do not touch ROM watcher or
+  scan state, and the sidebar/catalog remains independent.
+
+### Offline and cached behavior
+
+The local-first contract is explicit in both Settings and Game Detail. When the provider is offline
+or deferred, the library remains browsable, local content and readiness remain usable, and cached
+normalized metadata/cover stay rendered. Only new enrichment/revalidation is unavailable or queued
+according to the M5 state. Provider/account read errors remain local to the metadata section; root
+management is not blanked.
+
+### Tests and security checks
+
+Focused frontend coverage was added for provider/account status mapping, bounded reads/retry,
+StrictMode effect replay, write-only credential submission, fake-secret redaction, password clearing,
+save-field locking, duplicate credential mutation suppression, unmount safety, all seven metadata
+states and action mappings, live-region semantics, cached-data preservation, request/refresh failure,
+ordered candidates, absent candidates, candidate selection, selection failure, current user
+selection, clear selection/failure, event invalidation, duplicate metadata actions, route changes
+during mutation, and post-mutation focus. Settings integration coverage verifies that root management
+remains visible under provider failure and that offline/quota copy does not leak timestamps or
+internal codes. Existing M6.2–M6.4 and Rust suites remain in scope.
+
+The security review found no production credential readback or new backend capability. The password
+is submitted only to `set_metadata_provider_credentials`, held only by the current form/mutation
+closure, cleared from React state after the command settles, and never logged or rendered as text.
+Read DTOs have no password field. Developer/application credentials cross no frontend IPC. Candidate
+DTOs are safe display projections; provider IDs are used only as opaque command arguments/React keys.
+No authenticated URL, raw provider response, hash/fingerprint, filesystem capability, or broad
+Tauri permission was added.
 
 ## H. M6.6 — Hardening / Accessibility / Documentation
 
-Not started. No implementation details are inferred here.
+Not started. M6.6 remains responsible for final cross-screen visual/accessibility hardening and the
+known card, scanline, contrast, focus-custody, return-focus, and regression-suite debt. M6.5 does not
+begin that work.
 
 ## I. Architecture and Security Audit
 
-- React has no SQLite, filesystem, scanner, provider, credential, or runtime access.
+- React has no SQLite, filesystem, scanner, provider, developer-credential, or runtime access.
+  M6.5's personal-account form submits only through the existing narrow write-only IPC command.
 - SQL remains in repositories and Tauri commands remain thin.
 - UI projections are bounded and omit physical hashes/fingerprints and provider internals.
 - Cached-cover delivery accepts only stable game identity routes, enforces app-owned containment, and
   serves only validated supported image types.
-- Provider URLs, credentials, raw responses, candidate lists, and queue internals do not cross the
-  new list/detail/event/media boundaries.
+- Provider URLs, credential values, raw responses, and queue internals do not cross the UI boundary.
+  The one-game metadata DTO intentionally carries only the safe ordered candidate projection needed
+  by M6.5; candidates are not added to list cards or fetched globally.
 - M6.4 adds no Rust production code or new IPC readiness model. The detail page reuses the existing
   `get_systems` response, whose Rust service composes `SystemCatalog`, one verified runtime snapshot,
   BIOS discovery, and `SystemReadiness`; the UI only selects and presents the matching system status.
 - Detail-specific React state uses the bounded `get_library_game_detail` and `get_game_metadata`
-  commands and contains no launch, process, filesystem, BIOS mutation, or provider-management path.
-- React still has no SQLite, filesystem enumeration, scanner, provider, credential, or runtime
-  access. M6.2 UI state consumes summary/root/scan contracts only.
+  commands plus the existing metadata action commands; it contains no launch, process, filesystem,
+  BIOS mutation, provider logic, matching policy, quota calculation, or scheduler path.
+- Settings reads only normalized provider/account DTOs and sends personal credentials through the
+  existing write-only command. No password is returned, persisted in SQLite, or retained after the
+  mutation settles.
 - The native dialog is the official Tauri dialog plugin with only `dialog:allow-open`. Managed-folder
   opening accepts no frontend path and passes one validated canonical directory to the host-resolved
   platform opener, never a shell. Absolute executable resolution remains an accepted follow-up.
@@ -570,11 +733,13 @@ M6.2 retains the shell framing from B1, empty/setup guidance from A1/B4, scan st
 surfaces. M6.3 adds the real B1 bounded grid, B2 search, supported B3 filter subset, B5 filtered-empty
 state, C4 cover fallback, and A6 focus language. M6.4 adds the B6 detail hierarchy: back/library
 context, larger cover/fallback, title/system identity, normalized metadata, separate local content
-units, and a requirements/readiness panel. C1 supplies readiness/error language and C4's secure
-opaque-cover fallback is shared between card and detail. The token file remains authoritative across
-dark and light themes. Prototype-only genre/region discovery without a bounded option contract,
-unplayed, controller footer/keyboard, metadata candidate/editor workflows, launch, and save states
-were intentionally omitted.
+units, and a requirements/readiness panel. M6.5 extends that existing metadata section with
+state-appropriate request/refresh actions, safe provider/account Settings surfaces, ordered
+candidate resolution, user-selection clearing, and local-first offline copy. C1 supplies readiness/
+error language and C4's secure opaque-cover fallback is shared between card and detail. The token
+file remains authoritative across dark and light themes. Prototype-only genre/region discovery
+without a bounded option contract, unplayed, controller footer/keyboard, metadata editing, launch,
+and save states remain omitted.
 
 Manual inspection was performed against code/DOM/CSS at the 960×640 minimum, 1280×800, and larger
 desktop layouts, including dark/light tokens, populated cards, a long title, missing/failed cover,
@@ -585,59 +750,69 @@ existing B1 3 px black structural sidebar divider as a side-tab heuristic; it wa
 
 ## K. Test Coverage
 
-The frontend suite has 117 synthetic/local tests across 12 files. M6.3 coverage remains intact for
-initial/error/retry query state, multiple/final pages, filter reset, total shrink, literal debounced
-search, stale result/error/loading races, active-request unmount, favorites, duplicate writes,
-held-write/current-filter ownership, filtered-page removal, visible metadata invalidation cadence/
-lifecycle, terminal scan identity, real grid integration, system IDs/counts, search/no-results/
-clear, card semantics, title/cover fallbacks, availability, and stale metadata. M6.4 adds route and
-history tests, semantic card activation, detail deep-link/not-found/focus/context tests, bounded
-local/metadata loads with independent errors/retries, all metadata states, stale cached display,
-multi-unit content, normalized readiness states, favorite authority, targeted/coalesced metadata
-events, terminal scan refresh cadence, listener/timer cleanup, and accessibility semantics. Existing
-M6.2/root/IPC tests and all Rust tests remain passing. No live ScreenScraper or copyrighted fixture
-is used.
+The final frontend suite totals are recorded in section M after the M6.5 verification run. M6.3
+coverage remains intact for initial/error/retry query state, multiple/final pages, filter reset,
+total shrink, literal debounced search, stale result/error/loading races, active-request unmount,
+favorites, duplicate writes, held-write/current-filter ownership, filtered-page removal, visible
+metadata invalidation cadence/lifecycle, terminal scan identity, real grid integration, system
+IDs/counts, search/no-results/clear, card semantics, title/cover fallbacks, availability, and stale
+metadata. M6.4 adds route and history tests, semantic card activation, detail deep-link/not-found/
+focus/context tests, bounded local/metadata loads with independent errors/retries, all metadata
+states, stale cached display, multi-unit content, normalized readiness states, favorite authority,
+targeted/coalesced metadata events, terminal scan refresh cadence, listener/timer cleanup, and
+accessibility semantics. M6.5 adds provider/account status mapping, credential redaction/lifecycle,
+retry/unmount/race coverage, state/action mapping, cached refresh behavior, candidate ordering/
+selection/clear/failure, and metadata action focus. Existing M6.2/root/IPC and all Rust tests remain
+in scope. No live ScreenScraper or copyrighted fixture is used.
 
 ## L. Deferred Beyond M6
 
-- M6.5 detailed metadata states, metadata/provider settings, and settings workflows.
 - M6.6 final cross-screen hardening and accessibility consistency.
 - M7 launch/process/play-session and per-game core behavior.
 - M8 controller abstraction, focus graph, and on-screen keyboard.
 - M9 save-game and save-state management.
 - M10 packaging, signing, and release work.
+- Provider capability deferrals for CHD, CUE/BIN, GDI, M3U/multi-disc, RVZ/GCM, and other unsupported
+  representations remain governed by M5; ZIP/archive import remains out of scope.
+- Accepted M6.2/M6.3/M6.4 non-blocking review debt remains deferred to M6.6 where applicable.
 - Existing documented non-blocking M5/M4 observations that are not correctness dependencies of M6.1.
 
 ## M. Final Verification
 
-Final verification is recorded here after the M6.4 implementation and documentation changes:
+Final M6.5 verification is recorded here after the implementation and documentation changes:
 
-- `pnpm vitest run src/hooks/useGameDetail.test.tsx src/app/AppShell.test.tsx` — PASS — 2 files,
-  40 tests.
-- `pnpm vitest run src/features/library/readiness.test.ts src/features/library/GameDetailPage.test.tsx`
-  — PASS — 2 files, 18 tests.
-- `pnpm vitest run src/hooks/useLibraryQuery.test.tsx` — PASS — 1 file, 23 tests.
 - `pnpm typecheck` — PASS — `tsc -b --pretty false`, exit 0.
 - `pnpm lint` — PASS — `eslint .`, exit 0.
 - `pnpm format:check` — PASS — all configured files use Prettier formatting, exit 0.
-- `pnpm test` — PASS — 12 files, 117 tests, exit 0.
-- `pnpm build` — PASS — TypeScript and Vite build; 51 modules transformed, exit 0.
-- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — PASS — exit 0.
+- `pnpm test` — PASS — 16 files, 180 tests, exit 0.
+- `pnpm build` — PASS — TypeScript and Vite build; 54 modules transformed, exit 0.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — PASS — exit 0, no output.
 - `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings`
-  — PASS — release-free dev profile finished without warnings, exit 0.
-- `cargo test --manifest-path src-tauri/Cargo.toml` — PASS — 305 passed, 0 failed, 1 ignored;
-  frontend-independent Rust test command exit 0.
-- `cargo build --manifest-path src-tauri/Cargo.toml --release` — PASS — optimized release profile,
-  exit 0.
-- `pnpm tauri:build` — PASS — frontend build and release application build completed at
+  — PASS — dev profile finished without warnings, exit 0.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — PASS — 309 tests run; 308 passed, 0 failed,
+  1 ignored, exit 0.
+- `cargo build --manifest-path src-tauri/Cargo.toml --release` — PASS — optimized release profile
+  finished successfully, exit 0.
+- `pnpm tauri:build` — PASS — frontend build (54 modules) and release application build completed at
   `src-tauri/target/release/retrofrontier`, exit 0.
 - `git diff --check` — PASS — no whitespace errors, exit 0.
 
-The Impeccable detector command was also run over the changed UI. It returned one warning for the
-pre-existing B1 structural `border-right: 3px solid var(--border)` sidebar divider; no new detail or
-readiness anti-pattern warning remained. Visual verification was static/source-level only because
-the repository has no native screenshot harness. Verification was performed on Linux x86_64; no
-Windows/macOS runtime or packaging validation was performed.
+### Runtime smoke verification
+
+- `pnpm tauri:dev` — the initial sandboxed attempt was denied binding to `127.0.0.1:1420`; the
+  approved retry reached native startup but exited because an existing `pnpm tauri:dev` instance
+  already owns the application lock. That existing process was inspected and left untouched.
+- Isolated smoke command, using temporary `XDG_DATA_HOME` and Vite port 1421 — PASS: Vite became
+  ready, the Rust dev binary compiled and started, runtime reconciliation reported `NotInstalled`,
+  application storage initialized, and the metadata worker started with no credentials. The process
+  was stopped with Ctrl-C; port 1421 and the temporary screenshot attempt left no repository file.
+- Settings and Game Detail workflow inspection used the production components plus DOM/accessibility
+  integration tests. A native screenshot could not be captured in this Wayland session, and the
+  fresh isolated database had no game record; no claim of live ScreenScraper or screenshot-based
+  visual validation is made. Existing card/grid/scanline polish remains an M6.6 deferral.
+
+Verification was performed on Linux x86_64; no Windows/macOS runtime or packaging validation was
+performed. No live ScreenScraper request or credential was used.
 
 ## N. M6.4 Adversarial Review and Runtime Corrective Pass
 
@@ -813,9 +988,10 @@ filter cannot suppress a real change there.
 Deferred to M6.6, unchanged by this pass: MEDIUM-2 runtime-trust predicate duplication, MEDIUM-4
 focus restoration, MEDIUM-5 light-theme contrast, MEDIUM-7 missing regression suite, and LOW-1
 through LOW-5. Background scanline visual fidelity is recorded as a new M6.6 visual-fidelity
-follow-up and was deliberately not touched here. Accepted M6.2/M6.3 debt is unchanged. No M6.5 work
-was started.
+follow-up and was deliberately not touched here. Accepted M6.2/M6.3 debt is unchanged. M6.5 adds
+no scan trigger or catalog refresh path, so the corrected idle-watcher and sidebar-stability
+behavior remains intact.
 
 ## P. Current M6 Verdict
 
-`M6.4 RUNTIME CORRECTIVE PASS COMPLETE — ready for final runtime confirmation before M6.5`
+`M6.5 IMPLEMENTATION COMPLETE — ready for adversarial review before M6.6`

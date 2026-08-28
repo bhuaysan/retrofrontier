@@ -8,6 +8,10 @@ const mocks = vi.hoisted(() => ({
   getLibraryGameDetail: vi.fn(),
   getGameMetadata: vi.fn(),
   setGameFavorite: vi.fn(),
+  requestGameMetadata: vi.fn(),
+  refreshGameMetadata: vi.fn(),
+  selectGameMetadataCandidate: vi.fn(),
+  clearGameMetadataCandidate: vi.fn(),
   onMetadataStateChanged: vi.fn(),
 }));
 
@@ -18,6 +22,10 @@ vi.mock('../platform/ipc', async (importOriginal) => {
     getLibraryGameDetail: mocks.getLibraryGameDetail,
     getGameMetadata: mocks.getGameMetadata,
     setGameFavorite: mocks.setGameFavorite,
+    requestGameMetadata: mocks.requestGameMetadata,
+    refreshGameMetadata: mocks.refreshGameMetadata,
+    selectGameMetadataCandidate: mocks.selectGameMetadataCandidate,
+    clearGameMetadataCandidate: mocks.clearGameMetadataCandidate,
     onMetadataStateChanged: mocks.onMetadataStateChanged,
   };
 });
@@ -93,6 +101,10 @@ describe('useGameDetail', () => {
     mocks.getLibraryGameDetail.mockReset().mockResolvedValue(localDetail);
     mocks.getGameMetadata.mockReset().mockResolvedValue(metadata);
     mocks.setGameFavorite.mockReset().mockResolvedValue({ gameId: 7, favorite: true });
+    mocks.requestGameMetadata.mockReset().mockResolvedValue(undefined);
+    mocks.refreshGameMetadata.mockReset().mockResolvedValue(undefined);
+    mocks.selectGameMetadataCandidate.mockReset().mockResolvedValue(undefined);
+    mocks.clearGameMetadataCandidate.mockReset().mockResolvedValue(undefined);
     mocks.onMetadataStateChanged.mockReset().mockResolvedValue(vi.fn());
   });
 
@@ -260,6 +272,214 @@ describe('useGameDetail', () => {
     await act(async () => result.current.toggleFavorite());
     expect(result.current.localDetail?.favorite).toBe(true);
     expect(result.current.favoriteError?.code).toBe('library_unavailable');
+  });
+
+  it('requests metadata through the native command and rereads authoritative state', async () => {
+    const pending = { ...metadata, status: 'pending' as const };
+    mocks.getGameMetadata.mockResolvedValueOnce(pending).mockResolvedValueOnce(metadata);
+    const { result } = renderHook(() => useGameDetail({ enabled: true, gameId: 7 }));
+
+    await waitFor(() => expect(result.current.metadata).toEqual(pending));
+    await act(async () => result.current.requestMetadata());
+
+    expect(mocks.requestGameMetadata).toHaveBeenCalledWith({ gameId: 7 });
+    expect(mocks.getGameMetadata).toHaveBeenCalledTimes(2);
+    expect(result.current.metadata).toEqual(metadata);
+    expect(result.current.metadataActionPending).toBe(false);
+  });
+
+  it('preserves cached metadata while refresh is in flight and keeps the authoritative result', async () => {
+    const refresh = deferred<void>();
+    const refreshed = { ...metadata, status: 'matched' as const, lastCheckedAt: 2 };
+    mocks.refreshGameMetadata.mockReturnValue(refresh.promise);
+    mocks.getGameMetadata.mockResolvedValueOnce(metadata).mockResolvedValueOnce(refreshed);
+    const { result } = renderHook(() => useGameDetail({ enabled: true, gameId: 7 }));
+
+    await waitFor(() => expect(result.current.metadata).toEqual(metadata));
+    let operation: Promise<void>;
+    act(() => {
+      operation = result.current.refreshMetadata();
+    });
+
+    expect(result.current.metadata).toEqual(metadata);
+    expect(result.current.metadataActionPending).toBe(true);
+    expect(result.current.metadataActionKind).toBe('refresh');
+    expect(mocks.refreshGameMetadata).toHaveBeenCalledWith({ gameId: 7 });
+
+    await act(async () => {
+      refresh.resolve();
+      await operation!;
+    });
+
+    expect(result.current.metadata).toEqual(refreshed);
+    expect(result.current.metadataActionPending).toBe(false);
+  });
+
+  it('suppresses duplicate candidate selection and refetches the selected state', async () => {
+    const selection = deferred<void>();
+    const ambiguous = {
+      ...metadata,
+      status: 'ambiguous' as const,
+      providerGameId: null,
+      providerRomId: null,
+      metadata: null,
+      candidates: [
+        { providerGameId: 'candidate-a', title: 'Candidate A', releaseDate: '1994-01-01' },
+        { providerGameId: 'candidate-b', title: 'Candidate B', releaseDate: null },
+      ],
+    };
+    const selected = {
+      ...metadata,
+      userSelection: {
+        gameId: 7,
+        providerId: 'screenScraper' as const,
+        providerGameId: 'candidate-b',
+        updatedAt: 3,
+      },
+    };
+    mocks.getGameMetadata.mockResolvedValueOnce(ambiguous).mockResolvedValueOnce(selected);
+    mocks.selectGameMetadataCandidate.mockReturnValue(selection.promise);
+    const { result } = renderHook(() => useGameDetail({ enabled: true, gameId: 7 }));
+
+    await waitFor(() => expect(result.current.metadata).toEqual(ambiguous));
+    let first: Promise<void>;
+    let second: Promise<void>;
+    act(() => {
+      first = result.current.selectMetadataCandidate('candidate-b');
+      second = result.current.selectMetadataCandidate('candidate-b');
+    });
+
+    expect(mocks.selectGameMetadataCandidate).toHaveBeenCalledTimes(1);
+    expect(result.current.metadataActionPending).toBe(true);
+    expect(result.current.metadataActionKind).toBe('select');
+
+    await act(async () => {
+      selection.resolve();
+      await Promise.all([first!, second!]);
+    });
+
+    expect(mocks.selectGameMetadataCandidate).toHaveBeenCalledWith({
+      gameId: 7,
+      providerGameId: 'candidate-b',
+    });
+    expect(mocks.getGameMetadata).toHaveBeenCalledTimes(2);
+    expect(result.current.metadata).toEqual(selected);
+    expect(result.current.metadataActionKind).toBeNull();
+  });
+
+  it('clears only the user selection and leaves the resulting state to the backend', async () => {
+    const selected = {
+      ...metadata,
+      userSelection: {
+        gameId: 7,
+        providerId: 'screenScraper' as const,
+        providerGameId: '1234',
+        updatedAt: 3,
+      },
+    };
+    const cleared = { ...selected, userSelection: null, status: 'ambiguous' as const };
+    mocks.getGameMetadata.mockResolvedValueOnce(selected).mockResolvedValueOnce(cleared);
+    const { result } = renderHook(() => useGameDetail({ enabled: true, gameId: 7 }));
+
+    await waitFor(() => expect(result.current.metadata).toEqual(selected));
+    await act(async () => result.current.clearMetadataSelection());
+
+    expect(mocks.clearGameMetadataCandidate).toHaveBeenCalledWith({ gameId: 7 });
+    expect(result.current.metadata).toEqual(cleared);
+  });
+
+  it('keeps the ambiguous state intact when candidate selection fails', async () => {
+    const ambiguous = {
+      ...metadata,
+      status: 'ambiguous' as const,
+      metadata: null,
+      candidates: [{ providerGameId: 'candidate-a', title: 'Candidate A', releaseDate: null }],
+    };
+    mocks.getGameMetadata.mockResolvedValue(ambiguous);
+    mocks.selectGameMetadataCandidate.mockRejectedValueOnce({
+      code: 'metadata_unavailable',
+      message: 'provider details must stay out of the UI',
+    });
+    const { result } = renderHook(() => useGameDetail({ enabled: true, gameId: 7 }));
+
+    await waitFor(() => expect(result.current.metadata).toEqual(ambiguous));
+    await act(async () => result.current.selectMetadataCandidate('candidate-a'));
+
+    expect(result.current.metadata).toEqual(ambiguous);
+    expect(result.current.metadataActionError?.code).toBe('metadata_unavailable');
+  });
+
+  it('keeps the user selection intact when clearing it fails', async () => {
+    const selected = {
+      ...metadata,
+      userSelection: {
+        gameId: 7,
+        providerId: 'screenScraper' as const,
+        providerGameId: '1234',
+        updatedAt: 3,
+      },
+    };
+    mocks.getGameMetadata.mockResolvedValue(selected);
+    mocks.clearGameMetadataCandidate.mockRejectedValueOnce({
+      code: 'metadata_unavailable',
+      message: 'provider details must stay out of the UI',
+    });
+    const { result } = renderHook(() => useGameDetail({ enabled: true, gameId: 7 }));
+
+    await waitFor(() => expect(result.current.metadata).toEqual(selected));
+    await act(async () => result.current.clearMetadataSelection());
+
+    expect(result.current.metadata).toEqual(selected);
+    expect(result.current.metadataActionError?.code).toBe('metadata_unavailable');
+  });
+
+  it('keeps last-known-good metadata when a metadata mutation fails', async () => {
+    mocks.refreshGameMetadata.mockRejectedValueOnce({
+      code: 'metadata_unavailable',
+      message: 'provider secret must not reach the UI',
+    });
+    const { result } = renderHook(() => useGameDetail({ enabled: true, gameId: 7 }));
+
+    await waitFor(() => expect(result.current.metadata).toEqual(metadata));
+    await act(async () => result.current.refreshMetadata());
+
+    expect(result.current.metadata).toEqual(metadata);
+    expect(result.current.metadataActionError?.code).toBe('metadata_unavailable');
+    expect(result.current.metadataActionPending).toBe(false);
+  });
+
+  it('does not let a completed mutation for the previous route reread the current game', async () => {
+    const refresh = deferred<void>();
+    const nextLocal = { ...localDetail, gameId: 8, localTitle: 'Next Game' };
+    const nextMetadata = { ...metadata, gameId: 8, metadata: null };
+    mocks.refreshGameMetadata.mockReturnValue(refresh.promise);
+    mocks.getLibraryGameDetail.mockImplementation(({ gameId }: { gameId: number }) =>
+      gameId === 7 ? Promise.resolve(localDetail) : Promise.resolve(nextLocal),
+    );
+    mocks.getGameMetadata.mockImplementation(({ gameId }: { gameId: number }) =>
+      gameId === 7 ? Promise.resolve(metadata) : Promise.resolve(nextMetadata),
+    );
+    const { result, rerender } = renderHook(
+      ({ gameId }) => useGameDetail({ enabled: true, gameId }),
+      { initialProps: { gameId: 7 } },
+    );
+
+    await waitFor(() => expect(result.current.metadata?.gameId).toBe(7));
+    let operation: Promise<void>;
+    act(() => {
+      operation = result.current.refreshMetadata();
+    });
+    rerender({ gameId: 8 });
+    await waitFor(() => expect(result.current.metadata?.gameId).toBe(8));
+
+    await act(async () => {
+      refresh.resolve();
+      await operation!;
+    });
+
+    expect(mocks.refreshGameMetadata).toHaveBeenCalledTimes(1);
+    expect(mocks.getGameMetadata).toHaveBeenCalledTimes(2);
+    expect(result.current.metadata?.gameId).toBe(8);
   });
 
   it('shows a stable not-found state when a terminal scan removes the game', async () => {

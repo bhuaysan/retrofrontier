@@ -279,7 +279,7 @@ visible attribution presentation, which belongs to M6.
 - [x] M6.2 shell / empty library / scan UX (complete and reviewed)
 - [x] M6.3 library browsing
 - [x] M6.4 game detail / readiness
-- [ ] M6.5 metadata UX / settings
+- [x] M6.5 metadata UX / settings
 - [ ] M6.6 hardening / accessibility / documentation
       - [ ] M6.4 review deferrals: MEDIUM-2 runtime-trust predicate duplication, MEDIUM-4 focus
             restoration, MEDIUM-5 light-theme contrast, MEDIUM-7 regression suite, LOW-1..LOW-5
