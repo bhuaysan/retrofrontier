@@ -7,9 +7,17 @@ interface PixelRowProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'c
   count?: number;
   accent: string;
   active?: boolean;
+  activeMode?: 'current' | 'pressed';
 }
 
-export function PixelRow({ label, count, accent, active = false, ...props }: PixelRowProps) {
+export function PixelRow({
+  label,
+  count,
+  accent,
+  active = false,
+  activeMode = 'current',
+  ...props
+}: PixelRowProps) {
   return (
     <li className="pixel-row-shell">
       <span className="pixel-row-cursor" aria-hidden="true">
@@ -17,7 +25,8 @@ export function PixelRow({ label, count, accent, active = false, ...props }: Pix
       </span>
       <button
         className={`pixel-row${active ? ' pixel-row--active' : ''}`}
-        aria-current={active ? 'page' : undefined}
+        aria-current={active && activeMode === 'current' ? 'page' : undefined}
+        aria-pressed={activeMode === 'pressed' ? active : undefined}
         {...props}
       >
         <span className="system-swatch" style={{ background: accent }} aria-hidden="true" />

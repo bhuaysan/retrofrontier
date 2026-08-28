@@ -4,10 +4,11 @@ import { InlineError } from '../components/ui/InlineError';
 import { PixelRow } from '../components/ui/PixelRow';
 import { useContentRoots } from '../hooks/useContentRoots';
 import { useLibrarySummary } from '../hooks/useLibrarySummary';
+import { useLibraryQuery } from '../hooks/useLibraryQuery';
 import { useScanState } from '../hooks/useScanState';
 import { useSystemCatalog } from '../hooks/useSystemCatalog';
 import { pickExternalContentRoot } from '../platform/folderPicker';
-import { openManagedRomFolder } from '../platform/ipc';
+import { openManagedRomFolder, type ScanSummary } from '../platform/ipc';
 import { LibraryPage } from '../features/library/LibraryPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
 import { systemAccent } from '../features/library/systemAccents';
@@ -66,24 +67,68 @@ function SystemSummaryRow({
   label,
   count,
   accent,
+  active,
+  onClick,
 }: {
   label: string;
   count: number;
   accent: string;
+  active: boolean;
+  onClick: () => void;
 }) {
   return (
     <PixelRow
       label={label}
       count={count}
       accent={accent}
-      disabled
-      title="System filtering arrives with the library browsing milestone."
+      active={active}
+      activeMode="pressed"
+      onClick={onClick}
     />
+  );
+}
+
+function LibrarySearch({
+  value,
+  onChange,
+  onClear,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <search className="library-search">
+      <label className="library-search-label" htmlFor="library-search-input">
+        SEARCH LIBRARY
+      </label>
+      <svg aria-hidden="true" shapeRendering="crispEdges" viewBox="0 0 16 16">
+        <path
+          d="M2 2h9v2h2v2h1v5h-2V7h-1V5H4v6h6v2H2zM10 11h2v2h2v2h-2v-1h-2z"
+          fill="currentColor"
+        />
+      </svg>
+      <input
+        autoComplete="off"
+        id="library-search-input"
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="TITLE OR LOCAL NAME…"
+        spellCheck="false"
+        type="search"
+        value={value}
+      />
+      {value ? (
+        <button aria-label="Clear library search" onClick={onClear} type="button">
+          CLEAR
+        </button>
+      ) : null}
+    </search>
   );
 }
 
 export function AppShell() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
+  const [libraryScanCompletionRunId, setLibraryScanCompletionRunId] = useState<number | null>(null);
   const { route, navigate } = useRoute();
   const {
     summary,
@@ -101,10 +146,19 @@ export function AppShell() {
     updateRootEnabled,
   } = useContentRoots();
   const systemCatalog = useSystemCatalog();
-  const onScanCompleted = useCallback(() => {
-    void refreshSummary();
-  }, [refreshSummary]);
+  const onScanCompleted = useCallback(
+    (result: ScanSummary) => {
+      setLibraryScanCompletionRunId(result.runId);
+      void refreshSummary();
+    },
+    [refreshSummary],
+  );
   const scan = useScanState({ onCompleted: onScanCompleted });
+  const library = useLibraryQuery({
+    enabled: route === 'library' && Boolean(summary && summary.totalGames > 0),
+    scanCompletionRunId: libraryScanCompletionRunId,
+    onFavoriteCommitted: () => void refreshSummary(),
+  });
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -145,6 +199,13 @@ export function AppShell() {
         >
           RETRO<span>FRONTIER</span>
         </button>
+        {route === 'library' && summary && summary.totalGames > 0 ? (
+          <LibrarySearch
+            onChange={library.setSearchInput}
+            onClear={library.clearSearch}
+            value={library.searchInput}
+          />
+        ) : null}
         <MobileRouteNav route={route} navigate={navigate} />
         <div className="theme-toggle" role="group" aria-label="Theme">
           <button
@@ -189,8 +250,12 @@ export function AppShell() {
               label="All systems"
               count={summary?.totalGames ?? 0}
               accent="var(--accent)"
-              active={route === 'library'}
-              onClick={() => navigate('library')}
+              active={route === 'library' && library.systemId === null}
+              activeMode="pressed"
+              onClick={() => {
+                library.setSystemId(null);
+                navigate('library');
+              }}
             />
             {systemCatalog.systems.map((system) => (
               <SystemSummaryRow
@@ -198,6 +263,11 @@ export function AppShell() {
                 label={system.displayName}
                 count={systemCounts.get(system.id) ?? 0}
                 accent={systemAccent(system.id)}
+                active={route === 'library' && library.systemId === system.id}
+                onClick={() => {
+                  library.setSystemId(system.id);
+                  navigate('library');
+                }}
               />
             ))}
           </ul>
@@ -228,6 +298,7 @@ export function AppShell() {
           rootsError={rootsError}
           refreshRoots={refreshRoots}
           systems={systemCatalog.systems}
+          library={library}
           scan={scan}
           onAddExternalFolder={onAddExternalFolder}
           onOpenManagedFolder={onOpenManagedFolder}

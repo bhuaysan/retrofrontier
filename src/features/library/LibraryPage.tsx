@@ -16,13 +16,13 @@ import {
   type ScanIssue,
   type ScanProgress,
   type ScanSummary,
-  type SystemId,
 } from '../../platform/ipc';
+import type { LibraryQueryModel } from '../../hooks/useLibraryQuery';
 import type { SystemLabel } from '../../hooks/useSystemCatalog';
 import type { ScanStateModel } from '../../hooks/useScanState';
 import { RootActionError } from '../settings/RootActionError';
+import { LibraryBrowser } from './LibraryBrowser';
 import { rootAvailabilityLabel } from './rootLabels';
-import { systemAccent } from './systemAccents';
 
 interface LibraryPageProps {
   summary: LibrarySummary | null;
@@ -34,6 +34,7 @@ interface LibraryPageProps {
   rootsError: IpcError | null;
   refreshRoots: () => Promise<ContentRoot[] | null>;
   systems: SystemLabel[];
+  library: LibraryQueryModel;
   scan: ScanStateModel;
   onAddExternalFolder: () => Promise<boolean>;
   onOpenManagedFolder: () => Promise<void>;
@@ -106,10 +107,6 @@ function number(value: number) {
 
 function formatDuration(durationMs: number) {
   return `${Math.round(durationMs / 1000)}s`;
-}
-
-function systemName(systemId: SystemId, systems: SystemLabel[]) {
-  return systems.find((system) => system.id === systemId)?.displayName ?? systemId;
 }
 
 function SectionHeading({ id, title, meta }: { id: string; title: string; meta: string }) {
@@ -517,44 +514,6 @@ function ScanIssueRow({ issue, roots }: { issue: ScanIssue; roots: ContentRoot[]
   );
 }
 
-function PopulatedLibraryState({
-  summary,
-  systems,
-}: {
-  summary: LibrarySummary;
-  systems: SystemLabel[];
-}) {
-  return (
-    <section className="library-ready" aria-labelledby="library-ready-heading">
-      <div className="panel-heading">
-        <h2 id="library-ready-heading">LIBRARY READY</h2>
-        <span aria-hidden="true" />
-        <span className="panel-meta">BROWSING NEXT</span>
-      </div>
-      <div className="ready-total">
-        <strong>{number(summary.totalGames)}</strong>
-        <span>{summary.totalGames === 1 ? 'GAME FOUND' : 'GAMES FOUND'}</span>
-      </div>
-      <p>
-        Your local library is available. The full browsing view arrives in the next library slice.
-      </p>
-      <div className="system-counts" aria-label="Games by system">
-        {summary.systems.map((system) => (
-          <div className="system-count" key={system.systemId}>
-            <span
-              className="system-swatch"
-              style={{ background: systemAccent(system.systemId) }}
-              aria-hidden="true"
-            />
-            <span>{systemName(system.systemId, systems)}</span>
-            <strong>{number(system.gameCount)}</strong>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function scanPhaseLabel(phase: ScanProgress['phase']) {
   switch (phase) {
     case 'discovery':
@@ -580,6 +539,7 @@ export function LibraryPage({
   rootsError,
   refreshRoots,
   systems,
+  library,
   scan,
   onAddExternalFolder,
   onOpenManagedFolder,
@@ -672,7 +632,7 @@ export function LibraryPage({
               scanRunning={isRunning}
             />
           ) : (
-            <PopulatedLibraryState summary={summary} systems={systems} />
+            <LibraryBrowser library={library} systems={systems} />
           )}
 
           {showIssues && <ScanIssuesPanel scan={scan} roots={roots} />}

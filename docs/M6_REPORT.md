@@ -15,21 +15,21 @@
 - Pushed: No
 - Pre-existing untracked files: `M3_REVIEW.md`, `M4_REVIEW.md`, `M4_REVIEW_2.md`,
   `M4_REVIEW_3.md`, `M5_REVIEW.md`, `M6_1_REVIEW.md`, `M6_1_DELTA_REVIEW.md`, `M6_2_REVIEW.md`,
-  `docs/M5_IMPLEMENTATION_REPORT.md`
+  `M6_2_DELTA_REVIEW.md`, `docs/M5_IMPLEMENTATION_REPORT.md`
 
 ## B. Overall M6 Status
 
 - [x] M6.1 Backend Enablement
 - [x] M6.2 Shell / Empty Library / Scan UX
-- [ ] M6.3 Library Browsing — active
+- [x] M6.3 Library Browsing
 - [ ] M6.4 Game Detail / Readiness
 - [ ] M6.5 Metadata UX / Settings
 - [ ] M6.6 Hardening / Accessibility / Documentation
 
-Current phase: M6.1 and M6.2 are complete and reviewed; M6.3 implementation is active from
-`28e20dab7c5d68e100555ac94f7f610b2583c728`.
-Overall status: M6.1 and M6.2 are accepted as READY. M6.3 design and implementation work is in
-progress; it is not complete and M6.4 has not started.
+Current phase: M6.1 and M6.2 are complete and reviewed; M6.3 implementation started from
+`28e20dab7c5d68e100555ac94f7f610b2583c728` and is complete for review.
+Overall status: M6.1 and M6.2 are accepted as READY. M6.3 implementation and verification are
+complete; M6.4 has not started.
 
 ## C. M6.1 — Backend Enablement
 
@@ -76,9 +76,9 @@ progress; it is not complete and M6.4 has not started.
   protocol, not by a caller-supplied path or provider URL. The strongest boundary is that the
   WebView supplies only an opaque game identity; path containment checks are defence-in-depth
   against corrupted persisted cache paths. No new dependency was added.
-- The metadata event is an invalidation signal emitted after durable persistence; the future UI must
-  refetch bounded authoritative state. Bulk enrichment may emit many per-game events; M6.3 must
-  debounce/coalesce affected IDs and must not refetch the entire library once per event.
+- The metadata event is an invalidation signal emitted after durable persistence. M6.3 consumes it
+  by coalescing visible affected IDs and refetching bounded authoritative state, never by rebuilding
+  normalized metadata from the event or refetching once per emitted event.
 - The bounded issue page resolves the latest persisted terminal run (`completed` or `failed`) once and
   uses that identity for both count and rows; `running` runs are not selected by default.
 - No ADR was added: this slice uses the existing repository/application/Tauri boundaries and the
@@ -123,14 +123,14 @@ Focused and full Rust/frontend/release verification for the corrective pass is r
   run; transient watcher diagnostics remain on the legacy aggregate issue command.
 - M6.1 exposes only the product-required title-ascending sort.
 - A durable cover row may become unavailable between the list query and protocol request; the native
-  protocol returns a safe 404 and the future UI should treat `coverRef` as an availability hint.
+  protocol returns a safe 404 and M6.3 treats `coverRef` as an availability hint with C4 fallback.
 - SQLite `lower()` is ASCII-oriented in the current configuration. Full Unicode case folding is an
   accepted search-quality deferral; this pass adds no persisted folded-search columns or replacement
   search subsystem.
-- `metadata-state-changed` remains per-game by contract. M6.3 must debounce/coalesce bulk invalidations
-  and refetch bounded visible/current state instead of the entire library per event; that logic is
-  intentionally not implemented here.
-- M6.3 and later UI work is intentionally not started.
+- `metadata-state-changed` remains per-game by contract. M6.3 now debounces/coalesces visible bulk
+  invalidations and refetches bounded current state instead of the entire library per event.
+- At the M6.1 boundary, M6.3 and later UI work was intentionally not started; M6.3 now consumes these
+  contracts without changing them.
 
 ### Review status
 
@@ -142,8 +142,8 @@ M6.2. Not merged or pushed.
 ## D. M6.2 — Shell / Empty Library / Scan UX
 
 Implementation started from `59b10effa6afd80addf5b53ef7a684bfc4e3bccf`, was committed as
-`8a74438158f221464a972fb89c7774aa2e48f2c3`, and is complete within the M6.2 boundary. M6.3
-remains explicitly out of scope.
+`8a74438158f221464a972fb89c7774aa2e48f2c3`, and is complete within the M6.2 boundary. Browsing was
+explicitly out of that slice and is now implemented separately in section E.
 
 ### Application shell and routes
 
@@ -155,7 +155,7 @@ remains explicitly out of scope.
   back/forward behavior. No routing dependency was added.
 - System rows use the backend-owned systems catalog for labels and the bounded summary for counts.
   Catalog loading and failure are shown honestly, with retry and no fabricated fallback rows. The
-  rows remain visibly inert until M6.3 owns system filtering; no fake filter behavior is present.
+  rows were visibly inert within M6.2; M6.3 activates them with backend-owned system identities.
 
 ### Components and root handling
 
@@ -203,9 +203,9 @@ remains explicitly out of scope.
   Refresh failures and pagination failures have separate truthful retry actions.
 - A previous terminal issue page remains visible while a newer scan is running and is explicitly
   labelled with its persisted `scanRunId` and the current run where available.
-- A non-empty summary renders a restrained `LIBRARY READY` transitional state with the real total
-  and system counts. It does not query the full M4 snapshot and does not fabricate GameCards,
-  covers, search, filters, favorites, or pagination.
+- At the M6.2 boundary, a non-empty summary rendered a restrained `LIBRARY READY` transitional state
+  with real totals and no fabricated cards. M6.3 removes that component and its styles rather than
+  maintaining two populated-library implementations.
 
 ### Corrective pass after adversarial review
 
@@ -264,8 +264,8 @@ review artifact remains unchanged. The focused corrections are:
   truth for selection. There is no arbitrary external-root opener because only managed-root opening
   is supported safely in this slice.
 - Issue remediation, duplicate repair, system assignment, file movement/deletion, metadata/provider
-  settings, core/video/controller/save settings, full browsing, and game details remain deferred to
-  their milestones.
+  settings and core/video/controller/save settings remained deferred; browsing is now section E,
+  while game detail remains deferred to M6.4.
 - Native managed-folder opening intentionally keeps the platform executable names `explorer.exe`,
   `open`, and `xdg-open`; they are resolved by the host process rather than by an absolute path.
   The existing safety boundary remains: no caller-provided path, no shell, one validated canonical
@@ -280,13 +280,9 @@ review artifact remains unchanged. The focused corrections are:
 
 ## E. M6.3 — Library Browsing
 
-Active. The approved design is recorded in
-`docs/superpowers/specs/2026-08-28-m6-3-library-browsing-design.md`. Implementation starts with the
-carried M6.2 DELTA-LOW-1 loading-ownership correction, then adds bounded query state, search,
-system/favorite filters, page controls, list-DTO GameCards, cached-cover fallback, coalesced visible
-metadata invalidation, and one refresh per completed scan run. Genre/region facet discovery is
-deferred because M6.1 exposes exact filters but no bounded aggregate option contract; M6.3 will not
-derive facets by downloading the library or add an unbounded analytics endpoint.
+Implementation started from `28e20dab7c5d68e100555ac94f7f610b2583c728`. The approved design and
+implementation plan are recorded in `docs/superpowers/specs/2026-08-28-m6-3-library-browsing-design.md`
+and `docs/superpowers/plans/2026-08-28-m6-3-library-browsing.md`.
 
 ### Carried M6.2 correction
 
@@ -296,6 +292,115 @@ derive facets by downloading the library or add an unbounded analytics endpoint.
   errors remain rejected.
 - Added a focused overlapping-refresh regression in `AppShell.test.tsx`: the older refresh resolves
   first, the newer refresh retains its loading indicator, and only the newest operation releases it.
+
+### Query architecture and performance
+
+- Added focused `useLibraryQuery` state. It is the only M6.3 consumer of `query_library` and owns
+  raw/debounced search, system and favorite filters, the current replacement page, three loading
+  channels, query/favorite errors, paging, favorite mutations, scan-completion invalidation, and
+  metadata-event invalidation.
+- Requests omit `limit`, deliberately using M6.1's bounded default of 60. No snapshot, full-library
+  download, per-card metadata call, per-card detail call, provider request, or unbounded accumulation
+  was added. Title ascending is the only exposed sort because it is the only supported backend sort.
+- Query identity includes the debounced literal search, backend system ID, favorites-only flag,
+  title sort, and offset. Search/filter changes reset offset to zero. Previous/next controls replace
+  the page rather than append it. A total that shrinks below the current offset redirects to the last
+  valid page without installing the invalid empty offset.
+- A monotonic result generation rejects stale data and stale errors. Initial, refresh, and page
+  loading channels have independent operation owners, so an older operation cannot release loading
+  owned by a newer same-channel request. Favorite completions read the latest committed query
+  callback and page/filter state, so a held mutation cannot restore a superseded query identity.
+  Unmount invalidates active work.
+
+### Search, filters, and states
+
+- The B2 header search uses a visible `SEARCH LIBRARY` label with `<input type="search">`, a 200 ms
+  effect-owned debounce, literal query forwarding, a keyboard-reachable clear action, preserved
+  current content during refresh, and cleanup on change/unmount.
+- Sidebar rows are now real one-system-at-a-time filters. IDs/display names come only from the Rust
+  catalog, counts come from `get_library_summary`, and unknown future IDs use the existing visual
+  accent fallback without inventing catalog data. All Systems and system rows expose pressed state.
+- The M6-compatible B3 subset includes the handoff's `// FILTER` hierarchy, favorites-only, pixel
+  shadow treatment, and a combined clear-search/filters action.
+  Genre/region exact filters exist in M6.1, but M6.1 exposes no bounded distinct-value/facet contract.
+  M6.3 therefore does not download all games or add an unbounded facet endpoint; selectable genre and
+  region discovery remains explicitly deferred. Unplayed/recent/core/BIOS filters remain out of scope.
+- Initial loading reserves card geometry. Refreshes preserve the current page with a small updating
+  status. Page loading leaves cards/favorites available. Query errors retain the shell and retry.
+  B5 filtered-empty copy is distinct from M6.2 first-run empty-library onboarding and never suggests
+  a rescan merely because a query found no matches.
+
+### GameCard, covers, availability, and metadata
+
+- Replaced the `LIBRARY READY` transitional state with the real bounded grid. `GameCard` consumes
+  `LibraryListItem` only: effective title/local fallback, catalog system label, release year,
+  genre/region where present, favorite, local availability, coarse metadata state, and `coverRef`.
+- Cover space is reserved at 3:4. The opaque native reference is passed unchanged to a lazy image;
+  load/404 failure changes only that card to the C4 fallback. A later authoritative DTO retries even
+  when the stable opaque reference is unchanged. The fallback uses the system accent,
+  Press Start 2P title treatment, centered wrapping, and no fabricated artwork or gradients. A
+  changed authoritative cover reference is retried after an earlier reference failed.
+- Local availability is always separate from metadata status. A failed/no-match/deferred metadata
+  state never implies missing content. Stale metadata retains its last-known-good title and cover and
+  adds only a concise browsing-level status. Matched metadata is intentionally quiet.
+
+### Favorites and invalidation
+
+- Favorite writes use `set_game_favorite` and do not optimistically alter the DTO. A synchronous
+  per-game pending set suppresses duplicate clicks; success refetches the bounded authoritative page
+  and summary, while failure preserves the confirmed card and shows a safe error. Unfavoriting under
+  favorites-only resets a later page exactly once or refreshes page zero, so the removed card leaves
+  coherently without mixing offsets. The success continuation reads the latest committed query
+  identity, preventing a delayed write from overwriting a newer search/system/filter/page.
+- `metadata-state-changed` is consumed as invalidation only. An effect-owned set deduplicates visible
+  game IDs and a 180 ms timer coalesces a burst into one current-page refetch. Off-page IDs cause no
+  immediate work. Cleanup clears the timer/set and unregisters normally or immediately after late
+  async registration.
+- `useScanState` continues to deduplicate command/event terminal runs. AppShell passes only the newly
+  handled terminal run ID to the query hook, producing one bounded refresh per completed run. Scan
+  progress has no query-hook input and never refreshes the library page.
+
+### Accessibility and visual decisions
+
+- Cards are semantic articles with headings and exactly one independent favorite button; there is no
+  nested button, dead detail route, or M6.4 navigation. Search, filter, clear/reset, favorite, and page
+  controls are keyboard reachable with names/states. Real covers have useful alt text and placeholders
+  use an equivalent image role/name.
+- B1/B2/B3/B5/C4 and A6 are implemented with the existing dark/cream themes, token colors, bundled
+  typography, hard pixel borders/shadows, focus inversion, search inset focus, list cursor language,
+  and card scale/shadow focus. The grid uses `auto-fill` with a 158 px floor at desktop widths and a
+  140 px narrow fallback; the sidebar remains present at the configured 960 px minimum.
+- Active system rows retain B1's accent treatment and A6 cursor-only focus language; the light theme
+  mixes that accent toward white just enough for its black 14.5 px label to clear the contrast floor.
+  Light-theme system chips/placeholders use the same bounded presentation adjustment. Reset and
+  missing-local-content copy uses theme-safe text contrast while retaining the Arcade accent as a
+  non-text underline. The weakest adjusted pairing (light `accent-3`) is 6.36:1. No source token or
+  new color token was introduced.
+- The Impeccable mechanical detector reported one warning for the existing 3 px black structural
+  sidebar divider. It is the established B1 shell separator, not a colored card side-tab, so it was
+  retained. No generated image or fake cover asset was introduced.
+
+### Tests
+
+- Added focused hook coverage for initial success/error/retry, forward/back/final paging, no-more,
+  filter reset, total shrink, 200 ms literal search debounce, stale result/error/loading races,
+  unmount, favorite on/off/failure/duplicate suppression/favorites-page reset, a held favorite write
+  completing after a system-filter change, visible/off-page metadata cadence/deduplication/timer/
+  listener cleanup, and terminal scan-run identity.
+- Added GameCard coverage for title fallback, system/year/list metadata, favorite semantics/pending,
+  local unavailability, independent metadata failure, stale presentation, lazy opaque covers, 404
+  fallback, missing-cover C4 placeholder, long titles, and changed cover references.
+- Expanded AppShell integration coverage for the real populated grid, query error/retry, search/no
+  results/clear, system IDs/counts/pressed state, favorites-only/unfavorite behavior, and scan refresh
+  cadence. All fixtures are synthetic/local; no live ScreenScraper, ROM, BIOS, or copyrighted art is
+  used.
+
+### Deferrals
+
+- M6.4 detail/readiness, M6.5 metadata/settings workflows, M6.6 final hardening, M7 play data,
+  M8 controller/on-screen-keyboard behavior, and later milestones were not implemented.
+- Genre/region facet discovery is deferred as described above. Existing accepted M6.2 LOWs other
+  than required DELTA-LOW-1 remain untouched.
 
 ## F. M6.4 — Game Detail / Readiness
 
@@ -330,25 +435,35 @@ Not started. No implementation details are inferred here.
 
 ## J. Design Coverage
 
-M6.2 implements the shell framing from B1, empty/setup guidance from A1 and B4, active scan from
-A2, completion from A3, focus language from A6, the root-management subset of B9, native folder
-selection for B11, and the scan/root issue presentation needed from C1/C7/C8. The existing token
-file remains authoritative. Unsupported prototype-only affordances, such as B11's fake browser,
-A2 ETA/current-item details, settings controls owned by M6.5, and all M6.3 library browsing
-controls, were intentionally omitted.
+M6.2 retains the shell framing from B1, empty/setup guidance from A1/B4, scan states, and root
+surfaces. M6.3 adds the real B1 bounded grid, B2 search, supported B3 filter subset, B5 filtered-empty
+state, C4 cover fallback, and A6 focus language. The token file remains authoritative across dark
+and light themes. Prototype-only genre/region discovery without a bounded option contract, unplayed,
+controller footer/keyboard, detail, readiness, and metadata settings were intentionally omitted.
+
+Manual inspection was performed against code/DOM/CSS at the 960×640 minimum, 1280×800, and larger
+desktop layouts, including dark/light tokens, populated cards, a long title, missing/failed cover,
+unavailable local content, no-results, active filters, focus, and page controls. The repository has
+no visual runner or fixture-capable native browser harness, so no screenshot or automated visual
+claim is made. The Impeccable detector was run once over the changed UI and reported only the
+existing B1 3 px black structural sidebar divider as a side-tab heuristic; it was retained.
 
 ## K. Test Coverage
 
-The frontend suite has 32 synthetic/local tests across four files and covers the M6.2 shell, route
-history, summary-driven empty/populated states, root actions and taxonomy fallbacks, native picker
-shape/cancellation, scan event races/progress/completion/refetch cadence/listener cleanup, superseded
-issue loading teardown, late listener registration, post-completion progress, live-region semantics,
-system catalog loading/failure/retry/unknown-ID behavior, removal-confirmation focus, bounded issue
-paging and terminal-run context, and issue-page failure. Rust adds three native opener tests and all
-existing M4/M5/M6.1 tests remain passing. No live ScreenScraper or copyrighted fixture is used.
+The frontend suite has 64 synthetic/local tests across six files. M6.3 additions cover initial/error/
+retry query state, multiple/final pages, filter reset, total shrink, literal debounced search, stale
+result/error/loading races, active-request unmount, favorites, duplicate writes, held-write/current-
+filter ownership, filtered-page removal, visible metadata invalidation cadence/lifecycle, terminal
+scan identity including empty-to-populated transition, real grid integration, system IDs/counts,
+search/no-results/clear, card semantics, title/cover fallbacks, availability, and stale metadata.
+Existing M6.2/root/IPC tests and all Rust tests remain passing. No live ScreenScraper or copyrighted
+fixture is used.
 
 ## L. Deferred Beyond M6
 
+- M6.4 game detail and emulation/BIOS/runtime readiness.
+- M6.5 detailed metadata states, metadata/provider settings, and settings workflows.
+- M6.6 final cross-screen hardening and accessibility consistency.
 - M7 launch/process/play-session and per-game core behavior.
 - M8 controller abstraction, focus graph, and on-screen keyboard.
 - M9 save-game and save-state management.
@@ -360,22 +475,23 @@ existing M4/M5/M6.1 tests remain passing. No live ScreenScraper or copyrighted f
 - `pnpm typecheck` — PASS (`tsc -b --pretty false`).
 - `pnpm lint` — PASS (`eslint .`).
 - `pnpm format:check` — PASS (all checked files use Prettier code style).
-- `pnpm test` — PASS (4 test files, 32 tests).
-- `pnpm build` — PASS (`vite build`, 44 modules transformed).
+- `pnpm test` — PASS (6 test files, 64 tests).
+- `pnpm build` — PASS (`vite build`, 47 modules transformed).
 - `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — PASS.
 - `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` —
   PASS.
 - `cargo test --manifest-path src-tauri/Cargo.toml` — PASS (306 library tests run: 305 passed,
   1 ignored, 0 failed; main and doc-test binaries had 0 tests).
 - `cargo build --manifest-path src-tauri/Cargo.toml --release` — PASS (release application built;
-  26.29 seconds).
+  most recent incremental verification finished in 0.26 seconds).
 - `pnpm tauri:build` — PASS (Tauri release application built at
-  `src-tauri/target/release/retrofrontier`; frontend transformed 44 modules).
+  `src-tauri/target/release/retrofrontier`; frontend transformed 47 modules; Rust release build
+  finished in 24.98 seconds).
 - `git diff --check` — PASS.
-- Manual design inspection — PASS against the relevant M6 design handoff artifacts; the existing
-  structural sidebar border was retained because it is part of the B1 shell treatment. No automated
-  anti-pattern detector is claimed.
+- Manual design inspection — PASS as a static source/DOM/CSS inspection against B1/B2/B3/B5/C4/A6
+  at the requested desktop sizes and both themes; no rendered screenshot claim is made. The detector
+  result and retained structural sidebar divider are documented in sections E/J.
 
 ## N. Current M6 Verdict
 
-`M6.2 status: implementation complete, corrective pass complete, awaiting delta review`
+`M6.3 IMPLEMENTATION COMPLETE — ready for review before M6.4`

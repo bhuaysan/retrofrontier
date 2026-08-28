@@ -4,8 +4,10 @@ M4 establishes the local library scanner, durable content model, root management
 and system-readiness snapshot boundary. M5 adds provider-backed metadata
 enrichment behind a provider-neutral boundary. M6.1 adds bounded backend/IPC
 contracts, and M6.2 adds the library shell, empty/setup state, scan UX, and
-root-management entry points. M6.3 will add library browsing; core selection UI
-and game launching remain later milestones.
+root-management entry points. M6.3 consumes the bounded query for local library
+browsing, debounced search, system/favorite filters, page controls, favorites,
+cached covers, and coalesced metadata invalidation. Core selection UI and game
+launching remain later milestones.
 
 ## Prerequisites
 
@@ -151,8 +153,10 @@ later without changing command or service code.
 M6.1 keeps the UI-facing library contracts in the same manually mirrored boundary: Rust DTOs use
 `serde(rename_all = "camelCase")`, and `src/platform/ipc.ts` mirrors the bounded list, summary,
 detail, favorite, scan-issue-page, and metadata-invalidation shapes. M6.2 adds frontend state and
-query orchestration for the shell, roots, scan UX, and saved issues; library browsing query
-consumption remains M6.3.
+query orchestration for the shell, roots, scan UX, and saved issues. M6.3 adds `useLibraryQuery`,
+which owns bounded page identity, debounced search, filter resets, race-safe request/loading
+ownership, authoritative favorite refreshes, scan-completion refreshes, and visible-page metadata
+invalidation coalescing. Cards consume only the list DTO and opaque cached-cover reference.
 
 ## Design tokens
 

@@ -13,9 +13,11 @@ scan IPC. Rust also owns metadata: a provider-neutral provider boundary with a
 ScreenScraper adapter, evidence-validated matching, a restart-safe job queue with
 dynamic quota handling, an offline-capable local cache, and one cached cover per
 game. M6.2 adds the library shell, empty/setup state, scan UX, and root-management
-entry points. M6.3 browsing and game launching remain later milestones.
-M6.1 provides the bounded library-query, summary, local-detail, favorite, scan-issue,
-and cached-cover IPC foundations consumed by the current shell and future browsing UI.
+entry points. M6.3 adds bounded local library browsing with debounced search,
+system and favorite filters, page controls, authoritative favorite mutations,
+cached covers, and offline-safe cover fallbacks. Game detail and launching remain
+later milestones. M6.1 provides the bounded library-query, summary, local-detail,
+favorite, scan-issue, and cached-cover IPC foundations consumed by the current UI.
 
 ## Stack
 - Tauri 2

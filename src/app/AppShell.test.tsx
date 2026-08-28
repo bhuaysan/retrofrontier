@@ -2,7 +2,13 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
 
-import type { ContentRoot, ScanProgress, ScanSummary } from '../platform/ipc';
+import type {
+  ContentRoot,
+  LibraryPage,
+  MetadataStateChanged,
+  ScanProgress,
+  ScanSummary,
+} from '../platform/ipc';
 import { AppShell } from './AppShell';
 
 const mocks = vi.hoisted(() => {
@@ -33,6 +39,8 @@ const mocks = vi.hoisted(() => {
     removeExternalContentRoot: vi.fn(),
     setContentRootEnabled: vi.fn(),
     getLibrarySummary: vi.fn(),
+    queryLibrary: vi.fn(),
+    setGameFavorite: vi.fn(),
     getScanStatus: vi.fn(),
     getScanIssuePage: vi.fn(),
     getSystems: vi.fn(),
@@ -40,8 +48,10 @@ const mocks = vi.hoisted(() => {
     openManagedRomFolder: vi.fn(),
     onLibraryScanProgress: vi.fn(),
     onLibraryScanCompleted: vi.fn(),
+    onMetadataStateChanged: vi.fn(),
     progressHandlers: new Set<(progress: ScanProgress) => void>(),
     completedHandlers: new Set<(summary: ScanSummary) => void>(),
+    metadataHandlers: new Set<(event: MetadataStateChanged) => void>(),
     pickExternalContentRoot: vi.fn(),
   };
 });
@@ -54,6 +64,8 @@ vi.mock('../platform/ipc', () => ({
   removeExternalContentRoot: mocks.removeExternalContentRoot,
   setContentRootEnabled: mocks.setContentRootEnabled,
   getLibrarySummary: mocks.getLibrarySummary,
+  queryLibrary: mocks.queryLibrary,
+  setGameFavorite: mocks.setGameFavorite,
   getScanStatus: mocks.getScanStatus,
   getScanIssuePage: mocks.getScanIssuePage,
   getSystems: mocks.getSystems,
@@ -61,6 +73,7 @@ vi.mock('../platform/ipc', () => ({
   openManagedRomFolder: mocks.openManagedRomFolder,
   onLibraryScanProgress: mocks.onLibraryScanProgress,
   onLibraryScanCompleted: mocks.onLibraryScanCompleted,
+  onMetadataStateChanged: mocks.onMetadataStateChanged,
 }));
 
 vi.mock('../platform/folderPicker', () => ({
@@ -117,15 +130,56 @@ const systemsResponse = {
 
 const inactiveStatus = { running: false, progress: null, lastResult: null };
 
+const populatedLibraryPage: LibraryPage = {
+  items: [
+    {
+      gameId: 1,
+      systemId: 'nes',
+      localTitle: 'Kirby Local',
+      metadataTitle: 'Kirby’s Adventure',
+      displayTitle: 'Kirby’s Adventure',
+      sortTitle: 'kirby’s adventure',
+      availability: 'available',
+      favorite: false,
+      metadataMatchState: 'matched',
+      releaseDate: '1993-03-23',
+      genre: 'Platform',
+      region: 'US',
+      coverRef: null,
+    },
+    {
+      gameId: 2,
+      systemId: 'nes',
+      localTitle: 'A Very Long Local Title Without Metadata',
+      metadataTitle: null,
+      displayTitle: 'A Very Long Local Title Without Metadata',
+      sortTitle: 'a very long local title without metadata',
+      availability: 'unavailable',
+      favorite: true,
+      metadataMatchState: 'failed',
+      releaseDate: null,
+      genre: null,
+      region: null,
+      coverRef: 'rfmedia://localhost/cover/2',
+    },
+  ],
+  total: 2,
+  offset: 0,
+  limit: 60,
+};
+
 function setupDefaults() {
   mocks.progressHandlers.clear();
   mocks.completedHandlers.clear();
+  mocks.metadataHandlers.clear();
   for (const mock of [
     mocks.getContentRoots,
     mocks.addExternalContentRoot,
     mocks.removeExternalContentRoot,
     mocks.setContentRootEnabled,
     mocks.getLibrarySummary,
+    mocks.queryLibrary,
+    mocks.setGameFavorite,
     mocks.getScanStatus,
     mocks.getScanIssuePage,
     mocks.getSystems,
@@ -134,10 +188,13 @@ function setupDefaults() {
     mocks.pickExternalContentRoot,
     mocks.onLibraryScanProgress,
     mocks.onLibraryScanCompleted,
+    mocks.onMetadataStateChanged,
   ]) {
     mock.mockReset();
   }
   mocks.getLibrarySummary.mockResolvedValue({ totalGames: 0, favoriteGames: 0, systems: [] });
+  mocks.queryLibrary.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
+  mocks.setGameFavorite.mockResolvedValue({ gameId: 1, favorite: true });
   mocks.getContentRoots.mockResolvedValue([managedRoot]);
   mocks.getSystems.mockResolvedValue(systemsResponse);
   mocks.getScanStatus.mockResolvedValue(inactiveStatus);
@@ -188,6 +245,12 @@ function setupDefaults() {
       return () => mocks.completedHandlers.delete(handler);
     },
   );
+  mocks.onMetadataStateChanged.mockImplementation(
+    async (handler: (event: MetadataStateChanged) => void) => {
+      mocks.metadataHandlers.add(handler);
+      return () => mocks.metadataHandlers.delete(handler);
+    },
+  );
 }
 
 describe('AppShell M6.2 shell and library states', () => {
@@ -201,8 +264,8 @@ describe('AppShell M6.2 shell and library states', () => {
 
     expect(screen.getByRole('heading', { name: 'LIBRARY' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /All systems/ })).toHaveAttribute(
-      'aria-current',
-      'page',
+      'aria-pressed',
+      'true',
     );
     await screen.findByText('/documents/RetroFrontier/ROMs');
 
@@ -844,21 +907,197 @@ describe('AppShell M6.2 shell and library states', () => {
     expect(liveRegion?.textContent).toBe(announcedText);
   });
 
-  it('renders a restrained populated state without querying or fabricating game cards', async () => {
+  it('renders the real bounded populated library instead of the transitional state', async () => {
     mocks.getLibrarySummary.mockResolvedValue({
-      totalGames: 3,
+      totalGames: 2,
       favoriteGames: 1,
-      systems: [
-        { systemId: 'nes', gameCount: 2 },
-        { systemId: 'snes', gameCount: 1 },
-      ],
+      systems: [{ systemId: 'nes', gameCount: 2 }],
     });
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
     render(<AppShell />);
 
-    expect(await screen.findByRole('heading', { name: 'LIBRARY READY' })).toBeInTheDocument();
-    expect(screen.getAllByText('3').length).toBeGreaterThanOrEqual(1);
+    expect(await screen.findByRole('heading', { name: 'Kirby’s Adventure' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'A Very Long Local Title Without Metadata' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'LIBRARY READY' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'LIBRARY IS EMPTY' })).not.toBeInTheDocument();
+    expect(screen.getByText('SEARCH LIBRARY')).toBeVisible();
+    expect(screen.getByText('// FILTER')).toBeVisible();
     expect(screen.getAllByText('Nintendo Entertainment System').length).toBeGreaterThanOrEqual(1);
-    expect(screen.queryByText('Chrono Trigger')).not.toBeInTheDocument();
+    expect(mocks.queryLibrary).toHaveBeenCalledWith({ sort: 'titleAsc', offset: 0 });
+  });
+
+  it('keeps the shell available on library query failure and retries', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    mocks.queryLibrary
+      .mockRejectedValueOnce(new mocks.IpcError('database_unavailable', 'internal query detail'))
+      .mockResolvedValueOnce(populatedLibraryPage);
+    render(<AppShell />);
+
+    expect(await screen.findByText('LIBRARY QUERY UNAVAILABLE')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /All systems/ })).toBeInTheDocument();
+    expect(screen.getByRole('alert')).not.toHaveTextContent('internal query detail');
+    fireEvent.click(screen.getByRole('button', { name: 'RETRY LIBRARY' }));
+    expect(await screen.findByRole('heading', { name: 'Kirby’s Adventure' })).toBeInTheDocument();
+  });
+
+  it('searches through the debounced backend query and distinguishes no results', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    mocks.queryLibrary
+      .mockResolvedValueOnce(populatedLibraryPage)
+      .mockResolvedValueOnce({ items: [], total: 0, offset: 0, limit: 60 })
+      .mockResolvedValueOnce(populatedLibraryPage);
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    const search = screen.getByRole('searchbox', { name: 'SEARCH LIBRARY' });
+    fireEvent.change(search, { target: { value: 'Nothing%_\\' } });
+    expect(mocks.queryLibrary).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByRole('heading', { name: 'NO MATCH FOR “Nothing%_\\”' }),
+    ).toBeInTheDocument();
+    expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
+      search: 'Nothing%_\\',
+      sort: 'titleAsc',
+      offset: 0,
+    });
+    expect(screen.queryByRole('heading', { name: 'LIBRARY IS EMPTY' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear library search' }));
+    expect(await screen.findByRole('heading', { name: 'Kirby’s Adventure' })).toBeInTheDocument();
+    expect(search).toHaveValue('');
+  });
+
+  it('uses backend system identities and summary counts for sidebar filters', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 0,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    const nes = screen.getByRole('button', { name: /Nintendo Entertainment System2/ });
+    expect(nes).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(nes);
+    await waitFor(() =>
+      expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
+        systemId: 'nes',
+        sort: 'titleAsc',
+        offset: 0,
+      }),
+    );
+    expect(nes).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: /All systems2/ })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
+  it('filters favorites and serializes authoritative card mutation', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    mocks.queryLibrary
+      .mockResolvedValueOnce(populatedLibraryPage)
+      .mockResolvedValueOnce({
+        ...populatedLibraryPage,
+        items: [populatedLibraryPage.items[1]],
+        total: 1,
+      })
+      .mockResolvedValueOnce({
+        items: [],
+        total: 0,
+        offset: 0,
+        limit: 60,
+      });
+    mocks.setGameFavorite.mockResolvedValue({ gameId: 2, favorite: false });
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    const favoritesFilter = screen.getByRole('button', { name: 'FAVORITES ONLY' });
+    fireEvent.click(favoritesFilter);
+    await waitFor(() =>
+      expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
+        favoritesOnly: true,
+        sort: 'titleAsc',
+        offset: 0,
+      }),
+    );
+    expect(favoritesFilter).toHaveAttribute('aria-pressed', 'true');
+
+    const removeFavorite = await screen.findByRole('button', {
+      name: 'Remove A Very Long Local Title Without Metadata from favorites',
+    });
+    fireEvent.click(removeFavorite);
+    fireEvent.click(removeFavorite);
+    expect(mocks.setGameFavorite).toHaveBeenCalledTimes(1);
+    expect(mocks.setGameFavorite).toHaveBeenCalledWith({ gameId: 2, favorite: false });
+    expect(
+      await screen.findByRole('heading', { name: 'NO GAMES MATCH FILTERS' }),
+    ).toBeInTheDocument();
+  });
+
+  it('refreshes the bounded page once on completion and never on scan progress', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    const initialCalls = mocks.queryLibrary.mock.calls.length;
+
+    act(() =>
+      mocks.progressHandlers.forEach((handler) =>
+        handler({
+          runId: 41,
+          phase: 'hashing',
+          counters: {
+            rootsDiscovered: 1,
+            rootsCompleted: 0,
+            filesDiscovered: 2,
+            filesProcessed: 1,
+            filesHashed: 1,
+            bytesHashed: 10,
+            issuesFound: 0,
+          },
+        }),
+      ),
+    );
+    expect(mocks.queryLibrary).toHaveBeenCalledTimes(initialCalls);
+
+    const completion: ScanSummary = {
+      runId: 41,
+      state: 'completed',
+      counters: {
+        rootsDiscovered: 1,
+        rootsCompleted: 1,
+        filesDiscovered: 2,
+        filesProcessed: 2,
+        filesHashed: 2,
+        bytesHashed: 20,
+        issuesFound: 0,
+      },
+      durationMs: 1000,
+    };
+    act(() => mocks.completedHandlers.forEach((handler) => handler(completion)));
+    await waitFor(() => expect(mocks.queryLibrary).toHaveBeenCalledTimes(initialCalls + 1));
+    act(() => mocks.completedHandlers.forEach((handler) => handler(completion)));
+    expect(mocks.queryLibrary).toHaveBeenCalledTimes(initialCalls + 1);
   });
 
   it('cleans up both scan event listeners on unmount', async () => {
