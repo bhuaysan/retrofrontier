@@ -1187,9 +1187,6 @@ density; and M6.4 INFO-3's modified-click behavior remains a deliberate native-l
 Full Unicode case folding, metadata event volume beyond the bounded consumer, provider capability
 expansion, archive import, launch/process behavior, controller navigation, saves, and packaging also
 remain in their owning milestones. No known CRITICAL or HIGH finding remains.
-Full Unicode case folding, metadata event volume beyond the bounded consumer, provider capability
-expansion, archive import, launch/process behavior, controller navigation, saves, and packaging also
-remain in their owning milestones. No known CRITICAL or HIGH finding remains.
 
 ## P. Current M6 Verdict
 
