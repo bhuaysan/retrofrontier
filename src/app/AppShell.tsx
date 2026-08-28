@@ -159,13 +159,16 @@ export function AppShell() {
     error: catalogError,
     refresh: refreshCatalog,
   } = useSystemCatalog();
+  // A ROM scan changes local content only. Runtime state, approved cores, and BIOS files are all
+  // outside the scanned roots, so the system catalog is deliberately not refetched here:
+  // `useSystemCatalog.refresh()` clears the catalog before refetching, which blanked the sidebar
+  // and the readiness panel on every terminal scan.
   const onScanCompleted = useCallback(
     (result: ScanSummary) => {
       setLibraryScanCompletionRunId(result.runId);
       void refreshSummary();
-      void refreshCatalog();
     },
-    [refreshCatalog, refreshSummary],
+    [refreshSummary],
   );
   const scan = useScanState({ onCompleted: onScanCompleted });
   const onFavoriteCommitted = useCallback(() => {

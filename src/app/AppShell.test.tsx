@@ -1129,6 +1129,89 @@ describe('AppShell M6.2 shell and library states', () => {
     expect(mocks.queryLibrary).toHaveBeenCalledWith({ sort: 'titleAsc', offset: 0 });
   });
 
+  // Regression for the sidebar flicker: a terminal ROM scan must not clear and refetch the system
+  // catalog, because `useSystemCatalog.refresh()` blanks the sidebar and readiness panel first and
+  // a ROM scan cannot change runtime, core, or BIOS state.
+  it('keeps the system sidebar populated across a terminal scan completion', async () => {
+    render(<AppShell />);
+
+    await screen.findByRole('button', { name: /Nintendo Entertainment System/ });
+    expect(mocks.getSystems).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      mocks.completedHandlers.forEach((handler) =>
+        handler({
+          runId: 9,
+          state: 'completed',
+          counters: {
+            rootsDiscovered: 1,
+            rootsCompleted: 1,
+            filesDiscovered: 0,
+            filesProcessed: 0,
+            filesHashed: 0,
+            bytesHashed: 0,
+            issuesFound: 0,
+          },
+          durationMs: 5,
+        }),
+      );
+    });
+
+    expect(
+      screen.getByRole('button', { name: /Nintendo Entertainment System/ }),
+    ).toBeInTheDocument();
+    expect(mocks.getSystems).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('CHECKING SYSTEM CATALOG…')).not.toBeInTheDocument();
+  });
+
+  // Regression for the runtime pass: a first discovered game must leave the empty-library
+  // onboarding state without an application restart, and that transition must not itself request
+  // another scan.
+  it('leaves the empty library for a populated one when a terminal scan discovers a game', async () => {
+    mocks.getLibrarySummary
+      .mockResolvedValueOnce({ totalGames: 0, favoriteGames: 0, systems: [] })
+      .mockResolvedValue({
+        totalGames: 1,
+        favoriteGames: 0,
+        systems: [{ systemId: 'nes', gameCount: 1 }],
+      });
+    mocks.queryLibrary.mockResolvedValue({
+      ...populatedLibraryPage,
+      items: [populatedLibraryPage.items[0]],
+      total: 1,
+    });
+    render(<AppShell />);
+
+    expect(await screen.findByRole('heading', { name: 'LIBRARY IS EMPTY' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /All systems/ })).toHaveTextContent('0');
+    expect(mocks.queryLibrary).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mocks.completedHandlers.forEach((handler) =>
+        handler({
+          runId: 4,
+          state: 'completed',
+          counters: {
+            rootsDiscovered: 1,
+            rootsCompleted: 1,
+            filesDiscovered: 1,
+            filesProcessed: 1,
+            filesHashed: 1,
+            bytesHashed: 3,
+            issuesFound: 0,
+          },
+          durationMs: 12,
+        }),
+      );
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Kirby’s Adventure' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'LIBRARY IS EMPTY' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /All systems/ })).toHaveTextContent('1');
+    expect(mocks.queryLibrary).toHaveBeenCalledTimes(1);
+    expect(mocks.rescanLibrary).not.toHaveBeenCalled();
+  });
+
   it('keeps the shell available on library query failure and retries', async () => {
     mocks.getLibrarySummary.mockResolvedValue({
       totalGames: 2,
