@@ -594,4 +594,27 @@ describe('useLibraryQuery', () => {
 
     await waitFor(() => expect(mocks.queryLibrary).toHaveBeenCalledTimes(1));
   });
+
+  it('preserves the committed page when the library route is temporarily hidden', async () => {
+    const pageOne = pageWith('Page one', 0, 121);
+    const pageTwo = pageWith('Page two', 60, 121);
+    mocks.queryLibrary.mockResolvedValueOnce(pageOne).mockResolvedValue(pageTwo);
+    const { result, rerender } = renderHook(({ enabled }) => useLibraryQuery({ enabled }), {
+      initialProps: { enabled: true },
+    });
+    await waitFor(() => expect(result.current.page?.offset).toBe(0));
+
+    act(() => result.current.nextPage());
+    await waitFor(() => expect(result.current.page?.offset).toBe(60));
+    const callsBeforeRouteChange = mocks.queryLibrary.mock.calls.length;
+
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+    await waitFor(() =>
+      expect(mocks.queryLibrary).toHaveBeenCalledTimes(callsBeforeRouteChange + 1),
+    );
+
+    expect(mocks.queryLibrary).toHaveBeenLastCalledWith({ sort: 'titleAsc', offset: 60 });
+    expect(result.current.page?.offset).toBe(60);
+  });
 });

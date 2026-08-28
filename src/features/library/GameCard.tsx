@@ -1,12 +1,15 @@
-import { useState, type CSSProperties } from 'react';
+import type { CSSProperties, MouseEvent } from 'react';
 
 import type { LibraryListItem, LibraryMetadataMatchState } from '../../platform/ipc';
+import { gameRoute, routePath } from '../../app/routes';
+import { GameCover } from './GameCover';
 
 interface GameCardProps {
   item: LibraryListItem;
   systemName: string;
   accent: string;
   favoritePending: boolean;
+  onOpenGame: (gameId: number) => void;
   onToggleFavorite: (item: LibraryListItem) => void;
 }
 
@@ -19,7 +22,7 @@ const METADATA_LABELS: Partial<Record<LibraryMetadataMatchState, string>> = {
   stale: 'METADATA STALE',
 };
 
-function PixelStar({ filled }: { filled: boolean }) {
+export function PixelStar({ filled }: { filled: boolean }) {
   return (
     <svg aria-hidden="true" shapeRendering="crispEdges" viewBox="0 0 14 14">
       <path
@@ -37,18 +40,28 @@ export function GameCard({
   systemName,
   accent,
   favoritePending,
+  onOpenGame,
   onToggleFavorite,
 }: GameCardProps) {
-  const [failedCover, setFailedCover] = useState<{
-    item: LibraryListItem;
-    coverRef: string;
-  } | null>(null);
   const title = item.displayTitle || item.localTitle;
   const headingId = `game-card-title-${item.gameId}`;
   const metadataLabel = METADATA_LABELS[item.metadataMatchState];
   const releaseYear = item.releaseDate?.match(/^\d{4}/)?.[0] ?? null;
-  const coverFailed =
-    item.coverRef !== null && failedCover?.item === item && failedCover.coverRef === item.coverRef;
+
+  const handleDetailClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    event.preventDefault();
+    onOpenGame(item.gameId);
+  };
 
   return (
     <article
@@ -57,26 +70,14 @@ export function GameCard({
       style={{ '--system-accent': accent } as CSSProperties}
     >
       <div className="game-card-media">
-        {item.coverRef && !coverFailed ? (
-          <img
-            alt={`Cover art for ${title}`}
-            className="game-card-cover"
-            loading="lazy"
-            onError={() => {
-              if (item.coverRef) setFailedCover({ item, coverRef: item.coverRef });
-            }}
-            src={item.coverRef}
-          />
-        ) : (
-          <div
-            aria-label={`No cover available for ${title}`}
-            className="game-card-placeholder"
-            role="img"
-            style={{ '--system-accent': accent } as CSSProperties}
-          >
-            <span>{title}</span>
-          </div>
-        )}
+        <GameCover
+          accent={accent}
+          className={item.coverRef ? 'game-card-cover' : 'game-card-placeholder'}
+          coverRef={item.coverRef}
+          placeholderClassName="game-card-placeholder"
+          resetKey={item}
+          title={title}
+        />
         <button
           aria-label={
             favoritePending
@@ -96,8 +97,15 @@ export function GameCard({
       </div>
 
       <div className="game-card-copy">
-        <h2 id={headingId} title={title}>
-          {title}
+        <h2 aria-label={title} id={headingId} title={title}>
+          <a
+            aria-label={`Open ${title} details`}
+            data-game-detail-link={item.gameId}
+            href={routePath(gameRoute(item.gameId))}
+            onClick={handleDetailClick}
+          >
+            {title}
+          </a>
         </h2>
         <div className="game-card-system-row">
           <span className="game-card-system" title={systemName}>

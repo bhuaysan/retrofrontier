@@ -61,6 +61,7 @@ export function useLibraryQuery({
   // `page`/`pageRef` is the committed rendered position. The target is the latest logical
   // request position used by retries and bounded refreshes; it is not committed until success.
   const latestQueryState = useRef({ favoritesOnly: false, targetOffset: 0 });
+  const queryIdentityRef = useRef<string | null>(null);
   const latestRunQuery = useRef<
     (requestedOffset?: number, requestedChannel?: LoadingChannel) => Promise<void>
   >(async () => {});
@@ -164,8 +165,14 @@ export function useLibraryQuery({
 
   useLayoutEffect(() => {
     latestRunQuery.current = runQuery;
-    latestQueryState.current = { favoritesOnly, targetOffset: 0 };
-  }, [favoritesOnly, runQuery]);
+    const queryIdentity = `${debouncedSearch}\u0000${systemId ?? ''}\u0000${favoritesOnly}`;
+    if (queryIdentityRef.current !== queryIdentity) {
+      queryIdentityRef.current = queryIdentity;
+      latestQueryState.current = { favoritesOnly, targetOffset: 0 };
+    } else {
+      latestQueryState.current.favoritesOnly = favoritesOnly;
+    }
+  }, [debouncedSearch, favoritesOnly, runQuery, systemId]);
 
   useEffect(() => {
     mounted.current = true;
@@ -185,7 +192,7 @@ export function useLibraryQuery({
   }, [debouncedSearch, searchInput]);
 
   useEffect(() => {
-    if (enabled) void runQuery(0);
+    if (enabled) void runQuery();
   }, [enabled, runQuery]);
 
   const setSearchInput = useCallback((value: string) => setSearchInputState(value), []);

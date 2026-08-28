@@ -2,9 +2,9 @@
 
 ## Current Priority
 
-The project has completed its local-library foundation, M6.2 shell/empty/scan UX, and M6.3 bounded
-library browsing slice. Game detail/readiness, metadata/settings UX, launch, and later UI work
-remain; runtime trust and core-policy research remain explicit release gates.
+The project has completed its local-library foundation, M6.2 shell/empty/scan UX, M6.3 bounded
+library browsing slice, and M6.4 game detail/readiness UI. Metadata/settings UX, launch, and later
+UI work remain; runtime trust and core-policy research remain explicit release gates.
 
 ## M0 — Planning and Repository Foundation
 
@@ -275,10 +275,10 @@ visible attribution presentation, which belongs to M6.
 **Model:** Luna Max.
 
 - [x] M6.1 backend enablement: bounded library queries, summaries, local detail, favorites, issue
-  pages, typed root errors, cached-cover delivery, and metadata invalidation contracts
+      pages, typed root errors, cached-cover delivery, and metadata invalidation contracts
 - [x] M6.2 shell / empty library / scan UX (complete and reviewed)
 - [x] M6.3 library browsing
-- [ ] M6.4 game detail / readiness
+- [x] M6.4 game detail / readiness
 - [ ] M6.5 metadata UX / settings
 - [ ] M6.6 hardening / accessibility / documentation
 
@@ -289,9 +289,9 @@ visible attribution presentation, which belongs to M6.
 - [x] search
 - [x] system filters
 - [x] favorites
-- [ ] game details
-- [ ] runtime readiness
-- [ ] BIOS readiness
+- [x] game details
+- [x] runtime readiness
+- [x] BIOS readiness
 - [x] scan progress/issues
 - [x] settings entry points
 

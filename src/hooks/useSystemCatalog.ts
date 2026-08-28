@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getSystems, normalizeIpcError, type IpcError, type SystemId } from '../platform/ipc';
+import {
+  getSystems,
+  normalizeIpcError,
+  type IpcError,
+  type SystemId,
+  type SystemStatus,
+} from '../platform/ipc';
 
 export interface SystemLabel {
   id: SystemId;
@@ -10,12 +16,14 @@ export interface SystemLabel {
 export function useSystemCatalog() {
   const mounted = useRef(true);
   const [systems, setSystems] = useState<SystemLabel[]>([]);
+  const [statuses, setStatuses] = useState<SystemStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<IpcError | null>(null);
 
   const refresh = useCallback(async () => {
     if (mounted.current) {
       setSystems([]);
+      setStatuses([]);
       setLoading(true);
       setError(null);
     }
@@ -25,12 +33,14 @@ export function useSystemCatalog() {
       const nextSystems = response.systems.map(({ id, displayName }) => ({ id, displayName }));
       if (mounted.current) {
         setSystems(nextSystems);
+        setStatuses(response.systems);
         setError(null);
       }
       return nextSystems;
     } catch (reason: unknown) {
       if (mounted.current) {
         setSystems([]);
+        setStatuses([]);
         setError(normalizeIpcError(reason));
       }
       return null;
@@ -50,5 +60,5 @@ export function useSystemCatalog() {
     };
   }, [refresh]);
 
-  return { systems, loading, error, refresh };
+  return { systems, statuses, loading, error, refresh };
 }

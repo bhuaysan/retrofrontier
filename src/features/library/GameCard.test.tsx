@@ -22,23 +22,29 @@ const item: LibraryListItem = {
 
 function renderCard(overrides: Partial<LibraryListItem> = {}, favoritePending = false) {
   const onToggleFavorite = vi.fn();
+  const onOpenGame = vi.fn();
   render(
     <GameCard
       item={{ ...item, ...overrides }}
       systemName="Nintendo Entertainment System"
       accent="var(--accent)"
       favoritePending={favoritePending}
+      onOpenGame={onOpenGame}
       onToggleFavorite={onToggleFavorite}
     />,
   );
-  return onToggleFavorite;
+  return { onOpenGame, onToggleFavorite };
 }
 
 describe('GameCard', () => {
   it('renders list-level metadata with accessible favorite and local availability semantics', () => {
-    const onToggleFavorite = renderCard();
+    const { onToggleFavorite } = renderCard();
 
     expect(screen.getByRole('heading', { name: 'Kirby’s Adventure' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveAttribute(
+      'href',
+      '/games/1',
+    );
     expect(screen.getByText('Nintendo Entertainment System')).toBeInTheDocument();
     expect(screen.getByText('1993')).toBeInTheDocument();
     expect(screen.getByText('LOCAL')).toBeInTheDocument();
@@ -47,6 +53,19 @@ describe('GameCard', () => {
     fireEvent.click(favorite);
     expect(onToggleFavorite).toHaveBeenCalledWith(item);
     expect(screen.getAllByRole('button')).toHaveLength(1);
+  });
+
+  it('opens details from the title link without nesting Favorite inside an interactive element', () => {
+    const { onOpenGame } = renderCard();
+    const link = screen.getByRole('link', { name: 'Open Kirby’s Adventure details' });
+
+    fireEvent.click(link);
+
+    expect(onOpenGame).toHaveBeenCalledWith(1);
+    expect(link.closest('button')).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' }),
+    ).not.toContainElement(link);
   });
 
   it('uses the local title fallback and keeps metadata failure separate from availability', () => {
@@ -106,6 +125,7 @@ describe('GameCard', () => {
         accent="var(--accent)"
         favoritePending={false}
         item={item}
+        onOpenGame={vi.fn()}
         onToggleFavorite={onToggleFavorite}
         systemName="Nintendo Entertainment System"
       />,
@@ -116,6 +136,7 @@ describe('GameCard', () => {
         accent="var(--accent)"
         favoritePending={false}
         item={{ ...item, coverRef: 'rfmedia://localhost/cover/1?revision=2' }}
+        onOpenGame={vi.fn()}
         onToggleFavorite={onToggleFavorite}
         systemName="Nintendo Entertainment System"
       />,
@@ -134,6 +155,7 @@ describe('GameCard', () => {
         accent="var(--accent)"
         favoritePending={false}
         item={item}
+        onOpenGame={vi.fn()}
         onToggleFavorite={onToggleFavorite}
         systemName="Nintendo Entertainment System"
       />,
@@ -148,6 +170,7 @@ describe('GameCard', () => {
         accent="var(--accent)"
         favoritePending={false}
         item={{ ...item }}
+        onOpenGame={vi.fn()}
         onToggleFavorite={onToggleFavorite}
         systemName="Nintendo Entertainment System"
       />,

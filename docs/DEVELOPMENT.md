@@ -7,7 +7,9 @@ contracts, and M6.2 adds the library shell, empty/setup state, scan UX, and
 root-management entry points. M6.3 consumes the bounded query for local library
 browsing, debounced search, system/favorite filters, page controls, favorites,
 cached covers, and coalesced metadata invalidation. Core selection UI and game
-launching remain later milestones.
+launching remain later milestones. M6.4 adds bounded game detail, normalized
+metadata, content-unit presentation, and display of the existing Rust-authoritative
+system readiness snapshot.
 
 ## Prerequisites
 
@@ -156,7 +158,10 @@ detail, favorite, scan-issue-page, and metadata-invalidation shapes. M6.2 adds f
 query orchestration for the shell, roots, scan UX, and saved issues. M6.3 adds `useLibraryQuery`,
 which owns bounded page identity, debounced search, filter resets, race-safe request/loading
 ownership, authoritative favorite refreshes, scan-completion refreshes, and visible-page metadata
-invalidation coalescing. Cards consume only the list DTO and opaque cached-cover reference.
+invalidation coalescing. Cards consume only the list DTO and opaque cached-cover reference. M6.4's
+`useGameDetail` independently reads one bounded local detail and one authoritative metadata detail,
+while readiness reuses the existing `get_systems` response; it does not fetch a full snapshot or
+provider payload.
 
 ## Design tokens
 

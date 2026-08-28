@@ -8,6 +8,7 @@ import { systemAccent } from './systemAccents';
 interface LibraryBrowserProps {
   library: LibraryQueryModel;
   systems: SystemLabel[];
+  onOpenGame: (gameId: number) => void;
 }
 
 function systemName(systemId: string, systems: SystemLabel[]) {
@@ -27,7 +28,7 @@ function InitialLibraryLoading() {
   );
 }
 
-export function LibraryBrowser({ library, systems }: LibraryBrowserProps) {
+export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserProps) {
   const page = library.page;
   const hasActiveQuery =
     library.searchInput !== '' || library.systemId !== null || library.favoritesOnly;
@@ -101,6 +102,7 @@ export function LibraryBrowser({ library, systems }: LibraryBrowserProps) {
                 favoritePending={library.favoritePendingIds.has(item.gameId)}
                 item={item}
                 key={item.gameId}
+                onOpenGame={onOpenGame}
                 onToggleFavorite={(game) => void library.toggleFavorite(game)}
                 systemName={systemName(item.systemId, systems)}
               />

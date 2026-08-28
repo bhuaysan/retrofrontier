@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
@@ -39,6 +39,9 @@ interface LibraryPageProps {
   onAddExternalFolder: () => Promise<boolean>;
   onOpenManagedFolder: () => Promise<void>;
   onManageRoots: () => void;
+  onOpenGame: (gameId: number) => void;
+  restoreFocusGameId: number | null;
+  onFocusRestored: () => void;
 }
 
 const ISSUE_COPY: Record<ScanIssue['kind'], { label: string; description: string }> = {
@@ -112,7 +115,7 @@ function formatDuration(durationMs: number) {
 function SectionHeading({ id, title, meta }: { id: string; title: string; meta: string }) {
   return (
     <div className="section-heading">
-      <h1 id={id}>
+      <h1 id={id} tabIndex={-1}>
         <PixelArrow className="heading-arrow" />
         {title}
       </h1>
@@ -544,6 +547,9 @@ export function LibraryPage({
   onAddExternalFolder,
   onOpenManagedFolder,
   onManageRoots,
+  onOpenGame,
+  restoreFocusGameId,
+  onFocusRestored,
 }: LibraryPageProps) {
   const managedRoot = roots.find((root) => root.kind === 'managed');
   const isRunning = scan.status?.running === true;
@@ -553,6 +559,15 @@ export function LibraryPage({
     (scan.issuePage && (scan.issuePage.total > 0 || lastResult)) ||
     (scan.issueLoading && lastResult),
   );
+
+  useEffect(() => {
+    if (restoreFocusGameId === null) return;
+    const detailLink = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>('[data-game-detail-link]'),
+    ).find((link) => link.dataset.gameDetailLink === String(restoreFocusGameId));
+    (detailLink ?? document.getElementById('library-heading'))?.focus();
+    onFocusRestored();
+  }, [library.page, onFocusRestored, restoreFocusGameId]);
 
   return (
     <main className="app-main" id="main-content">
@@ -632,7 +647,7 @@ export function LibraryPage({
               scanRunning={isRunning}
             />
           ) : (
-            <LibraryBrowser library={library} systems={systems} />
+            <LibraryBrowser library={library} onOpenGame={onOpenGame} systems={systems} />
           )}
 
           {showIssues && <ScanIssuesPanel scan={scan} roots={roots} />}

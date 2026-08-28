@@ -2,14 +2,15 @@
 
 ## A. Repository State
 
-- Starting corrective-pass HEAD: `2da7788680507907bc74fec360c3083eadfbed93`
+- Starting M6.4 HEAD: `622614298c010ca6aa3a38c8f80624019f338bd8`
+- Starting commit: `fix(library-ui): stabilize M6.3 pagination refresh state`
 - Starting M6.2 HEAD: `59b10effa6afd80addf5b53ef7a684bfc4e3bccf`
 - Branch: `feat/m6-library-ui`
 - Main comparison at start: local `main` and `origin/main` were both
   `9a1a1e3d8c38633c1c82bc95293c6a6024e94e93`; no rebase was required.
 - Original M6.1 implementation commits remain `1cdf5a2` and `e7f3df8`; they were not rewritten.
-- Final corrective-pass HEAD: the single focused corrective commit created from the starting
-  corrective-pass HEAD; see the final repository handoff for its exact ID.
+- Final M6.4 HEAD: recorded after the focused implementation commit in the final repository
+  handoff below.
 - M6.2 implementation commit: `8a74438158f221464a972fb89c7774aa2e48f2c3`
 - M6.2 corrective commit: `fix(ui): address M6.2 adversarial review findings`
 - Merged to main: No
@@ -23,14 +24,13 @@
 - [x] M6.1 Backend Enablement
 - [x] M6.2 Shell / Empty Library / Scan UX
 - [x] M6.3 Library Browsing
-- [ ] M6.4 Game Detail / Readiness
+- [x] M6.4 Game Detail / Readiness
 - [ ] M6.5 Metadata UX / Settings
 - [ ] M6.6 Hardening / Accessibility / Documentation
 
-Current phase: M6.1 and M6.2 are complete and reviewed; M6.3 implementation started from
-`28e20dab7c5d68e100555ac94f7f610b2583c728` and is complete for review.
-Overall status: M6.1 and M6.2 are accepted as READY. M6.3 implementation, adversarial review, and
-the focused corrective pass are complete; M6.3 is awaiting delta review. M6.4 has not started.
+Current phase: M6.1, M6.2, and M6.3 are complete. M6.3's adversarial review found 0 CRITICAL and
+0 HIGH findings; its focused corrective pass is complete and was not reopened for M6.4.
+M6.4 implementation is complete on `feat/m6-library-ui` and is awaiting review before M6.5.
 
 ## C. M6.1 — Backend Enablement
 
@@ -265,8 +265,8 @@ review artifact remains unchanged. The focused corrections are:
   truth for selection. There is no arbitrary external-root opener because only managed-root opening
   is supported safely in this slice.
 - Issue remediation, duplicate repair, system assignment, file movement/deletion, metadata/provider
-  settings and core/video/controller/save settings remained deferred; browsing is now section E,
-  while game detail remains deferred to M6.4.
+  settings and core/video/controller/save settings remained deferred; browsing is now section E and
+  game detail/readiness is section F.
 - Native managed-folder opening intentionally keeps the platform executable names `explorer.exe`,
   `open`, and `xdg-open`; they are resolved by the host process rather than by an absolute path.
   The existing safety boundary remains: no caller-provided path, no shell, one validated canonical
@@ -429,7 +429,7 @@ MEDIUM-5 and LOW-1 through LOW-11 remain documented deferrals for later hardenin
 
 ### Deferrals
 
-- M6.4 detail/readiness, M6.5 metadata/settings workflows, M6.6 final hardening, M7 play data,
+- M6.5 metadata/settings workflows, M6.6 final hardening, M7 play data,
   M8 controller/on-screen-keyboard behavior, and later milestones were not implemented.
 - Genre/region facet discovery is deferred as described above. Existing accepted M6.2 LOWs other
   than required DELTA-LOW-1 remain untouched.
@@ -439,7 +439,98 @@ MEDIUM-5 and LOW-1 through LOW-11 remain documented deferrals for later hardenin
 
 ## F. M6.4 — Game Detail / Readiness
 
-Not started. No implementation details are inferred here.
+M6.4 uses the existing bounded M6.1/M5 contracts and the existing Rust-owned system readiness
+snapshot. No backend readiness projection was added: `get_systems` already evaluates one coherent
+`VerifiedRuntimeSnapshot`, BIOS discovery result, `SystemCatalog` core policy, and
+`SystemReadiness` per system. React selects the returned status for the game's system and formats
+it for display; it does not infer core policy, BIOS substitution, runtime trust, or launchability.
+
+### Routing and navigation
+
+- Extended the small `pushState`/`popstate` route layer with `/games/:id`. IDs accept only positive
+  safe integer path segments. Missing, malformed, oversized, and unknown game IDs remain a typed
+  game route and render a stable invalid/not-found page instead of throwing. Unrelated unknown paths
+  still normalize to `/library`.
+- A card title is now a semantic detail link. Its normal left-click is handled by the route layer,
+  while modified clicks retain native link behavior. Favorite remains a separate sibling button;
+  no interactive element contains another interactive element.
+- Detail provides explicit semantic Back to Library navigation. Browser/WebView back and forward
+  continue to use history. The library query remains mounted in `AppShell`, and its committed page,
+  search, system, and favorites state survive the detail route. Returning also restores focus to the
+  originating card when it is still rendered, or to the Library heading when it is not.
+- Direct valid deep links load detail without a library visit. Invalid route IDs and missing local
+  games expose a truthful message and a Library path. M7 launch behavior is deliberately absent.
+
+### Detail data architecture and boundaries
+
+- `useGameDetail` owns separate local-detail, metadata, readiness-facing, and favorite channels.
+  Local detail calls `get_library_game_detail({ gameId })`; metadata calls the authoritative M5
+  `get_game_metadata({ gameId })`; readiness reuses the already-loaded `get_systems` status for the
+  matching system. There is no full-library snapshot, library-wide metadata lookup, queue read,
+  provider request, or per-content-file query.
+- Local detail and metadata load independently and use generation guards. A local failure does not
+  blank metadata/readiness, and a metadata failure does not make a valid local game look missing.
+  Local not-found is represented separately from transport/application failure and has its own
+  stable page state. Each failed channel has its own retry.
+- The detail projection displays the local title, normalized title when available, system identity,
+  local availability, content-unit summaries, relative primary paths, root identity, file counts,
+  normalized metadata fields, provenance credit, and readiness state. It never adds hashes,
+  fingerprints, physical memberships, provider payloads, credentials, authenticated URLs, queue
+  internals, or runtime filesystem paths.
+- Favorite mutation reuses `set_game_favorite`, does not optimistically invent a state, updates the
+  detail from the authoritative response, and refreshes the bounded library summary. No launch,
+  save-state, controller, or metadata candidate-selection control was added.
+
+### State separation and presentation
+
+- Local content availability, emulation readiness, and metadata enrichment remain visibly separate.
+  The local content panel reports the game and each bounded content unit as available, incomplete,
+  or missing. Single-file, CHD, CUE/BIN, GDI, and M3U units retain their unit kind and summary rather
+  than being flattened into one arbitrary ROM path; zero-unit records remain understandable.
+- Metadata uses normalized M5 data only. Pending, matched, no match, ambiguous, deferred, failed,
+  and stale states have truthful copy. Stale state retains its last-known-good title, synopsis, and
+  cover while explicitly asking for revalidation. Metadata failure/no-match/deferred/ambiguous does
+  not alter local availability.
+- Covers reuse the opaque `coverRef` boundary and the shared `GameCover` component. React never
+  resolves a filesystem path or provider URL. Missing/404 media falls back to the system-accent
+  placeholder without retries; a later authoritative DTO identity permits recovery from an earlier
+  failed image.
+- Readiness is presented as separate LOCAL CONTENT, RUNTIME, CORE, and BIOS rows. Overall status is
+  Rust's `SystemReadiness` with local unavailability taking priority in the presentation. The page
+  says `EMULATION READY` / `REQUIREMENTS NOT SATISFIED` rather than claiming `READY TO PLAY`, and
+  reports unavailable, missing, invalid, and unknown dependencies in text as well as color.
+- BIOS output uses the existing per-system policy/requirement state and safe expected/matched
+  filenames only. It does not scan from React, expose BIOS hashes or paths, import/download files,
+  or offer destructive file actions. Missing BIOS copy points to the managed BIOS location and a
+  readiness retry.
+
+### Refresh, events, and focus
+
+- `metadata-state-changed` is subscribed only for the open game. Matching events use one trailing
+  180 ms debounce, repeated transitions coalesce, unrelated game IDs do nothing, and listener/timer
+  cleanup handles ordinary and late registration. Refresh refetches only that game's metadata.
+- AppShell passes the deduplicated terminal scan run ID from `useScanState` to the detail hook. Scan
+  progress does not refresh detail; each new terminal run refreshes bounded local detail and
+  metadata/readiness-facing state once. Duplicate terminal delivery is ignored. A disappeared game
+  becomes the stable not-found state after refresh.
+- Detail heading focus moves on entry/route change. The page has one H1, semantic main/back/link
+  structure, keyboard-accessible favorite and retry controls, meaningful cover fallback naming, and
+  text readiness statuses. No M8 controller focus graph was introduced.
+
+### Tests and design coverage
+
+- Added route, AppShell, GameCard, GameCover, detail-page, readiness projection, `useGameDetail`,
+  library-query preservation, and system-catalog status-retention coverage. Tests cover deep links,
+  invalid/nonexistent IDs, browser back, context/focus restoration, bounded IPC calls, valid and
+  partial loads, independent retries/errors, all metadata states, stale cached display, multi-unit
+  content, all normalized readiness dependency states, readiness retry, favorite authority, current
+  versus unrelated metadata invalidations, debounce/coalescing/cleanup, scan progress/terminal
+  cadence, and accessibility semantics.
+- Static/manual comparison covered B6 Game Detail, B1/B3/B5 navigation context, C1 readiness/error
+  language, C4 cover fallback, A6 focus language, the existing typography/tokens, dark/light themes,
+  960×640 and larger desktop layouts, long text, no cover, unavailable content, stale metadata,
+  readiness dependency failure, and not-found states. No native screenshot harness exists in this
+  repository, so no rendered screenshot claim is made.
 
 ## G. M6.5 — Metadata UX / Settings
 
@@ -458,6 +549,11 @@ Not started. No implementation details are inferred here.
   serves only validated supported image types.
 - Provider URLs, credentials, raw responses, candidate lists, and queue internals do not cross the
   new list/detail/event/media boundaries.
+- M6.4 adds no Rust production code or new IPC readiness model. The detail page reuses the existing
+  `get_systems` response, whose Rust service composes `SystemCatalog`, one verified runtime snapshot,
+  BIOS discovery, and `SystemReadiness`; the UI only selects and presents the matching system status.
+- Detail-specific React state uses the bounded `get_library_game_detail` and `get_game_metadata`
+  commands and contains no launch, process, filesystem, BIOS mutation, or provider-management path.
 - React still has no SQLite, filesystem enumeration, scanner, provider, credential, or runtime
   access. M6.2 UI state consumes summary/root/scan contracts only.
 - The native dialog is the official Tauri dialog plugin with only `dialog:allow-open`. Managed-folder
@@ -472,9 +568,13 @@ Not started. No implementation details are inferred here.
 
 M6.2 retains the shell framing from B1, empty/setup guidance from A1/B4, scan states, and root
 surfaces. M6.3 adds the real B1 bounded grid, B2 search, supported B3 filter subset, B5 filtered-empty
-state, C4 cover fallback, and A6 focus language. The token file remains authoritative across dark
-and light themes. Prototype-only genre/region discovery without a bounded option contract, unplayed,
-controller footer/keyboard, detail, readiness, and metadata settings were intentionally omitted.
+state, C4 cover fallback, and A6 focus language. M6.4 adds the B6 detail hierarchy: back/library
+context, larger cover/fallback, title/system identity, normalized metadata, separate local content
+units, and a requirements/readiness panel. C1 supplies readiness/error language and C4's secure
+opaque-cover fallback is shared between card and detail. The token file remains authoritative across
+dark and light themes. Prototype-only genre/region discovery without a bounded option contract,
+unplayed, controller footer/keyboard, metadata candidate/editor workflows, launch, and save states
+were intentionally omitted.
 
 Manual inspection was performed against code/DOM/CSS at the 960×640 minimum, 1280×800, and larger
 desktop layouts, including dark/light tokens, populated cards, a long title, missing/failed cover,
@@ -485,20 +585,21 @@ existing B1 3 px black structural sidebar divider as a side-tab heuristic; it wa
 
 ## K. Test Coverage
 
-The frontend suite has 68 synthetic/local tests across six files. M6.3 additions cover initial/
-error/retry query state, multiple/final pages, filter reset, total shrink, literal debounced search,
-stale result/error/loading races, active-request unmount, favorites, duplicate writes, held-write/
-current-filter ownership, filtered-page removal, visible metadata invalidation cadence/lifecycle,
-terminal scan identity including empty-to-populated transition, real grid integration, system IDs/
-counts, search/no-results/clear, card semantics, title/cover fallbacks, availability, and stale
-metadata. The corrective pass adds deferred regressions for invalidation during navigation, query
-identity changes during invalidation debounce, failed page-forward recovery with ordinary Next and
-Back, and dedicated retry at the failed target. Existing M6.2/root/IPC tests and all Rust tests
-remain passing. No live ScreenScraper or copyrighted fixture is used.
+The frontend suite has 117 synthetic/local tests across 12 files. M6.3 coverage remains intact for
+initial/error/retry query state, multiple/final pages, filter reset, total shrink, literal debounced
+search, stale result/error/loading races, active-request unmount, favorites, duplicate writes,
+held-write/current-filter ownership, filtered-page removal, visible metadata invalidation cadence/
+lifecycle, terminal scan identity, real grid integration, system IDs/counts, search/no-results/
+clear, card semantics, title/cover fallbacks, availability, and stale metadata. M6.4 adds route and
+history tests, semantic card activation, detail deep-link/not-found/focus/context tests, bounded
+local/metadata loads with independent errors/retries, all metadata states, stale cached display,
+multi-unit content, normalized readiness states, favorite authority, targeted/coalesced metadata
+events, terminal scan refresh cadence, listener/timer cleanup, and accessibility semantics. Existing
+M6.2/root/IPC tests and all Rust tests remain passing. No live ScreenScraper or copyrighted fixture
+is used.
 
 ## L. Deferred Beyond M6
 
-- M6.4 game detail and emulation/BIOS/runtime readiness.
 - M6.5 detailed metadata states, metadata/provider settings, and settings workflows.
 - M6.6 final cross-screen hardening and accessibility consistency.
 - M7 launch/process/play-session and per-game core behavior.
@@ -509,15 +610,18 @@ remain passing. No live ScreenScraper or copyrighted fixture is used.
 
 ## M. Final Verification
 
-The corrective pass verification was run on the final working tree after the hook and report
-changes:
+Final verification is recorded here after the M6.4 implementation and documentation changes:
 
-- `pnpm vitest run src/hooks/useLibraryQuery.test.tsx` — PASS — 1 file, 22 tests.
+- `pnpm vitest run src/hooks/useGameDetail.test.tsx src/app/AppShell.test.tsx` — PASS — 2 files,
+  40 tests.
+- `pnpm vitest run src/features/library/readiness.test.ts src/features/library/GameDetailPage.test.tsx`
+  — PASS — 2 files, 18 tests.
+- `pnpm vitest run src/hooks/useLibraryQuery.test.tsx` — PASS — 1 file, 23 tests.
 - `pnpm typecheck` — PASS — `tsc -b --pretty false`, exit 0.
 - `pnpm lint` — PASS — `eslint .`, exit 0.
 - `pnpm format:check` — PASS — all configured files use Prettier formatting, exit 0.
-- `pnpm test` — PASS — 6 files, 68 tests, exit 0.
-- `pnpm build` — PASS — TypeScript and Vite build; 47 modules transformed, exit 0.
+- `pnpm test` — PASS — 12 files, 117 tests, exit 0.
+- `pnpm build` — PASS — TypeScript and Vite build; 51 modules transformed, exit 0.
 - `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — PASS — exit 0.
 - `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings`
   — PASS — release-free dev profile finished without warnings, exit 0.
@@ -529,8 +633,12 @@ changes:
   `src-tauri/target/release/retrofrontier`, exit 0.
 - `git diff --check` — PASS — no whitespace errors, exit 0.
 
-No screenshot or visual verification was required for this state-only corrective pass.
+The Impeccable detector command was also run over the changed UI. It returned one warning for the
+pre-existing B1 structural `border-right: 3px solid var(--border)` sidebar divider; no new detail or
+readiness anti-pattern warning remained. Visual verification was static/source-level only because
+the repository has no native screenshot harness. Verification was performed on Linux x86_64; no
+Windows/macOS runtime or packaging validation was performed.
 
 ## N. Current M6 Verdict
 
-`implementation complete, adversarial review complete, corrective pass complete, awaiting delta review`
+`M6.4 IMPLEMENTATION COMPLETE — ready for review before M6.5`

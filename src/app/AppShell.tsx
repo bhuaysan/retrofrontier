@@ -5,6 +5,7 @@ import { PixelRow } from '../components/ui/PixelRow';
 import { useContentRoots } from '../hooks/useContentRoots';
 import { useLibrarySummary } from '../hooks/useLibrarySummary';
 import { useLibraryQuery } from '../hooks/useLibraryQuery';
+import { useGameDetail } from '../hooks/useGameDetail';
 import { useScanState } from '../hooks/useScanState';
 import { useSystemCatalog } from '../hooks/useSystemCatalog';
 import { pickExternalContentRoot } from '../platform/folderPicker';
@@ -12,7 +13,8 @@ import { openManagedRomFolder, type ScanSummary } from '../platform/ipc';
 import { LibraryPage } from '../features/library/LibraryPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
 import { systemAccent } from '../features/library/systemAccents';
-import { useRoute } from './routes';
+import { GameDetailPage } from '../features/library/GameDetailPage';
+import { gameRoute, isGameRoute, useRoute } from './routes';
 
 type Theme = 'dark' | 'light';
 
@@ -130,6 +132,11 @@ export function AppShell() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [libraryScanCompletionRunId, setLibraryScanCompletionRunId] = useState<number | null>(null);
   const { route, navigate } = useRoute();
+  const isLibraryRoute = route === 'library';
+  const isSettingsRoute = route === 'settings';
+  const gameRouteState = isGameRoute(route) ? route : null;
+  const currentGameId = gameRouteState?.gameId ?? null;
+  const [libraryFocusGameId, setLibraryFocusGameId] = useState<number | null>(null);
   const {
     summary,
     loading: summaryLoading,
@@ -145,19 +152,35 @@ export function AppShell() {
     removeExternalRoot,
     updateRootEnabled,
   } = useContentRoots();
-  const systemCatalog = useSystemCatalog();
+  const {
+    systems: catalogSystems,
+    statuses: catalogStatuses,
+    loading: catalogLoading,
+    error: catalogError,
+    refresh: refreshCatalog,
+  } = useSystemCatalog();
   const onScanCompleted = useCallback(
     (result: ScanSummary) => {
       setLibraryScanCompletionRunId(result.runId);
       void refreshSummary();
+      void refreshCatalog();
     },
-    [refreshSummary],
+    [refreshCatalog, refreshSummary],
   );
   const scan = useScanState({ onCompleted: onScanCompleted });
+  const onFavoriteCommitted = useCallback(() => {
+    void refreshSummary();
+  }, [refreshSummary]);
   const library = useLibraryQuery({
-    enabled: route === 'library' && Boolean(summary && summary.totalGames > 0),
+    enabled: isLibraryRoute && Boolean(summary && summary.totalGames > 0),
     scanCompletionRunId: libraryScanCompletionRunId,
-    onFavoriteCommitted: () => void refreshSummary(),
+    onFavoriteCommitted,
+  });
+  const gameDetail = useGameDetail({
+    enabled: gameRouteState !== null && currentGameId !== null,
+    gameId: currentGameId,
+    scanCompletionRunId: libraryScanCompletionRunId,
+    onFavoriteCommitted,
   });
 
   useEffect(() => {
@@ -179,6 +202,26 @@ export function AppShell() {
     await openManagedRomFolder();
   }, []);
 
+  const onOpenGame = useCallback(
+    (gameId: number) => {
+      setLibraryFocusGameId(gameId);
+      navigate(gameRoute(gameId));
+    },
+    [navigate],
+  );
+
+  const onBackToLibrary = useCallback(() => {
+    navigate('library');
+  }, [navigate]);
+
+  const onLibraryFocusRestored = useCallback(() => {
+    setLibraryFocusGameId(null);
+  }, []);
+
+  const detailSystemStatus = gameDetail.localDetail
+    ? (catalogStatuses.find((status) => status.id === gameDetail.localDetail?.systemId) ?? null)
+    : null;
+
   const systemCounts = new Map(
     (summary?.systems ?? []).map((system) => [system.systemId, system.gameCount]),
   );
@@ -199,14 +242,14 @@ export function AppShell() {
         >
           RETRO<span>FRONTIER</span>
         </button>
-        {route === 'library' && summary && summary.totalGames > 0 ? (
+        {isLibraryRoute && summary && summary.totalGames > 0 ? (
           <LibrarySearch
             onChange={library.setSearchInput}
             onClear={library.clearSearch}
             value={library.searchInput}
           />
         ) : null}
-        <MobileRouteNav route={route} navigate={navigate} />
+        <MobileRouteNav route={isSettingsRoute ? 'settings' : 'library'} navigate={navigate} />
         <div className="theme-toggle" role="group" aria-label="Theme">
           <button
             type="button"
@@ -232,17 +275,17 @@ export function AppShell() {
           <h2 id="systems-heading" className="sidebar-label">
             // SYSTEMS
           </h2>
-          {systemCatalog.loading && (
+          {catalogLoading && (
             <p className="sidebar-catalog-status loading-inline" role="status">
               CHECKING SYSTEM CATALOG…
             </p>
           )}
-          {systemCatalog.error && (
+          {catalogError && (
             <InlineError
               title="SYSTEM CATALOG UNAVAILABLE"
               message="RetroFrontier could not load the supported systems. No system rows are shown; try again."
               actionLabel="RETRY SYSTEMS"
-              onAction={() => void systemCatalog.refresh()}
+              onAction={() => void refreshCatalog()}
             />
           )}
           <ul className="pixel-row-list">
@@ -250,20 +293,20 @@ export function AppShell() {
               label="All systems"
               count={summary?.totalGames ?? 0}
               accent="var(--accent)"
-              active={route === 'library' && library.systemId === null}
+              active={isLibraryRoute && library.systemId === null}
               activeMode="pressed"
               onClick={() => {
                 library.setSystemId(null);
                 navigate('library');
               }}
             />
-            {systemCatalog.systems.map((system) => (
+            {catalogSystems.map((system) => (
               <SystemSummaryRow
                 key={system.id}
                 label={system.displayName}
                 count={systemCounts.get(system.id) ?? 0}
                 accent={systemAccent(system.id)}
-                active={route === 'library' && library.systemId === system.id}
+                active={isLibraryRoute && library.systemId === system.id}
                 onClick={() => {
                   library.setSystemId(system.id);
                   navigate('library');
@@ -280,14 +323,14 @@ export function AppShell() {
           <ul className="pixel-row-list">
             <RouteRow
               label="Settings"
-              active={route === 'settings'}
+              active={isSettingsRoute}
               onClick={() => navigate('settings')}
             />
           </ul>
         </nav>
       </aside>
 
-      {route === 'library' ? (
+      {isLibraryRoute ? (
         <LibraryPage
           summary={summary}
           summaryLoading={summaryLoading}
@@ -297,12 +340,25 @@ export function AppShell() {
           rootsLoading={rootsLoading}
           rootsError={rootsError}
           refreshRoots={refreshRoots}
-          systems={systemCatalog.systems}
+          systems={catalogSystems}
           library={library}
           scan={scan}
           onAddExternalFolder={onAddExternalFolder}
           onOpenManagedFolder={onOpenManagedFolder}
           onManageRoots={() => navigate('settings')}
+          onOpenGame={onOpenGame}
+          restoreFocusGameId={libraryFocusGameId}
+          onFocusRestored={onLibraryFocusRestored}
+        />
+      ) : gameRouteState ? (
+        <GameDetailPage
+          detail={gameDetail}
+          gameId={currentGameId}
+          onBackToLibrary={onBackToLibrary}
+          onRetryReadiness={() => void refreshCatalog()}
+          readinessError={catalogError}
+          readinessLoading={catalogLoading}
+          systemStatus={detailSystemStatus}
         />
       ) : (
         <SettingsPage
@@ -312,7 +368,7 @@ export function AppShell() {
           refreshRoots={refreshRoots}
           removeExternalRoot={removeExternalRoot}
           updateRootEnabled={updateRootEnabled}
-          systems={systemCatalog.systems}
+          systems={catalogSystems}
           scan={scan}
           refreshSummary={refreshSummary}
           onAddExternalFolder={onAddExternalFolder}

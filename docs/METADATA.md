@@ -474,11 +474,11 @@ authenticated URL, or a SQL/domain internal. The cover is exposed as an opaque n
 reference; React never resolves or owns filesystem paths.
 
 Metadata changes that affect visible game state emit `metadata-state-changed` after the relevant
-database write. Its payload is only `{ gameId, providerId }`; it is an invalidation signal, and the
-future UI refetches the bounded library/detail or existing metadata state rather than treating the
-event as a data source. It remains a per-game invalidation signal: bulk enrichment can emit many
-events. M6.3 must debounce/coalesce them, accumulate affected game IDs, and refetch only bounded
-visible/current state; it must not refetch the entire library immediately for every event.
+database write. Its payload is only `{ gameId, providerId }`; it is an invalidation signal, and M6.3
+/M6.4 refetch the bounded library/detail or existing metadata state rather than treating the event
+as a data source. It remains a per-game invalidation signal: bulk enrichment can emit many events.
+M6.3 debounces/coalesces visible-page events, while M6.4 debounces only the currently open game;
+neither refetches the entire library immediately for every event.
 
 The M6 list and M5 detail use one coherent provider-match vocabulary. `pending` means that no
 accepted provider match is currently available, including a game that has not been requested yet or
