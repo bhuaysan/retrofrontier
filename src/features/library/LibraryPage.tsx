@@ -561,16 +561,23 @@ export function LibraryPage({
   );
 
   useEffect(() => {
-    if (restoreFocusGameId === null) return;
-    const detailLink = Array.from(
-      document.querySelectorAll<HTMLAnchorElement>('[data-game-detail-link]'),
-    ).find((link) => link.dataset.gameDetailLink === String(restoreFocusGameId));
-    (detailLink ?? document.getElementById('library-heading'))?.focus();
-    onFocusRestored();
-  }, [library.page, onFocusRestored, restoreFocusGameId]);
+    if (restoreFocusGameId === null || library.pageLoading || library.refreshing) return;
+    // Let the route-entry query announce its loading state before deciding whether the
+    // originating card still exists. Otherwise an immediately available stale page can
+    // consume the focus request before the authoritative refresh removes that card.
+    const timer = window.setTimeout(() => {
+      if (library.pageLoading || library.refreshing) return;
+      const detailLink = Array.from(
+        document.querySelectorAll<HTMLAnchorElement>('[data-game-detail-link]'),
+      ).find((link) => link.dataset.gameDetailLink === String(restoreFocusGameId));
+      (detailLink ?? document.getElementById('library-heading'))?.focus();
+      onFocusRestored();
+    });
+    return () => window.clearTimeout(timer);
+  }, [library.page, library.pageLoading, library.refreshing, onFocusRestored, restoreFocusGameId]);
 
   return (
-    <main className="app-main" id="main-content">
+    <main aria-labelledby="library-heading" className="app-main" id="main-content">
       <SectionHeading
         id="library-heading"
         title="LIBRARY"

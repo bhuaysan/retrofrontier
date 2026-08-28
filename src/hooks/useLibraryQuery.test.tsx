@@ -358,6 +358,7 @@ describe('useLibraryQuery', () => {
       sort: 'titleAsc',
       offset: 0,
     });
+    expect(result.current.debouncedSearch).toBe('A%_\\');
   });
 
   it('keeps the newest result, error, and loading ownership across stale requests', async () => {
@@ -492,6 +493,7 @@ describe('useLibraryQuery', () => {
         total: 61,
         offset: 60,
       })
+      .mockResolvedValueOnce({ items: [], total: 0, offset: 60, limit: 60 })
       .mockResolvedValueOnce({ items: [], total: 0, offset: 0, limit: 60 });
     mocks.setGameFavorite.mockResolvedValueOnce({ gameId: 1, favorite: false });
     const { result } = renderHook(() => useLibraryQuery({ enabled: true }));
@@ -504,7 +506,7 @@ describe('useLibraryQuery', () => {
     await act(async () => result.current.toggleFavorite(favoriteItem));
     await waitFor(() => expect(result.current.page?.items).toEqual([]));
 
-    expect(mocks.queryLibrary).toHaveBeenCalledTimes(4);
+    expect(mocks.queryLibrary).toHaveBeenCalledTimes(5);
     expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
       favoritesOnly: true,
       sort: 'titleAsc',
@@ -534,6 +536,28 @@ describe('useLibraryQuery', () => {
     await act(async () => vi.advanceTimersByTimeAsync(179));
     expect(mocks.queryLibrary).toHaveBeenCalledTimes(initialCalls);
     await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(mocks.queryLibrary).toHaveBeenCalledTimes(initialCalls + 1);
+  });
+
+  it('flushes a continuous visible metadata stream at its maximum wait', async () => {
+    vi.useFakeTimers();
+    let handler: ((event: { gameId: number; providerId: 'screenScraper' }) => void) | undefined;
+    mocks.onMetadataStateChanged.mockImplementation(async (nextHandler) => {
+      handler = nextHandler;
+      return vi.fn();
+    });
+    renderHook(() => useLibraryQuery({ enabled: true }));
+    await act(async () => Promise.resolve());
+    await act(async () => Promise.resolve());
+    const initialCalls = mocks.queryLibrary.mock.calls.length;
+
+    for (let index = 0; index < 6; index += 1) {
+      act(() => handler?.({ gameId: 1, providerId: 'screenScraper' }));
+      await act(async () => vi.advanceTimersByTimeAsync(100));
+    }
+    expect(mocks.queryLibrary).toHaveBeenCalledTimes(initialCalls);
+
+    await act(async () => vi.advanceTimersByTimeAsync(400));
     expect(mocks.queryLibrary).toHaveBeenCalledTimes(initialCalls + 1);
   });
 
@@ -580,6 +604,19 @@ describe('useLibraryQuery', () => {
     expect(mocks.queryLibrary).toHaveBeenCalledTimes(2);
     rerender({ runId: 32 });
     await waitFor(() => expect(mocks.queryLibrary).toHaveBeenCalledTimes(3));
+  });
+
+  it('uses one bounded query when returning to the library after a terminal scan', async () => {
+    const { rerender } = renderHook(
+      ({ enabled, runId }) => useLibraryQuery({ enabled, scanCompletionRunId: runId }),
+      { initialProps: { enabled: true, runId: null as number | null } },
+    );
+    await waitFor(() => expect(mocks.queryLibrary).toHaveBeenCalledTimes(1));
+
+    rerender({ enabled: false, runId: 44 });
+    rerender({ enabled: true, runId: 44 });
+
+    await waitFor(() => expect(mocks.queryLibrary).toHaveBeenCalledTimes(2));
   });
 
   it('uses one initial query when a completed scan turns an empty library populated', async () => {

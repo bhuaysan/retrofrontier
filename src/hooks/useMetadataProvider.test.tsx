@@ -183,6 +183,109 @@ describe('useMetadataProvider', () => {
     expect(mocks.getMetadataProviderAccount).toHaveBeenCalledTimes(2);
   });
 
+  it('preserves the authoritative configured account when clearing credentials fails', async () => {
+    const configuredAccount: ProviderAccountStatus = {
+      configured: true,
+      state: 'configured',
+      username: 'test-user',
+    };
+    mocks.getMetadataProviderAccount.mockResolvedValue(configuredAccount);
+    mocks.clearMetadataProviderCredentials.mockRejectedValueOnce({
+      code: 'metadata_unavailable',
+      message: 'clear failed',
+    });
+    const { result } = renderHook(() => useMetadataProvider());
+    await waitFor(() => expect(result.current.account).toEqual(configuredAccount));
+
+    await act(async () => {
+      expect(await result.current.clearCredentials()).toBe(false);
+    });
+
+    expect(result.current.account).toEqual(configuredAccount);
+    expect(result.current.accountActionError?.code).toBe('metadata_unavailable');
+    expect(mocks.getMetadataProviderAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a stale initial account read overwrite the post-save refresh', async () => {
+    const initialAccount = deferred<ProviderAccountStatus>();
+    const configuredAccount: ProviderAccountStatus = {
+      configured: true,
+      state: 'configured',
+      username: 'test-user',
+    };
+    mocks.getMetadataProviderAccount
+      .mockReturnValueOnce(initialAccount.promise)
+      .mockResolvedValueOnce(configuredAccount);
+    const { result } = renderHook(() => useMetadataProvider());
+
+    act(() => {
+      result.current.setCredentialUsername('test-user');
+      result.current.setCredentialPassword('fake-secret-never-render');
+    });
+    await act(async () => {
+      expect(await result.current.saveCredentials()).toBe(true);
+    });
+    expect(result.current.account).toEqual(configuredAccount);
+
+    await act(async () => {
+      initialAccount.resolve(notConfiguredAccount);
+    });
+    expect(result.current.account).toEqual(configuredAccount);
+  });
+
+  it('keeps post-save provider and account refreshes authoritative when reads resolve out of order', async () => {
+    const initialStatus = deferred<MetadataProviderStatus>();
+    const initialAccount = deferred<ProviderAccountStatus>();
+    const savedStatus = { ...providerStatus, pendingJobs: 9 };
+    const savedAccount: ProviderAccountStatus = {
+      configured: true,
+      state: 'configured',
+      username: 'test-user',
+    };
+    const savedStatusRead = deferred<MetadataProviderStatus>();
+    const savedAccountRead = deferred<ProviderAccountStatus>();
+    mocks.getMetadataProviderStatus
+      .mockReturnValueOnce(initialStatus.promise)
+      .mockReturnValueOnce(savedStatusRead.promise);
+    mocks.getMetadataProviderAccount
+      .mockReturnValueOnce(initialAccount.promise)
+      .mockReturnValueOnce(savedAccountRead.promise);
+    const { result } = renderHook(() => useMetadataProvider());
+
+    await waitFor(() => {
+      expect(mocks.getMetadataProviderStatus).toHaveBeenCalledTimes(1);
+      expect(mocks.getMetadataProviderAccount).toHaveBeenCalledTimes(1);
+    });
+    act(() => {
+      result.current.setCredentialUsername('test-user');
+      result.current.setCredentialPassword('fake-secret-never-render');
+    });
+
+    let save: Promise<boolean> | undefined;
+    act(() => {
+      save = result.current.saveCredentials();
+    });
+    await waitFor(() => {
+      expect(mocks.getMetadataProviderStatus).toHaveBeenCalledTimes(2);
+      expect(mocks.getMetadataProviderAccount).toHaveBeenCalledTimes(2);
+    });
+
+    await act(async () => {
+      savedAccountRead.resolve(savedAccount);
+      savedStatusRead.resolve(savedStatus);
+      await save!;
+    });
+    expect(result.current.providerStatus).toEqual(savedStatus);
+    expect(result.current.account).toEqual(savedAccount);
+
+    await act(async () => {
+      initialStatus.resolve({ ...providerStatus, credentialsConfigured: false });
+      initialAccount.resolve(notConfiguredAccount);
+    });
+    expect(result.current.providerStatus).toEqual(savedStatus);
+    expect(result.current.account).toEqual(savedAccount);
+  });
+
   it('does not start a refetch or commit settings state after unmount', async () => {
     const save = deferred<void>();
     mocks.setMetadataProviderCredentials.mockReturnValue(save.promise);

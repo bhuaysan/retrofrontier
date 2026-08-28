@@ -2,8 +2,11 @@
 
 ## A. Repository State
 
-- Starting M6.5 HEAD: `c6bbf747465ffa5d98cbef6a47bcb4f85ecec624`
-- Starting M6.5 commit: recorded M6.4 runtime corrective pass on `feat/m6-library-ui`.
+- M6.6 starting HEAD: `8be0e409fbf10c063fa9feb819c1216eea921adf`.
+- M6.6 branch: `feat/m6-library-ui`.
+- M6.6 start had a clean tracked worktree, no newer M6.6 implementation, and the accepted M6.5
+  corrective-pass delta was the final authority for the M6.5 gate.
+- M6.5 accepted corrective HEAD: `8be0e409fbf10c063fa9feb819c1216eea921adf`.
 - Starting M6.4 HEAD: `622614298c010ca6aa3a38c8f80624019f338bd8`
 - Starting commit: `fix(library-ui): stabilize M6.3 pagination refresh state`
 - Starting M6.2 HEAD: `59b10effa6afd80addf5b53ef7a684bfc4e3bccf`
@@ -11,18 +14,19 @@
 - Main comparison at start: local `main` and `origin/main` were both
   `9a1a1e3d8c38633c1c82bc95293c6a6024e94e93`; no rebase was required.
 - Original M6.1 implementation commits remain `1cdf5a2` and `e7f3df8`; they were not rewritten.
-- M6.5 corrective-pass starting HEAD: `dbbf7bb5047c5c024861b79cfe9048f0742d49b0`.
+- Original M6.5 implementation HEAD: `dbbf7bb5047c5c024861b79cfe9048f0742d49b0`.
 - Final M6.4 HEAD: recorded after the focused implementation commit in the final repository
   handoff below.
-- Final M6.5 implementation and documentation commit is recorded in the final repository handoff
-  below; it contains the complete M6.5 code and tests.
+- Final M6.6 HEAD is the commit containing this completed report; its exact hash is supplied in the
+  final completion handoff after commit creation.
 - M6.2 implementation commit: `8a74438158f221464a972fb89c7774aa2e48f2c3`
 - M6.2 corrective commit: `fix(ui): address M6.2 adversarial review findings`
 - Merged to main: No
 - Pushed: No
 - Pre-existing untracked files: `M3_REVIEW.md`, `M4_REVIEW.md`, `M4_REVIEW_2.md`,
   `M4_REVIEW_3.md`, `M5_REVIEW.md`, `M6_1_REVIEW.md`, `M6_1_DELTA_REVIEW.md`, `M6_2_REVIEW.md`,
-  `M6_2_DELTA_REVIEW.md`, `M6_3_REVIEW.md`, `docs/M5_IMPLEMENTATION_REPORT.md`
+  `M6_2_DELTA_REVIEW.md`, `M6_3_REVIEW.md`, `M6_4_REVIEW.md`, `M6_5_REVIEW.md`,
+  `M6_5_DELTA_REVIEW.md`, `docs/M5_IMPLEMENTATION_REPORT.md`
 
 ## B. Overall M6 Status
 
@@ -31,13 +35,11 @@
 - [x] M6.3 Library Browsing
 - [x] M6.4 Game Detail / Readiness
 - [x] M6.5 Metadata UX / Settings
-- [ ] M6.6 Hardening / Accessibility / Documentation
+- [x] M6.6 Hardening / Accessibility / Documentation
 
-Current phase: M6.1, M6.2, and M6.3 are complete. M6.3's adversarial review found 0 CRITICAL and
-0 HIGH findings; its focused corrective pass is complete and was not reopened for M6.4.
-M6.4 implementation and its runtime corrective pass are complete. M6.5 implementation and its
-adversarial corrective pass are complete on `feat/m6-library-ui`; it is awaiting focused delta
-review before M6.6.
+Current phase: M6.1 through M6.5 were accepted before this slice. M6.6 is implemented and verified
+as the final Library UI hardening slice. No CRITICAL or HIGH finding remains known. Final status is
+**M6 COMPLETE — READY FOR FINAL ADVERSARIAL REVIEW**; M7 has not started.
 
 ## C. M6.1 — Backend Enablement
 
@@ -440,9 +442,10 @@ MEDIUM-5 and LOW-1 through LOW-11 remain documented deferrals for later hardenin
   milestones were not implemented in this section.
 - Genre/region facet discovery is deferred as described above. Existing accepted M6.2 LOWs other
   than required DELTA-LOW-1 remain untouched.
-- The remaining M6.3 MEDIUM findings (light-theme contrast, the library section heading, and
-  favorite-button focus custody) and all 11 M6.3 LOW findings remain deferred; they do not affect
-  the corrected pagination/query-state contract or the M6.5 metadata workflows.
+- M6.6 resolves the carried light-theme contrast, library section heading, favorite-button focus,
+  whitespace-title, skeleton geometry, committed-search, CSS hygiene, invalidation max-wait, and
+  vestigial-state findings. The intentionally retained M6.3 facet-count, minimum-size density, and
+  modified-click observations are listed in the final M6.6 deferrals below.
 
 ## F. M6.4 — Game Detail / Readiness
 
@@ -505,8 +508,9 @@ it for display; it does not infer core policy, BIOS substitution, runtime trust,
   failed image.
 - Readiness is presented as separate LOCAL CONTENT, RUNTIME, CORE, and BIOS rows. Overall status is
   Rust's `SystemReadiness` with local unavailability taking priority in the presentation. The page
-  says `EMULATION READY` / `REQUIREMENTS NOT SATISFIED` rather than claiming `READY TO PLAY`, and
-  reports unavailable, missing, invalid, and unknown dependencies in text as well as color.
+  says `EMULATION REQUIREMENTS SATISFIED` / `REQUIREMENTS NOT SATISFIED` rather than claiming
+  `READY TO PLAY`, and reports unavailable, missing, invalid, and unknown dependencies in text as
+  well as color.
 - BIOS output uses the existing per-system policy/requirement state and safe expected/matched
   filenames only. It does not scan from React, expose BIOS hashes or paths, import/download files,
   or offer destructive file actions. Missing BIOS copy points to the managed BIOS location and a
@@ -617,7 +621,7 @@ while a command or authoritative reread is pending.
 | `stale`        | Revalidate metadata                                                                                      | Uses the M5 refresh path, which re-identifies stale evidence rather than trusting an old provider ID.                      |
 | `noMatch`      | Try metadata again                                                                                        | Reuses the backend request path; no candidate is fabricated.                                                               |
 | `ambiguous`    | Search again                                                                                              | Reuses the backend request path; an existing candidate panel is also available for direct manual resolution.               |
-| `deferred`     | None for a capability gate or existing candidates; try again only for a provider deferral without rows | Capability-gated content and persisted manual candidates do not get another automatic request; provider policy stays native. |
+| `deferred`     | None for a capability gate with candidates; try again when a capability-gated state has no candidates or when the provider deferral has no candidates | Persisted manual candidates suppress a futile automatic request; an empty capability-gated state retains the heuristic search path. Provider policy stays native. |
 | `failed`       | None when candidates exist; retry only when no candidates are available                                  | Existing candidates are the recovery path; retry remains available only when there is no manual choice to make.            |
 
 Live `pending`, `running`, or `deferred` jobs suppress duplicate primary requests. Mutation failure
@@ -662,12 +666,14 @@ the safe candidate title, release date when present, ordinal position, and an ex
 control. It does not display provider IDs, confidence percentages, similarity scores, raw responses,
 or a frontend-resorted order.
 
-Capability-gated `deferred` states describe manual resolution and have no automatic retry action.
-`deferred` or `failed` states with candidates likewise have no repeated provider request action; the
-candidate panel is the meaningful recovery path. A provider-originated `deferred` state with no
-capability reason and no candidates retains the existing retry, and a `failed` state without
-candidates retains its retry. `ambiguous` keeps SEARCH AGAIN as an optional provider search because
-the backend can issue a new search, while direct candidate selection remains available.
+Capability-gated `deferred` states with candidates describe manual resolution and have no automatic
+retry action. A capability-gated `deferred` state with zero candidates retains `TRY METADATA AGAIN`
+because the heuristic search can still produce a useful candidate set; `systemNotMapped` remains
+suppressed because repeating the request cannot map an unsupported system. `deferred` or `failed`
+states with candidates likewise have no repeated provider request action; the candidate panel is the
+meaningful recovery path. A provider-originated `deferred` state without candidates and a retryable
+`failed` state without candidates retain their retry. `ambiguous` and `noMatch` keep their provider
+search actions when the DTO permits them, while direct candidate selection remains available.
 
 When M5 returns `userSelection`, the page labels the association USER-CONFIRMED MATCH and offers
 FORGET PROVIDER CHOICE. Clear means “forget RetroFrontier's manual provider choice”; it does not
@@ -759,9 +765,128 @@ unsupported-content user-pin stale guard. No real provider quota or credentials 
 
 ## H. M6.6 — Hardening / Accessibility / Documentation
 
-Not started. M6.6 remains responsible for final cross-screen visual/accessibility hardening and the
-known card, scanline, contrast, focus-custody, return-focus, and regression-suite debt. M6.5 does not
-begin that work.
+M6.6 is the final Library UI hardening slice. It stays within the existing React presentation and
+interaction boundary; no Rust production code, DTO/IPC field, Tauri command, dependency, provider
+policy, credential flow, filesystem capability, or M7 behavior was added.
+
+### Implemented hardening
+
+- Corrected the M6.5 delta zero-candidate dead end. Capability-gated `deferred` states with
+  candidates expose the authoritative ordered picker and suppress a futile automatic request;
+  capability-gated `deferred` states with zero candidates retain `TRY METADATA AGAIN` so another
+  heuristic search can produce candidates. `systemNotMapped` remains actionless because repeating
+  the request cannot map the system. `ambiguous` empty-state copy is truthful and candidate rows
+  remain hidden for empty arrays or an accepted `matched` state.
+- Kept `noMatch + candidates` reachable, documented, and covered in the DOM. Candidate selection
+  carries only the opaque command argument; only the selected row reports `SELECTING…` and
+  `aria-busy=true`. All other rows are disabled without claiming to be busy. A live backend job
+  suppresses the primary action until the authoritative DTO no longer reports that job.
+- Made permanent metadata failures (`invalidRequest`, developer/user authentication failure,
+  client rejection, and unavailable credentials) actionless in the generic retry projection while
+  preserving retry for transient/provider-retryable failures. Fixed copy explains when Settings
+  attention is required without exposing provider policy or raw errors.
+- Made provider deferral copy time-aware using the normalized millisecond fields. Expired or
+  timestamp-less deferrals no longer present as active; the settings panel re-evaluates at the
+  known expiry. Quota snapshots now include a bounded recency treatment. Personal credentials are
+  labelled `PERSONAL ACCOUNT SAVED`, not connected or validated. Clear-account remains reachable
+  when account status fails or the vault is unavailable, with a truthful disabled explanation.
+- Hardened cross-screen focus and semantics: route mains are labelled, Library uses `LIBRARY` →
+  `BROWSE LIBRARY` → card `h3` hierarchy, sidebar labels are non-heading labels, and the detail
+  hero has one announced H1. Favorite controls remain focusable during writes with truthful
+  `aria-busy`; field help/errors are associated to both credential inputs; status text is not
+  conveyed by color alone.
+- Preserved focus custody. Detail entry focuses its H1; Back restores the originating card only
+  after the bounded library refresh settles and otherwise focuses the Library H1. Primary shell
+  navigation clears stale return-focus state. Account/root confirmations support Escape and return
+  focus to their trigger or the stable settings heading; metadata mutations return focus to the
+  metadata heading after settling. No M8 controller focus graph was introduced.
+- Corrected readiness presentation to use the normalized runtime-unavailable reason and to keep
+  local content visible while the environment snapshot is checking. Skeleton cards now reserve the
+  same media/copy geometry as populated cards. Positive statuses use readable theme text plus the
+  existing accent as a non-text underline in both themes; scanlines, pixel borders, typography, and
+  supported 960×640 and larger desktop layouts remain on the established design system.
+- Added a synchronous in-flight guard to scan starts, a monotonic scan completion/progress guard,
+  a metadata invalidation maximum wait, a single bounded return-after-scan query, and a monotonic
+  metadata mutation generation covering A → B → A route changes. These changes preserve bounded
+  reads and authoritative DTO ownership.
+
+### M6.5 finding resolution
+
+| Finding | Result | M6.6 disposition |
+| --- | --- | --- |
+| HIGH-1 candidate visibility | RESOLVED | M6.5 correction remains data-driven: non-empty, non-`matched` DTO candidates are visible in backend order; matched historical rows remain hidden. |
+| MEDIUM-1 capability-gated retry | RESOLVED | M6.5 suppressed futile retries when candidates existed; M6.6 restores the useful heuristic retry only for zero-candidate deferred states and keeps `systemNotMapped` suppressed. |
+| MEDIUM-2 expired provider deferral | RESOLVED | `deferredUntil` is compared with a normalized `Date.now()` value; active and expired cases are tested. |
+| MEDIUM-3 account validation copy | RESOLVED | Settings says credentials are saved/unverified; M5's unreachable `Invalid` write lifecycle remains documented as outside this UI slice. |
+| MEDIUM-4 candidate pending identity | RESOLVED | The operation carries an internal target identity; only that candidate is busy or labelled selecting. |
+| MEDIUM-5 permanent retry semantics | RESOLVED | Permanent failure classes suppress generic retry; retryable failures retain it and fixed copy remains local-first. |
+| MEDIUM-6 priority regression gaps | RESOLVED | Account-clear failure, vault/error reachability, post-save read races, metadata-selection races, live-job clearing, scan completion, and focus cases are covered. |
+| LOW-1 mutation ownership | RESOLVED | Metadata operation ownership uses a monotonic generation as well as the route key, covering A → B → A. |
+| LOW-2 account-clear reachability | RESOLVED | The control remains rendered and truthfully disabled during account-read/vault failures. |
+| LOW-3 credential associations | RESOLVED | Help and action-error descriptions are attached directly to username and password inputs. |
+| LOW-4 quota recency | RESOLVED | Normalized `quotaObservedAt` is shown as recent, aged, missing, or potentially stale. |
+| LOW-5 unreachable provider-deferral branches | RESOLVED | Defensive mappings remain redacted and are explicitly documented as older/native DTO protection; normal M5 scheduler taxonomy does not route them there. |
+| LOW-6 duplicated empty-candidate copy | RESOLVED | The duplicate candidate-panel paragraph and state override were removed; one truthful state description remains. |
+| DELTA-MEDIUM-1 zero-candidate dead end | RESOLVED | Empty capability-gated deferred states have a retry path and copy no longer refers to a missing picker. |
+| DELTA-LOW-1 stale + candidates semantics | RESOLVED | The report now identifies these as historical candidates retained through stale projection; revalidation remains available and the DTO still drives visibility. |
+| DELTA-LOW-2 noMatch + candidates | RESOLVED | Reachable candidate rendering and fresh-search behavior are documented and covered at projection and DOM level. |
+| DELTA-LOW-3 triplicated deferred copy | RESOLVED | The standalone candidate intro was removed; specific unsupported-content copy remains separate and useful. |
+| DELTA-INFO-1 pending + candidates invariant | RESOLVED | The projection comment records that M5 does not emit this combination; no synthetic impossible-state behavior was added. |
+| DELTA-INFO-2 action-guard width | RESOLVED | The action guard is explicitly status-scoped for deferred/failed candidates and deferred capability reasons; `systemNotMapped` remains a separate non-retryable reason. |
+| DELTA-INFO-3 scope | VERIFIED | No backend, DTO, IPC, credential, dependency, provider-policy, or secret boundary changed. |
+| INFO-1..INFO-9 | VERIFIED | The M6.5 observations remain true or are covered by the final implementation; none introduced a blocker or an unbounded read. |
+
+### Prior M6 findings touched
+
+| Review finding | Result | Rationale |
+| --- | --- | --- |
+| M6.2 MEDIUM-1 scan live-region frequency | RESOLVED | Phase/status is the only polite live content; high-frequency counters remain visual/non-live. |
+| M6.2 MEDIUM-3 root-removal focus | RESOLVED | Alert-dialog semantics, Escape handling, trigger restoration, and stable-heading fallback are covered. |
+| M6.2 LOW-2 terminal progress straggler | RESOLVED | Progress at or below the handled terminal run is ignored. |
+| M6.2 LOW-5 duplicate scan start | RESOLVED | `useScanState` has a synchronous in-flight ref guard and a deferred-promise regression. |
+| M6.2 LOW-7 documentation drift | RESOLVED | `BACKLOG.md`, this report, and the high-level development record reflect final M6 behavior. |
+| M6.2 LOW-8 sidebar heading/orphan IDs | RESOLVED | Sidebar labels no longer precede page H1 as headings; route mains and section headings have stable labels. |
+| M6.2 LOW-9 initial scan status wording | RESOLVED | The shell reports `CHECKING SCAN STATUS` until the first authoritative read and keeps request copy scoped to request submission. |
+| M6.2 LOW-11 inert-row explanation | OBSOLETE | System rows became actionable filters in M6.3; the inert-row tooltip finding no longer describes production behavior. |
+| M6.3 MEDIUM-3 light-theme contrast | RESOLVED | Positive status text uses `--text` with accent underline; the original low-contrast accent pairing is gone. |
+| M6.3 MEDIUM-4 Library heading semantics | RESOLVED | `BROWSE LIBRARY` is a labelled H2 and cards are nested H3 headings. |
+| M6.3 MEDIUM-5 favorite focus custody | RESOLVED | Favorite controls remain focusable while busy and expose stable names plus `aria-busy`. |
+| M6.3 LOW-1 favorites-only page correction | RESOLVED | Empty terminal responses at later offsets redirect to the last valid bounded page, including zero results. |
+| M6.3 LOW-2 listener resubscription | RESOLVED | Metadata listener lifetime is stable across query changes and reads the latest callback. |
+| M6.3 LOW-3 whitespace title | RESOLVED | Display titles trim before local-title/untitled fallback. |
+| M6.3 LOW-4 skeleton geometry | RESOLVED | Skeletons have composed media/copy geometry matching the card proportions. |
+| M6.3 LOW-5 committed no-results copy | RESOLVED | Empty search headings echo only the committed debounced query. |
+| M6.3 LOW-8 duplicate reset CSS | RESOLVED | Conflicting duplicate declarations were consolidated. |
+| M6.3 LOW-10 invalidation starvation | RESOLVED | Visible metadata invalidation has a 180 ms trailing debounce and a 1 s maximum wait. |
+| M6.3 LOW-11 vestigial affected-ID state | RESOLVED | The unused set was removed; visible-page filtering remains bounded. |
+| M6.4 MEDIUM-2 readiness predicate duplication | RESOLVED | Runtime unavailability is projected from Rust's normalized readiness reason. |
+| M6.4 MEDIUM-3 catalog blanking on scan | RESOLVED | Terminal local scans refresh summary/detail consumers without blanking the independent system catalog. |
+| M6.4 MEDIUM-4 return focus | RESOLVED | Return focus waits for the authoritative library query and has a heading fallback. |
+| M6.4 MEDIUM-5 light-theme contrast | RESOLVED | The shared positive-status treatment covers detail/readiness surfaces as well. |
+| M6.4 MEDIUM-7 race/focus regression quality | RESOLVED | Deferred IPC tests now cover route generation, event/selection, account, scan, and focus invariants. |
+| M6.4 LOW-1 duplicate detail title | RESOLVED | The hero title is visually retained but hidden from the accessibility tree; the H1 is the announced title. |
+| M6.4 LOW-2 checking readiness rows | RESOLVED | Environment rows say `CHECKING` while local content remains authoritative. |
+| M6.4 LOW-3 mobile detail `aria-current` | RESOLVED | Detail routes mark neither primary destination as current. |
+| M6.4 LOW-4 unstable cover reset key | RESOLVED | A stable module sentinel replaces the per-render object fallback. |
+| M6.4 LOW-5 return-after-scan double query | RESOLVED | Enabled/terminal-scan handling is one bounded query path and has a regression. |
+
+### Accessibility and visual decisions
+
+All route mains have explicit accessible labels. The Library hierarchy is H1 `LIBRARY`, H2
+`BROWSE LIBRARY`, and per-card H3 titles; Settings and Game Detail use labelled mains and stable
+section headings. Search, filters, favorites, pagination, metadata candidates, root actions, and
+theme controls retain keyboard names and state. Busy state is attached only to the operation that
+is actually in flight. Polite live regions announce bounded status/phase changes, while counters and
+decorative scanlines are not high-frequency live content. Alert dialogs have labels, descriptions,
+Escape cancellation, and deterministic return focus. Credential help and errors are field-associated.
+
+Positive/available states remain distinguishable by text and use readable `--text` foregrounds in
+both themes, with the established accent retained as an underline/status accent. The existing
+Press Start 2P, VT323, Space Grotesk, hard-border/shadow, scanline, cover-placeholder, and
+responsive-layout decisions remain intact. Static DOM/CSS inspection covered populated, loading,
+filtered-empty, error, detail, candidate, readiness, settings, roots, scan, and shell states at
+960×640, 1280×800, and larger desktop sizes. The repository has no screenshot-capable visual test
+harness; no screenshot-based claim is made.
 
 ## I. Architecture and Security Audit
 
@@ -814,8 +939,8 @@ existing B1 3 px black structural sidebar divider as a side-tab heuristic; it wa
 
 ## K. Test Coverage
 
-The final frontend suite totals are recorded in section M after the M6.5 verification run. M6.3
-coverage remains intact for initial/error/retry query state, multiple/final pages, filter reset,
+The final frontend and Rust suite totals are recorded in section R after the M6.6 verification run.
+M6.3 coverage remains intact for initial/error/retry query state, multiple/final pages, filter reset,
 total shrink, literal debounced search, stale result/error/loading races, active-request unmount,
 favorites, duplicate writes, held-write/current-filter ownership, filtered-page removal, visible
 metadata invalidation cadence/lifecycle, terminal scan identity, real grid integration, system
@@ -826,19 +951,20 @@ states, stale cached display, multi-unit content, normalized readiness states, f
 targeted/coalesced metadata events, terminal scan refresh cadence, listener/timer cleanup, and
 accessibility semantics. M6.5 adds provider/account status mapping, credential redaction/lifecycle,
 retry/unmount/race coverage, state/action mapping, cached refresh behavior, candidate ordering/
-selection/clear/failure, and metadata action focus. Existing M6.2/root/IPC and all Rust tests remain
-in scope. No live ScreenScraper or copyrighted fixture is used.
+selection/clear/failure, and metadata action focus. M6.6 adds zero-candidate action projection,
+active/expired provider timing, field descriptions, candidate-operation identity, route/focus
+custody, readiness/loading truth, bounded invalidation, scan-start coalescing, and the remaining
+high-value account/race regressions. Existing M6.2/root/IPC and all Rust tests remain in scope. No
+live ScreenScraper or copyrighted fixture is used.
 
 ## L. Deferred Beyond M6
 
-- M6.6 final cross-screen hardening and accessibility consistency.
 - M7 launch/process/play-session and per-game core behavior.
 - M8 controller abstraction, focus graph, and on-screen keyboard.
 - M9 save-game and save-state management.
 - M10 packaging, signing, and release work.
 - Provider capability deferrals for CHD, CUE/BIN, GDI, M3U/multi-disc, RVZ/GCM, and other unsupported
   representations remain governed by M5; ZIP/archive import remains out of scope.
-- Accepted M6.2/M6.3/M6.4 non-blocking review debt remains deferred to M6.6 where applicable.
 - Existing documented non-blocking M5/M4 observations that are not correctness dependencies of M6.1.
 
 ## M. M6.5 Implementation Verification (before adversarial corrective pass)
@@ -874,7 +1000,8 @@ corrective-pass verification is recorded in section Q below:
 - Settings and Game Detail workflow inspection used the production components plus DOM/accessibility
   integration tests. A native screenshot could not be captured in this Wayland session, and the
   fresh isolated database had no game record; no claim of live ScreenScraper or screenshot-based
-  visual validation is made. Existing card/grid/scanline polish remains an M6.6 deferral.
+  visual validation is made. The final M6.6 visual decisions and their limits are recorded in
+  section H.
 
 Verification was performed on Linux x86_64; no Windows/macOS runtime or packaging validation was
 performed. No live ScreenScraper request or credential was used.
@@ -1048,22 +1175,25 @@ performed, so the watcher event-kind behaviour on FSEvents and ReadDirectoryChan
 from the `notify` backends rather than observed; neither backend emits `Access` events, so the
 filter cannot suppress a real change there.
 
-## O. Remaining Deferrals After the M6.5 Corrective Pass
+## O. Remaining Deferrals After M6.6
 
-This pass intentionally leaves the non-blocking M6.5 review findings for the focused delta review
-and/or M6.6: MEDIUM-2 expired provider deferral copy, MEDIUM-3 unvalidated personal-account copy,
-MEDIUM-4 section-wide candidate pending state, MEDIUM-5 permanent-failure retry semantics,
-MEDIUM-6 priority race/security regression coverage, LOW-1 mutation generation ownership, LOW-2
-clear-account availability, LOW-3 field-level credential associations, LOW-4 quota recency copy,
-LOW-5 unreachable provider-deferral copy, and LOW-6 ambiguous empty-copy duplication. INFO-1 through
-INFO-9 remain observations, not corrective-pass blockers. Existing M6.2/M6.3/M6.4 debt also stays
-deferred. M6.6 still owns cross-screen visual/accessibility/hardening work, including card polish,
-scanline fidelity, contrast, focus custody/return focus, and the remaining regression-suite debt.
-No M6.6 implementation began here; the corrected pass adds no scan trigger or catalog refresh path.
+M6.5's accepted MEDIUM and LOW findings, the M6.5 delta MEDIUM/LOW/INFO observations, and the
+carried M6.3/M6.4 accessibility and truthfulness findings are resolved or explicitly accounted for
+in section H. The remaining deferrals are deliberately outside M6.6: M5 does not currently write
+`UserAccountState::Invalid` after provider authentication failure; M6.2 LOW-3 has no safe stuck-scan
+cancellation/recovery command; M6.2 MEDIUM-4/LOW-6/LOW-10 require native platform/release work;
+M6.3 LOW-6 has no bounded per-filter count contract and LOW-7 is the design-approved 960×640
+density; and M6.4 INFO-3's modified-click behavior remains a deliberate native-link fallback.
+Full Unicode case folding, metadata event volume beyond the bounded consumer, provider capability
+expansion, archive import, launch/process behavior, controller navigation, saves, and packaging also
+remain in their owning milestones. No known CRITICAL or HIGH finding remains.
+Full Unicode case folding, metadata event volume beyond the bounded consumer, provider capability
+expansion, archive import, launch/process behavior, controller navigation, saves, and packaging also
+remain in their owning milestones. No known CRITICAL or HIGH finding remains.
 
 ## P. Current M6 Verdict
 
-`M6.5 CORRECTIVE PASS COMPLETE — ready for focused delta review before M6.6`
+`M6 COMPLETE — READY FOR FINAL ADVERSARIAL REVIEW`
 
 ## Q. M6.5 Adversarial Corrective-Pass Verification
 
@@ -1102,4 +1232,27 @@ starting HEAD `dbbf7bb5047c5c024861b79cfe9048f0742d49b0`:
 - Live candidate DTO inspection was not practical because the isolated database had no game record
   and the existing Vite/native instance could not be displaced safely. Synthetic DTO/state
   visibility, action hierarchy, candidate order, and selection/reread behavior are covered by the
-  focused DOM/projection/hook regressions above. Settings/provider and scan paths were not changed.
+  focused DOM/projection/hook regressions above; this smoke limit does not replace the M6.6
+  Settings/provider and scan regressions.
+
+## R. M6.6 Final Verification
+
+Final command results are recorded here after the complete M6.6 implementation and documentation
+pass. All checks use synthetic/legal fixtures only; no provider quota, credentials, commercial ROM,
+copyrighted BIOS, runtime binary, or unrelated process was used or modified.
+
+- `pnpm typecheck` — PASS — `tsc -b --pretty false`, exit 0.
+- `pnpm lint` — PASS — `eslint .`, exit 0.
+- `pnpm format:check` — PASS — all configured source/configuration files use Prettier formatting, exit 0.
+- `pnpm test` — PASS — 17 files, 246 tests, exit 0.
+- `pnpm build` — PASS — TypeScript and Vite build; 54 modules transformed, exit 0.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — PASS — no output, exit 0.
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` — PASS — release-independent dev profile finished without warnings, exit 0.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — PASS — 309 tests run; 308 passed, 0 failed, 1 ignored, exit 0.
+- `cargo build --manifest-path src-tauri/Cargo.toml --release` — PASS — optimized release profile finished successfully, exit 0.
+- `pnpm tauri:build` — PASS — frontend and release application build completed at `src-tauri/target/release/retrofrontier`, exit 0.
+- `git diff --check` — PASS — no whitespace errors, exit 0.
+
+The safe runtime smoke limit remains the one documented in section M: an existing RetroFrontier
+instance owns the normal application lock/port, so it was not disturbed; isolated native startup
+was verified without touching user data, but live provider/game workflows were not claimed.

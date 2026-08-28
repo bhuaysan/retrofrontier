@@ -40,7 +40,7 @@ function MobileRouteNav({
   route,
   navigate,
 }: {
-  route: 'library' | 'settings';
+  route: 'library' | 'settings' | null;
   navigate: (route: 'library' | 'settings') => void;
 }) {
   return (
@@ -217,6 +217,14 @@ export function AppShell() {
     navigate('library');
   }, [navigate]);
 
+  const navigateFromShell = useCallback(
+    (nextRoute: 'library' | 'settings') => {
+      setLibraryFocusGameId(null);
+      navigate(nextRoute);
+    },
+    [navigate],
+  );
+
   const onLibraryFocusRestored = useCallback(() => {
     setLibraryFocusGameId(null);
   }, []);
@@ -230,9 +238,11 @@ export function AppShell() {
   );
   const footerStatus = scan.statusError
     ? 'SCAN STATUS UNKNOWN'
-    : scan.status?.running
-      ? 'SCAN IN PROGRESS'
-      : 'SCAN READY';
+    : scan.statusLoading && !scan.status
+      ? 'CHECKING SCAN STATUS'
+      : scan.status?.running
+        ? 'SCAN IN PROGRESS'
+        : 'SCAN READY';
 
   return (
     <div className="app-shell" data-theme={theme}>
@@ -241,7 +251,7 @@ export function AppShell() {
           type="button"
           className="wordmark"
           aria-label="Go to Library"
-          onClick={() => navigate('library')}
+          onClick={() => navigateFromShell('library')}
         >
           RETRO<span>FRONTIER</span>
         </button>
@@ -252,7 +262,10 @@ export function AppShell() {
             value={library.searchInput}
           />
         ) : null}
-        <MobileRouteNav route={isSettingsRoute ? 'settings' : 'library'} navigate={navigate} />
+        <MobileRouteNav
+          route={isLibraryRoute ? 'library' : isSettingsRoute ? 'settings' : null}
+          navigate={navigateFromShell}
+        />
         <div className="theme-toggle" role="group" aria-label="Theme">
           <button
             type="button"
@@ -274,10 +287,10 @@ export function AppShell() {
       </header>
 
       <aside className="app-sidebar" aria-label="Library navigation">
-        <nav aria-labelledby="systems-heading">
-          <h2 id="systems-heading" className="sidebar-label">
+        <section aria-labelledby="systems-heading">
+          <p id="systems-heading" className="sidebar-label">
             // SYSTEMS
-          </h2>
+          </p>
           {catalogLoading && (
             <p className="sidebar-catalog-status loading-inline" role="status">
               CHECKING SYSTEM CATALOG…
@@ -300,7 +313,7 @@ export function AppShell() {
               activeMode="pressed"
               onClick={() => {
                 library.setSystemId(null);
-                navigate('library');
+                navigateFromShell('library');
               }}
             />
             {catalogSystems.map((system) => (
@@ -312,22 +325,22 @@ export function AppShell() {
                 active={isLibraryRoute && library.systemId === system.id}
                 onClick={() => {
                   library.setSystemId(system.id);
-                  navigate('library');
+                  navigateFromShell('library');
                 }}
               />
             ))}
           </ul>
-        </nav>
+        </section>
 
         <nav className="sidebar-menu" aria-labelledby="menu-heading">
-          <h2 id="menu-heading" className="sidebar-label">
+          <p id="menu-heading" className="sidebar-label">
             // MENU
-          </h2>
+          </p>
           <ul className="pixel-row-list">
             <RouteRow
               label="Settings"
               active={isSettingsRoute}
-              onClick={() => navigate('settings')}
+              onClick={() => navigateFromShell('settings')}
             />
           </ul>
         </nav>
@@ -348,7 +361,7 @@ export function AppShell() {
           scan={scan}
           onAddExternalFolder={onAddExternalFolder}
           onOpenManagedFolder={onOpenManagedFolder}
-          onManageRoots={() => navigate('settings')}
+          onManageRoots={() => navigateFromShell('settings')}
           onOpenGame={onOpenGame}
           restoreFocusGameId={libraryFocusGameId}
           onFocusRestored={onLibraryFocusRestored}
@@ -376,7 +389,7 @@ export function AppShell() {
           refreshSummary={refreshSummary}
           onAddExternalFolder={onAddExternalFolder}
           onOpenManagedFolder={onOpenManagedFolder}
-          onBackToLibrary={() => navigate('library')}
+          onBackToLibrary={() => navigateFromShell('library')}
         />
       )}
 

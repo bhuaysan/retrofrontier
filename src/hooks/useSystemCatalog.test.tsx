@@ -68,6 +68,16 @@ function setupDefaults() {
   mocks.getSystems.mockResolvedValue(response);
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('useSystemCatalog', () => {
   beforeEach(setupDefaults);
 
@@ -120,6 +130,39 @@ describe('useSystemCatalog', () => {
     });
 
     await waitFor(() => expect(result.current.statuses).toHaveLength(1));
+    expect(result.current.error).toBeNull();
+  });
+
+  it('keeps the newest overlapping catalog refresh authoritative', async () => {
+    const older = deferred<SystemsResponse>();
+    const newer = deferred<SystemsResponse>();
+    mocks.getSystems
+      .mockResolvedValueOnce(response)
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const { result } = renderHook(() => useSystemCatalog());
+
+    await waitFor(() => expect(result.current.statuses).toHaveLength(1));
+    let olderRefresh: Promise<unknown> | undefined;
+    let newerRefresh: Promise<unknown> | undefined;
+    act(() => {
+      olderRefresh = result.current.refresh();
+      newerRefresh = result.current.refresh();
+    });
+
+    await act(async () => {
+      newer.resolve({ ...response, systems: [] });
+      await newerRefresh!;
+    });
+    expect(result.current.systems).toEqual([]);
+    expect(result.current.error).toBeNull();
+
+    await act(async () => {
+      older.resolve(response);
+      await olderRefresh!;
+    });
+    expect(result.current.systems).toEqual([]);
+    expect(result.current.statuses).toEqual([]);
     expect(result.current.error).toBeNull();
   });
 });

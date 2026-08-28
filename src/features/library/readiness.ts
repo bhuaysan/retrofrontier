@@ -40,23 +40,26 @@ function runtimeRow(status: SystemStatus | null): ReadinessRow {
     return unknownRow('runtime', 'RUNTIME', 'The runtime status is not available.');
   }
 
-  const runtimeState = status.core.availability.runtimeState;
-  if (runtimeState === 'ready' || runtimeState === 'rollbackAvailable') {
+  const unavailableReason = status.readiness.reasons.find(
+    (reason) => reason.kind === 'runtimeUnavailable',
+  );
+  if (unavailableReason?.kind === 'runtimeUnavailable') {
     return {
       id: 'runtime',
       label: 'RUNTIME',
-      tone: 'ready',
-      status: 'AVAILABLE',
-      detail: `Managed runtime ${RUNTIME_STATE_LABELS[runtimeState]}.`,
+      tone: 'unavailable',
+      status: 'UNAVAILABLE',
+      detail: `Managed runtime is ${RUNTIME_STATE_LABELS[unavailableReason.state]}.`,
     };
   }
 
+  const runtimeState = status.core.availability.runtimeState;
   return {
     id: 'runtime',
     label: 'RUNTIME',
-    tone: 'unavailable',
-    status: 'UNAVAILABLE',
-    detail: `Managed runtime is ${RUNTIME_STATE_LABELS[runtimeState]}.`,
+    tone: 'ready',
+    status: 'AVAILABLE',
+    detail: `Managed runtime ${RUNTIME_STATE_LABELS[runtimeState]}.`,
   };
 }
 
@@ -237,17 +240,30 @@ function unknownRow(id: ReadinessRowId, label: string, detail: string): Readines
   return { id, label, tone: 'unknown', status: 'UNKNOWN', detail };
 }
 
+function checkingRow(id: ReadinessRowId, label: string): ReadinessRow {
+  return {
+    id,
+    label,
+    tone: 'unknown',
+    status: 'CHECKING',
+    detail: `Checking the current ${label.toLocaleLowerCase()} snapshot.`,
+  };
+}
+
 export function getReadinessRows(
   availability: GameAvailability | null,
   status: SystemStatus | null,
   contentUnits: readonly LibraryContentUnitSummary[],
+  loading = false,
 ): ReadinessRow[] {
-  return [
+  const rows = [
     localContentRow(availability, contentUnits),
     runtimeRow(status),
     coreRow(status),
     biosRow(status),
   ];
+  if (!loading) return rows;
+  return rows.map((row) => (row.id === 'localContent' ? row : checkingRow(row.id, row.label)));
 }
 
 function reasonDetail(reason: ReadinessReason): string {

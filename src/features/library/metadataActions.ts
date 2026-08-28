@@ -28,7 +28,7 @@ const STATE_COPY: Record<GameMetadataState['status'], MetadataStateCopy> = {
   ambiguous: {
     label: 'MATCH REVIEW NEEDED',
     description:
-      'Choose a provider candidate below, or search again without changing local content.',
+      'No provider candidates are available. Search again without changing local content.',
   },
   deferred: {
     label: 'METADATA DEFERRED',
@@ -50,24 +50,57 @@ const LIVE_JOB_STATES: ReadonlySet<GameMetadataState['jobs'][number]['state']> =
   'deferred',
 ]);
 
+const PERMANENT_METADATA_FAILURES: ReadonlySet<NonNullable<GameMetadataState['lastFailure']>> =
+  new Set([
+    'invalidRequest',
+    'developerAuthenticationFailed',
+    'userAuthenticationFailed',
+    'clientRejected',
+    'credentialsUnavailable',
+  ]);
+
 /**
  * Candidate rows are authoritative manual-resolution suggestions unless an accepted match is
  * current. The backend keeps suggestion rows when a match is persisted, so a matched state must
  * not surface those historical rows as another choice.
  */
 export function hasSelectableCandidates(state: GameMetadataState | null): boolean {
+  // M5 does not emit pending jobs with candidates, but keep this projection broad enough to
+  // preserve any persisted, non-matched suggestions the authoritative DTO provides.
   return state !== null && state.status !== 'matched' && state.candidates.length > 0;
 }
 
 export function metadataStateCopy(
   status: GameMetadataState['status'],
   unsupportedReason: GameMetadataState['unsupportedReason'] = null,
+  candidateCount = 0,
 ): MetadataStateCopy {
+  if (status === 'deferred' && unsupportedReason === 'systemNotMapped') {
+    return {
+      label: 'METADATA DEFERRED',
+      description:
+        'Automatic identification is unavailable because this system is not mapped to the provider.',
+    };
+  }
+  if (status === 'deferred' && unsupportedReason !== null && candidateCount > 0) {
+    return {
+      label: 'METADATA DEFERRED',
+      description:
+        'Automatic identification is not available for this content. Choose a provider candidate below.',
+    };
+  }
   if (status === 'deferred' && unsupportedReason !== null) {
     return {
       label: 'METADATA DEFERRED',
       description:
-        'Automatic identification is not available for this content. Choose a provider candidate below when one is available.',
+        'Automatic identification is unavailable for this content. Try again to search for provider candidates.',
+    };
+  }
+  if (status === 'ambiguous' && candidateCount === 0) {
+    return {
+      label: 'MATCH REVIEW NEEDED',
+      description:
+        'No provider candidates are available. Search again without changing local content.',
     };
   }
   return STATE_COPY[status];
@@ -78,11 +111,17 @@ export function getMetadataAction(state: GameMetadataState | null): MetadataActi
     return null;
   }
 
-  // A capability gate cannot be changed by repeating the same automatic identification request.
-  // Deferred/failed states with persisted candidates already have the meaningful manual path.
+  // An unmapped system cannot be changed by repeating the same automatic identification request.
+  // Other deferred capability gates may still benefit from another heuristic search when the
+  // backend persisted no candidates. Persisted candidates remain the meaningful manual path.
   if (
-    state.unsupportedReason !== null ||
-    (hasSelectableCandidates(state) && (state.status === 'deferred' || state.status === 'failed'))
+    state.unsupportedReason === 'systemNotMapped' ||
+    (hasSelectableCandidates(state) &&
+      (state.status === 'deferred' || state.status === 'failed')) ||
+    (state.unsupportedReason !== null && state.status !== 'deferred') ||
+    (state.status === 'failed' &&
+      state.lastFailure !== null &&
+      PERMANENT_METADATA_FAILURES.has(state.lastFailure))
   ) {
     return null;
   }

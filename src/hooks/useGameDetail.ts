@@ -42,8 +42,10 @@ export type MetadataOperationKind = 'request' | 'refresh' | 'select' | 'clear';
 
 interface MetadataOperationChannel {
   key: string;
+  generation: number;
   pending: boolean;
   kind: MetadataOperationKind | null;
+  targetProviderGameId: string | null;
   error: IpcError | null;
 }
 
@@ -55,8 +57,15 @@ function emptyFavoriteChannel(key: string): FavoriteChannel {
   return { key, pending: false, error: null };
 }
 
-function emptyMetadataOperationChannel(key: string): MetadataOperationChannel {
-  return { key, pending: false, kind: null, error: null };
+function emptyMetadataOperationChannel(key: string, generation = 0): MetadataOperationChannel {
+  return {
+    key,
+    generation,
+    pending: false,
+    kind: null,
+    targetProviderGameId: null,
+    error: null,
+  };
 }
 
 export interface GameDetailModel {
@@ -72,6 +81,7 @@ export interface GameDetailModel {
   favoriteError: IpcError | null;
   metadataActionPending: boolean;
   metadataActionKind: MetadataOperationKind | null;
+  metadataActionTarget: string | null;
   metadataActionError: IpcError | null;
   refresh: () => Promise<void>;
   retryLocal: () => Promise<void>;
@@ -96,7 +106,8 @@ export function useGameDetail({
   const latestScanCompletionRunId = useRef(scanCompletionRunId);
   const detailKey = `${enabled ? 'enabled' : 'disabled'}:${gameId ?? 'invalid'}`;
   const favoriteOperation = useRef({ key: detailKey, pending: false });
-  const metadataOperation = useRef({ key: detailKey, pending: false });
+  const metadataOperationGeneration = useRef(0);
+  const metadataOperation = useRef({ key: detailKey, generation: 0, pending: false });
   const favoriteCommittedHandler = useRef(onFavoriteCommitted);
   const initialLoading = enabled && gameId !== null;
 
@@ -129,7 +140,7 @@ export function useGameDetail({
   const metadataOperationChannel =
     metadataOperationState.key === detailKey
       ? metadataOperationState
-      : emptyMetadataOperationChannel(detailKey);
+      : emptyMetadataOperationChannel(detailKey, metadataOperationState.generation);
 
   useEffect(() => {
     favoriteCommittedHandler.current = onFavoriteCommitted;
@@ -199,7 +210,9 @@ export function useGameDetail({
             : current,
         );
         setMetadataOperationState((current) =>
-          current.key === detailKey ? { ...current, error: null } : current,
+          current.key === detailKey && current.generation === metadataOperationGeneration.current
+            ? { ...current, error: null }
+            : current,
         );
       }
     } catch (reason: unknown) {
@@ -222,7 +235,10 @@ export function useGameDetail({
     localRequestGeneration.current += 1;
     metadataRequestGeneration.current += 1;
     favoriteOperation.current = { key: detailKey, pending: false };
-    metadataOperation.current = { key: detailKey, pending: false };
+    const operationGeneration = metadataOperationGeneration.current + 1;
+    metadataOperationGeneration.current = operationGeneration;
+    metadataOperation.current = { key: detailKey, generation: operationGeneration, pending: false };
+    setMetadataOperationState(emptyMetadataOperationChannel(detailKey, operationGeneration));
     if (enabled && gameId !== null && latestScanCompletionRunId.current !== null) {
       lastScanKey.current = `${gameId}:${latestScanCompletionRunId.current}`;
     }
@@ -238,6 +254,7 @@ export function useGameDetail({
       disposed = true;
       localRequestGeneration.current += 1;
       metadataRequestGeneration.current += 1;
+      metadataOperationGeneration.current += 1;
     };
   }, [detailKey, enabled, gameId, loadLocal, loadMetadata]);
 
@@ -247,6 +264,7 @@ export function useGameDetail({
       mounted.current = false;
       localRequestGeneration.current += 1;
       metadataRequestGeneration.current += 1;
+      metadataOperationGeneration.current += 1;
     };
   }, []);
 
@@ -293,44 +311,72 @@ export function useGameDetail({
   }, [loadLocal, loadMetadata]);
 
   const runMetadataMutation = useCallback(
-    async (kind: MetadataOperationKind, command: () => Promise<void>) => {
+    async (
+      kind: MetadataOperationKind,
+      command: () => Promise<void>,
+      targetProviderGameId: string | null = null,
+    ) => {
       if (!enabled || gameId === null) return;
 
-      if (metadataOperation.current.key !== detailKey) {
-        metadataOperation.current = { key: detailKey, pending: false };
+      if (
+        metadataOperation.current.key !== detailKey ||
+        metadataOperation.current.generation !== metadataOperationGeneration.current
+      ) {
+        metadataOperation.current = {
+          key: detailKey,
+          generation: metadataOperationGeneration.current,
+          pending: false,
+        };
       }
       if (metadataOperation.current.pending) return;
 
       metadataOperation.current.pending = true;
       const operationKey = detailKey;
+      const operationGeneration = metadataOperation.current.generation;
+      const ownsOperation = () =>
+        metadataOperation.current.key === operationKey &&
+        metadataOperation.current.generation === operationGeneration;
       if (mounted.current) {
         setMetadataOperationState((current) => {
           const base =
-            current.key === detailKey ? current : emptyMetadataOperationChannel(detailKey);
-          return { ...base, pending: true, kind, error: null };
+            current.key === detailKey && current.generation === operationGeneration
+              ? current
+              : emptyMetadataOperationChannel(detailKey, operationGeneration);
+          return {
+            ...base,
+            generation: operationGeneration,
+            pending: true,
+            kind,
+            targetProviderGameId,
+            error: null,
+          };
         });
       }
 
       try {
         await command();
-        if (!mounted.current || metadataOperation.current.key !== operationKey) return;
+        if (!mounted.current || !ownsOperation()) return;
         // Clear-selection has no durable metadata event. A bounded authoritative read after
         // every successful command also keeps fast local feedback independent of event timing;
         // the existing metadata-state-changed listener remains authoritative for worker writes.
         await loadMetadata();
       } catch (reason: unknown) {
-        if (mounted.current && metadataOperation.current.key === operationKey) {
+        if (mounted.current && ownsOperation()) {
           const error = normalizeIpcError(reason);
           setMetadataOperationState((current) =>
-            current.key === operationKey ? { ...current, error } : current,
+            current.key === operationKey && current.generation === operationGeneration
+              ? { ...current, error }
+              : current,
           );
         }
       } finally {
-        if (metadataOperation.current.key === operationKey) {
+        if (ownsOperation()) {
           metadataOperation.current.pending = false;
           if (mounted.current) {
             setMetadataOperationState((current) =>
-              current.key === operationKey ? { ...current, pending: false, kind: null } : current,
+              current.key === operationKey && current.generation === operationGeneration
+                ? { ...current, pending: false, kind: null, targetProviderGameId: null }
+                : current,
             );
           }
         }
@@ -351,8 +397,10 @@ export function useGameDetail({
 
   const selectMetadataCandidate = useCallback(
     (providerGameId: string) =>
-      runMetadataMutation('select', () =>
-        selectGameMetadataCandidate({ gameId: gameId!, providerGameId }),
+      runMetadataMutation(
+        'select',
+        () => selectGameMetadataCandidate({ gameId: gameId!, providerGameId }),
+        providerGameId,
       ),
     [gameId, runMetadataMutation],
   );
@@ -431,6 +479,7 @@ export function useGameDetail({
     favoriteError: favoriteChannel.error,
     metadataActionPending: metadataOperationChannel.pending,
     metadataActionKind: metadataOperationChannel.kind,
+    metadataActionTarget: metadataOperationChannel.targetProviderGameId,
     metadataActionError: metadataOperationChannel.error,
     refresh,
     retryLocal: loadLocal,

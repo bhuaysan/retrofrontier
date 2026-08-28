@@ -21,7 +21,9 @@ normalized metadata presentation, local content-unit summaries, and Rust-authori
 runtime/core/BIOS readiness information without launch behavior. M6.5 adds metadata/provider
 status and optional account settings, write-only credential submission, game metadata request/
 refresh actions, and ordered candidate resolution while preserving local-first offline behavior.
-M7 owns launching. M6.1 provides the bounded library-query, summary, local-detail, favorite,
+M6.6 hardens the same UI with truthful zero-candidate metadata recovery, provider/account status
+copy, bounded race handling, keyboard focus custody, semantic headings, and dark/light contrast
+coverage. M7 owns launching. M6.1 provides the bounded library-query, summary, local-detail, favorite,
 scan-issue, cached-cover, and metadata-invalidation IPC foundations consumed by the current UI.
 
 ## Stack

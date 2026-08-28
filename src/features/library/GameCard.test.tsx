@@ -82,15 +82,22 @@ describe('GameCard', () => {
     expect(screen.queryByText('LOCAL FILE MISSING')).not.toBeInTheDocument();
   });
 
-  it('shows unavailable content independently and disables an in-flight favorite', () => {
+  it('shows unavailable content independently while keeping an in-flight favorite focusable', () => {
     renderCard({ availability: 'unavailable', favorite: true }, true);
 
     expect(screen.getByText('LOCAL FILE MISSING')).toBeInTheDocument();
     const favorite = screen.getByRole('button', {
-      name: 'Updating favorite for Kirby’s Adventure',
+      name: 'Remove Kirby’s Adventure from favorites',
     });
-    expect(favorite).toBeDisabled();
+    expect(favorite).not.toBeDisabled();
+    expect(favorite).toHaveAttribute('aria-busy', 'true');
     expect(favorite).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('uses the local title when the authoritative display title is only whitespace', () => {
+    renderCard({ displayTitle: '   ', localTitle: 'Local fallback title' });
+
+    expect(screen.getByRole('heading', { name: 'Local fallback title' })).toBeInTheDocument();
   });
 
   it('retains stale last-known-good title and cover presentation', () => {

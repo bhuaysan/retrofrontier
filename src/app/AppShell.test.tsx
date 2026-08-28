@@ -472,6 +472,64 @@ describe('AppShell M6.2 shell and library states', () => {
     );
   });
 
+  it('does not restore a card after leaving detail through primary navigation', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    fireEvent.click(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }));
+    await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Go to Library' }));
+    expect(await screen.findByRole('heading', { name: 'LIBRARY' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.activeElement).not.toBe(
+        screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }),
+      ),
+    );
+  });
+
+  it('returns focus to the Library heading when the originating card is no longer present', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    mocks.queryLibrary.mockResolvedValueOnce(populatedLibraryPage).mockResolvedValueOnce({
+      ...populatedLibraryPage,
+      items: [populatedLibraryPage.items[1]],
+      total: 1,
+    });
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    fireEvent.click(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }));
+    await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+    fireEvent.click(screen.getByRole('link', { name: /back to library/i }));
+
+    await screen.findByRole('heading', { name: 'A Very Long Local Title Without Metadata' });
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'LIBRARY' })).toHaveFocus());
+  });
+
+  it('does not mark either primary destination current on a game detail route', async () => {
+    window.history.replaceState({}, '', '/games/1');
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+    const primaryNavigation = screen.getByRole('navigation', { name: 'Primary navigation' });
+    expect(within(primaryNavigation).getByRole('button', { name: 'LIBRARY' })).not.toHaveAttribute(
+      'aria-current',
+    );
+    expect(within(primaryNavigation).getByRole('button', { name: 'SETTINGS' })).not.toHaveAttribute(
+      'aria-current',
+    );
+  });
+
   it('does not refresh detail on scan progress and refreshes bounded detail once on completion', async () => {
     window.history.replaceState({}, '', '/games/1');
     render(<AppShell />);
@@ -1116,6 +1174,15 @@ describe('AppShell M6.2 shell and library states', () => {
     act(() => mocks.progressHandlers.forEach((handler) => handler(progress)));
     expect(screen.getByRole('heading', { name: 'SCAN COMPLETE' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'SCAN IN PROGRESS' })).not.toBeInTheDocument();
+    expect(mocks.getLibrarySummary).toHaveBeenCalledTimes(summaryCallsAfterCompletion);
+    expect(mocks.getScanIssuePage).toHaveBeenCalledTimes(issueCallsAfterCompletion);
+
+    act(() =>
+      mocks.progressHandlers.forEach((handler) =>
+        handler({ ...progress, runId: 11, counters: { ...progress.counters, filesProcessed: 2 } }),
+      ),
+    );
+    expect(screen.getByRole('heading', { name: 'SCAN COMPLETE' })).toBeInTheDocument();
     expect(mocks.getLibrarySummary).toHaveBeenCalledTimes(summaryCallsAfterCompletion);
     expect(mocks.getScanIssuePage).toHaveBeenCalledTimes(issueCallsAfterCompletion);
   });

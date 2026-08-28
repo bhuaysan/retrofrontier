@@ -12,7 +12,9 @@ metadata, content-unit presentation, and display of the existing Rust-authoritat
 system readiness snapshot. M6.5 adds bounded provider/account status settings,
 write-only optional account credentials, metadata request/refresh actions, and
 ordered candidate selection. Local library and cached metadata remain usable when
-the provider is offline.
+the provider is offline. M6.6 completes the UI hardening pass: candidate/action projections remain
+DTO-driven, provider/account copy reflects normalized guarantees, and focus, heading, live-region,
+contrast, and async race behavior are covered without moving policy or secrets across IPC.
 
 ## Prerequisites
 

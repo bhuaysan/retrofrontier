@@ -41,6 +41,7 @@ describe('metadata provider status copy', () => {
           offline: true,
           deferReason: 'transport',
         }),
+        100,
       ),
     ).toEqual({
       tone: 'offline',
@@ -63,17 +64,35 @@ describe('metadata provider status copy', () => {
     ['providerRestricted', 'PROVIDER ACCESS DEFERRED'],
     ['providerUnavailable', 'PROVIDER UNAVAILABLE'],
   ] as const)('maps %s without exposing provider internals', (reason, label) => {
-    const copy = providerStatusCopy(status({ deferReason: reason }));
+    const copy = providerStatusCopy(status({ deferReason: reason, deferredUntil: 200 }), 100);
 
     expect(copy.label).toBe(label);
     expect(copy.description).not.toContain(reason);
     expect(copy.description).not.toMatch(/429|430|431|https?:\/\//i);
   });
 
-  it('summarizes only normalized quota and job counts without a countdown', () => {
-    expect(quotaSummary(status())).toEqual({
+  it('distinguishes active and expired provider deferrals from normalized time fields', () => {
+    expect(
+      providerStatusCopy(status({ deferReason: 'capacityDeferred', deferredUntil: 200 }), 100).tone,
+    ).toBe('deferred');
+    expect(
+      providerStatusCopy(status({ deferReason: 'capacityDeferred', deferredUntil: 100 }), 100),
+    ).toEqual({
+      tone: 'online',
+      label: 'PROVIDER ONLINE',
+      description: 'ScreenScraper is available for metadata work.',
+    });
+    expect(
+      providerStatusCopy(status({ deferReason: 'capacityDeferred', deferredUntil: null }), 100)
+        .tone,
+    ).toBe('online');
+  });
+
+  it('summarizes normalized quota and gives its snapshot a truthful recency', () => {
+    expect(quotaSummary(status(), 100)).toEqual({
       quota: 'DAILY 4 / 1,000 · NO-MATCH 1 / 100',
       jobs: '2 PENDING · 0 DEFERRED · 0 NEED RETRY',
+      observed: 'UPDATED JUST NOW',
     });
     expect(
       quotaSummary(
@@ -89,11 +108,22 @@ describe('metadata provider status copy', () => {
           pendingJobs: 0,
           deferredJobs: 3,
           failedJobs: 1,
+          quotaObservedAt: null,
         }),
+        100,
       ),
     ).toEqual({
       quota: 'QUOTA NOT REPORTED',
       jobs: '0 PENDING · 3 DEFERRED · 1 NEED RETRY',
+      observed: 'SNAPSHOT TIME NOT REPORTED',
+    });
+    expect(quotaSummary(status({ quotaObservedAt: 100 - 60 * 60 * 1000 }), 100)).toMatchObject({
+      observed: 'UPDATED 1H AGO',
+    });
+    expect(
+      quotaSummary(status({ quotaObservedAt: 100 - 2 * 24 * 60 * 60 * 1000 }), 100),
+    ).toMatchObject({
+      observed: 'SNAPSHOT MAY BE STALE',
     });
   });
 });
@@ -104,10 +134,7 @@ describe('metadata provider account copy', () => {
       { configured: false, state: 'notConfigured', username: null },
       'OPTIONAL ACCOUNT NOT CONFIGURED',
     ],
-    [
-      { configured: true, state: 'configured', username: 'test-user' },
-      'PERSONAL ACCOUNT CONNECTED',
-    ],
+    [{ configured: true, state: 'configured', username: 'test-user' }, 'PERSONAL ACCOUNT SAVED'],
     [
       { configured: true, state: 'invalid', username: 'test-user' },
       'PERSONAL ACCOUNT NEEDS ATTENTION',
@@ -128,9 +155,10 @@ describe('metadata provider account copy', () => {
     expect(
       accountStatusCopy({ configured: true, state: 'configured', username: 'test-user' }),
     ).toEqual({
-      tone: 'online',
-      label: 'PERSONAL ACCOUNT CONNECTED',
-      description: 'Connected as test-user. Personal credentials stay in secure OS storage.',
+      tone: 'neutral',
+      label: 'PERSONAL ACCOUNT SAVED',
+      description:
+        'Credentials for test-user are saved in secure OS storage; provider authentication is not verified here.',
     });
   });
 });

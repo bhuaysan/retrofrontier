@@ -18,6 +18,8 @@ import { PixelStar } from './GameCard';
 import { getOverallReadiness, getReadinessRows, type ReadinessTone } from './readiness';
 import { systemAccent } from './systemAccents';
 
+const EMPTY_DETAIL_RESET_KEY = {};
+
 interface GameDetailPageProps {
   gameId: number | null;
   detail: GameDetailModel;
@@ -74,6 +76,10 @@ function metadataFailureCopy(failure: ProviderFailureClass | null) {
       return 'The metadata provider is not configured for this build. Local content remains usable.';
     case 'userAuthenticationFailed':
       return 'The optional personal provider account needs attention. Local content remains usable.';
+    case 'invalidRequest':
+      return 'This metadata request is not valid for the current local content. Automatic retry is unavailable; local content remains usable.';
+    case 'clientRejected':
+      return 'The metadata provider rejected this request. Automatic retry is unavailable; local content remains usable.';
     case 'mediaUnavailable':
       return 'Metadata is available, but the provider cover could not be cached.';
     default:
@@ -232,7 +238,7 @@ function ReadinessSection({
         detail: 'Reading the current runtime, core, and BIOS snapshot…',
       }
     : getOverallReadiness(availability, systemStatus, contentUnits);
-  const rows = getReadinessRows(availability, systemStatus, contentUnits);
+  const rows = getReadinessRows(availability, systemStatus, contentUnits, readinessLoading);
 
   return (
     <section
@@ -286,26 +292,11 @@ function MetadataCandidates({
   metadataState: GameMetadataState;
 }) {
   if (!hasSelectableCandidates(metadataState)) {
-    return metadataState.status === 'ambiguous' ? (
-      <p className="game-detail-empty-copy">
-        No provider candidates were returned. Search again when the provider is available; local
-        content is unchanged.
-      </p>
-    ) : null;
+    return null;
   }
 
   const selectedProviderGameId = metadataState.userSelection?.providerGameId ?? null;
   const selecting = detail.metadataActionKind === 'select';
-  const description =
-    metadataState.unsupportedReason !== null
-      ? 'Automatic identification is not available for this content. Choose a provider candidate below to resolve it manually.'
-      : metadataState.status === 'deferred'
-        ? 'Provider work is deferred, but these candidates remain available for manual resolution.'
-        : metadataState.status === 'failed'
-          ? 'Automatic provider work did not complete, but these candidates remain available for manual resolution.'
-          : metadataState.status === 'stale'
-            ? 'The previous provider match needs revalidation; these candidates remain available for manual resolution.'
-            : 'These provider candidates are available for manual resolution. Choose one to confirm the provider match.';
 
   return (
     <div
@@ -323,10 +314,11 @@ function MetadataCandidates({
           {metadataState.candidates.length === 1 ? 'OPTION' : 'OPTIONS'}
         </span>
       </div>
-      <p className="game-detail-empty-copy">{description}</p>
       <ul aria-label="Metadata candidates" className="metadata-candidate-list">
         {metadataState.candidates.map((candidate, index) => {
           const selected = selectedProviderGameId === candidate.providerGameId;
+          const selectingCandidate =
+            selecting && detail.metadataActionTarget === candidate.providerGameId;
           const date = candidate.releaseDate
             ? `RELEASED ${candidate.releaseDate}`
             : 'RELEASE DATE UNKNOWN';
@@ -345,16 +337,16 @@ function MetadataCandidates({
                 </div>
               </div>
               <PixelButton
-                aria-busy={selecting}
+                aria-busy={selectingCandidate || undefined}
                 aria-pressed={selected}
-                aria-label={`${selecting ? 'Selecting' : 'Select'} ${candidate.title} candidate ${index + 1}`}
+                aria-label={`${selectingCandidate ? 'Selecting' : 'Select'} ${candidate.title} candidate ${index + 1}`}
                 className="metadata-candidate-action"
                 disabled={detail.metadataActionPending}
                 onClick={() => void detail.selectMetadataCandidate(candidate.providerGameId)}
                 type="button"
                 variant={selected ? 'primary' : 'secondary'}
               >
-                {selecting ? 'SELECTING…' : selected ? 'SELECTED' : 'SELECT'}
+                {selectingCandidate ? 'SELECTING…' : selected ? 'SELECTED' : 'SELECT'}
               </PixelButton>
             </li>
           );
@@ -370,7 +362,11 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
   const metadataState = detail.metadata;
   const normalized = metadataState?.metadata?.metadata ?? null;
   const stateCopy = metadataState
-    ? metadataStateCopy(metadataState.status, metadataState.unsupportedReason)
+    ? metadataStateCopy(
+        metadataState.status,
+        metadataState.unsupportedReason,
+        metadataState.candidates.length,
+      )
     : null;
   const action = getMetadataAction(metadataState);
   const pendingLabel = metadataOperationPendingLabel(detail.metadataActionKind);
@@ -384,11 +380,6 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
     if (action.kind === 'request') void detail.requestMetadata();
     else void detail.refreshMetadata();
   };
-
-  const stateDescription =
-    metadataState?.status === 'ambiguous' && metadataState.candidates.length === 0
-      ? 'No provider candidates are available. Search again without changing local content.'
-      : stateCopy?.description;
 
   useEffect(() => {
     if (wasActionPending.current && !detail.metadataActionPending) {
@@ -434,7 +425,7 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
           role="status"
         >
           <strong>{stateCopy.label}</strong>
-          <p>{stateDescription}</p>
+          <p>{stateCopy.description}</p>
           {failureCopy ? <p className="metadata-state-detail">{failureCopy}</p> : null}
           {unsupportedCopy ? <p className="metadata-state-detail">{unsupportedCopy}</p> : null}
         </div>
@@ -471,7 +462,7 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
         <div className="metadata-selection-summary">
           <div>
             <strong>USER-CONFIRMED MATCH</strong>
-            <p>RetroFrontier will keep this provider choice until you forget it.</p>
+            <p>Forget the manual provider association; cached metadata remains available.</p>
           </div>
           <PixelButton
             disabled={detail.metadataActionPending}
@@ -555,7 +546,7 @@ export function GameDetailPage({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const localDetail = detail.localDetail;
   const normalized = detail.metadata?.metadata?.metadata ?? null;
-  const title = normalized?.title ?? localDetail?.localTitle ?? 'GAME DETAIL';
+  const title = normalized?.title?.trim() || localDetail?.localTitle.trim() || 'GAME DETAIL';
   const systemId = localDetail?.systemId ?? systemStatus?.id ?? null;
   const systemName =
     systemStatus?.displayName ?? (systemId ? formatSystemId(systemId) : 'SYSTEM UNKNOWN');
@@ -570,9 +561,13 @@ export function GameDetailPage({
   }, [gameId, notFound]);
 
   return (
-    <main className="app-main game-detail-main" id="game-detail-main">
+    <main
+      aria-labelledby="game-detail-title"
+      className="app-main game-detail-main"
+      id="game-detail-main"
+    >
       <BackToLibrary onBackToLibrary={onBackToLibrary} />
-      <h1 className="game-detail-title" ref={headingRef} tabIndex={-1}>
+      <h1 className="game-detail-title" id="game-detail-title" ref={headingRef} tabIndex={-1}>
         {gameId === null ? 'INVALID GAME LINK' : notFound ? 'GAME NOT FOUND' : title}
       </h1>
 
@@ -612,14 +607,14 @@ export function GameDetailPage({
               onAction={() => void detail.retryLocal()}
             />
           ) : null}
-          <section className="game-detail-hero" aria-labelledby="game-hero-heading">
+          <section className="game-detail-hero" aria-labelledby="game-detail-title">
             <div className="game-detail-cover-frame">
               <GameCover
                 accent={accent}
                 className="game-detail-cover"
                 coverRef={coverRef}
                 placeholderClassName="game-detail-placeholder"
-                resetKey={cover ?? detail.metadata ?? localDetail ?? detail}
+                resetKey={cover ?? detail.metadata ?? localDetail ?? EMPTY_DETAIL_RESET_KEY}
                 loading="eager"
                 title={title}
               />
@@ -638,22 +633,22 @@ export function GameDetailPage({
                   </span>
                 ) : null}
               </div>
-              <h2 id="game-hero-heading">{title}</h2>
+              <p aria-hidden="true" className="game-detail-hero-title">
+                {title}
+              </p>
               {localDetail ? (
                 <p className="game-detail-local-identity">LOCAL TITLE · {localDetail.localTitle}</p>
               ) : null}
               {localDetail ? (
                 <button
+                  aria-busy={detail.favoritePending || undefined}
                   aria-label={
-                    detail.favoritePending
-                      ? `Updating favorite for ${title}`
-                      : localDetail.favorite
-                        ? `Remove ${title} from favorites`
-                        : `Add ${title} to favorites`
+                    localDetail.favorite
+                      ? `Remove ${title} from favorites`
+                      : `Add ${title} to favorites`
                   }
                   aria-pressed={localDetail.favorite}
                   className="game-detail-favorite"
-                  disabled={detail.favoritePending}
                   onClick={() => void detail.toggleFavorite()}
                   type="button"
                 >

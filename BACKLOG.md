@@ -2,9 +2,9 @@
 
 ## Current Priority
 
-The project has completed its local-library foundation, M6.2 shell/empty/scan UX, M6.3 bounded
-library browsing slice, and M6.4 game detail/readiness UI. Metadata/settings UX, launch, and later
-UI work remain; runtime trust and core-policy research remain explicit release gates.
+The project has completed M6 Library UI, including the M6.6 hardening/accessibility/documentation
+pass. M7 launch/process behavior and later UI work remain; runtime trust and core-policy research
+remain explicit release gates.
 
 ## M0 — Planning and Repository Foundation
 
@@ -280,10 +280,13 @@ visible attribution presentation, which belongs to M6.
 - [x] M6.3 library browsing
 - [x] M6.4 game detail / readiness
 - [x] M6.5 metadata UX / settings
-- [ ] M6.6 hardening / accessibility / documentation
-      - [ ] M6.4 review deferrals: MEDIUM-2 runtime-trust predicate duplication, MEDIUM-4 focus
-            restoration, MEDIUM-5 light-theme contrast, MEDIUM-7 regression suite, LOW-1..LOW-5
-      - [ ] background scanline visual fidelity does not match the design handoff
+- [x] M6.6 hardening / accessibility / documentation
+      - [x] accepted M6.5 candidate/action, provider/account truthfulness, focus, contrast, and
+            regression findings
+      - [x] carried M6.2–M6.4 focus, heading, readiness, scan, and visual hardening findings
+      - [ ] M5 account lifecycle does not yet write `Invalid` after provider authentication failure
+      - [ ] platform opener executable/reaping hardening and stuck-scan recovery remain native/release
+            work outside this UI slice
 
 - [x] navigation shell
 - [x] empty state

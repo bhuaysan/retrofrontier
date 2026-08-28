@@ -14,6 +14,7 @@ import {
 
 const SEARCH_DEBOUNCE_MS = 200;
 const METADATA_INVALIDATION_DEBOUNCE_MS = 180;
+const METADATA_INVALIDATION_MAX_WAIT_MS = 1000;
 
 interface UseLibraryQueryOptions {
   enabled: boolean;
@@ -23,6 +24,7 @@ interface UseLibraryQueryOptions {
 
 export interface LibraryQueryModel {
   searchInput: string;
+  debouncedSearch: string;
   setSearchInput: (value: string) => void;
   systemId: SystemId | null;
   setSystemId: (systemId: SystemId | null) => void;
@@ -132,13 +134,13 @@ export function useLibraryQuery({
         const nextPage = await queryLibrary(request);
         if (mounted.current && requestGeneration.current === generation) {
           if (
-            nextPage.total > 0 &&
             nextPage.items.length === 0 &&
+            nextPage.offset > 0 &&
             nextPage.offset >= nextPage.total
           ) {
             const effectiveLimit = Math.max(1, nextPage.limit);
             void latestRunQuery.current(
-              Math.floor((nextPage.total - 1) / effectiveLimit) * effectiveLimit,
+              Math.max(0, Math.floor((nextPage.total - 1) / effectiveLimit) * effectiveLimit),
               'page',
             );
             return;
@@ -191,10 +193,6 @@ export function useLibraryQuery({
     return () => window.clearTimeout(timer);
   }, [debouncedSearch, searchInput]);
 
-  useEffect(() => {
-    if (enabled) void runQuery();
-  }, [enabled, runQuery]);
-
   const setSearchInput = useCallback((value: string) => setSearchInputState(value), []);
   const clearSearch = useCallback(() => {
     setSearchInputState('');
@@ -243,9 +241,7 @@ export function useLibraryQuery({
       await setGameFavorite({ gameId: item.gameId, favorite: !item.favorite });
       if (!mounted.current) return;
       const currentQuery = latestQueryState.current;
-      const resetFilteredPage =
-        currentQuery.favoritesOnly && item.favorite && currentQuery.targetOffset !== 0;
-      await latestRunQuery.current(resetFilteredPage ? 0 : currentQuery.targetOffset, 'refresh');
+      await latestRunQuery.current(currentQuery.targetOffset, 'refresh');
       await favoriteCommittedHandler.current?.();
     } catch (reason: unknown) {
       if (mounted.current) setFavoriteError(normalizeIpcError(reason));
@@ -256,11 +252,17 @@ export function useLibraryQuery({
   }, []);
 
   useEffect(() => {
-    if (!enabled || scanCompletionRunId === null) return;
-    if (lastScanCompletionRunId.current === scanCompletionRunId) return;
-    lastScanCompletionRunId.current = scanCompletionRunId;
-    if (pageRef.current === null) return;
-    void latestRunQuery.current(latestQueryState.current.targetOffset, 'refresh');
+    if (!enabled) return;
+
+    if (scanCompletionRunId !== null && lastScanCompletionRunId.current !== scanCompletionRunId) {
+      lastScanCompletionRunId.current = scanCompletionRunId;
+      if (pageRef.current !== null) {
+        void latestRunQuery.current(latestQueryState.current.targetOffset, 'refresh');
+        return;
+      }
+    }
+
+    void runQuery();
   }, [enabled, runQuery, scanCompletionRunId]);
 
   useEffect(() => {
@@ -268,17 +270,38 @@ export function useLibraryQuery({
     let disposed = false;
     let unlisten: (() => void) | undefined;
     let timer: number | undefined;
-    const affectedIds = new Set<number>();
+    let maxTimer: number | undefined;
+    let hasVisibleInvalidation = false;
+    let invalidationQueryIdentity: string | null = null;
+
+    const flushInvalidation = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (maxTimer !== undefined) window.clearTimeout(maxTimer);
+      timer = undefined;
+      maxTimer = undefined;
+      if (
+        disposed ||
+        !hasVisibleInvalidation ||
+        queryIdentityRef.current !== invalidationQueryIdentity
+      ) {
+        hasVisibleInvalidation = false;
+        invalidationQueryIdentity = null;
+        return;
+      }
+      hasVisibleInvalidation = false;
+      invalidationQueryIdentity = null;
+      void latestRunQuery.current(latestQueryState.current.targetOffset, 'refresh');
+    };
+
     const subscription = onMetadataStateChanged(({ gameId }) => {
       if (disposed || !pageRef.current?.items.some((item) => item.gameId === gameId)) return;
-      affectedIds.add(gameId);
+      if (!hasVisibleInvalidation) {
+        invalidationQueryIdentity = queryIdentityRef.current;
+        maxTimer = window.setTimeout(flushInvalidation, METADATA_INVALIDATION_MAX_WAIT_MS);
+      }
+      hasVisibleInvalidation = true;
       if (timer !== undefined) window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        timer = undefined;
-        if (disposed || affectedIds.size === 0) return;
-        affectedIds.clear();
-        void latestRunQuery.current(latestQueryState.current.targetOffset, 'refresh');
-      }, METADATA_INVALIDATION_DEBOUNCE_MS);
+      timer = window.setTimeout(flushInvalidation, METADATA_INVALIDATION_DEBOUNCE_MS);
     })
       .then((nextUnlisten) => {
         if (disposed) nextUnlisten();
@@ -288,15 +311,18 @@ export function useLibraryQuery({
 
     return () => {
       disposed = true;
-      affectedIds.clear();
+      hasVisibleInvalidation = false;
+      invalidationQueryIdentity = null;
       if (timer !== undefined) window.clearTimeout(timer);
+      if (maxTimer !== undefined) window.clearTimeout(maxTimer);
       unlisten?.();
       void subscription;
     };
-  }, [enabled, runQuery]);
+  }, [enabled]);
 
   return {
     searchInput,
+    debouncedSearch,
     setSearchInput,
     systemId,
     setSystemId,

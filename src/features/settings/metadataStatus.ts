@@ -16,6 +16,13 @@ export type AccountStatusView = {
   description: string;
 };
 
+export function hasActiveProviderDeferral(
+  status: MetadataProviderStatus,
+  now = Date.now(),
+): boolean {
+  return status.deferReason !== null && status.deferredUntil !== null && status.deferredUntil > now;
+}
+
 export function providerDeferralCopy(reason: ProviderFailureClass): ProviderStatusView | null {
   switch (reason) {
     case 'capacityDeferred':
@@ -49,6 +56,9 @@ export function providerDeferralCopy(reason: ProviderFailureClass): ProviderStat
         description:
           'ScreenScraper is not accepting metadata work right now. Cached data remains available.',
       };
+    // Transport/authentication failures are normally job dispositions rather than provider-wide
+    // scheduler deferrals. Keep these defensive mappings redacted if an older/native DTO exposes
+    // one here, but do not treat them as a new frontend policy.
     case 'transport':
     case 'transientServer':
       return {
@@ -76,7 +86,10 @@ export function providerDeferralCopy(reason: ProviderFailureClass): ProviderStat
   }
 }
 
-export function providerStatusCopy(status: MetadataProviderStatus): ProviderStatusView {
+export function providerStatusCopy(
+  status: MetadataProviderStatus,
+  now = Date.now(),
+): ProviderStatusView {
   if (!status.credentialsConfigured) {
     return {
       tone: 'unavailable',
@@ -95,7 +108,7 @@ export function providerStatusCopy(status: MetadataProviderStatus): ProviderStat
     };
   }
 
-  if (status.deferReason) {
+  if (hasActiveProviderDeferral(status, now) && status.deferReason !== null) {
     const deferred = providerDeferralCopy(status.deferReason);
     if (deferred) return deferred;
   }
@@ -111,7 +124,16 @@ function formatCount(value: number) {
   return value.toLocaleString('en-US');
 }
 
-export function quotaSummary(status: MetadataProviderStatus) {
+function quotaObservationCopy(observedAt: number | null, now: number) {
+  if (observedAt === null) return 'SNAPSHOT TIME NOT REPORTED';
+  const age = Math.max(0, now - observedAt);
+  if (age < 60 * 1000) return 'UPDATED JUST NOW';
+  if (age < 60 * 60 * 1000) return `UPDATED ${Math.floor(age / (60 * 1000))}M AGO`;
+  if (age < 24 * 60 * 60 * 1000) return `UPDATED ${Math.floor(age / (60 * 60 * 1000))}H AGO`;
+  return 'SNAPSHOT MAY BE STALE';
+}
+
+export function quotaSummary(status: MetadataProviderStatus, now = Date.now()) {
   const daily =
     status.quota.requestsToday !== null && status.quota.maxRequestsPerDay !== null
       ? `DAILY ${formatCount(status.quota.requestsToday)} / ${formatCount(status.quota.maxRequestsPerDay)}`
@@ -126,6 +148,7 @@ export function quotaSummary(status: MetadataProviderStatus) {
       [daily, negative].filter((item): item is string => item !== null).join(' · ') ||
       'QUOTA NOT REPORTED',
     jobs: `${formatCount(status.pendingJobs)} PENDING · ${formatCount(status.deferredJobs)} DEFERRED · ${formatCount(status.failedJobs)} NEED RETRY`,
+    observed: quotaObservationCopy(status.quotaObservedAt, now),
   };
 }
 
@@ -148,11 +171,11 @@ export function accountStatusCopy(account: ProviderAccountStatus | null): Accoun
       };
     case 'configured':
       return {
-        tone: 'online',
-        label: 'PERSONAL ACCOUNT CONNECTED',
+        tone: 'neutral',
+        label: 'PERSONAL ACCOUNT SAVED',
         description: account.username
-          ? `Connected as ${account.username}. Personal credentials stay in secure OS storage.`
-          : 'A personal account is connected. Personal credentials stay in secure OS storage.',
+          ? `Credentials for ${account.username} are saved in secure OS storage; provider authentication is not verified here.`
+          : 'Personal credentials are saved in secure OS storage; provider authentication is not verified here.',
       };
     case 'invalid':
       return {

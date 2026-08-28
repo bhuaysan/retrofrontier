@@ -43,7 +43,7 @@ export function GameCard({
   onOpenGame,
   onToggleFavorite,
 }: GameCardProps) {
-  const title = item.displayTitle || item.localTitle;
+  const title = item.displayTitle.trim() || item.localTitle.trim() || 'UNTITLED GAME';
   const headingId = `game-card-title-${item.gameId}`;
   const metadataLabel = METADATA_LABELS[item.metadataMatchState];
   const releaseYear = item.releaseDate?.match(/^\d{4}/)?.[0] ?? null;
@@ -79,16 +79,12 @@ export function GameCard({
           title={title}
         />
         <button
+          aria-busy={favoritePending || undefined}
           aria-label={
-            favoritePending
-              ? `Updating favorite for ${title}`
-              : item.favorite
-                ? `Remove ${title} from favorites`
-                : `Add ${title} to favorites`
+            item.favorite ? `Remove ${title} from favorites` : `Add ${title} to favorites`
           }
           aria-pressed={item.favorite}
           className="game-card-favorite"
-          disabled={favoritePending}
           onClick={() => onToggleFavorite(item)}
           type="button"
         >
@@ -97,7 +93,7 @@ export function GameCard({
       </div>
 
       <div className="game-card-copy">
-        <h2 aria-label={title} id={headingId} title={title}>
+        <h3 aria-label={title} id={headingId} title={title}>
           <a
             aria-label={`Open ${title} details`}
             data-game-detail-link={item.gameId}
@@ -106,7 +102,7 @@ export function GameCard({
           >
             {title}
           </a>
-        </h2>
+        </h3>
         <div className="game-card-system-row">
           <span className="game-card-system" title={systemName}>
             {systemName}

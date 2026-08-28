@@ -46,6 +46,7 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
   const issueRequestVersion = useRef(0);
   const issueLoadingOwner = useRef(0);
   const issueLoadingMoreOwner = useRef(0);
+  const scanStartPendingRef = useRef(false);
 
   const [status, setStatus] = useState<ScanStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
@@ -113,7 +114,10 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
   );
 
   const handleProgress = useCallback((progress: ScanProgress) => {
-    if (handledCompletionRunId.current === progress.runId) {
+    if (
+      handledCompletionRunId.current !== null &&
+      progress.runId <= handledCompletionRunId.current
+    ) {
       return;
     }
 
@@ -207,6 +211,9 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
   }, [issueLoadingMore, issuePage]);
 
   const startScan = useCallback(async () => {
+    if (scanStartPendingRef.current) return null;
+    scanStartPendingRef.current = true;
+
     if (mounted.current) {
       setScanStartPending(true);
       setScanStartError(null);
@@ -229,6 +236,7 @@ export function useScanState({ onCompleted }: UseScanStateOptions = {}): ScanSta
       }
       return null;
     } finally {
+      scanStartPendingRef.current = false;
       if (mounted.current) {
         setScanStartPending(false);
       }

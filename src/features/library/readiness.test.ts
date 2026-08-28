@@ -77,6 +77,44 @@ describe('readiness presentation projection', () => {
     expect(rows.find(({ id }) => id === 'bios')?.detail).not.toContain('must-not-render');
   });
 
+  it('uses the normalized readiness reason for runtime availability', () => {
+    const status = systemStatus({
+      core: {
+        ...systemStatus().core,
+        availability: {
+          ...systemStatus().core.availability,
+          runtimeState: 'rollbackAvailable',
+        },
+      },
+      readiness: {
+        ready: false,
+        reasons: [{ kind: 'runtimeUnavailable', state: 'rollbackAvailable' }],
+      },
+    });
+
+    expect(
+      getReadinessRows('available', status, AVAILABLE_UNITS).find(({ id }) => id === 'runtime'),
+    ).toMatchObject({
+      tone: 'unavailable',
+      status: 'UNAVAILABLE',
+    });
+  });
+
+  it('keeps local availability visible while environment rows are checking', () => {
+    expect(
+      getReadinessRows('available', null, AVAILABLE_UNITS, true).map(({ id, tone, status }) => ({
+        id,
+        tone,
+        status,
+      })),
+    ).toEqual([
+      { id: 'localContent', tone: 'ready', status: 'AVAILABLE' },
+      { id: 'runtime', tone: 'unknown', status: 'CHECKING' },
+      { id: 'core', tone: 'unknown', status: 'CHECKING' },
+      { id: 'bios', tone: 'unknown', status: 'CHECKING' },
+    ]);
+  });
+
   it('prioritizes unavailable local content over an otherwise ready environment', () => {
     const rows = getReadinessRows('unavailable', systemStatus(), AVAILABLE_UNITS);
     const overall = getOverallReadiness('unavailable', systemStatus(), AVAILABLE_UNITS);

@@ -137,6 +137,11 @@ describe('SettingsPage metadata/provider section', () => {
     expect(screen.getByLabelText(/account password/i)).toHaveAttribute('type', 'password');
     expect(screen.getByText('DAILY 4 / 1,000 · NO-MATCH 1 / 100')).toBeInTheDocument();
     expect(screen.getByText('2 PENDING · 0 DEFERRED · 0 NEED RETRY')).toBeInTheDocument();
+    expect(screen.getByText('SNAPSHOT MAY BE STALE')).toBeInTheDocument();
+    expect(screen.getByLabelText(/account name/i)).toHaveAttribute(
+      'aria-describedby',
+      'metadata-account-help',
+    );
   });
 
   it('submits a personal account write-only and clears the password after authoritative refresh', async () => {
@@ -154,7 +159,7 @@ describe('SettingsPage metadata/provider section', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'SAVE ACCOUNT' }));
 
-    await waitFor(() => expect(screen.getByText('PERSONAL ACCOUNT CONNECTED')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('PERSONAL ACCOUNT SAVED')).toBeInTheDocument());
 
     expect(mocks.setMetadataProviderCredentials).toHaveBeenCalledWith({
       username: 'test-user',
@@ -193,7 +198,7 @@ describe('SettingsPage metadata/provider section', () => {
       ...providerStatus,
       offline: true,
       deferReason: 'dailyQuotaExceeded',
-      deferredUntil: 999999,
+      deferredUntil: Date.now() + 60_000,
       pendingJobs: 0,
       deferredJobs: 3,
     });
@@ -210,7 +215,7 @@ describe('SettingsPage metadata/provider section', () => {
   it('requires an explicit second action before clearing a personal account', async () => {
     mocks.getMetadataProviderAccount.mockResolvedValue(configuredAccount);
     renderPage();
-    await waitFor(() => expect(screen.getByText('PERSONAL ACCOUNT CONNECTED')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('PERSONAL ACCOUNT SAVED')).toBeInTheDocument());
 
     const clearTrigger = screen.getByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' });
     fireEvent.click(clearTrigger);
@@ -247,6 +252,14 @@ describe('SettingsPage metadata/provider section', () => {
       screen.queryByText(/provider\.invalid|fake-secret-never-render/i),
     ).not.toBeInTheDocument();
     expect(screen.getByLabelText(/account password/i)).toHaveValue('');
+    expect(screen.getByLabelText(/account name/i)).toHaveAttribute(
+      'aria-describedby',
+      'metadata-account-help metadata-account-error',
+    );
+    expect(screen.getByLabelText(/account password/i)).toHaveAttribute(
+      'aria-describedby',
+      'metadata-account-help metadata-account-error',
+    );
   });
 
   it('locks credential fields while an account save is in flight', async () => {
@@ -273,5 +286,52 @@ describe('SettingsPage metadata/provider section', () => {
       save.resolve();
     });
     await waitFor(() => expect(password).toHaveValue(''));
+  });
+
+  it('keeps account clearing reachable but disabled when the vault is unavailable', async () => {
+    mocks.getMetadataProviderAccount.mockResolvedValue({
+      configured: false,
+      state: 'vaultUnavailable',
+      username: null,
+    } satisfies ProviderAccountStatus);
+    renderPage();
+
+    const clear = await screen.findByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' });
+    expect(clear).toBeDisabled();
+    expect(clear).toHaveAccessibleDescription(
+      'Secure account storage is unavailable. Clearing the stored account is disabled until storage can be read.',
+    );
+  });
+
+  it('keeps account clearing reachable but disabled when account status cannot be read', async () => {
+    mocks.getMetadataProviderAccount.mockRejectedValueOnce({
+      code: 'metadata_unavailable',
+      message: 'internal account detail',
+    });
+    renderPage();
+
+    const clear = await screen.findByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' });
+    expect(clear).toBeDisabled();
+    expect(clear).toHaveAccessibleDescription(
+      'Account status is unavailable. Retry the account status read before clearing stored credentials.',
+    );
+  });
+
+  it('closes the account confirmation with Escape and restores focus to its trigger', async () => {
+    mocks.getMetadataProviderAccount.mockResolvedValue(configuredAccount);
+    renderPage();
+    const clear = await screen.findByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' });
+    fireEvent.click(clear);
+    const confirmation = await screen.findByRole('alertdialog', {
+      name: /forget this personal account/i,
+    });
+    fireEvent.keyDown(confirmation, { key: 'Escape' });
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' })).toHaveFocus(),
+    );
+    expect(
+      screen.queryByRole('alertdialog', { name: /forget this personal account/i }),
+    ).not.toBeInTheDocument();
   });
 });

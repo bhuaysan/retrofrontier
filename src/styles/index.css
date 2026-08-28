@@ -382,6 +382,7 @@ a:focus-visible {
 }
 
 .section-heading h1,
+.section-heading h2,
 .panel-heading h2 {
   display: flex;
   align-items: center;
@@ -684,7 +685,11 @@ a:focus-visible {
 }
 
 .scan-panel--active .panel-heading h2 {
-  color: var(--accent);
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
 }
 
 .status-pulse {
@@ -793,7 +798,11 @@ a:focus-visible {
 }
 
 .scan-panel--result:not(.scan-panel--failed) .panel-heading h2 {
-  color: var(--accent);
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
 }
 
 .scan-panel--failed .panel-heading h2 {
@@ -970,7 +979,11 @@ a:focus-visible {
 }
 
 .root-status--available {
-  color: var(--accent);
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
 }
 
 .root-status--partiallyAvailable,
@@ -1188,6 +1201,10 @@ a:focus-visible {
   line-height: 1.5;
 }
 
+.metadata-account-error {
+  color: var(--accent-6);
+}
+
 .metadata-account-fields {
   display: grid;
   grid-template-columns: minmax(140px, 190px) minmax(0, 1fr);
@@ -1303,20 +1320,23 @@ a:focus-visible {
 .library-filter,
 .library-filter-reset {
   padding: 7px 10px;
-  color: var(--text-dim);
-  background: var(--surface);
   border: 2px solid var(--border);
-  box-shadow: 3px 3px 0 var(--shadow);
   cursor: pointer;
 }
 
 .library-filter {
+  color: var(--text-dim);
+  background: var(--surface);
+  box-shadow: 3px 3px 0 var(--shadow);
   padding-inline: 16px;
   font-family: var(--font-meta);
   font-size: 20px;
 }
 
 .library-filter-reset {
+  color: var(--text);
+  background: var(--surface-2);
+  box-shadow: 2px 2px 0 var(--shadow);
   font-family: var(--font-label);
   font-size: 9px;
   letter-spacing: 0.06em;
@@ -1338,12 +1358,6 @@ a:focus-visible {
   box-shadow: 2px 2px 0 var(--shadow);
 }
 
-.library-filter-reset {
-  color: var(--text);
-  background: var(--surface-2);
-  box-shadow: 2px 2px 0 var(--shadow);
-}
-
 .library-filter-note,
 .library-refreshing,
 .library-result-meta,
@@ -1357,7 +1371,11 @@ a:focus-visible {
 
 .library-refreshing {
   margin-left: auto;
-  color: var(--accent);
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
 }
 
 .library-result-meta {
@@ -1386,11 +1404,47 @@ a:focus-visible {
 }
 
 .game-card-skeleton {
-  aspect-ratio: 3 / 5.35;
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
   background: var(--surface);
   border: 2px solid var(--border);
   box-shadow: var(--shadow-rest);
   animation: loading-block 1.1s steps(2, end) infinite;
+}
+
+.game-card-skeleton-media {
+  display: block;
+  flex: none;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background: var(--surface-2);
+  border-bottom: 2px solid var(--border);
+}
+
+.game-card-skeleton-copy {
+  display: block;
+  flex: 1;
+  min-height: 126px;
+  padding: 10px;
+  background: var(--surface);
+}
+
+.game-card-skeleton-copy::before,
+.game-card-skeleton-copy::after {
+  display: block;
+  height: 10px;
+  background: var(--bg-soft);
+  content: '';
+}
+
+.game-card-skeleton-copy::before {
+  width: 88%;
+  margin-bottom: 18px;
+}
+
+.game-card-skeleton-copy::after {
+  width: 62%;
 }
 
 .library-no-results {
@@ -1522,13 +1576,13 @@ a:focus-visible {
   background: var(--accent-2);
 }
 
-.game-card-favorite:hover:not(:disabled),
+.game-card-favorite:hover:not([aria-busy='true']),
 .game-card-favorite:focus-visible {
   color: var(--bg);
   background: var(--text);
 }
 
-.game-card-favorite:disabled {
+.game-card-favorite[aria-busy='true'] {
   cursor: progress;
   opacity: 0.65;
 }
@@ -1541,7 +1595,7 @@ a:focus-visible {
   gap: 7px;
 }
 
-.game-card-copy h2 {
+.game-card-copy h3 {
   display: -webkit-box;
   min-height: 2.55em;
   margin: 0;
@@ -1600,7 +1654,11 @@ a:focus-visible {
 }
 
 .availability-badge--available {
-  color: var(--accent);
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
 }
 
 .availability-badge--unavailable {
@@ -1757,7 +1815,7 @@ a:focus-visible {
   background: color-mix(in srgb, var(--system-accent) 78%, white);
 }
 
-.game-detail-hero-copy h2 {
+.game-detail-hero-title {
   max-width: 28ch;
   margin: 0;
   font-family: var(--font-label);
@@ -1787,7 +1845,11 @@ a:focus-visible {
 }
 
 .game-detail-availability--available {
-  color: var(--accent);
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
 }
 
 .game-detail-availability--unavailable {
@@ -1818,7 +1880,7 @@ a:focus-visible {
   height: 16px;
 }
 
-.game-detail-favorite:hover:not(:disabled),
+.game-detail-favorite:hover:not([aria-busy='true']),
 .game-detail-favorite:focus-visible {
   color: var(--bg);
   background: var(--text);
@@ -1831,7 +1893,7 @@ a:focus-visible {
   background: var(--accent-2);
 }
 
-.game-detail-favorite:disabled {
+.game-detail-favorite[aria-busy='true'] {
   cursor: progress;
   opacity: 0.65;
 }
@@ -2172,7 +2234,11 @@ a:focus-visible {
 }
 
 .readiness-status--ready {
-  color: var(--accent);
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
 }
 
 .readiness-status--missing,
@@ -2250,7 +2316,11 @@ a:focus-visible {
 }
 
 .game-detail-unit-status--available {
-  color: var(--accent);
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
 }
 
 .game-detail-unit-status--incomplete,
@@ -2452,6 +2522,7 @@ a:focus-visible {
   }
 
   .section-heading h1,
+  .section-heading h2,
   .panel-heading h2 {
     font-size: 10px;
   }

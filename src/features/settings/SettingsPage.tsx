@@ -16,6 +16,7 @@ import { RootActionError } from './RootActionError';
 import {
   accountStatusCopy,
   providerDeferralCopy,
+  hasActiveProviderDeferral,
   providerStatusCopy,
   quotaSummary,
 } from './metadataStatus';
@@ -112,6 +113,12 @@ function RootCard({
             role="alertdialog"
             aria-modal="false"
             aria-labelledby={`remove-root-title-${root.id}`}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && !busy) {
+                event.preventDefault();
+                onCancelRemoval();
+              }
+            }}
           >
             <span id={`remove-root-title-${root.id}`}>
               Remove this root from RetroFrontier? Files stay on disk.
@@ -161,15 +168,32 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
   const accountHeading = useRef<HTMLHeadingElement>(null);
   const focusClearTrigger = useRef(false);
   const status = provider.providerStatus;
-  const statusCopy = status ? providerStatusCopy(status) : null;
-  const deferCopy = status?.deferReason ? providerDeferralCopy(status.deferReason) : null;
+  const [now, setNow] = useState(() => Date.now());
+  const statusCopy = status ? providerStatusCopy(status, now) : null;
+  const deferCopy =
+    status && hasActiveProviderDeferral(status, now) && status.deferReason !== null
+      ? providerDeferralCopy(status.deferReason)
+      : null;
   const accountCopy = accountStatusCopy(provider.account);
-  const quota = status ? quotaSummary(status) : null;
+  const quota = status ? quotaSummary(status, now) : null;
+  const clearUnavailableReason = provider.accountError
+    ? 'Account status is unavailable. Retry the account status read before clearing stored credentials.'
+    : provider.account?.state === 'vaultUnavailable'
+      ? 'Secure account storage is unavailable. Clearing the stored account is disabled until storage can be read.'
+      : null;
+  const showClearAccount = Boolean(provider.account?.configured || clearUnavailableReason);
   const saveDisabled =
     provider.credentialsPending ||
     provider.credentialUsername.trim().length === 0 ||
     provider.credentialPassword.length === 0 ||
     provider.account?.state === 'vaultUnavailable';
+
+  useEffect(() => {
+    const deferredUntil = status?.deferredUntil;
+    if (deferredUntil === null || deferredUntil === undefined || deferredUntil <= now) return;
+    const timer = window.setTimeout(() => setNow(Date.now()), deferredUntil - now);
+    return () => window.clearTimeout(timer);
+  }, [now, status?.deferredUntil]);
 
   useEffect(() => {
     if (confirmingClear) {
@@ -256,6 +280,10 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
                 <dt>BACKGROUND WORK</dt>
                 <dd>{quota.jobs}</dd>
               </div>
+              <div>
+                <dt>QUOTA RECENCY</dt>
+                <dd>{quota.observed}</dd>
+              </div>
             </dl>
           ) : null}
         </div>
@@ -305,11 +333,7 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
           </div>
         ) : null}
         <form
-          aria-describedby={
-            provider.accountActionError
-              ? 'metadata-account-help metadata-account-error'
-              : 'metadata-account-help'
-          }
+          aria-labelledby="metadata-account-heading"
           className="metadata-account-form"
           onSubmit={submitCredentials}
         >
@@ -325,6 +349,11 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
               id="metadata-account-username"
               name="username"
               onChange={(event) => provider.setCredentialUsername(event.target.value)}
+              aria-describedby={
+                provider.accountActionError
+                  ? 'metadata-account-help metadata-account-error'
+                  : 'metadata-account-help'
+              }
               spellCheck="false"
               type="text"
               value={provider.credentialUsername}
@@ -336,6 +365,11 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
               id="metadata-account-password"
               name="password"
               onChange={(event) => provider.setCredentialPassword(event.target.value)}
+              aria-describedby={
+                provider.accountActionError
+                  ? 'metadata-account-help metadata-account-error'
+                  : 'metadata-account-help'
+              }
               type="password"
               value={provider.credentialPassword}
             />
@@ -344,12 +378,19 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
             <PixelButton disabled={saveDisabled} type="submit">
               {provider.credentialsPending ? 'SAVING ACCOUNT…' : 'SAVE ACCOUNT'}
             </PixelButton>
-            {provider.account?.configured ? (
+            {showClearAccount ? (
               confirmingClear ? (
                 <div
                   aria-describedby="metadata-clear-account-copy"
                   aria-labelledby="metadata-clear-account-title"
                   className="metadata-clear-confirmation"
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape' && !provider.credentialsPending) {
+                      event.preventDefault();
+                      focusClearTrigger.current = true;
+                      setConfirmingClear(false);
+                    }
+                  }}
                   role="alertdialog"
                 >
                   <span id="metadata-clear-account-title">FORGET THIS PERSONAL ACCOUNT?</span>
@@ -369,7 +410,7 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
                   </PixelButton>
                   <PixelButton
                     ref={clearConfirmation}
-                    disabled={provider.credentialsPending}
+                    disabled={provider.credentialsPending || clearUnavailableReason !== null}
                     onClick={() => void clearAccount()}
                     type="button"
                   >
@@ -378,8 +419,11 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
                 </div>
               ) : (
                 <PixelButton
+                  aria-describedby={
+                    clearUnavailableReason ? 'metadata-clear-account-unavailable' : undefined
+                  }
                   ref={clearTrigger}
-                  disabled={provider.credentialsPending}
+                  disabled={provider.credentialsPending || clearUnavailableReason !== null}
                   onClick={() => setConfirmingClear(true)}
                   type="button"
                   variant="secondary"
@@ -389,6 +433,14 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
               )
             ) : null}
           </div>
+          {clearUnavailableReason ? (
+            <p
+              className="metadata-account-help metadata-account-error"
+              id="metadata-clear-account-unavailable"
+            >
+              {clearUnavailableReason}
+            </p>
+          ) : null}
           {provider.credentialsPending ? (
             <p className="game-detail-inline-status" role="status">
               UPDATING PERSONAL ACCOUNT…
@@ -488,7 +540,7 @@ export function SettingsPage({
   const runScan = () => void runOperation({ kind: 'scan' }, scan.startScan);
 
   return (
-    <main className="app-main settings-main" id="main-content">
+    <main aria-labelledby="settings-heading" className="app-main settings-main" id="main-content">
       <PixelButton
         type="button"
         variant="secondary"
@@ -591,6 +643,7 @@ export function SettingsPage({
                 setPendingRemoval(null);
               }}
               onConfirmRemoval={() => {
+                setRemovalFocusTarget({ kind: 'heading' });
                 setPendingRemoval(null);
                 void runOperation({ kind: 'remove', rootId: root.id }, () =>
                   removeExternalRoot(root.id),

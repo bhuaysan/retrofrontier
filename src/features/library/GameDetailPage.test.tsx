@@ -125,6 +125,7 @@ function detailModel(overrides: Partial<GameDetailModel> = {}): GameDetailModel 
     favoriteError: null,
     metadataActionPending: false,
     metadataActionKind: null,
+    metadataActionTarget: null,
     metadataActionError: null,
     refresh: vi.fn().mockResolvedValue(undefined),
     retryLocal: vi.fn().mockResolvedValue(undefined),
@@ -141,6 +142,7 @@ function detailModel(overrides: Partial<GameDetailModel> = {}): GameDetailModel 
 function renderDetail(
   model: GameDetailModel = detailModel(),
   status: SystemStatus | null = systemStatus(),
+  readinessLoading = false,
 ) {
   return render(
     <GameDetailPage
@@ -148,6 +150,7 @@ function renderDetail(
       gameId={7}
       onBackToLibrary={vi.fn()}
       onRetryReadiness={vi.fn()}
+      readinessLoading={readinessLoading}
       readinessError={null}
       systemStatus={status}
     />,
@@ -355,6 +358,29 @@ describe('GameDetailPage', () => {
     },
   );
 
+  it('renders persisted candidates for a no-match state while keeping a fresh search available', () => {
+    const noMatchMetadata: GameMetadataState = {
+      ...metadata,
+      status: 'noMatch',
+      metadata: null,
+      providerGameId: null,
+      providerRomId: null,
+      candidates: [
+        { providerGameId: 'candidate-a', title: 'No-Match Candidate', releaseDate: null },
+      ],
+    };
+
+    renderDetail(detailModel({ metadata: noMatchMetadata }));
+
+    expect(screen.getByRole('list', { name: 'Metadata candidates' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'CHOOSE A METADATA MATCH' })).toBeInTheDocument();
+    expect(screen.getByText('No-Match Candidate')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'TRY METADATA AGAIN' })).toBeInTheDocument();
+    expect(
+      screen.queryByText(/choose one of the ordered provider candidates/i),
+    ).not.toBeInTheDocument();
+  });
+
   it('shows truthful in-flight feedback while a candidate choice is being applied', () => {
     const ambiguousMetadata: GameMetadataState = {
       ...metadata,
@@ -370,6 +396,7 @@ describe('GameDetailPage', () => {
         metadata: ambiguousMetadata,
         metadataActionPending: true,
         metadataActionKind: 'select',
+        metadataActionTarget: 'candidate-a',
       }),
     );
 
@@ -382,6 +409,36 @@ describe('GameDetailPage', () => {
         expect.objectContaining({ textContent: expect.stringContaining('SELECTING MATCH') }),
       ]),
     );
+  });
+
+  it('marks only the selected candidate as busy while the choice is pending', () => {
+    const candidateMetadata: GameMetadataState = {
+      ...metadata,
+      status: 'ambiguous',
+      metadata: null,
+      providerGameId: null,
+      providerRomId: null,
+      candidates: [
+        { providerGameId: 'candidate-a', title: 'First Candidate', releaseDate: null },
+        { providerGameId: 'candidate-b', title: 'Second Candidate', releaseDate: null },
+      ],
+    };
+
+    renderDetail(
+      detailModel({
+        metadata: candidateMetadata,
+        metadataActionPending: true,
+        metadataActionKind: 'select',
+        metadataActionTarget: 'candidate-b',
+      }),
+    );
+
+    const first = screen.getByRole('button', { name: 'Select First Candidate candidate 1' });
+    const second = screen.getByRole('button', { name: 'Selecting Second Candidate candidate 2' });
+    expect(first).toBeDisabled();
+    expect(first).not.toHaveAttribute('aria-busy', 'true');
+    expect(second).toBeDisabled();
+    expect(second).toHaveAttribute('aria-busy', 'true');
   });
 
   it('returns focus to the metadata section after a metadata mutation settles', () => {
@@ -420,9 +477,106 @@ describe('GameDetailPage', () => {
       }),
     );
 
-    expect(screen.getByText(/no provider candidates were returned/i)).toBeInTheDocument();
+    expect(screen.getByText(/no provider candidates are available/i)).toBeInTheDocument();
     expect(screen.queryByRole('list', { name: 'Metadata candidates' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /select candidate/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps a retry path for an unsupported deferred state with no candidates', () => {
+    renderDetail(
+      detailModel({
+        metadata: {
+          ...metadata,
+          status: 'deferred',
+          unsupportedReason: 'chdRepresentationUndefined',
+          candidates: [],
+        },
+      }),
+    );
+
+    expect(screen.getByRole('button', { name: 'TRY METADATA AGAIN' })).toBeInTheDocument();
+    expect(screen.getByText(/try again to search for provider candidates/i)).toBeInTheDocument();
+    expect(screen.queryByText(/choose a provider candidate below/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Metadata candidates' })).not.toBeInTheDocument();
+  });
+
+  it('restores the metadata action when an authoritative live job disappears', () => {
+    const liveJob = {
+      id: 3,
+      gameId: 7,
+      providerId: 'screenScraper' as const,
+      kind: 'refreshMetadata' as const,
+      state: 'running' as const,
+      priority: 200,
+      attempts: 1,
+      lastFailure: null,
+      earliestNextAttemptAt: null,
+      claimedAt: 100,
+      createdAt: 100,
+      updatedAt: 100,
+    };
+    const view = renderDetail(detailModel({ metadata: { ...metadata, jobs: [liveJob] } }));
+
+    expect(screen.queryByRole('button', { name: 'REFRESH METADATA' })).not.toBeInTheDocument();
+
+    view.rerender(
+      <GameDetailPage
+        detail={detailModel({ metadata: { ...metadata, jobs: [] } })}
+        gameId={7}
+        onBackToLibrary={vi.fn()}
+        onRetryReadiness={vi.fn()}
+        readinessError={null}
+        systemStatus={systemStatus()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'REFRESH METADATA' })).toBeInTheDocument();
+  });
+
+  it('keeps a genuinely unmapped system actionless when no candidates exist', () => {
+    renderDetail(
+      detailModel({
+        metadata: {
+          ...metadata,
+          status: 'deferred',
+          unsupportedReason: 'systemNotMapped',
+          candidates: [],
+        },
+      }),
+    );
+
+    expect(screen.queryByRole('button', { name: 'TRY METADATA AGAIN' })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/system is not mapped to the current metadata provider/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/choose a provider candidate below/i)).not.toBeInTheDocument();
+  });
+
+  it('does not present a generic retry for a permanent metadata failure', () => {
+    renderDetail(
+      detailModel({
+        metadata: {
+          ...metadata,
+          status: 'failed',
+          metadata: null,
+          lastFailure: 'userAuthenticationFailed',
+        },
+      }),
+    );
+
+    expect(screen.queryByRole('button', { name: 'RETRY METADATA' })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/optional personal provider account needs attention/i),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps readiness rows truthful while the system snapshot is checking', () => {
+    renderDetail(detailModel(), systemStatus(), true);
+
+    const readiness = screen.getByRole('region', { name: /emulation readiness/i });
+    expect(within(readiness).getAllByText('CHECKING')).toHaveLength(3);
+    expect(within(readiness).getByText('PARTIALLY AVAILABLE')).toBeInTheDocument();
+    expect(within(readiness).queryByText('UNAVAILABLE')).not.toBeInTheDocument();
   });
 
   it.each(['deferred', 'failed'] as const)(

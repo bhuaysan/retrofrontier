@@ -1,5 +1,6 @@
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
+import { PixelArrow } from '../../components/ui/PixelIcon';
 import type { LibraryQueryModel } from '../../hooks/useLibraryQuery';
 import type { SystemLabel } from '../../hooks/useSystemCatalog';
 import { GameCard } from './GameCard';
@@ -21,7 +22,10 @@ function InitialLibraryLoading() {
       <span className="library-loading-copy">READING LOCAL LIBRARY…</span>
       <div aria-hidden="true" className="library-grid library-grid--skeleton">
         {Array.from({ length: 6 }, (_, index) => (
-          <span className="game-card-skeleton" key={index} />
+          <span className="game-card-skeleton" key={index}>
+            <span className="game-card-skeleton-media" />
+            <span className="game-card-skeleton-copy" />
+          </span>
         ))}
       </div>
     </section>
@@ -34,9 +38,31 @@ export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserP
     library.searchInput !== '' || library.systemId !== null || library.favoritesOnly;
   const firstVisible = page && page.total > 0 ? page.offset + 1 : 0;
   const lastVisible = page ? Math.min(page.total, page.offset + page.items.length) : 0;
+  const resultRange = page
+    ? page.total > 0
+      ? `${firstVisible}–${lastVisible} OF ${page.total}`
+      : '0 GAMES'
+    : 'READING…';
+  const committedSearch = library.debouncedSearch;
+  const canEchoSearch = committedSearch !== '' && library.searchInput === committedSearch;
 
   return (
-    <section aria-label="Browse library" className="library-browser">
+    <section aria-labelledby="library-browse-heading" className="library-browser">
+      <div className="section-heading library-browser-heading">
+        <h2 id="library-browse-heading">
+          <PixelArrow className="heading-arrow" />
+          BROWSE LIBRARY
+        </h2>
+        <span aria-hidden="true" />
+        <span aria-live="polite" className="section-meta library-browser-count">
+          {resultRange}
+        </span>
+        <span className="section-meta library-browser-system">
+          {library.systemId
+            ? systemName(library.systemId, systems).toLocaleUpperCase()
+            : 'ALL SYSTEMS'}
+        </span>
+      </div>
       <div className="library-filter-bar" aria-label="Library filters">
         <span className="library-filter-label">// FILTER</span>
         <button
@@ -85,16 +111,6 @@ export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserP
 
       {page && page.items.length > 0 ? (
         <>
-          <div className="library-result-meta" aria-live="polite">
-            <span>
-              {firstVisible}–{lastVisible} OF {page.total}
-            </span>
-            {library.systemId ? (
-              <span>{systemName(library.systemId, systems).toLocaleUpperCase()}</span>
-            ) : (
-              <span>ALL SYSTEMS</span>
-            )}
-          </div>
           <div className="library-grid">
             {page.items.map((item) => (
               <GameCard
@@ -137,9 +153,7 @@ export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserP
       {page && page.items.length === 0 && !library.initialLoading && !library.error ? (
         <section aria-labelledby="no-results-heading" className="library-no-results">
           <h2 id="no-results-heading">
-            {library.searchInput
-              ? `NO MATCH FOR “${library.searchInput}”`
-              : 'NO GAMES MATCH FILTERS'}
+            {canEchoSearch ? `NO MATCH FOR “${committedSearch}”` : 'NO GAMES MATCH FILTERS'}
           </h2>
           <p>
             Your local library is not empty. Check the spelling or clear the active filters;
