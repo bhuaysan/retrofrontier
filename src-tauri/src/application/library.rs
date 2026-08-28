@@ -443,8 +443,15 @@ impl LibraryWatcher {
         let callback_sender = sender.clone();
         let watcher = RecommendedWatcher::new(
             move |result: notify::Result<notify::Event>| match result {
-                Ok(_) => {
-                    let _ = callback_sender.send(WatcherMessage::Change);
+                Ok(event) => {
+                    if event_mutates_content(&event) {
+                        tracing::debug!(
+                            kind = ?event.kind,
+                            paths = ?event.paths,
+                            "library watcher accepted a content change"
+                        );
+                        let _ = callback_sender.send(WatcherMessage::Change);
+                    }
                 }
                 Err(error) => {
                     let _ = callback_sender.send(WatcherMessage::Failure(error.to_string()));
@@ -504,6 +511,24 @@ impl LibraryWatcher {
                 watched.remove(&path);
             }
         }
+    }
+}
+
+/// Decides whether a watcher event reports a content change that justifies another scan.
+///
+/// The inotify backend subscribes to `IN_OPEN` and `IN_CLOSE_NOWRITE`, so every read-only pass the
+/// scanner makes over a watched root reports back as `Access(Open)` on each enumerated directory
+/// and hashed file. Treating those as changes made the scanner trigger itself: scan -> open events
+/// -> watcher request -> scan. Only events that can actually change what a scan would find are
+/// accepted; `Access(Close(Write))` stays a change because it reports a completed write.
+fn event_mutates_content(event: &notify::Event) -> bool {
+    use notify::event::{AccessKind, AccessMode};
+    use notify::EventKind;
+
+    match &event.kind {
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) => false,
+        _ => true,
     }
 }
 
@@ -703,7 +728,8 @@ fn now_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_directory, ensure_managed_root, normalize_configured_path, ScanRequest, ScanSchedule,
+        ensure_directory, ensure_managed_root, event_mutates_content, normalize_configured_path,
+        ScanRequest, ScanSchedule,
     };
     use crate::adapters::database::Database;
     use crate::domain::library::{
@@ -716,6 +742,105 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    /// Regression for the runaway-scan defect.
+    ///
+    /// The inotify backend subscribes to `IN_OPEN`, so a read-only scan pass over a watched root
+    /// reported back as a filesystem change and requested another scan, which read the root again.
+    /// A live watcher is driven here because the defect lives in the event kinds `notify` actually
+    /// produces for reads, not in a hand-written event value.
+    #[test]
+    fn a_read_only_scan_pass_reports_no_content_change() {
+        use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let directory = tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        fs::create_dir_all(root.join("NES")).unwrap();
+        fs::write(root.join("NES").join("game.nes"), [1, 2, 3]).unwrap();
+
+        let (sender, receiver) = mpsc::channel();
+        let mut watcher = RecommendedWatcher::new(
+            move |result: notify::Result<notify::Event>| {
+                if let Ok(event) = result {
+                    let _ = sender.send(event);
+                }
+            },
+            Config::default(),
+        )
+        .unwrap();
+        watcher.watch(&root, RecursiveMode::Recursive).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        while receiver.try_recv().is_ok() {}
+
+        fn read_only_pass(path: &Path) {
+            for entry in fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                if fs::symlink_metadata(entry.path()).unwrap().is_dir() {
+                    read_only_pass(&entry.path());
+                } else {
+                    let _ = fs::read(entry.path());
+                }
+            }
+        }
+        read_only_pass(&root);
+        std::thread::sleep(Duration::from_millis(400));
+
+        let observed: Vec<_> = receiver.try_iter().collect();
+        let mutating: Vec<_> = observed
+            .iter()
+            .filter(|event| event_mutates_content(event))
+            .map(|event| event.kind)
+            .collect();
+        assert!(
+            mutating.is_empty(),
+            "a read-only scan pass must not request another scan; got {mutating:?}"
+        );
+
+        fs::write(root.join("NES").join("added.nes"), [4, 5, 6]).unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            receiver
+                .try_iter()
+                .any(|event| event_mutates_content(&event)),
+            "a real content write must still request a scan"
+        );
+    }
+
+    #[test]
+    fn only_content_changing_watcher_events_request_a_scan() {
+        use notify::event::{
+            AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode,
+        };
+        use notify::{Event, EventKind};
+
+        for kind in [
+            EventKind::Access(AccessKind::Open(AccessMode::Any)),
+            EventKind::Access(AccessKind::Read),
+            EventKind::Access(AccessKind::Close(AccessMode::Read)),
+            EventKind::Access(AccessKind::Any),
+        ] {
+            assert!(
+                !event_mutates_content(&Event::new(kind)),
+                "{kind:?} must not request a scan"
+            );
+        }
+
+        for kind in [
+            EventKind::Create(CreateKind::File),
+            EventKind::Remove(RemoveKind::File),
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+            EventKind::Access(AccessKind::Close(AccessMode::Write)),
+            EventKind::Other,
+        ] {
+            assert!(
+                event_mutates_content(&Event::new(kind)),
+                "{kind:?} must request a scan"
+            );
+        }
+    }
 
     #[test]
     fn watcher_signals_coalesce_while_a_scan_is_running() {
@@ -834,6 +959,93 @@ mod tests {
         #[cfg(all(unix, not(target_os = "macos")))]
         assert_eq!(command.get_program(), OsStr::new("xdg-open"));
         assert_eq!(args, vec![path.as_os_str()]);
+    }
+
+    /// Regression for the managed-ROM discovery pass.
+    ///
+    /// The managed root the UI shows is the same authoritative root the scanner enumerates, a
+    /// supported file in a catalog system folder reaches summary and query, and an unsupported
+    /// archive next to it is omitted without inventing a scan issue — that omission is current
+    /// product policy, not a discovery failure.
+    #[tokio::test]
+    async fn a_supported_file_in_the_managed_root_reaches_the_library_summary_and_query() {
+        let directory = tempdir().unwrap();
+        let managed_root = directory.path().join("Documents/RetroFrontier/ROMs");
+        let database = Database::open(directory.path().join("database.sqlite3"))
+            .await
+            .unwrap();
+        let service = super::LibraryApplicationService::initialize(
+            database.pool().clone(),
+            SystemCatalog::v1(),
+            managed_root.clone(),
+            Arc::new(NoopScanEventSink),
+        )
+        .await
+        .unwrap();
+
+        let roots = service.get_content_roots().await.unwrap();
+        let managed = roots
+            .iter()
+            .find(|root| root.kind == ContentRootKind::Managed)
+            .expect("the managed root must be persisted");
+        assert_eq!(
+            Path::new(&managed.path),
+            service.managed_root.as_path(),
+            "the root shown by the UI must be the root the scanner enumerates"
+        );
+        assert!(managed.enabled);
+
+        assert_eq!(service.get_library_summary().await.unwrap().total_games, 0);
+
+        fs::write(
+            managed_root.join("NES").join("Synthetic Test.nes"),
+            [1, 2, 3],
+        )
+        .unwrap();
+        fs::write(managed_root.join("NES").join("Archived.zip"), [4, 5, 6]).unwrap();
+
+        let summary = service.rescan_library().await.unwrap();
+        assert_eq!(
+            summary.state,
+            crate::domain::library::ScanRunState::Completed
+        );
+        assert_eq!(summary.counters.files_discovered, 1);
+
+        let library = service.get_library_summary().await.unwrap();
+        assert_eq!(library.total_games, 1);
+        assert_eq!(
+            library
+                .systems
+                .iter()
+                .find(|system| system.system_id == SystemId::Nes)
+                .map(|system| system.game_count),
+            Some(1)
+        );
+
+        let page = service
+            .query_library(&LibraryQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(page.total, 1);
+        let item = page.items.first().unwrap();
+        assert_eq!(item.system_id, SystemId::Nes);
+        assert_eq!(item.local_title, "Synthetic Test");
+
+        let detail = service
+            .get_library_game_detail(item.game_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.content_units.len(), 1);
+        assert_eq!(
+            detail.content_units[0].availability,
+            crate::domain::library::ContentUnitAvailability::Available
+        );
+
+        assert!(
+            service.get_scan_issues().await.unwrap().is_empty(),
+            "an unsupported archive is outside V1 scanner policy and must not create an issue"
+        );
     }
 
     #[tokio::test]
