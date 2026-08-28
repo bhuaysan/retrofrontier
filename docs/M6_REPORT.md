@@ -639,6 +639,183 @@ readiness anti-pattern warning remained. Visual verification was static/source-l
 the repository has no native screenshot harness. Verification was performed on Linux x86_64; no
 Windows/macOS runtime or packaging validation was performed.
 
-## N. Current M6 Verdict
+## N. M6.4 Adversarial Review and Runtime Corrective Pass
 
-`M6.4 IMPLEMENTATION COMPLETE — ready for review before M6.5`
+The M6.4 adversarial review (`M6_4_REVIEW.md`, immutable) returned
+`FIXES REQUIRED BEFORE M6.5` with 0 critical, 0 high, 7 medium, 5 low, and 3 informational
+findings. MEDIUM-1 and MEDIUM-6 were recorded as blocking. Separately, manual runtime testing with
+`pnpm tauri:dev` on Linux x86_64 revealed two defects that the source-level review did not cover:
+continually increasing scan `RUN #` while the application was idle, and a ROM placed in the managed
+ROM directory that never appeared in the library.
+
+### Runaway scan runs — root cause
+
+The defect was real backend run creation, not a presentation artifact. The development database
+held **29,049 persisted `scan_runs` rows**, spaced almost exactly 252 ms apart — the 250 ms watcher
+debounce plus a ~2 ms scan of an empty root.
+
+`notify` 8.2's inotify backend subscribes to `IN_OPEN` and `IN_CLOSE_NOWRITE`
+(`notify-8.2.0/src/inotify.rs:425-432`), which it reports as `EventKind::Access(AccessKind::Open)`.
+The watcher callback in `LibraryApplicationService` treated **every** successful event as a content
+change. A read-only scan pass therefore reported itself back to its own watcher:
+
+```text
+scan reads the watched roots (read_dir / File::open)
+  -> inotify IN_OPEN on every enumerated directory and hashed file
+  -> notify emits Access(Open(Any))
+  -> watcher requests another scan
+  -> scan reads the watched roots ...
+```
+
+This was reproduced directly against `notify` 8.2: a purely read-only walk of a watched tree
+produced four `Access(Open(Any))` events and no other event kind. The loop was not
+development-only; `pnpm tauri:dev` merely made it visible.
+
+Rejected hypotheses, each with evidence:
+
+- **React StrictMode / effect remount.** `src/main.tsx` does not use `StrictMode`, and no frontend
+  code path calls `rescanLibrary` except the explicit Library and Settings scan buttons.
+- **Scan-completion refresh feedback.** `AppShell.onScanCompleted` only sets the completion run id
+  and refreshes bounded summary data; no refresh path reaches a scan command.
+- **Application-owned writes under a watched root.** The scanner performs no writes; the database,
+  cover cache, runtime, and logs all live under the app data directory, outside the ROM roots.
+- **Frontend run-id presentation defect.** Disproved by the 29,049 persisted rows.
+
+### Runaway scan runs — fix
+
+`event_mutates_content` in `src-tauri/src/application/library.rs` now accepts only events that can
+change what a scan would find. Every `EventKind::Access(_)` is rejected except
+`Access(Close(Write))`, which reports a completed write; creates, removes, data and name
+modifications, and `EventKind::Other` (which carries `Flag::Rescan`) still request a scan. Accepted
+events are logged at `debug` with their kind and paths, so a future feedback loop is diagnosable
+from normal structured logging. No debounce was lengthened, no effect was guarded, and no event was
+suppressed for cosmetic reasons.
+
+### Managed ROM discovery — root cause
+
+The managed root is consistent end to end. `content_roots` holds exactly one enabled, available
+managed root at `/home/ben/Dokumente/RetroFrontier/ROMs` — the localized XDG documents directory —
+and that is both the path the UI renders and the path the scanner enumerates.
+
+The files in that root were `.zip` archives. `.zip` is not a supported extension for any V1 system
+in `SystemCatalog::v1()`, so `walk_directory` never promotes those files to candidates. That is
+current product policy, documented in `docs/LIBRARY_SCANNER.md`: only catalog-supported extensions
+become candidates, and an unrelated file creates no scan issue. Archive import is explicitly out of
+scope for M4/M6 and remains an open backlog item. `0 GAMES` with `0 ISSUES` was therefore a truthful
+report, not a discovery failure — the scanner counters confirm it, with `files_discovered = 0` on
+every run.
+
+A controlled synthetic fixture confirmed the pipeline is healthy:
+
+```text
+managed root:  <documents>/RetroFrontier/ROMs
+relative path: NES/RetroFrontier Synthetic Test.nes
+extension:     .nes
+expected system: nes (from the managed top-level folder name)
+```
+
+No scanner code change was required for this defect. Its regression is now automated so the
+managed-root path is asserted rather than assumed.
+
+### Sidebar flicker
+
+The flicker was a symptom of the scan loop plus MEDIUM-3. `useSystemCatalog.refresh()` clears
+`systems` and `statuses` before refetching, so every terminal scan blanked the sidebar and the
+readiness panel; at roughly four scans per second this read as continuous flicker.
+
+MEDIUM-3 was fixed rather than deferred, using the correction the review preferred: a ROM scan
+changes local content only — runtime state, approved cores, and BIOS files all live outside the
+scanned roots — so `AppShell.onScanCompleted` no longer calls `refreshCatalog()`. Sidebar counts
+still update because they come from the library summary, which is refreshed. The explicit
+readiness retry on the detail page still refreshes the catalog, where a loading state is correct.
+
+### MEDIUM-1 — positive readiness with incomplete content
+
+`games.availability` is `available` when *at least one* content unit is available, so a multi-disc
+game with one missing unit was reported as fully available and could reach the positive overall
+label. `readiness.ts` now takes the already-authoritative `LibraryContentUnitSummary.availability`
+values alongside game availability. Any unit that is `incomplete` or `missing` produces a
+`PARTIALLY AVAILABLE` local content row and an `INCOMPLETE CONTENT` overall state, suppressing the
+positive verdict. Rust readiness policy is unchanged; this is presentation over M4 unit state.
+
+### MEDIUM-6 — positive readiness wording
+
+The positive overall label is restored to the approved `EMULATION REQUIREMENTS SATISFIED`. M6.4
+evaluates requirements, not launch success, which is M7 work.
+
+### Automated regressions added
+
+- `a_read_only_scan_pass_reports_no_content_change` — drives a live `notify` watcher, asserts a
+  read-only pass produces no accepted change, and asserts a real write still does. Verified
+  non-vacuous: the pass observes four `Access(Open(Any))` events that the old code accepted.
+- `only_content_changing_watcher_events_request_a_scan` — event-kind classification.
+- `a_supported_file_in_the_managed_root_reaches_the_library_summary_and_query` — asserts the UI
+  root equals the scanner root, that a supported synthetic `.nes` file reaches summary, query, and
+  detail with one available content unit, and that an unsupported `.zip` sibling is omitted without
+  a fabricated issue.
+- `leaves the empty library for a populated one when a terminal scan discovers a game` — the
+  empty-to-populated transition without restart, asserting exactly one library query and no second
+  scan request.
+- `keeps the system sidebar populated across a terminal scan completion` — verified non-vacuous.
+- Mixed-availability readiness cases and the approved positive-label case in `readiness.test.ts`
+  and `GameDetailPage.test.tsx`.
+
+### Manual `pnpm tauri:dev` verification
+
+- **Idle stability.** Clean launch, no user action. Zero new `scan_runs` rows and zero accepted
+  watcher events across the observed idle windows; `RUN #` stable. Before the fix the same idle
+  state produced roughly four persisted runs per second.
+- **Synthetic supported ROM.** Writing `NES/RetroFrontier Synthetic Test.nes` into the real managed
+  root produced three accepted watcher events (`Create(File)`, `Modify(Data)`,
+  `Access(Close(Write))`) that the debounce coalesced into **exactly one** scan run, #29051, with
+  `files_discovered = 1`, `files_processed = 1`, `files_hashed = 1`, `issues_found = 0`. No
+  follow-on run was created by the scan's own reads.
+- **UI.** A full-screen capture of the running application shows `SCAN COMPLETE · RUN #29051`,
+  `1 GAME IN LIBRARY`, `0s · 0 ISSUES`, the sidebar populated with `All systems 1` /
+  `Nintendo Ente… 1` and the remaining systems at 0, the `RetroFrontier Synthetic Test` card
+  rendered in the grid, `SCAN ISSUES — 0 TOTAL`, and footer `SCAN READY`. The application had
+  started with an empty library, so the empty-to-populated transition happened without a restart.
+- **Restart.** Restarting `pnpm tauri:dev` created no scan run at startup, the discovered game
+  persisted, and the idle state stayed idle.
+
+One isolated scan run was recorded roughly eleven seconds after the first post-fix launch, before
+event-kind debug logging was enabled; it did not recur across the instrumented launches, and a
+single run in response to a genuine external filesystem event is correct behaviour. The 29,049
+historical `scan_runs` rows produced by the defect remain in the local development database; no
+migration or data deletion was performed as part of this pass.
+
+The synthetic fixture was removed from the managed ROM directory after verification. No
+runtime-generated user data is committed.
+
+### Corrective-pass verification
+
+- `pnpm typecheck` — PASS — exit 0.
+- `pnpm lint` — PASS — exit 0.
+- `pnpm format:check` — PASS — exit 0.
+- `pnpm test` — PASS — 12 files, 123 tests, exit 0.
+- `pnpm build` — PASS — exit 0.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — PASS — exit 0.
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings`
+  — PASS — exit 0.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — PASS — 308 passed, 0 failed, 1 ignored.
+- `cargo build --manifest-path src-tauri/Cargo.toml --release` — PASS — exit 0.
+- `pnpm tauri:build` — PASS — built at `src-tauri/target/release/retrofrontier`, exit 0.
+- `git diff --check` — PASS — exit 0.
+- Manual `pnpm tauri:dev` — PASS — see the runtime verification above.
+
+Verification was performed on Linux x86_64. No Windows or macOS runtime or packaging validation was
+performed, so the watcher event-kind behaviour on FSEvents and ReadDirectoryChangesW is reasoned
+from the `notify` backends rather than observed; neither backend emits `Access` events, so the
+filter cannot suppress a real change there.
+
+## O. Remaining Deferrals After the Corrective Pass
+
+Deferred to M6.6, unchanged by this pass: MEDIUM-2 runtime-trust predicate duplication, MEDIUM-4
+focus restoration, MEDIUM-5 light-theme contrast, MEDIUM-7 missing regression suite, and LOW-1
+through LOW-5. Background scanline visual fidelity is recorded as a new M6.6 visual-fidelity
+follow-up and was deliberately not touched here. Accepted M6.2/M6.3 debt is unchanged. No M6.5 work
+was started.
+
+## P. Current M6 Verdict
+
+`M6.4 RUNTIME CORRECTIVE PASS COMPLETE — ready for final runtime confirmation before M6.5`
