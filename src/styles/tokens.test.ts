@@ -33,6 +33,14 @@ describe('design semantic tokens', () => {
     expect(tokenValue('light', '--accent-6')).toBe('#b5753d');
   });
 
+  it('strengthens only the dark pixel shadow while preserving light color and offset geometry', () => {
+    expect(tokenValue('dark', '--shadow')).toBe('#353535');
+    expect(tokenValue('light', '--shadow')).toBe('#1a1a1a');
+    expect(tokenValue('dark', '--shadow-rest')).toBe('4px 4px 0 var(--shadow)');
+    expect(tokenValue('dark', '--shadow-hover')).toBe('6px 6px 0 var(--shadow)');
+    expect(tokenValue('dark', '--shadow-focus')).toBe('8px 8px 0 var(--shadow)');
+  });
+
   it('keeps the light negative text color above AA contrast on rendered light surfaces', () => {
     for (const background of ['#fbf5e8', '#f1e8d4', '#efe4cd']) {
       expect(contrastRatio('#743c00', background)).toBeGreaterThanOrEqual(4.5);
