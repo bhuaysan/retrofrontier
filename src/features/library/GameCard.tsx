@@ -41,6 +41,7 @@ export function GameCard({
   const title = item.displayTitle.trim() || item.localTitle.trim() || 'UNTITLED GAME';
   const headingId = `game-card-title-${item.gameId}`;
   const metadataLabel = METADATA_LABELS[item.metadataMatchState];
+  const metadataId = metadataLabel ? `game-card-metadata-${item.gameId}` : undefined;
   const releaseYear = item.releaseDate?.match(/^\d{4}/)?.[0] ?? null;
   const unavailable = item.availability === 'unavailable';
   const shortSystem = systemShortLabel(item.systemId, systemName);
@@ -103,6 +104,7 @@ export function GameCard({
         <h3 aria-label={title} className="game-card-title" id={headingId} title={title}>
           <a
             aria-label={`Open ${title} details`}
+            aria-describedby={metadataId}
             className="game-card-title-link game-card-detail-target"
             data-game-detail-link={item.gameId}
             href={routePath(gameRoute(item.gameId))}
@@ -124,7 +126,11 @@ export function GameCard({
         </div>
       </div>
 
-      {metadataLabel ? <p className="visually-hidden">{metadataLabel}</p> : null}
+      {metadataLabel ? (
+        <p id={metadataId} className="visually-hidden">
+          {metadataLabel}
+        </p>
+      ) : null}
     </article>
   );
 }

@@ -294,7 +294,10 @@ export function AppShell() {
         <aside className="app-sidebar" aria-label="Library navigation">
           <section aria-labelledby="systems-heading">
             <p id="systems-heading" className="sidebar-label">
-              // SYSTEMS
+              <span aria-hidden="true" className="sidebar-prefix">
+                //
+              </span>{' '}
+              SYSTEMS
             </p>
             {catalogLoading && (
               <p className="sidebar-catalog-status loading-inline" role="status">
@@ -339,7 +342,10 @@ export function AppShell() {
 
           <nav className="sidebar-menu" aria-labelledby="menu-heading">
             <p id="menu-heading" className="sidebar-label">
-              // MENU
+              <span aria-hidden="true" className="sidebar-prefix">
+                //
+              </span>{' '}
+              MENU
             </p>
             <ul className="pixel-row-list">
               <RouteRow

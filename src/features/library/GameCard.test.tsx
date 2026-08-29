@@ -221,12 +221,15 @@ describe('GameCard', () => {
     }
   });
 
-  it('keeps the coarse metadata state available to assistive technology', () => {
+  it('associates the coarse metadata state with the singular detail target', () => {
     renderCard({ metadataMatchState: 'stale' });
 
     const card = screen.getByRole('article');
-    expect(within(card).getByText('METADATA STALE')).toBeInTheDocument();
-    expect(within(card).getByText('METADATA STALE')).toHaveClass('visually-hidden');
+    const state = within(card).getByText('METADATA STALE');
+    const target = within(card).getByRole('link', { name: 'Open Kirby’s Adventure details' });
+    expect(state).toHaveClass('visually-hidden');
+    expect(state).toHaveAttribute('id', 'game-card-metadata-1');
+    expect(target).toHaveAttribute('aria-describedby', 'game-card-metadata-1');
   });
 
   it('does not add a genre or region row to the compact tile', () => {

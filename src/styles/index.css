@@ -461,7 +461,7 @@ a:focus-visible {
 .inline-error-icon {
   flex: none;
   margin-top: 2px;
-  color: var(--accent-6);
+  color: var(--negative-text);
 }
 
 .inline-error-copy {
@@ -472,6 +472,7 @@ a:focus-visible {
 }
 
 .inline-error-copy strong {
+  color: var(--negative-text);
   font-family: var(--font-label);
   font-size: 9px;
   letter-spacing: 1px;
@@ -809,7 +810,7 @@ a:focus-visible {
 }
 
 .scan-panel--failed .panel-heading h2 {
-  color: var(--accent-6);
+  color: var(--negative-text);
 }
 
 .scan-issues {
@@ -861,7 +862,7 @@ a:focus-visible {
 }
 
 .issue-row-heading strong {
-  color: var(--accent-6);
+  color: var(--negative-text);
   font-size: 15px;
 }
 
@@ -1029,7 +1030,7 @@ a:focus-visible {
 .root-status--unavailable,
 .root-status--unsafe,
 .root-status--disabled {
-  color: var(--accent-6);
+  color: var(--negative-text);
 }
 
 .root-card > .root-path {
@@ -1063,7 +1064,7 @@ a:focus-visible {
 .root-confirm-actions > span {
   flex: 1;
   min-width: 220px;
-  color: var(--accent-6);
+  color: var(--negative-text);
   font-size: 14px;
   line-height: 1.4;
 }
@@ -1241,7 +1242,7 @@ a:focus-visible {
 }
 
 .metadata-account-error {
-  color: var(--accent-6);
+  color: var(--negative-text);
 }
 
 .metadata-account-fields {
@@ -2130,9 +2131,16 @@ a:focus-visible {
 .game-detail-inline-status,
 .game-detail-loading-secondary {
   margin: 0;
-  color: var(--accent-6);
   font-family: var(--font-meta);
   font-size: 18px;
+}
+
+.game-detail-action-error {
+  color: var(--negative-text);
+}
+
+.game-detail-inline-status {
+  color: var(--text-dim);
 }
 
 .game-detail-loading {

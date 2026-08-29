@@ -387,6 +387,14 @@ describe('AppShell M6.2 shell and library states', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'LIBRARY' })).toBeInTheDocument();
   });
 
+  it('keeps the visible sidebar prefixes decorative in accessible group names', async () => {
+    render(<AppShell />);
+
+    expect(await screen.findByRole('region', { name: 'SYSTEMS' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'MENU' })).toBeInTheDocument();
+    expect(screen.getAllByText('//', { selector: '.sidebar-prefix' })).toHaveLength(2);
+  });
+
   it('uses the Library shell only on Library and Game Detail, while Settings keeps the shared header without its sidebar or footer', async () => {
     mocks.getLibrarySummary.mockResolvedValue({
       totalGames: 2,
