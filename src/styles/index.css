@@ -1414,6 +1414,7 @@ a:focus-visible {
 }
 
 .library-filter-reset {
+  margin-left: auto;
   color: var(--text);
   background: var(--surface-2);
   box-shadow: 2px 2px 0 var(--shadow);

@@ -30,11 +30,6 @@ export function LibraryFilterBar({ library, systems }: LibraryFilterBarProps) {
       >
         <span aria-hidden="true">★</span> FAVORITES ONLY
       </button>
-      {hasActiveQuery && page?.items.length !== 0 ? (
-        <button className="library-filter-reset" onClick={library.resetQuery} type="button">
-          CLEAR SEARCH &amp; FILTERS
-        </button>
-      ) : null}
       <span aria-hidden="true" className="library-filter-spacer" />
       {library.refreshing ? (
         <span aria-live="polite" className="library-refreshing" role="status">
@@ -52,6 +47,11 @@ export function LibraryFilterBar({ library, systems }: LibraryFilterBarProps) {
             : 'ALL SYSTEMS'}
         </span>
       </p>
+      {hasActiveQuery && page?.items.length !== 0 ? (
+        <button className="library-filter-reset" onClick={library.resetQuery} type="button">
+          CLEAR SEARCH &amp; FILTERS
+        </button>
+      ) : null}
     </div>
   );
 }

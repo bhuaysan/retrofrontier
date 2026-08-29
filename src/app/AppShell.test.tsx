@@ -1565,6 +1565,27 @@ describe('AppShell M6.2 shell and library states', () => {
     expect(favoritesFilter).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('places the clear search and filters action at the right edge of the filter toolbar', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    mocks.queryLibrary.mockResolvedValueOnce(populatedLibraryPage).mockResolvedValueOnce({
+      ...populatedLibraryPage,
+      items: [populatedLibraryPage.items[1]],
+      total: 1,
+    });
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'FAVORITES ONLY' }));
+
+    const filterBar = screen.getByRole('group', { name: 'Library filters' });
+    const resetButton = await screen.findByRole('button', { name: 'CLEAR SEARCH & FILTERS' });
+    expect(filterBar.lastElementChild).toBe(resetButton);
+  });
+
   it('refreshes the bounded page once on completion and never on scan progress', async () => {
     mocks.getLibrarySummary.mockResolvedValue({
       totalGames: 2,
