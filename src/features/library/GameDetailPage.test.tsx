@@ -165,7 +165,7 @@ describe('GameDetailPage', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Ridge Racer' })).toBeInTheDocument();
     expect(screen.getByText('PlayStation')).toBeInTheDocument();
     expect(screen.getByText('A fast arcade racing game.')).toBeInTheDocument();
-    const metadataPanel = screen.getByRole('region', { name: /normalized metadata/i });
+    const metadataPanel = screen.getByRole('region', { name: 'METADATA' });
     expect(within(metadataPanel).getByRole('status')).toHaveTextContent('METADATA MATCHED');
     expect(screen.getAllByText('Namco')).toHaveLength(2);
     expect(screen.getByText('1994-12-03')).toBeInTheDocument();
@@ -173,7 +173,7 @@ describe('GameDetailPage', () => {
       screen.getByRole('img', { name: 'No cover available for Ridge Racer' }),
     ).toBeInTheDocument();
 
-    const content = screen.getByRole('region', { name: /associated content/i });
+    const content = screen.getByRole('region', { name: 'LOCAL CONTENT' });
     expect(within(content).getByText('2 CONTENT UNITS')).toBeInTheDocument();
     expect(within(content).getByText('CUE / BIN')).toBeInTheDocument();
     expect(within(content).getByText('M3U PLAYLIST')).toBeInTheDocument();
@@ -183,7 +183,7 @@ describe('GameDetailPage', () => {
     // The fixture mixes one available and one incomplete unit, so the overall claim must stay
     // negative even though the game-level availability is `available` and every system
     // requirement is satisfied.
-    const readiness = screen.getByRole('region', { name: /emulation readiness/i });
+    const readiness = screen.getByRole('region', { name: 'EMULATION READINESS' });
     expect(within(readiness).getByText('INCOMPLETE CONTENT')).toBeInTheDocument();
     expect(
       within(readiness).queryByText('EMULATION REQUIREMENTS SATISFIED'),
@@ -210,7 +210,7 @@ describe('GameDetailPage', () => {
       }),
     );
 
-    const readiness = screen.getByRole('region', { name: /emulation readiness/i });
+    const readiness = screen.getByRole('region', { name: 'EMULATION READINESS' });
     expect(within(readiness).getByText('EMULATION REQUIREMENTS SATISFIED')).toBeInTheDocument();
     expect(within(readiness).queryByText('EMULATION READY')).not.toBeInTheDocument();
     expect(within(readiness).queryByText('PARTIALLY AVAILABLE')).not.toBeInTheDocument();
@@ -244,7 +244,8 @@ describe('GameDetailPage', () => {
 
     renderDetail(detailModel({ metadata: staleMetadata }));
 
-    expect(screen.getAllByText('METADATA STALE')).toHaveLength(2);
+    // The state truth is stated once, in the compact secondary metadata surface.
+    expect(screen.getAllByText('METADATA STALE')).toHaveLength(1);
     expect(screen.getByText('A fast arcade racing game.')).toBeInTheDocument();
     expect(screen.getByRole('img', { name: 'Cover art for Ridge Racer' })).toHaveAttribute(
       'src',
@@ -307,7 +308,7 @@ describe('GameDetailPage', () => {
         .getAllByRole('heading', { level: 4 })
         .map((heading) => heading.textContent),
     ).toEqual(['Zelda Candidate', 'Another Zelda']);
-    const metadataPanel = screen.getByRole('region', { name: /normalized metadata/i });
+    const metadataPanel = screen.getByRole('region', { name: 'METADATA' });
     expect(within(metadataPanel).getByRole('status')).toHaveTextContent(
       'Choose a provider candidate below, or search again without changing local content.',
     );
@@ -411,7 +412,7 @@ describe('GameDetailPage', () => {
     expect(screen.getByRole('button', { name: /selecting zelda candidate/i })).toHaveTextContent(
       'SELECTING…',
     );
-    const metadataPanel = screen.getByRole('region', { name: /normalized metadata/i });
+    const metadataPanel = screen.getByRole('region', { name: 'METADATA' });
     expect(within(metadataPanel).getAllByRole('status')).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ textContent: expect.stringContaining('SELECTING MATCH') }),
@@ -452,7 +453,7 @@ describe('GameDetailPage', () => {
   it('returns focus to the metadata section after a metadata mutation settles', () => {
     const initial = detailModel();
     const view = renderDetail(initial);
-    const heading = screen.getByRole('heading', { name: 'NORMALIZED METADATA' });
+    const heading = screen.getByRole('heading', { name: 'METADATA' });
 
     view.rerender(
       <GameDetailPage
@@ -485,7 +486,7 @@ describe('GameDetailPage', () => {
       }),
     );
 
-    const metadataPanel = screen.getByRole('region', { name: /normalized metadata/i });
+    const metadataPanel = screen.getByRole('region', { name: 'METADATA' });
     expect(
       within(metadataPanel).getAllByText(/no provider candidates are available/i),
     ).toHaveLength(1);
@@ -587,7 +588,7 @@ describe('GameDetailPage', () => {
   it('keeps readiness rows truthful while the system snapshot is checking', () => {
     renderDetail(detailModel(), systemStatus(), true);
 
-    const readiness = screen.getByRole('region', { name: /emulation readiness/i });
+    const readiness = screen.getByRole('region', { name: 'EMULATION READINESS' });
     expect(within(readiness).getAllByText('CHECKING')).toHaveLength(3);
     expect(within(readiness).getByText('PARTIALLY AVAILABLE')).toBeInTheDocument();
     expect(within(readiness).queryByText('UNAVAILABLE')).not.toBeInTheDocument();
@@ -758,7 +759,7 @@ describe('GameDetailPage', () => {
 
     renderDetail(detailModel({ localDetail: unavailableGame }), missingStatus);
 
-    const readiness = screen.getByRole('region', { name: /emulation readiness/i });
+    const readiness = screen.getByRole('region', { name: 'EMULATION READINESS' });
     expect(within(readiness).getByText('MISSING CONTENT')).toBeInTheDocument();
     expect(within(readiness).getByText('RUNTIME')).toBeInTheDocument();
     expect(within(readiness).getByText('CORE')).toBeInTheDocument();
@@ -802,5 +803,244 @@ describe('GameDetailPage', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'GAME NOT FOUND' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('link', { name: /back to library/i }));
     expect(onBackToLibrary).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GameDetailPage — B6 hero fidelity', () => {
+  const cachedCover = {
+    gameId: 7,
+    providerId: 'screenScraper' as const,
+    kind: 'cover' as const,
+    state: 'cached' as const,
+    providerMediaType: 'image/png',
+    region: 'US',
+    mediaRef: 'rfmedia://localhost/cover/7',
+    contentType: 'image/png',
+    sizeBytes: 120,
+    contentSha256: 'hidden',
+    providerCrc32: null,
+    providerMd5: null,
+    providerSha1: null,
+    sourceCredit: 'ScreenScraper',
+    lastFailure: null,
+    fetchedAt: 1,
+    updatedAt: 2,
+  };
+
+  function hero() {
+    const node = document.querySelector('.game-detail-hero');
+    if (!(node instanceof HTMLElement)) throw new Error('hero not rendered');
+    return node;
+  }
+
+  it('renders exactly one dominant game title, inside the hero', () => {
+    renderDetail(detailModel({ metadata: { ...metadata, cover: cachedCover } }));
+
+    const headings = screen.getAllByRole('heading', { level: 1 });
+    expect(headings).toHaveLength(1);
+    expect(headings[0]).toHaveAttribute('id', 'game-detail-title');
+    expect(headings[0]).toHaveTextContent('Ridge Racer');
+    expect(hero().contains(headings[0])).toBe(true);
+    // The cover is a real image here, so the only remaining occurrence of the title inside the
+    // hero must be the heading itself — no second dominant copy of the same identity.
+    expect(within(hero()).getAllByText('Ridge Racer')).toHaveLength(1);
+    expect(screen.getByRole('main')).toHaveAttribute('aria-labelledby', 'game-detail-title');
+  });
+
+  it('presents the compact system identity with the full catalog name still accessible', () => {
+    renderDetail();
+
+    const badge = within(hero()).getByTitle('PlayStation');
+    expect(badge).toHaveTextContent('PS1');
+    expect(within(badge).getByText('PlayStation')).toHaveClass('visually-hidden');
+    expect(within(hero()).queryByText('Nintendo Entertainment System')).not.toBeInTheDocument();
+  });
+
+  it('places the favorite action in the cover action area and offers no launch action', () => {
+    const toggleFavorite = vi.fn().mockResolvedValue(undefined);
+    renderDetail(detailModel({ toggleFavorite }));
+
+    const favorite = screen.getByRole('button', { name: 'Add Ridge Racer to favorites' });
+    expect(favorite).toHaveAttribute('aria-pressed', 'false');
+    expect(favorite.closest('.game-detail-cover-column')).not.toBeNull();
+    expect(document.querySelector('.game-detail-cover-column')?.contains(favorite)).toBe(true);
+
+    fireEvent.click(favorite);
+    expect(toggleFavorite).toHaveBeenCalledTimes(1);
+
+    expect(
+      screen.queryByRole('button', { name: /^(start|play|launch|run game)$/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
+  });
+
+  it('renders genre and release-year chips only from real normalized metadata', () => {
+    renderDetail();
+
+    const chips = hero().querySelector('.game-detail-chips');
+    expect(chips).not.toBeNull();
+    expect(within(chips as HTMLElement).getByText('Racing')).toBeInTheDocument();
+    expect(within(chips as HTMLElement).getByText('1994')).toBeInTheDocument();
+  });
+
+  it('omits optional hero chips instead of rendering placeholder values', () => {
+    renderDetail(
+      detailModel({
+        metadata: {
+          ...metadata,
+          metadata: {
+            ...metadata.metadata!,
+            metadata: {
+              ...metadata.metadata!.metadata,
+              genre: null,
+              releaseDate: null,
+              synopsis: null,
+              developer: null,
+              publisher: null,
+              players: null,
+              region: null,
+            },
+          },
+        },
+      }),
+    );
+
+    expect(within(hero()).queryByText(/unknown|n\/a|no genre|no synopsis|----/i)).toBeNull();
+    expect(hero().querySelector('.game-detail-info')).toBeNull();
+    expect(within(hero()).getByTitle('PlayStation')).toHaveTextContent('PS1');
+  });
+
+  it('projects the real synopsis and key/value information into the hero once', () => {
+    renderDetail();
+
+    expect(within(hero()).getByText('A fast arcade racing game.')).toBeInTheDocument();
+    const info = hero().querySelector('.game-detail-info');
+    expect(info).not.toBeNull();
+    const scoped = within(info as HTMLElement);
+    expect(scoped.getByText('RELEASE')).toBeInTheDocument();
+    expect(scoped.getByText('1994-12-03')).toBeInTheDocument();
+    expect(scoped.getByText('DEVELOPER')).toBeInTheDocument();
+    expect(scoped.getByText('PUBLISHER')).toBeInTheDocument();
+    expect(scoped.getByText('PLAYERS')).toBeInTheDocument();
+    expect(scoped.getByText('1-2')).toBeInTheDocument();
+    expect(scoped.getByText('REGION')).toBeInTheDocument();
+    expect(scoped.getByText('US')).toBeInTheDocument();
+    // Genre is already a hero chip; it must not be repeated as an information row.
+    expect(scoped.queryByText('GENRE')).toBeNull();
+    // The synopsis and normalized fields no longer live in the metadata workflow section.
+    const metadataPanel = screen.getByRole('region', { name: 'METADATA' });
+    expect(within(metadataPanel).queryByText('A fast arcade racing game.')).toBeNull();
+    expect(within(metadataPanel).queryByText('DEVELOPER')).toBeNull();
+  });
+
+  it('suppresses a redundant local title and keeps a genuinely distinct one secondary', () => {
+    renderDetail(
+      detailModel({
+        localDetail: { ...localDetail, localTitle: 'Ridge Racer' },
+      }),
+    );
+    expect(within(hero()).queryByText(/LOCAL TITLE/)).toBeNull();
+
+    screen.getByRole('heading', { level: 1, name: 'Ridge Racer' });
+  });
+
+  it('keeps the distinct local title as clearly secondary hero information', () => {
+    renderDetail();
+    expect(within(hero()).getByText(/LOCAL TITLE · Ridge Racer Local/)).toBeInTheDocument();
+  });
+
+  it('keeps route-entry focus on the hero title and semantic Library navigation', () => {
+    const onBackToLibrary = vi.fn();
+    render(
+      <GameDetailPage
+        detail={detailModel()}
+        gameId={7}
+        onBackToLibrary={onBackToLibrary}
+        onRetryReadiness={vi.fn()}
+        readinessError={null}
+        systemStatus={systemStatus()}
+      />,
+    );
+
+    const heading = screen.getByRole('heading', { level: 1, name: 'Ridge Racer' });
+    expect(document.activeElement).toBe(heading);
+
+    const back = screen.getByRole('link', { name: /back to library/i });
+    expect(back).toHaveAttribute('href', '/library');
+    fireEvent.click(back);
+    expect(onBackToLibrary).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the C4 accent placeholder when the cached cover cannot be rendered', () => {
+    renderDetail(detailModel({ metadata: { ...metadata, cover: cachedCover } }));
+
+    fireEvent.error(screen.getByRole('img', { name: 'Cover art for Ridge Racer' }));
+    expect(
+      screen.getByRole('img', { name: 'No cover available for Ridge Racer' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders readiness as one compact requirement list rather than dashboard cards', () => {
+    renderDetail();
+
+    const readiness = screen.getByRole('region', { name: 'EMULATION READINESS' });
+    expect(readiness.querySelectorAll('article')).toHaveLength(0);
+    const rows = within(readiness).getByRole('list', { name: 'Emulation requirements' });
+    expect(within(rows).getAllByRole('listitem')).toHaveLength(4);
+    expect(within(rows).getByText('LOCAL CONTENT')).toBeInTheDocument();
+    expect(within(rows).getByText('RUNTIME')).toBeInTheDocument();
+    expect(within(rows).getByText('CORE')).toBeInTheDocument();
+    expect(within(rows).getByText('BIOS')).toBeInTheDocument();
+  });
+
+  it('keeps a stable matched state compact and free of the old metadata data panel', () => {
+    renderDetail();
+
+    const metadataPanel = screen.getByRole('region', { name: 'METADATA' });
+    expect(within(metadataPanel).queryByText('NORMALIZED METADATA')).toBeNull();
+    expect(within(metadataPanel).queryByText('ENRICHMENT')).toBeNull();
+    expect(metadataPanel.querySelector('.game-detail-metadata-list')).toBeNull();
+    // The single state truth stays visible exactly once.
+    expect(within(metadataPanel).getAllByText('METADATA MATCHED')).toHaveLength(1);
+    expect(within(metadataPanel).getByText(/ScreenScraper/)).toBeInTheDocument();
+    expect(within(metadataPanel).getByRole('button', { name: 'REFRESH METADATA' })).toBeVisible();
+  });
+
+  it('keeps an unavailable metadata state compact, truthful, and secondary', () => {
+    renderDetail(
+      detailModel({
+        metadata: {
+          ...metadata,
+          status: 'failed',
+          metadata: null,
+          cover: null,
+          lastFailure: 'credentialsUnavailable',
+        },
+      }),
+    );
+
+    const metadataPanel = screen.getByRole('region', { name: 'METADATA' });
+    expect(within(metadataPanel).getAllByText('METADATA UNAVAILABLE')).toHaveLength(1);
+    expect(
+      within(metadataPanel).getByText(/provider is not configured for this build/i),
+    ).toBeInTheDocument();
+    // "remains usable" is one product truth; the compact state surface must not echo it twice.
+    const callout = within(metadataPanel).getByRole('status');
+    expect(callout.textContent?.match(/remains usable/gi) ?? []).toHaveLength(1);
+    // The hero still reads as a game, using the local identity.
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Ridge Racer Local' }),
+    ).toBeInTheDocument();
+  });
+
+  it('uses product section language instead of implementation labels', () => {
+    renderDetail();
+
+    expect(screen.getByRole('heading', { name: 'LOCAL CONTENT' })).toBeInTheDocument();
+    expect(screen.queryByText('ASSOCIATED CONTENT')).toBeNull();
+    expect(screen.queryByText('LOCAL UNITS SUMMARIZED')).toBeNull();
+    const content = screen.getByRole('region', { name: 'LOCAL CONTENT' });
+    expect(within(content).getByText('PlayStation/Ridge Racer.m3u')).toBeInTheDocument();
+    expect(within(content).getAllByText('CONTENT ROOT #2')).toHaveLength(2);
   });
 });

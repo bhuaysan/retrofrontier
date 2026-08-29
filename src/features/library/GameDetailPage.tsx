@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties } from 'react';
+import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject } from 'react';
 
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
@@ -9,6 +9,7 @@ import type {
   GameMetadataState,
   IpcError,
   LibraryGameDetail,
+  NormalizedMetadata,
   ProviderFailureClass,
   SystemStatus,
   UnsupportedContentReason,
@@ -16,7 +17,8 @@ import type {
 import { GameCover } from './GameCover';
 
 import { getOverallReadiness, getReadinessRows, type ReadinessTone } from './readiness';
-import { systemAccent } from './systemAccents';
+import { systemAccent, systemAccentKey } from './systemAccents';
+import { systemShortLabel } from './systemLabels';
 
 const EMPTY_DETAIL_RESET_KEY = {};
 
@@ -57,6 +59,82 @@ function toneClass(tone: ReadinessTone) {
   return `readiness-status readiness-status--${tone}`;
 }
 
+/**
+ * B6 leads the hero with a compact release year. Only a real normalized release date can produce
+ * one: the first four digits of the authoritative value, never a year inferred from a filename or
+ * from an unrelated local timestamp.
+ */
+function releaseYear(releaseDate: string | null | undefined): string | null {
+  return releaseDate?.match(/^\d{4}/)?.[0] ?? null;
+}
+
+interface HeroInfoRow {
+  key: string;
+  label: string;
+  value: string;
+  dateTime?: string;
+}
+
+/**
+ * B6's compact hero information block. Only authoritative normalized values become rows; a missing
+ * optional field is omitted rather than rendered as a placeholder. Genre is already a hero chip and
+ * the release year is already visible beside it, so a release row is added only when the
+ * authoritative date carries more than that year.
+ */
+function heroInfoRows(normalized: NormalizedMetadata | null, year: string | null): HeroInfoRow[] {
+  if (!normalized) return [];
+  const rows: HeroInfoRow[] = [];
+  const release = normalized.releaseDate?.trim();
+  if (release && release !== year) {
+    rows.push({ key: 'release', label: 'RELEASE', value: release, dateTime: release });
+  }
+  if (normalized.developer) {
+    rows.push({ key: 'developer', label: 'DEVELOPER', value: normalized.developer });
+  }
+  if (normalized.publisher) {
+    rows.push({ key: 'publisher', label: 'PUBLISHER', value: normalized.publisher });
+  }
+  if (normalized.players) {
+    rows.push({ key: 'players', label: 'PLAYERS', value: normalized.players });
+  }
+  if (normalized.region) {
+    rows.push({ key: 'region', label: 'REGION', value: normalized.region });
+  }
+  return rows;
+}
+
+/**
+ * B6 section rule: a compact label, a hard rule, and an optional trailing status. Game Detail's
+ * secondary sections use it instead of full-width dashboard panels so the game stays dominant.
+ */
+function SectionHeading({
+  headingId,
+  headingRef,
+  focusable = false,
+  title,
+  status,
+}: {
+  headingId: string;
+  headingRef?: RefObject<HTMLHeadingElement | null>;
+  focusable?: boolean;
+  title: string;
+  status?: ReactNode;
+}) {
+  return (
+    <div className="game-detail-section-heading">
+      <h2 id={headingId} ref={headingRef} tabIndex={focusable ? -1 : undefined}>
+        {title}
+      </h2>
+      <span aria-hidden="true" className="game-detail-section-rule" />
+      {status}
+    </div>
+  );
+}
+
+/**
+ * The provider-specific reason, added under the state description. The state description already
+ * states that the local game remains usable, so this line no longer repeats that same truth.
+ */
 function metadataFailureCopy(failure: ProviderFailureClass | null) {
   switch (failure) {
     case 'capacityDeferred':
@@ -73,13 +151,13 @@ function metadataFailureCopy(failure: ProviderFailureClass | null) {
       return 'The metadata provider is unavailable. Cached metadata remains visible.';
     case 'developerAuthenticationFailed':
     case 'credentialsUnavailable':
-      return 'The metadata provider is not configured for this build. Local content remains usable.';
+      return 'The metadata provider is not configured for this build.';
     case 'userAuthenticationFailed':
-      return 'The optional personal provider account needs attention. Local content remains usable.';
+      return 'The optional personal provider account needs attention.';
     case 'invalidRequest':
-      return 'This metadata request is not valid for the current local content. Automatic retry is unavailable; local content remains usable.';
+      return 'This metadata request is not valid for the current local content. Automatic retry is unavailable.';
     case 'clientRejected':
-      return 'The metadata provider rejected this request. Automatic retry is unavailable; local content remains usable.';
+      return 'The metadata provider rejected this request. Automatic retry is unavailable.';
     case 'mediaUnavailable':
       return 'Metadata is available, but the provider cover could not be cached.';
     default:
@@ -153,31 +231,17 @@ function DetailLoading({ metadataLoading }: { metadataLoading: boolean }) {
 
 function LocalContentSection({ detail }: { detail: LibraryGameDetail }) {
   return (
-    <section
-      aria-labelledby="local-content-heading"
-      className="game-detail-panel game-detail-content"
-    >
-      <div className="game-detail-panel-heading">
-        <div>
-          <span className="game-detail-kicker">LOCAL CONTENT</span>
-          <h2 id="local-content-heading">ASSOCIATED CONTENT</h2>
-        </div>
-        <span className="game-detail-panel-meta">
-          {detail.contentUnits.length} {detail.contentUnits.length === 1 ? 'UNIT' : 'CONTENT UNITS'}
-        </span>
-      </div>
-      <div className="game-detail-content-summary">
-        <span
-          className={`game-detail-availability game-detail-availability--${detail.availability}`}
-        >
-          {detail.availability === 'available'
-            ? 'LOCAL CONTENT AVAILABLE'
-            : 'LOCAL CONTENT MISSING'}
-        </span>
-        <span>
-          {detail.contentUnits.length === 0 ? 'NO CONTENT UNITS' : 'LOCAL UNITS SUMMARIZED'}
-        </span>
-      </div>
+    <section aria-labelledby="local-content-heading" className="game-detail-section">
+      <SectionHeading
+        headingId="local-content-heading"
+        status={
+          <span className="game-detail-section-meta">
+            {detail.contentUnits.length}{' '}
+            {detail.contentUnits.length === 1 ? 'UNIT' : 'CONTENT UNITS'}
+          </span>
+        }
+        title="LOCAL CONTENT"
+      />
       {detail.contentUnits.length > 0 ? (
         <ul className="game-detail-content-list">
           {detail.contentUnits.map((unit) => (
@@ -200,6 +264,8 @@ function LocalContentSection({ detail }: { detail: LibraryGameDetail }) {
               <code className="game-detail-relative-path" title={unit.primaryRelativePath}>
                 {unit.primaryRelativePath}
               </code>
+              {/* Operationally useful for troubleshooting a content root, but tertiary: it never
+                  competes with the local title, kind, availability, or path. */}
               <div className="game-detail-content-item-meta">
                 <span>CONTENT ROOT #{unit.rootId}</span>
                 <span>{formatFileCount(unit.fileCount)}</span>
@@ -241,17 +307,12 @@ function ReadinessSection({
   const rows = getReadinessRows(availability, systemStatus, contentUnits, readinessLoading);
 
   return (
-    <section
-      aria-labelledby="readiness-heading"
-      className="game-detail-panel game-detail-readiness"
-    >
-      <div className="game-detail-panel-heading">
-        <div>
-          <span className="game-detail-kicker">REQUIREMENTS</span>
-          <h2 id="readiness-heading">EMULATION READINESS</h2>
-        </div>
-        <span className={toneClass(overall.tone)}>{overall.label}</span>
-      </div>
+    <section aria-labelledby="readiness-heading" className="game-detail-section">
+      <SectionHeading
+        headingId="readiness-heading"
+        status={<span className={toneClass(overall.tone)}>{overall.label}</span>}
+        title="EMULATION READINESS"
+      />
       <p className="game-detail-readiness-summary">{overall.detail}</p>
       {readinessError ? (
         <InlineError
@@ -261,17 +322,17 @@ function ReadinessSection({
           onAction={onRetryReadiness}
         />
       ) : null}
-      <div className="readiness-grid">
+      {/* One requirement list, not four dashboard cards. Every readiness truth from readiness.ts
+          is still rendered per row, and status never depends on colour alone. */}
+      <ul aria-label="Emulation requirements" className="readiness-list">
         {rows.map((row) => (
-          <article className={`readiness-row readiness-row--${row.tone}`} key={row.id}>
-            <div className="readiness-row-heading">
-              <h3>{row.label}</h3>
-              <span className={toneClass(row.tone)}>{row.status}</span>
-            </div>
-            <p>{row.detail}</p>
-          </article>
+          <li className={`readiness-row readiness-row--${row.tone}`} key={row.id}>
+            <span className="readiness-row-label">{row.label}</span>
+            <span className={toneClass(row.tone)}>{row.status}</span>
+            <p className="readiness-row-detail">{row.detail}</p>
+          </li>
         ))}
-      </div>
+      </ul>
       {rows.some(
         ({ id, tone }) => id === 'bios' && (tone === 'missing' || tone === 'unavailable'),
       ) && systemStatus?.bios.policy === 'required' ? (
@@ -309,7 +370,7 @@ function MetadataCandidates({
           <span className="game-detail-kicker">ORDERED PROVIDER RESULTS</span>
           <h3 id="metadata-candidate-heading">CHOOSE A METADATA MATCH</h3>
         </div>
-        <span className="game-detail-panel-meta">
+        <span className="game-detail-section-meta">
           {metadataState.candidates.length}{' '}
           {metadataState.candidates.length === 1 ? 'OPTION' : 'OPTIONS'}
         </span>
@@ -360,7 +421,6 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
   const metadataHeading = useRef<HTMLHeadingElement>(null);
   const wasActionPending = useRef(false);
   const metadataState = detail.metadata;
-  const normalized = metadataState?.metadata?.metadata ?? null;
   const stateCopy = metadataState
     ? metadataStateCopy(
         metadataState.status,
@@ -374,6 +434,7 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
   const unsupportedCopy = unsupportedContentCopy(metadataState?.unsupportedReason ?? null);
   const userConfirmed =
     metadataState?.userSelection !== null && metadataState?.userSelection !== undefined;
+  const sourceCredit = metadataState?.metadata?.provenance.sourceCredit ?? null;
 
   const runMetadataAction = () => {
     if (!action) return;
@@ -389,16 +450,15 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
   }, [detail.metadataActionPending]);
 
   return (
-    <section aria-labelledby="metadata-heading" className="game-detail-panel game-detail-metadata">
-      <div className="game-detail-panel-heading">
-        <div>
-          <span className="game-detail-kicker">ENRICHMENT</span>
-          <h2 id="metadata-heading" ref={metadataHeading} tabIndex={-1}>
-            NORMALIZED METADATA
-          </h2>
-        </div>
-        {stateCopy ? <span className="game-detail-panel-meta">{stateCopy.label}</span> : null}
-      </div>
+    // The normalized data itself now belongs to the hero. What remains here is the provider
+    // workflow and its state, which only takes visual weight when a decision or a failure is real.
+    <section aria-labelledby="metadata-heading" className="game-detail-section">
+      <SectionHeading
+        focusable
+        headingId="metadata-heading"
+        headingRef={metadataHeading}
+        title="METADATA"
+      />
       {detail.metadataError && (
         <InlineError
           title={metadataState ? 'METADATA REFRESH FAILED' : 'METADATA UNAVAILABLE'}
@@ -475,60 +535,8 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
         </div>
       ) : null}
       {metadataState ? <MetadataCandidates detail={detail} metadataState={metadataState} /> : null}
-      {normalized ? (
-        <>
-          {normalized.synopsis ? (
-            <p className="game-detail-synopsis">{normalized.synopsis}</p>
-          ) : null}
-          <dl className="game-detail-metadata-list">
-            {normalized.releaseDate ? (
-              <div>
-                <dt>RELEASE DATE</dt>
-                <dd>
-                  <time dateTime={normalized.releaseDate}>{normalized.releaseDate}</time>
-                </dd>
-              </div>
-            ) : null}
-            {normalized.developer ? (
-              <div>
-                <dt>DEVELOPER</dt>
-                <dd>{normalized.developer}</dd>
-              </div>
-            ) : null}
-            {normalized.publisher ? (
-              <div>
-                <dt>PUBLISHER</dt>
-                <dd>{normalized.publisher}</dd>
-              </div>
-            ) : null}
-            {normalized.genre ? (
-              <div>
-                <dt>GENRE</dt>
-                <dd>{normalized.genre}</dd>
-              </div>
-            ) : null}
-            {normalized.players ? (
-              <div>
-                <dt>PLAYERS</dt>
-                <dd>{normalized.players}</dd>
-              </div>
-            ) : null}
-            {normalized.region ? (
-              <div>
-                <dt>REGION</dt>
-                <dd>{normalized.region}</dd>
-              </div>
-            ) : null}
-          </dl>
-          {metadataState?.metadata?.provenance.sourceCredit ? (
-            <p className="game-detail-provenance">
-              {userConfirmed ? 'USER-CONFIRMED MATCH · ' : ''}SOURCE CREDIT ·{' '}
-              {metadataState.metadata.provenance.sourceCredit}
-            </p>
-          ) : null}
-        </>
-      ) : metadataState && !detail.metadataLoading ? (
-        <p className="game-detail-empty-copy">No normalized metadata is available yet.</p>
+      {sourceCredit ? (
+        <p className="game-detail-provenance">SOURCE CREDIT · {sourceCredit}</p>
       ) : null}
     </section>
   );
@@ -550,11 +558,19 @@ export function GameDetailPage({
   const systemId = localDetail?.systemId ?? systemStatus?.id ?? null;
   const systemName =
     systemStatus?.displayName ?? (systemId ? formatSystemId(systemId) : 'SYSTEM UNKNOWN');
+  const shortSystem = systemId ? systemShortLabel(systemId, systemName) : systemName;
   const accent = systemAccent(systemId ?? 'unknown');
   const cover = detail.metadata?.cover;
   const coverRef = cover?.state === 'cached' ? cover.mediaRef : null;
   const notFound = gameId === null || (detail.localLoaded && !localDetail && !detail.localError);
   const localError = detail.localError;
+  const year = releaseYear(normalized?.releaseDate);
+  const infoRows = heroInfoRows(normalized, year);
+  // Local telemetry is only worth hero space when it is a genuinely different identity from the
+  // one already shown as the title.
+  const localTitle = localDetail?.localTitle.trim() ?? '';
+  const showLocalTitle =
+    localTitle !== '' && localTitle.toLocaleLowerCase() !== title.toLocaleLowerCase();
 
   useEffect(() => {
     headingRef.current?.focus();
@@ -567,33 +583,35 @@ export function GameDetailPage({
       id="game-detail-main"
     >
       <BackToLibrary onBackToLibrary={onBackToLibrary} />
-      <h1 className="game-detail-title" id="game-detail-title" ref={headingRef} tabIndex={-1}>
-        {gameId === null ? 'INVALID GAME LINK' : notFound ? 'GAME NOT FOUND' : title}
-      </h1>
 
       {notFound ? (
-        <section className="game-detail-not-found" aria-labelledby="game-not-found-copy">
-          <h2 id="game-not-found-copy">
-            {gameId === null
-              ? 'THIS GAME LINK IS INVALID'
-              : 'THIS GAME IS NO LONGER IN THE LIBRARY'}
-          </h2>
-          <p>
-            {gameId === null
-              ? 'The game ID in this route is not valid.'
-              : 'The local game record could not be found. It may have changed after a scan.'}
-          </p>
-          <a
-            className="text-link"
-            href="/library"
-            onClick={(event) => {
-              event.preventDefault();
-              onBackToLibrary();
-            }}
-          >
-            RETURN TO LIBRARY
-          </a>
-        </section>
+        <>
+          <h1 className="game-detail-title" id="game-detail-title" ref={headingRef} tabIndex={-1}>
+            {gameId === null ? 'INVALID GAME LINK' : 'GAME NOT FOUND'}
+          </h1>
+          <section className="game-detail-not-found" aria-labelledby="game-not-found-copy">
+            <h2 id="game-not-found-copy">
+              {gameId === null
+                ? 'THIS GAME LINK IS INVALID'
+                : 'THIS GAME IS NO LONGER IN THE LIBRARY'}
+            </h2>
+            <p>
+              {gameId === null
+                ? 'The game ID in this route is not valid.'
+                : 'The local game record could not be found. It may have changed after a scan.'}
+            </p>
+            <a
+              className="text-link"
+              href="/library"
+              onClick={(event) => {
+                event.preventDefault();
+                onBackToLibrary();
+              }}
+            >
+              RETURN TO LIBRARY
+            </a>
+          </section>
+        </>
       ) : (
         <>
           {detail.localLoading && !detail.localLoaded ? (
@@ -607,64 +625,112 @@ export function GameDetailPage({
               onAction={() => void detail.retryLocal()}
             />
           ) : null}
-          <section className="game-detail-hero" aria-labelledby="game-detail-title">
-            <div className="game-detail-cover-frame">
-              <GameCover
-                accent={accent}
-                className="game-detail-cover"
-                coverRef={coverRef}
-                placeholderClassName="game-detail-placeholder"
-                resetKey={cover ?? detail.metadata ?? localDetail ?? EMPTY_DETAIL_RESET_KEY}
-                loading="eager"
-                title={title}
-              />
+
+          {/* B6 hero: 280px cover column, the one dominant title, compact identity, and the real
+              M6 Favorite action under the cover. No launch action exists until M7 owns it. */}
+          <section
+            className="game-detail-hero"
+            data-system-accent={systemAccentKey(systemId ?? 'unknown')}
+            style={{ '--system-accent': accent } as CSSProperties}
+          >
+            <div className="game-detail-cover-column">
+              <div className="game-detail-cover-frame">
+                <GameCover
+                  accent={accent}
+                  className="game-detail-cover"
+                  coverRef={coverRef}
+                  placeholderClassName="game-detail-placeholder"
+                  resetKey={cover ?? detail.metadata ?? localDetail ?? EMPTY_DETAIL_RESET_KEY}
+                  loading="eager"
+                  title={title}
+                />
+              </div>
+              {localDetail ? (
+                <div className="game-detail-cover-actions">
+                  <button
+                    aria-busy={detail.favoritePending || undefined}
+                    aria-label={
+                      localDetail.favorite
+                        ? `Remove ${title} from favorites`
+                        : `Add ${title} to favorites`
+                    }
+                    aria-pressed={localDetail.favorite}
+                    className="game-detail-favorite"
+                    onClick={() => void detail.toggleFavorite()}
+                    type="button"
+                  >
+                    <PixelStar filled={localDetail.favorite} />
+                    {localDetail.favorite ? 'FAVORITED' : 'ADD TO FAVORITES'}
+                  </button>
+                  {detail.favoriteError ? (
+                    <p className="game-detail-action-error" role="alert">
+                      FAVORITE NOT UPDATED · TRY AGAIN
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
+
             <div className="game-detail-hero-copy">
-              <div className="game-detail-system-line">
-                <span
-                  className="game-detail-system"
-                  style={{ '--system-accent': accent } as CSSProperties}
-                >
-                  {systemName}
+              <div className="game-detail-chips">
+                <span className="game-detail-system" title={systemName}>
+                  <span aria-hidden="true">{shortSystem}</span>
+                  <span className="visually-hidden">{systemName}</span>
                 </span>
+                {normalized?.genre ? (
+                  <span className="game-detail-chip">{normalized.genre}</span>
+                ) : null}
+                {year ? (
+                  <time
+                    className="game-detail-year"
+                    dateTime={normalized?.releaseDate ?? undefined}
+                  >
+                    {year}
+                  </time>
+                ) : null}
                 {localDetail?.availability === 'unavailable' ? (
                   <span className="game-detail-availability game-detail-availability--unavailable">
                     LOCAL CONTENT MISSING
                   </span>
                 ) : null}
               </div>
-              <p aria-hidden="true" className="game-detail-hero-title">
+
+              <h1
+                className="game-detail-title"
+                id="game-detail-title"
+                ref={headingRef}
+                tabIndex={-1}
+              >
                 {title}
-              </p>
-              {localDetail ? (
-                <p className="game-detail-local-identity">LOCAL TITLE · {localDetail.localTitle}</p>
+              </h1>
+
+              {showLocalTitle ? (
+                <p className="game-detail-local-identity">LOCAL TITLE · {localTitle}</p>
               ) : null}
-              {localDetail ? (
-                <button
-                  aria-busy={detail.favoritePending || undefined}
-                  aria-label={
-                    localDetail.favorite
-                      ? `Remove ${title} from favorites`
-                      : `Add ${title} to favorites`
-                  }
-                  aria-pressed={localDetail.favorite}
-                  className="game-detail-favorite"
-                  onClick={() => void detail.toggleFavorite()}
-                  type="button"
-                >
-                  <PixelStar filled={localDetail.favorite} />
-                  {localDetail.favorite ? 'FAVORITED' : 'ADD TO FAVORITES'}
-                </button>
+
+              {normalized?.synopsis ? (
+                <p className="game-detail-synopsis">{normalized.synopsis}</p>
               ) : null}
-              {detail.favoriteError ? (
-                <p className="game-detail-action-error" role="alert">
-                  FAVORITE NOT UPDATED · TRY AGAIN
-                </p>
+
+              {infoRows.length > 0 ? (
+                <dl className="game-detail-info">
+                  {infoRows.map((row) => (
+                    <div key={row.key}>
+                      <dt>{row.label}</dt>
+                      <dd>
+                        {row.dateTime ? (
+                          <time dateTime={row.dateTime}>{row.value}</time>
+                        ) : (
+                          row.value
+                        )}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
               ) : null}
             </div>
           </section>
 
-          <MetadataSection detail={detail} />
           <ReadinessSection
             detail={localDetail}
             onRetryReadiness={onRetryReadiness}
@@ -672,6 +738,7 @@ export function GameDetailPage({
             readinessError={readinessError}
             systemStatus={systemStatus}
           />
+          <MetadataSection detail={detail} />
           {localDetail ? <LocalContentSection detail={localDetail} /> : null}
         </>
       )}

@@ -1551,13 +1551,23 @@ a:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+/* C4/B1 render black on every accent, and B6's Detail cover and system badge follow the same
+   rule. Light `--accent-3` is the one pairing that cannot carry badge text in black at AA, so
+   only its ink is adjusted; no accent is diluted and no surface is washed toward white. */
+.game-card,
+.game-detail-hero {
+  --system-accent-ink: #000;
+}
+
+[data-theme='light'] .game-card[data-system-accent='accent-3'],
+[data-theme='light'] .game-detail-hero[data-system-accent='accent-3'] {
+  --system-accent-ink: #ffffff;
+}
+
 /* GameCard — B1 tile geometry, C4 placeholder rule, A6 V5 focus language. */
 .game-card {
   position: relative;
   min-width: 0;
-  /* C4/B1 render black on every accent. Light `--accent-3` is the one pairing that cannot carry
-     15 px badge text in black at AA, so only its ink is adjusted; no accent is diluted. */
-  --system-accent-ink: #000;
   overflow: visible;
   background: var(--surface);
   border: 2px solid var(--border);
@@ -1567,10 +1577,6 @@ a:focus-visible {
     transform 0.14s cubic-bezier(0.16, 1, 0.3, 1),
     box-shadow 0.14s cubic-bezier(0.16, 1, 0.3, 1);
   transform-origin: center bottom;
-}
-
-[data-theme='light'] .game-card[data-system-accent='accent-3'] {
-  --system-accent-ink: #ffffff;
 }
 
 .game-card:hover {
@@ -1782,8 +1788,11 @@ a:focus-visible {
   opacity: 0.72;
 }
 
+/* Game Detail — B6 composition. The game dominates: one hero with the cover column, one
+   dominant title, and compact identity; the truthful technical surfaces below stay secondary
+   section rules rather than full-width dashboard panels. */
 .game-detail-main {
-  gap: 20px;
+  gap: 26px;
 }
 
 .game-detail-back {
@@ -1808,26 +1817,18 @@ a:focus-visible {
   box-shadow: 4px 4px 0 var(--shadow);
 }
 
-.game-detail-title {
-  max-width: 34ch;
-  margin: 0;
-  font-family: var(--font-label);
-  font-size: clamp(16px, 2.2vw, 25px);
-  letter-spacing: 1px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.game-detail-title:focus-visible {
-  color: var(--bg);
-  background: var(--text);
-}
-
 .game-detail-hero {
   display: grid;
-  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
-  gap: 24px;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 28px;
   align-items: start;
+}
+
+.game-detail-cover-column {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .game-detail-cover-frame {
@@ -1850,11 +1851,12 @@ a:focus-visible {
   object-fit: cover;
 }
 
+/* C4: the missing cover is the system accent itself, never a diluted variant of it. */
 .game-detail-placeholder {
   display: grid;
   place-items: center;
   padding: 24px;
-  color: #000;
+  color: var(--system-accent-ink);
   text-align: center;
   background: var(--system-accent);
 }
@@ -1868,20 +1870,23 @@ a:focus-visible {
   text-wrap: pretty;
 }
 
-[data-theme='light'] .game-detail-placeholder {
-  background: color-mix(in srgb, var(--system-accent) 78%, white);
+/* B6's cover-action rhythm. Only the real M6 Favorite action lives here; the launch action
+   belongs to M7 and is deliberately absent rather than faked. */
+.game-detail-cover-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .game-detail-hero-copy {
   display: flex;
   min-width: 0;
-  padding-top: 6px;
   flex-direction: column;
   align-items: flex-start;
   gap: 14px;
 }
 
-.game-detail-system-line {
+.game-detail-chips {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -1889,32 +1894,55 @@ a:focus-visible {
 }
 
 .game-detail-system {
-  padding: 3px 9px;
-  color: #000;
+  min-width: 0;
+  padding: 1px 9px;
+  overflow: hidden;
+  color: var(--system-accent-ink);
   font-family: var(--font-meta);
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   background: var(--system-accent);
   border: 2px solid var(--border);
 }
 
-[data-theme='light'] .game-detail-system {
-  background: color-mix(in srgb, var(--system-accent) 78%, white);
+.game-detail-chip {
+  padding: 1px 9px;
+  color: var(--text);
+  font-family: var(--font-meta);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  background: var(--surface-2);
+  border: 2px solid var(--border);
 }
 
-.game-detail-hero-title {
+.game-detail-year {
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 19px;
+  letter-spacing: 0.04em;
+}
+
+.game-detail-title {
   max-width: 28ch;
   margin: 0;
   font-family: var(--font-label);
-  font-size: clamp(18px, 2.6vw, 30px);
-  line-height: 1.45;
+  font-size: clamp(17px, 2.4vw, 26px);
+  letter-spacing: 1px;
+  line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.game-detail-title:focus-visible {
+  color: var(--bg);
+  background: var(--text);
 }
 
 .game-detail-local-identity,
 .game-detail-provenance,
-.game-detail-content-summary,
 .game-detail-content-item-meta {
   color: var(--text-dim);
   font-family: var(--font-meta);
@@ -1923,21 +1951,66 @@ a:focus-visible {
 }
 
 .game-detail-local-identity {
-  margin: -4px 0 0;
+  margin: -6px 0 0;
+}
+
+.game-detail-synopsis {
+  max-width: 62ch;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+/* B6's compact key/value block — a bordered pixel-shadow surface with dashed row rules, not a
+   full-width metadata dashboard. */
+.game-detail-info {
+  width: 100%;
+  max-width: 520px;
+  margin: 2px 0 0;
+  padding: 4px 16px;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
+}
+
+.game-detail-info > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding: 8px 0;
+  border-top: 1px dashed var(--text-dim);
+}
+
+.game-detail-info > div:first-child {
+  border-top: none;
+}
+
+.game-detail-info dt {
+  flex: none;
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+}
+
+.game-detail-info dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-family: var(--font-meta);
+  font-size: 20px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .game-detail-availability {
   font-family: var(--font-meta);
   font-size: 17px;
   letter-spacing: 0.03em;
-}
-
-.game-detail-availability--available {
-  color: var(--text);
-  text-decoration: underline;
-  text-decoration-color: var(--accent);
-  text-decoration-thickness: 2px;
-  text-underline-offset: 3px;
 }
 
 .game-detail-availability--unavailable {
@@ -1951,19 +2024,23 @@ a:focus-visible {
 .game-detail-favorite {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
+  width: 100%;
   min-height: 40px;
-  padding: 8px 12px;
+  padding: 12px 10px;
   color: var(--text);
   font-family: var(--font-label);
   font-size: 9px;
-  background: var(--surface);
+  letter-spacing: 0.04em;
+  background: var(--surface-2);
   border: 2px solid var(--border);
   box-shadow: 3px 3px 0 var(--shadow);
   cursor: pointer;
 }
 
 .game-detail-favorite svg {
+  flex: none;
   width: 16px;
   height: 16px;
 }
@@ -2000,8 +2077,8 @@ a:focus-visible {
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
-  min-height: 180px;
-  padding: 28px;
+  min-height: 96px;
+  padding: 24px 28px;
   color: var(--text-dim);
   font-family: var(--font-meta);
   font-size: 21px;
@@ -2014,37 +2091,40 @@ a:focus-visible {
   color: var(--text-dim);
 }
 
-.game-detail-panel {
-  display: flex;
-  min-width: 0;
-  padding: 20px 22px;
-  flex-direction: column;
-  gap: 16px;
-  background: var(--surface);
-  border: 2px solid var(--border);
-  box-shadow: var(--shadow-rest);
-}
-
-.game-detail-panel-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.game-detail-panel-heading > div {
+/* B6 section rule. The secondary surfaces are sections under a hard rule, not stacked panels. */
+.game-detail-section {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 7px;
+  gap: 14px;
 }
 
-.game-detail-panel-heading h2 {
+.game-detail-section-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.game-detail-section-heading h2 {
+  flex: none;
   margin: 0;
   font-family: var(--font-label);
-  font-size: 12px;
-  letter-spacing: 0.08em;
+  font-size: 13px;
+  letter-spacing: 1px;
   line-height: 1.5;
+  white-space: nowrap;
+}
+
+.game-detail-section-heading h2:focus-visible {
+  color: var(--bg);
+  background: var(--text);
+}
+
+.game-detail-section-rule {
+  flex: 1;
+  min-width: 12px;
+  height: 3px;
+  background: var(--border);
 }
 
 .game-detail-kicker {
@@ -2054,50 +2134,17 @@ a:focus-visible {
   letter-spacing: 0.1em;
 }
 
-.game-detail-panel-meta {
+.game-detail-section-meta {
   flex: none;
   color: var(--text-dim);
   font-family: var(--font-meta);
   font-size: 18px;
-  text-align: right;
-}
-
-.game-detail-synopsis {
-  max-width: 72ch;
-  margin: 0;
-  font-size: 16px;
-  line-height: 1.65;
-  text-wrap: pretty;
-}
-
-.game-detail-metadata-list {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px 20px;
-  margin: 0;
-}
-
-.game-detail-metadata-list > div {
-  min-width: 0;
-}
-
-.game-detail-metadata-list dt {
-  margin-bottom: 4px;
-  color: var(--text-dim);
-  font-family: var(--font-label);
-  font-size: 8px;
-  letter-spacing: 0.06em;
-}
-
-.game-detail-metadata-list dd {
-  margin: 0;
-  font-family: var(--font-meta);
-  font-size: 20px;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .metadata-state-callout {
   display: flex;
+  max-width: 78ch;
   padding: 12px 14px;
   flex-direction: column;
   gap: 5px;
@@ -2263,53 +2310,48 @@ a:focus-visible {
   text-wrap: pretty;
 }
 
-.readiness-grid {
+/* Compact requirement rows. Every requirement keeps its label, its status word, and its
+   supporting sentence; none of them becomes a dashboard card. */
+.readiness-list {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
 }
 
 .readiness-row {
-  display: flex;
+  display: grid;
+  align-items: baseline;
+  gap: 2px 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-top: 2px solid var(--border);
+}
+
+.readiness-row:first-child {
+  border-top: none;
+}
+
+.readiness-row-label {
   min-width: 0;
-  padding: 13px 14px;
-  flex-direction: column;
-  gap: 10px;
-  background: var(--surface-2);
-  border: 2px solid var(--border);
-}
-
-.readiness-row-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.readiness-row h3 {
-  margin: 0;
   font-family: var(--font-label);
   font-size: 9px;
   letter-spacing: 0.05em;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
-.readiness-row p {
-  min-height: 2.8em;
+.readiness-row-detail {
+  grid-column: 1 / -1;
   margin: 0;
   color: var(--text-dim);
   font-family: var(--font-meta);
   font-size: 18px;
-  line-height: 1.2;
-}
-
-.readiness-row--missing,
-.readiness-row--unavailable {
-  border-top: 3px solid var(--accent-6);
-}
-
-.readiness-row--unknown {
-  border-top: 3px solid var(--text-dim);
+  line-height: 1.25;
 }
 
 .readiness-status {
@@ -2347,14 +2389,6 @@ a:focus-visible {
   color: var(--text);
 }
 
-.game-detail-content-summary {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 8px 16px;
-}
-
 .game-detail-content-list {
   display: grid;
   gap: 10px;
@@ -2369,7 +2403,7 @@ a:focus-visible {
   padding: 13px 14px;
   flex-direction: column;
   gap: 10px;
-  background: var(--surface-2);
+  background: var(--surface);
   border: 2px solid var(--border);
 }
 
@@ -2439,6 +2473,7 @@ a:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  font-size: 17px;
 }
 
 .game-detail-not-found {
@@ -2469,9 +2504,16 @@ a:focus-visible {
   line-height: 1.55;
 }
 
+/* B6 stacks the hero below 1080px. The cover column keeps its 280px ceiling so the game keeps a
+   cover-sized identity instead of a full-width image. */
 @media (max-width: 1080px) {
-  .readiness-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .game-detail-hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 22px;
+  }
+
+  .game-detail-cover-column {
+    max-width: 280px;
   }
 }
 
@@ -2551,13 +2593,8 @@ a:focus-visible {
     padding: 24px 20px 44px;
   }
 
-  .game-detail-hero {
-    grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
-    gap: 20px;
-  }
-
-  .game-detail-panel {
-    padding: 18px;
+  .game-detail-cover-column {
+    max-width: 240px;
   }
 }
 
@@ -2685,29 +2722,14 @@ a:focus-visible {
     min-width: 0;
   }
 
-  .game-detail-hero {
-    grid-template-columns: 1fr;
-  }
-
-  .game-detail-cover-frame {
-    width: min(100%, 280px);
-  }
-
-  .game-detail-metadata-list,
-  .readiness-grid,
   .metadata-provider-summary {
     grid-template-columns: 1fr;
   }
 
-  .game-detail-panel-heading,
   .game-detail-content-item-heading,
   .metadata-candidate-heading,
   .metadata-account-heading {
     flex-direction: column;
-  }
-
-  .game-detail-panel-meta {
-    text-align: left;
   }
 
   .game-detail-content-item-meta {
