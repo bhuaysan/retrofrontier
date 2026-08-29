@@ -3,6 +3,8 @@ import type { CSSProperties, MouseEvent } from 'react';
 import type { LibraryListItem, LibraryMetadataMatchState } from '../../platform/ipc';
 import { gameRoute, routePath } from '../../app/routes';
 import { GameCover } from './GameCover';
+import { systemAccentKey } from './systemAccents';
+import { systemShortLabel } from './systemLabels';
 
 interface GameCardProps {
   item: LibraryListItem;
@@ -13,6 +15,11 @@ interface GameCardProps {
   onToggleFavorite: (item: LibraryListItem) => void;
 }
 
+/**
+ * Coarse metadata lifecycle state. B1/C4 tiles are deliberately compact, so this is no longer a
+ * visible card row; it stays in the card's accessible description, and Game Detail remains the
+ * surface that renders the full metadata state.
+ */
 const METADATA_LABELS: Partial<Record<LibraryMetadataMatchState, string>> = {
   pending: 'METADATA PENDING',
   noMatch: 'NO METADATA MATCH',
@@ -23,13 +30,23 @@ const METADATA_LABELS: Partial<Record<LibraryMetadataMatchState, string>> = {
 };
 
 export function PixelStar({ filled }: { filled: boolean }) {
+  // Hard-edged 12×12 pixel star. The unfilled variant is the same silhouette with a one-pixel
+  // interior cut out through `evenodd`, so both states stay crisp and unmistakably a star at the
+  // small overlay size instead of closing into a blob the way a stroked outline did.
+  const silhouette =
+    'M5 0h2v2h-2zM4 2h4v2h-4zM0 4h12v1h-12zM1 5h10v1h-10zM2 6h8v1h-8z' +
+    'M3 7h6v1h-6zM2 8h8v1h-8zM1 9h3v1h-3zM8 9h3v1h-3zM0 10h3v1h-3z' +
+    'M9 10h3v1h-3zM0 11h2v1h-2zM10 11h2v1h-2z';
+  const interior =
+    'M5 2h2v2h-2zM4 4h4v1h-4zM2 5h8v1h-8zM3 6h6v1h-6zM4 7h4v1h-4z' +
+    'M3 8h1v1h-1zM8 8h1v1h-1zM2 9h1v1h-1zM9 9h1v1h-1zM1 10h1v1h-1zM10 10h1v1h-1z';
+
   return (
-    <svg aria-hidden="true" shapeRendering="crispEdges" viewBox="0 0 14 14">
+    <svg aria-hidden="true" shapeRendering="crispEdges" viewBox="0 0 12 12">
       <path
-        d="M6 0h2v3h3v2h3v2h-2v2h1v5H8v-2H6v2H1V9h1V7H0V5h3V3h3z"
-        fill={filled ? 'currentColor' : 'none'}
-        stroke="currentColor"
-        strokeWidth="1.5"
+        d={filled ? silhouette : `${silhouette}${interior}`}
+        fill="currentColor"
+        fillRule="evenodd"
       />
     </svg>
   );
@@ -47,6 +64,8 @@ export function GameCard({
   const headingId = `game-card-title-${item.gameId}`;
   const metadataLabel = METADATA_LABELS[item.metadataMatchState];
   const releaseYear = item.releaseDate?.match(/^\d{4}/)?.[0] ?? null;
+  const unavailable = item.availability === 'unavailable';
+  const shortSystem = systemShortLabel(item.systemId, systemName);
 
   const handleDetailClick = (event: MouseEvent<HTMLAnchorElement>) => {
     if (
@@ -66,7 +85,8 @@ export function GameCard({
   return (
     <article
       aria-labelledby={headingId}
-      className={`game-card${item.availability === 'unavailable' ? ' game-card--unavailable' : ''}`}
+      className={`game-card${unavailable ? ' game-card--unavailable' : ''}`}
+      data-system-accent={systemAccentKey(item.systemId)}
       style={{ '--system-accent': accent } as CSSProperties}
     >
       <div className="game-card-media">
@@ -78,6 +98,13 @@ export function GameCard({
           resetKey={item}
           title={title}
         />
+        {unavailable ? (
+          <p className="game-card-flag" title="Local content is unavailable or missing">
+            <span aria-hidden="true">!</span>
+            <span>MISSING</span>
+            <span className="visually-hidden">{' local content'}</span>
+          </p>
+        ) : null}
         <button
           aria-busy={favoritePending || undefined}
           aria-label={
@@ -93,9 +120,10 @@ export function GameCard({
       </div>
 
       <div className="game-card-copy">
-        <h3 aria-label={title} id={headingId} title={title}>
+        <h3 aria-label={title} className="game-card-title" id={headingId} title={title}>
           <a
             aria-label={`Open ${title} details`}
+            className="game-card-title-link"
             data-game-detail-link={item.gameId}
             href={routePath(gameRoute(item.gameId))}
             onClick={handleDetailClick}
@@ -105,27 +133,18 @@ export function GameCard({
         </h3>
         <div className="game-card-system-row">
           <span className="game-card-system" title={systemName}>
-            {systemName}
+            <span aria-hidden="true">{shortSystem}</span>
+            <span className="visually-hidden">{systemName}</span>
           </span>
-          {releaseYear ? <time dateTime={item.releaseDate ?? undefined}>{releaseYear}</time> : null}
+          {releaseYear ? (
+            <time className="game-card-year" dateTime={item.releaseDate ?? undefined}>
+              {releaseYear}
+            </time>
+          ) : null}
         </div>
-        <div className="game-card-state-row">
-          <span
-            className={`availability-badge availability-badge--${item.availability}`}
-            title={
-              item.availability === 'available'
-                ? 'Local content is available'
-                : 'Local content is unavailable or missing'
-            }
-          >
-            {item.availability === 'available' ? 'LOCAL' : 'LOCAL FILE MISSING'}
-          </span>
-          {metadataLabel ? <span className="metadata-state">{metadataLabel}</span> : null}
-        </div>
-        {item.genre || item.region ? (
-          <p className="game-card-meta">{[item.genre, item.region].filter(Boolean).join(' · ')}</p>
-        ) : null}
       </div>
+
+      {metadataLabel ? <p className="visually-hidden">{metadataLabel}</p> : null}
     </article>
   );
 }

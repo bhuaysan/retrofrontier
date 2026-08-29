@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { LibraryListItem } from '../../platform/ipc';
@@ -23,7 +23,7 @@ const item: LibraryListItem = {
 function renderCard(overrides: Partial<LibraryListItem> = {}, favoritePending = false) {
   const onToggleFavorite = vi.fn();
   const onOpenGame = vi.fn();
-  render(
+  const { unmount } = render(
     <GameCard
       item={{ ...item, ...overrides }}
       systemName="Nintendo Entertainment System"
@@ -33,11 +33,11 @@ function renderCard(overrides: Partial<LibraryListItem> = {}, favoritePending = 
       onToggleFavorite={onToggleFavorite}
     />,
   );
-  return { onOpenGame, onToggleFavorite };
+  return { onOpenGame, onToggleFavorite, unmount };
 }
 
 describe('GameCard', () => {
-  it('renders list-level metadata with accessible favorite and local availability semantics', () => {
+  it('renders the compact B1 tile: title, compact system badge, and real release year', () => {
     const { onToggleFavorite } = renderCard();
 
     expect(screen.getByRole('heading', { name: 'Kirby’s Adventure' })).toBeInTheDocument();
@@ -45,9 +45,8 @@ describe('GameCard', () => {
       'href',
       '/games/1',
     );
-    expect(screen.getByText('Nintendo Entertainment System')).toBeInTheDocument();
+    expect(screen.getByText('NES')).toBeInTheDocument();
     expect(screen.getByText('1993')).toBeInTheDocument();
-    expect(screen.getByText('LOCAL')).toBeInTheDocument();
     const favorite = screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' });
     expect(favorite).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(favorite);
@@ -55,9 +54,16 @@ describe('GameCard', () => {
     expect(screen.getAllByRole('button')).toHaveLength(1);
   });
 
-  it('opens details from the title link without nesting Favorite inside an interactive element', () => {
+  it('keeps the detail target a real anchor without browser-link chrome', () => {
     const { onOpenGame } = renderCard();
     const link = screen.getByRole('link', { name: 'Open Kirby’s Adventure details' });
+
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/games/1');
+    expect(link).toHaveAttribute('data-game-detail-link', '1');
+    // The card owns the title's appearance; the anchor must not fall back to the user agent's
+    // blue/underlined link styling.
+    expect(link).toHaveClass('game-card-title-link');
 
     fireEvent.click(link);
 
@@ -66,6 +72,130 @@ describe('GameCard', () => {
     expect(
       screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' }),
     ).not.toContainElement(link);
+  });
+
+  it('leaves modified clicks to the native anchor', () => {
+    const { onOpenGame } = renderCard();
+    const link = screen.getByRole('link', { name: 'Open Kirby’s Adventure details' });
+
+    fireEvent.click(link, { ctrlKey: true });
+    fireEvent.click(link, { metaKey: true });
+    fireEvent.click(link, { shiftKey: true });
+    fireEvent.click(link, { button: 1 });
+
+    expect(onOpenGame).not.toHaveBeenCalled();
+  });
+
+  it('does not spend a card row on normal local availability', () => {
+    renderCard();
+
+    expect(screen.queryByText('LOCAL')).not.toBeInTheDocument();
+    expect(screen.queryByText('LOCAL FILE MISSING')).not.toBeInTheDocument();
+    expect(screen.queryByText('MISSING')).not.toBeInTheDocument();
+  });
+
+  it('does not render metadata lifecycle prose as a visible card row', () => {
+    for (const state of [
+      'pending',
+      'noMatch',
+      'ambiguous',
+      'deferred',
+      'failed',
+      'stale',
+    ] as const) {
+      const { unmount } = render(
+        <GameCard
+          accent="var(--accent)"
+          favoritePending={false}
+          item={{ ...item, metadataMatchState: state }}
+          onOpenGame={vi.fn()}
+          onToggleFavorite={vi.fn()}
+          systemName="Nintendo Entertainment System"
+        />,
+      );
+
+      expect(
+        screen.queryByText(/METADATA|MATCH REVIEW/, { ignore: '.visually-hidden' }),
+      ).toBeNull();
+      unmount();
+    }
+  });
+
+  it('keeps the coarse metadata state available to assistive technology', () => {
+    renderCard({ metadataMatchState: 'stale' });
+
+    const card = screen.getByRole('article');
+    expect(within(card).getByText('METADATA STALE')).toBeInTheDocument();
+    expect(within(card).getByText('METADATA STALE')).toHaveClass('visually-hidden');
+  });
+
+  it('does not add a genre or region row to the compact tile', () => {
+    renderCard();
+
+    expect(screen.queryByText(/Platform/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/US/)).not.toBeInTheDocument();
+  });
+
+  it('keeps a visible, accessible missing-content indication for unavailable local content', () => {
+    renderCard({ availability: 'unavailable', favorite: true }, true);
+
+    const flag = screen.getByText('MISSING');
+    expect(flag).toBeVisible();
+    expect(flag.closest('.game-card-flag')).toHaveTextContent(/MISSING local content/);
+    // The card stays browsable: the detail route is never disabled for a missing local file.
+    expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveAttribute(
+      'href',
+      '/games/1',
+    );
+    const favorite = screen.getByRole('button', {
+      name: 'Remove Kirby’s Adventure from favorites',
+    });
+    expect(favorite).not.toBeDisabled();
+    expect(favorite).toHaveAttribute('aria-busy', 'true');
+    expect(favorite).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('renders the compact badge but keeps the full system name accessible', () => {
+    renderCard({ systemId: 'snes' }, false);
+
+    const badge = screen.getByText('SNES');
+    expect(badge).toBeInTheDocument();
+    expect(badge.closest('.game-card-system')).toHaveAttribute(
+      'title',
+      'Nintendo Entertainment System',
+    );
+    expect(
+      within(screen.getByRole('article')).getByText('Nintendo Entertainment System'),
+    ).toHaveClass('visually-hidden');
+  });
+
+  it('falls back safely for an unknown future authoritative system ID', () => {
+    render(
+      <GameCard
+        accent="var(--accent-3)"
+        favoritePending={false}
+        item={{ ...item, systemId: 'atari_2600' as LibraryListItem['systemId'] }}
+        onOpenGame={vi.fn()}
+        onToggleFavorite={vi.fn()}
+        systemName="Atari 2600"
+      />,
+    );
+
+    const badge = screen.getByText('ATARI 2600');
+    expect(badge).toBeVisible();
+    expect(badge.textContent).not.toBe('');
+  });
+
+  it('renders no year at all when the release date is missing or not a real year', () => {
+    const { unmount } = renderCard({ releaseDate: null });
+    expect(screen.queryByText('UNKNOWN')).not.toBeInTheDocument();
+    expect(screen.queryByText('N/A')).not.toBeInTheDocument();
+    expect(screen.queryByText('----')).not.toBeInTheDocument();
+    expect(document.querySelector('time')).toBeNull();
+    unmount();
+
+    renderCard({ releaseDate: 'not-a-date' });
+    expect(document.querySelector('time')).toBeNull();
   });
 
   it('uses the local title fallback and keeps metadata failure separate from availability', () => {
@@ -77,21 +207,7 @@ describe('GameCard', () => {
     });
 
     expect(screen.getByRole('heading', { name: 'Local title' })).toBeInTheDocument();
-    expect(screen.getByText('METADATA UNAVAILABLE')).toBeInTheDocument();
-    expect(screen.getByText('LOCAL')).toBeInTheDocument();
-    expect(screen.queryByText('LOCAL FILE MISSING')).not.toBeInTheDocument();
-  });
-
-  it('shows unavailable content independently while keeping an in-flight favorite focusable', () => {
-    renderCard({ availability: 'unavailable', favorite: true }, true);
-
-    expect(screen.getByText('LOCAL FILE MISSING')).toBeInTheDocument();
-    const favorite = screen.getByRole('button', {
-      name: 'Remove Kirby’s Adventure from favorites',
-    });
-    expect(favorite).not.toBeDisabled();
-    expect(favorite).toHaveAttribute('aria-busy', 'true');
-    expect(favorite).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByText('MISSING')).not.toBeInTheDocument();
   });
 
   it('uses the local title when the authoritative display title is only whitespace', () => {
@@ -108,21 +224,21 @@ describe('GameCard', () => {
       'src',
       item.coverRef,
     );
-    expect(screen.getByText('METADATA STALE')).toBeInTheDocument();
-    expect(screen.getByText('LOCAL')).toBeInTheDocument();
   });
 
-  it('uses an opaque lazy cover reference and falls back normally after image failure', () => {
+  it('uses an opaque lazy cover reference and falls back to the C4 placeholder after failure', () => {
     renderCard();
     const cover = screen.getByRole('img', { name: 'Cover art for Kirby’s Adventure' });
     expect(cover).toHaveAttribute('loading', 'lazy');
     expect(cover).toHaveAttribute('src', item.coverRef);
 
     fireEvent.error(cover);
-    expect(
-      screen.getByRole('img', { name: 'No cover available for Kirby’s Adventure' }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('METADATA UNAVAILABLE')).not.toBeInTheDocument();
+    const placeholder = screen.getByRole('img', {
+      name: 'No cover available for Kirby’s Adventure',
+    });
+    expect(placeholder).toHaveClass('game-card-placeholder');
+    expect(placeholder).toHaveTextContent('Kirby’s Adventure');
+    expect(screen.queryByRole('img', { name: /Cover art/ })).not.toBeInTheDocument();
   });
 
   it('tries a changed authoritative cover reference after an earlier cover failed', () => {
@@ -196,5 +312,31 @@ describe('GameCard', () => {
     const placeholder = screen.getByRole('img', { name: `No cover available for ${longTitle}` });
     expect(placeholder).toHaveStyle({ '--system-accent': 'var(--accent)' });
     expect(placeholder).toHaveTextContent(longTitle);
+  });
+
+  it('keeps a long title fully available even though the visible tile shows one line', () => {
+    const longTitle = 'A Very Long Local Game Title That Must Remain Readable';
+    renderCard({ coverRef: null, displayTitle: longTitle, metadataTitle: null });
+
+    const heading = screen.getByRole('heading', { name: longTitle });
+    expect(heading).toHaveAttribute('title', longTitle);
+    expect(screen.getByRole('link', { name: `Open ${longTitle} details` })).toHaveTextContent(
+      longTitle,
+    );
+  });
+
+  it('exposes the accent token backing the tile so light-theme ink can stay accessible', () => {
+    render(
+      <GameCard
+        accent="var(--accent-3)"
+        favoritePending={false}
+        item={{ ...item, systemId: 'mega_drive' }}
+        onOpenGame={vi.fn()}
+        onToggleFavorite={vi.fn()}
+        systemName="Sega Mega Drive"
+      />,
+    );
+
+    expect(screen.getByRole('article')).toHaveAttribute('data-system-accent', 'accent-3');
   });
 });

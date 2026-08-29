@@ -1240,6 +1240,40 @@ describe('AppShell M6.2 shell and library states', () => {
     expect(mocks.queryLibrary).toHaveBeenCalledWith({ sort: 'titleAsc', offset: 0 });
   });
 
+  // M6.7B: the populated grid must read as games, not as database records. The tiles carry the
+  // compact B1 hierarchy only; local-availability and metadata lifecycle prose no longer occupy a
+  // permanent text row on every card.
+  it('renders compact B1 game tiles without technical status rows in the real grid', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { name: 'Kirby\u2019s Adventure' });
+
+    // Compact system badge, not the full catalog display name, inside the tile.
+    expect(screen.getAllByText('NES')).toHaveLength(2);
+    expect(screen.getByText('1993')).toBeInTheDocument();
+
+    // No permanent availability or metadata rows on the tiles.
+    expect(screen.queryByText('LOCAL')).not.toBeInTheDocument();
+    expect(screen.queryByText('LOCAL FILE MISSING')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/METADATA|MATCH REVIEW/, { ignore: '.visually-hidden' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Platform \u00b7 US')).not.toBeInTheDocument();
+
+    // The missing local file stays visible, actionable, and browsable.
+    const missing = screen.getByText('MISSING');
+    expect(missing).toBeVisible();
+    expect(
+      screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
+    ).toHaveAttribute('href', '/games/2');
+  });
+
   // Regression for the sidebar flicker: a terminal ROM scan must not clear and refetch the system
   // catalog, because `useSystemCatalog.refresh()` blanks the sidebar and readiness panel first and
   // a ROM scan cannot change runtime, core, or BIOS state.

@@ -1436,7 +1436,7 @@ a:focus-visible {
 .library-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
-  gap: 24px 20px;
+  gap: 20px 18px;
   min-width: 0;
 }
 
@@ -1467,8 +1467,8 @@ a:focus-visible {
 .game-card-skeleton-copy {
   display: block;
   flex: 1;
-  min-height: 126px;
-  padding: 10px;
+  min-height: 62px;
+  padding: 8px 10px 10px;
   background: var(--surface);
 }
 
@@ -1482,7 +1482,7 @@ a:focus-visible {
 
 .game-card-skeleton-copy::before {
   width: 88%;
-  margin-bottom: 18px;
+  margin-bottom: 10px;
 }
 
 .game-card-skeleton-copy::after {
@@ -1529,9 +1529,13 @@ a:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+/* GameCard — B1 tile geometry, C4 placeholder rule, A6 V5 focus language. */
 .game-card {
   position: relative;
   min-width: 0;
+  /* C4/B1 render black on every accent. Light `--accent-3` is the one pairing that cannot carry
+     15 px badge text in black at AA, so only its ink is adjusted; no accent is diluted. */
+  --system-accent-ink: #000;
   overflow: visible;
   background: var(--surface);
   border: 2px solid var(--border);
@@ -1542,13 +1546,19 @@ a:focus-visible {
   transform-origin: center bottom;
 }
 
+[data-theme='light'] .game-card[data-system-accent='accent-3'] {
+  --system-accent-ink: #ffffff;
+}
+
 .game-card:hover {
   z-index: 1;
   box-shadow: var(--shadow-hover);
   transform: scale(1.04);
 }
 
-.game-card:focus-within {
+/* A6 V5 rule 3 — the image card zooms only for "open this game". Focusing the standalone favorite
+   control inverts that control instead (rule 2), so the two focus targets stay distinguishable. */
+.game-card:has(.game-card-title-link:focus-visible) {
   z-index: 2;
   box-shadow: var(--shadow-focus);
   transform: scale(1.08);
@@ -1576,8 +1586,8 @@ a:focus-visible {
 .game-card-placeholder {
   display: grid;
   place-items: center;
-  padding: 14px;
-  color: #000;
+  padding: 12px;
+  color: var(--system-accent-ink);
   text-align: center;
   background: var(--system-accent);
 }
@@ -1586,9 +1596,32 @@ a:focus-visible {
   max-width: 100%;
   overflow-wrap: anywhere;
   font-family: var(--font-label);
-  font-size: clamp(8px, 0.72vw, 11px);
-  line-height: 1.65;
+  font-size: 11px;
+  line-height: 1.6;
   text-wrap: pretty;
+}
+
+.game-card-flag {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  margin: 0;
+  padding: 3px 7px;
+  overflow: hidden;
+  color: #000;
+  font-family: var(--font-meta);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  background: var(--accent-6);
+  border-top: 2px solid var(--border);
+  border-right: 2px solid var(--border);
+  z-index: 1;
 }
 
 .game-card-favorite {
@@ -1596,19 +1629,20 @@ a:focus-visible {
   top: 8px;
   right: 8px;
   display: grid;
-  width: 34px;
-  height: 34px;
-  padding: 7px;
+  width: 22px;
+  height: 22px;
+  padding: 4px;
   place-items: center;
   color: var(--text);
   background: var(--surface);
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
   border: 2px solid var(--border);
   box-shadow: 2px 2px 0 var(--shadow);
   cursor: pointer;
+  z-index: 2;
 }
 
 .game-card-favorite svg {
+  display: block;
   width: 100%;
   height: 100%;
 }
@@ -1618,10 +1652,16 @@ a:focus-visible {
   background: var(--accent-2);
 }
 
+/* A6 V5 rule 2 — standalone surface inverts foreground/background, no ring, no focus colour. */
 .game-card-favorite:hover:not([aria-busy='true']),
 .game-card-favorite:focus-visible {
   color: var(--bg);
   background: var(--text);
+}
+
+.game-card-favorite:focus-visible {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--shadow);
 }
 
 .game-card-favorite[aria-busy='true'] {
@@ -1631,27 +1671,34 @@ a:focus-visible {
 
 .game-card-copy {
   display: flex;
-  min-height: 126px;
-  padding: 10px;
+  padding: 8px 10px 10px;
   flex-direction: column;
-  gap: 7px;
+  gap: 6px;
 }
 
-.game-card-copy h3 {
-  display: -webkit-box;
-  min-height: 2.55em;
+.game-card-title {
+  min-width: 0;
   margin: 0;
-  overflow: hidden;
-  font-size: 14px;
-  line-height: 1.28;
-  text-overflow: ellipsis;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  font-size: 14.5px;
+  font-weight: 700;
+  line-height: 1.25;
 }
 
-.game-card-system-row,
-.game-card-state-row {
+/* The detail target stays a real anchor; the card owns its appearance, so no user-agent link
+   colour, underline, or visited treatment leaks into the tile. */
+.game-card-title-link,
+.game-card-title-link:visited,
+.game-card-title-link:hover,
+.game-card-title-link:focus-visible {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.game-card-system-row {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -1661,79 +1708,37 @@ a:focus-visible {
 
 .game-card-system {
   min-width: 0;
-  padding: 2px 7px;
+  padding: 1px 8px;
   overflow: hidden;
-  color: #000;
+  color: var(--system-accent-ink);
   font-family: var(--font-meta);
   font-size: 15px;
   font-weight: 700;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.06em;
   text-overflow: ellipsis;
   white-space: nowrap;
   background: var(--system-accent);
   border: 2px solid var(--border);
 }
 
-[data-theme='light'] .game-card-placeholder,
-[data-theme='light'] .game-card-system {
-  background: var(--system-accent);
-  background: color-mix(in srgb, var(--system-accent) 78%, white);
-}
-
-.game-card-system-row time {
+.game-card-year {
+  flex: none;
   color: var(--text-dim);
   font-family: var(--font-meta);
   font-size: 17px;
   font-variant-numeric: tabular-nums;
 }
 
-.availability-badge,
-.metadata-state {
-  font-family: var(--font-meta);
-  font-size: 14px;
-  line-height: 1;
-  letter-spacing: 0.035em;
-}
-
-.availability-badge--available {
-  color: var(--text);
-  text-decoration: underline;
-  text-decoration-color: var(--accent);
-  text-decoration-thickness: 2px;
-  text-underline-offset: 3px;
-}
-
-.availability-badge--unavailable {
-  color: var(--text);
-  text-decoration: underline;
-  text-decoration-color: var(--accent-6);
-  text-decoration-thickness: 2px;
-  text-underline-offset: 3px;
-}
-
-.metadata-state {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-dim);
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.game-card-meta {
-  margin: auto 0 0;
-  overflow: hidden;
-  color: var(--text-dim);
-  font-family: var(--font-meta);
-  font-size: 15px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
+/* Missing local content is desaturated, never hidden. The C4 placeholder is real text, so it is
+   only greyed — dropping its opacity too would push the 11 px title under AA against the card
+   surface. Real cover art carries no text and keeps the extra dimming. */
 .game-card--unavailable .game-card-cover,
 .game-card--unavailable .game-card-placeholder {
-  filter: grayscale(0.7);
-  opacity: 0.62;
+  filter: grayscale(0.9);
+}
+
+.game-card--unavailable .game-card-cover {
+  opacity: 0.72;
 }
 
 .game-detail-main {
@@ -2543,6 +2548,12 @@ a:focus-visible {
 
   .library-grid {
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+
+  /* C4 sizes its placeholder for the 158 px floor; the narrow fallback tile needs one step less
+     so a long title still wraps inside the 3:4 media frame. */
+  .game-card-placeholder span {
+    font-size: 10px;
   }
 
   .library-no-results {
