@@ -71,7 +71,7 @@ a:focus-visible {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 264px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100vh;
   height: 100dvh;
@@ -2568,7 +2568,7 @@ a:focus-visible {
   line-height: 1.55;
 }
 
-/* B6 stacks the hero below 1080px, but B6 has no persistent 232px application sidebar consuming
+/* B6 stacks the hero below 1080px, but B6 has no persistent 264px application sidebar consuming
    viewport width. Measured against the real shell, the 280px cover and the hero information column
    still sit side by side comfortably down to a ~980px viewport, so the stack happens there instead
    of throwing the composition away while it still fits. The cover column keeps its 280px ceiling so
