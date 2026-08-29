@@ -57,6 +57,19 @@ After initial bootstrap:
 - do not mix unrelated refactors
 - do not rewrite shared history
 
+## Remote Development Visibility
+Verified development checkpoints should normally remain inspectable on GitHub while `main` remains stable.
+
+- Continue work on focused feature/fix branches, never directly on `main`.
+- After a milestone slice, corrective pass, or other meaningful checkpoint has passed its required verification and is ready for handoff/review, push the current branch to `origin` and establish or update its upstream.
+- Pushing a development branch does not mean merging or accepting it.
+- Never force-push or rewrite a branch that has been shared unless explicitly authorized.
+- Keep `main` stable and merge only through the normal PR/squash workflow.
+- Do not push secrets, ROMs, BIOS files, downloaded runtime binaries, generated build artifacts, databases, or user data.
+- Keep pre-existing local untracked review artifacts untracked unless explicitly promoted into repository documentation.
+- If the user explicitly asks to keep a branch local or not to push, that instruction overrides this default.
+- Before finishing a development checkpoint, report whether the branch was pushed and its remote ref/HEAD.
+
 Prefixes:
 - `feat/`
 - `fix/`
