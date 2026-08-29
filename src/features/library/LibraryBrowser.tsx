@@ -1,6 +1,5 @@
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
-import { PixelArrow } from '../../components/ui/PixelIcon';
 import type { LibraryQueryModel } from '../../hooks/useLibraryQuery';
 import type { SystemLabel } from '../../hooks/useSystemCatalog';
 import { GameCard } from './GameCard';
@@ -45,25 +44,13 @@ export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserP
     : 'READING…';
   const committedSearch = library.debouncedSearch;
   const canEchoSearch = committedSearch !== '' && library.searchInput === committedSearch;
+  // A single bounded page cannot be navigated, so the pagination row is pure vertical cost there.
+  // `offset > 0` keeps the control present after a total shrink, until the clamped page commits.
+  const canPaginate = page !== null && (page.total > page.limit || page.offset > 0);
 
   return (
-    <section aria-labelledby="library-browse-heading" className="library-browser">
-      <div className="section-heading library-browser-heading">
-        <h2 id="library-browse-heading">
-          <PixelArrow className="heading-arrow" />
-          BROWSE LIBRARY
-        </h2>
-        <span aria-hidden="true" />
-        <span aria-live="polite" className="section-meta library-browser-count">
-          {resultRange}
-        </span>
-        <span className="section-meta library-browser-system">
-          {library.systemId
-            ? systemName(library.systemId, systems).toLocaleUpperCase()
-            : 'ALL SYSTEMS'}
-        </span>
-      </div>
-      <div className="library-filter-bar" aria-label="Library filters">
+    <section aria-label="Library results" className="library-browser">
+      <div aria-label="Library filters" className="library-filter-bar" role="group">
         <span className="library-filter-label">// FILTER</span>
         <button
           aria-pressed={library.favoritesOnly}
@@ -71,20 +58,30 @@ export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserP
           onClick={() => library.setFavoritesOnly(!library.favoritesOnly)}
           type="button"
         >
-          FAVORITES ONLY
+          <span aria-hidden="true">★</span> FAVORITES ONLY
         </button>
         {hasActiveQuery && page?.items.length !== 0 ? (
           <button className="library-filter-reset" onClick={library.resetQuery} type="button">
             CLEAR SEARCH &amp; FILTERS
           </button>
-        ) : !hasActiveQuery ? (
-          <span className="library-filter-note">TITLE ORDER · LOCAL DATA</span>
         ) : null}
+        <span aria-hidden="true" className="library-filter-spacer" />
         {library.refreshing ? (
           <span aria-live="polite" className="library-refreshing" role="status">
             UPDATING…
           </span>
         ) : null}
+        <p className="library-result-meta">
+          <span aria-live="polite" className="library-result-range">
+            {resultRange}
+          </span>
+          <span aria-hidden="true">·</span>
+          <span className="library-result-system">
+            {library.systemId
+              ? systemName(library.systemId, systems).toLocaleUpperCase()
+              : 'ALL SYSTEMS'}
+          </span>
+        </p>
       </div>
 
       {library.favoriteError ? (
@@ -124,29 +121,31 @@ export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserP
               />
             ))}
           </div>
-          <nav aria-label="Library pages" className="library-pagination">
-            <PixelButton
-              disabled={page.offset === 0 || library.pageLoading}
-              onClick={library.previousPage}
-              type="button"
-              variant="secondary"
-            >
-              PREVIOUS PAGE
-            </PixelButton>
-            <span aria-live="polite" className="library-page-status">
-              {library.pageLoading
-                ? 'LOADING PAGE…'
-                : `PAGE ${Math.floor(page.offset / page.limit) + 1} OF ${Math.max(1, Math.ceil(page.total / page.limit))}`}
-            </span>
-            <PixelButton
-              disabled={page.offset + page.items.length >= page.total || library.pageLoading}
-              onClick={library.nextPage}
-              type="button"
-              variant="secondary"
-            >
-              NEXT PAGE
-            </PixelButton>
-          </nav>
+          {canPaginate ? (
+            <nav aria-label="Library pages" className="library-pagination">
+              <PixelButton
+                disabled={page.offset === 0 || library.pageLoading}
+                onClick={library.previousPage}
+                type="button"
+                variant="secondary"
+              >
+                PREVIOUS PAGE
+              </PixelButton>
+              <span aria-live="polite" className="library-page-status">
+                {library.pageLoading
+                  ? 'LOADING PAGE…'
+                  : `PAGE ${Math.floor(page.offset / page.limit) + 1} OF ${Math.max(1, Math.ceil(page.total / page.limit))}`}
+              </span>
+              <PixelButton
+                disabled={page.offset + page.items.length >= page.total || library.pageLoading}
+                onClick={library.nextPage}
+                type="button"
+                variant="secondary"
+              >
+                NEXT PAGE
+              </PixelButton>
+            </nav>
+          ) : null}
         </>
       ) : null}
 

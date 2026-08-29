@@ -387,6 +387,21 @@ function ScanResultPanel({ result, totalGames }: { result: ScanSummary; totalGam
   );
 }
 
+// A healthy terminal run in an already populated library is history, not the headline. It keeps
+// its live announcement and every truthful counter, but yields the top of the screen to the grid.
+function ScanResultStrip({ result, totalGames }: { result: ScanSummary; totalGames: number }) {
+  return (
+    <p className="scan-last-run" role="status" aria-live="polite">
+      <span className="scan-last-run-label">LAST SCAN</span>
+      <span className="scan-last-run-detail">
+        RUN #{result.runId} · {formatDuration(result.durationMs)} · {number(totalGames)}{' '}
+        {totalGames === 1 ? 'GAME' : 'GAMES'} · {number(result.counters.issuesFound)}{' '}
+        {result.counters.issuesFound === 1 ? 'ISSUE' : 'ISSUES'}
+      </span>
+    </p>
+  );
+}
+
 function ScanIssuesPanel({ scan, roots }: { scan: ScanStateModel; roots: ContentRoot[] }) {
   const page = scan.issuePage;
   const showPreviousRunContext = Boolean(scan.status?.running && page?.scanRunId !== null);
@@ -554,10 +569,21 @@ export function LibraryPage({
   const managedRoot = roots.find((root) => root.kind === 'managed');
   const isRunning = scan.status?.running === true;
   const lastResult = scan.status?.lastResult;
+  const issuePage = scan.issuePage;
+  const populated = summary !== null && summary.totalGames > 0;
+  const terminalResult = !isRunning && lastResult ? lastResult : null;
+  // A failure, or a run that recorded issues, still needs the prominent panel next to its workflow.
+  // Everything else about a healthy populated library belongs behind the grid.
+  const resultNeedsAttention =
+    terminalResult !== null &&
+    (terminalResult.state === 'failed' || terminalResult.counters.issuesFound > 0);
+  const showResultPanel = terminalResult !== null && (resultNeedsAttention || !populated);
+  const showResultStrip = terminalResult !== null && !showResultPanel;
+  // An empty issue page is not a diagnostic worth a panel; loading and error states still are.
   const showIssues = Boolean(
     scan.issueError ||
-    (scan.issuePage && (scan.issuePage.total > 0 || lastResult)) ||
-    (scan.issueLoading && lastResult),
+    (issuePage && issuePage.total > 0) ||
+    (scan.issueLoading && lastResult && !issuePage),
   );
 
   useEffect(() => {
@@ -637,8 +663,8 @@ export function LibraryPage({
             </p>
           )}
           {isRunning && <ScanProgressPanel progress={scan.status?.progress ?? null} />}
-          {!isRunning && lastResult && (
-            <ScanResultPanel result={lastResult} totalGames={summary.totalGames} />
+          {showResultPanel && terminalResult && (
+            <ScanResultPanel result={terminalResult} totalGames={summary.totalGames} />
           )}
 
           {summary.totalGames === 0 ? (
@@ -655,6 +681,10 @@ export function LibraryPage({
             />
           ) : (
             <LibraryBrowser library={library} onOpenGame={onOpenGame} systems={systems} />
+          )}
+
+          {showResultStrip && terminalResult && (
+            <ScanResultStrip result={terminalResult} totalGames={summary.totalGames} />
           )}
 
           {showIssues && <ScanIssuesPanel scan={scan} roots={roots} />}

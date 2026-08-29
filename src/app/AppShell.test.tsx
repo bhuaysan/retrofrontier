@@ -1564,3 +1564,214 @@ describe('AppShell M6.2 shell and library states', () => {
     expect(completedRegistrations[1].unlisten).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('AppShell M6.7A library composition', () => {
+  const populatedSummary = {
+    totalGames: 2,
+    favoriteGames: 1,
+    systems: [{ systemId: 'nes' as const, gameCount: 2 }],
+  };
+
+  const terminalCounters = {
+    rootsDiscovered: 1,
+    rootsCompleted: 1,
+    filesDiscovered: 2,
+    filesProcessed: 2,
+    filesHashed: 2,
+    bytesHashed: 20,
+    issuesFound: 0,
+  };
+
+  const healthyResult: ScanSummary = {
+    runId: 7,
+    state: 'completed',
+    counters: terminalCounters,
+    durationMs: 4100,
+  };
+
+  const issueBearingResult: ScanSummary = {
+    runId: 8,
+    state: 'completed',
+    counters: { ...terminalCounters, issuesFound: 1 },
+    durationMs: 4100,
+  };
+
+  const failedResult: ScanSummary = {
+    runId: 9,
+    state: 'failed',
+    counters: terminalCounters,
+    durationMs: 900,
+  };
+
+  const unreadableIssuePage = {
+    issues: [
+      {
+        id: 10,
+        scanRunId: 8,
+        rootId: 1,
+        kind: 'unreadablePath' as const,
+        relativePath: 'broken.nes',
+        relatedPath: null,
+        detail: 'Cannot read file',
+        createdAt: 1,
+      },
+    ],
+    scanRunId: 8,
+    total: 1,
+    offset: 0,
+    limit: 50,
+  };
+
+  function terminalStatus(lastResult: ScanSummary) {
+    return { running: false, progress: null, lastResult };
+  }
+
+  beforeEach(() => {
+    setupDefaults();
+    window.history.replaceState({}, '', '/library');
+    mocks.getLibrarySummary.mockResolvedValue(populatedSummary);
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    mocks.getScanStatus.mockResolvedValue(terminalStatus(healthyResult));
+  });
+
+  it('keeps exactly one visible Library heading in the populated state', async () => {
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    expect(screen.queryByRole('heading', { name: 'BROWSE LIBRARY' })).not.toBeInTheDocument();
+    const libraryHeadings = screen.getAllByRole('heading', { name: /LIBRARY$/ });
+    expect(libraryHeadings).toHaveLength(1);
+    expect(libraryHeadings[0]).toBeVisible();
+    expect(libraryHeadings[0].tagName).toBe('H1');
+    expect(libraryHeadings[0]).toHaveAttribute('id', 'library-heading');
+  });
+
+  it('does not put a large scan-result panel in front of a healthy populated grid', async () => {
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    expect(screen.queryByRole('heading', { name: 'SCAN COMPLETE' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/scan finished without recorded issues/i)).not.toBeInTheDocument();
+  });
+
+  it('reports the successful zero-issue scan truthfully in a compact secondary strip', async () => {
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    const strip = screen.getByText('LAST SCAN').closest('p');
+    expect(strip).toBeVisible();
+    expect(strip).toHaveAttribute('role', 'status');
+    expect(strip).toHaveTextContent('RUN #7');
+    expect(strip).toHaveTextContent('2 GAMES');
+    expect(strip).toHaveTextContent('0 ISSUES');
+  });
+
+  it('keeps a failed terminal scan prominent in a populated library', async () => {
+    mocks.getScanStatus.mockResolvedValue(terminalStatus(failedResult));
+    render(<AppShell />);
+
+    expect(await screen.findByRole('heading', { name: 'SCAN FINISHED WITH ERRORS' })).toBeVisible();
+    expect(screen.queryByText('LAST SCAN')).not.toBeInTheDocument();
+  });
+
+  it('keeps the issue workflow for a successful scan that recorded real issues', async () => {
+    mocks.getScanStatus.mockResolvedValue(terminalStatus(issueBearingResult));
+    mocks.getScanIssuePage.mockResolvedValue(unreadableIssuePage);
+    render(<AppShell />);
+
+    expect(await screen.findByRole('heading', { name: 'SCAN COMPLETE' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'SCAN ISSUES' })).toBeVisible();
+    expect(screen.getByText('Path unreadable')).toBeVisible();
+    expect(screen.queryByText('LAST SCAN')).not.toBeInTheDocument();
+  });
+
+  it('does not render a scan-issue region for a zero-total issue page', async () => {
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    expect(screen.queryByRole('heading', { name: 'SCAN ISSUES' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/no persisted scan issues were recorded/i)).not.toBeInTheDocument();
+  });
+
+  it('still offers issue retry when the bounded issue page fails in a populated library', async () => {
+    mocks.getScanIssuePage.mockRejectedValue(
+      new mocks.IpcError('library_unavailable', 'internal issue-store detail'),
+    );
+    render(<AppShell />);
+
+    expect(await screen.findByText('SCAN ISSUES UNAVAILABLE')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'RETRY ISSUES' })).toBeVisible();
+    expect(screen.getByRole('alert')).not.toHaveTextContent('internal issue-store detail');
+  });
+
+  it('hides the pagination row when the bounded result fits on a single page', async () => {
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    expect(screen.queryByRole('navigation', { name: 'Library pages' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'PREVIOUS PAGE' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'NEXT PAGE' })).not.toBeInTheDocument();
+    expect(screen.queryByText('PAGE 1 OF 1')).not.toBeInTheDocument();
+  });
+
+  it('keeps pagination rendered and operable when more than one page exists', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 121,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 121 }],
+    });
+    mocks.queryLibrary
+      .mockResolvedValueOnce({ ...populatedLibraryPage, total: 121, offset: 0 })
+      .mockResolvedValue({ ...populatedLibraryPage, total: 121, offset: 60 });
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    expect(screen.getByRole('navigation', { name: 'Library pages' })).toBeVisible();
+    expect(screen.getByText('PAGE 1 OF 3')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'PREVIOUS PAGE' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'NEXT PAGE' }));
+    await screen.findByText('PAGE 2 OF 3');
+    expect(mocks.queryLibrary).toHaveBeenLastCalledWith({ sort: 'titleAsc', offset: 60 });
+  });
+
+  it('keeps the query result range and system context as live compact metadata', async () => {
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    const range = screen.getByText('1–2 OF 2');
+    expect(range).toBeVisible();
+    expect(range).toHaveAttribute('aria-live', 'polite');
+    expect(screen.getByText('ALL SYSTEMS')).toBeVisible();
+    expect(screen.queryByText('TITLE ORDER · LOCAL DATA')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Nintendo Entertainment System/ }));
+    expect(await screen.findByText('NINTENDO ENTERTAINMENT SYSTEM')).toBeVisible();
+  });
+
+  it('keeps the large scan result while the library is still empty', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({ totalGames: 0, favoriteGames: 0, systems: [] });
+    render(<AppShell />);
+
+    expect(await screen.findByRole('heading', { name: 'SCAN COMPLETE' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'LIBRARY IS EMPTY' })).toBeVisible();
+    expect(screen.queryByText('LAST SCAN')).not.toBeInTheDocument();
+  });
+
+  it('keeps a running scan clearly visible above a populated grid', async () => {
+    mocks.getScanStatus.mockResolvedValue({
+      running: true,
+      progress: {
+        runId: 11,
+        phase: 'hashing' as const,
+        counters: { ...terminalCounters, filesProcessed: 1 },
+      },
+      lastResult: healthyResult,
+    });
+    render(<AppShell />);
+
+    expect(await screen.findByRole('heading', { name: 'SCAN IN PROGRESS' })).toBeVisible();
+    expect(screen.queryByText('LAST SCAN')).not.toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+  });
+});
