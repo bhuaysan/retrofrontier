@@ -1319,7 +1319,10 @@ describe('AppShell M6.2 shell and library states', () => {
     ).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'LIBRARY READY' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'LIBRARY IS EMPTY' })).not.toBeInTheDocument();
-    expect(screen.getByText('SEARCH LIBRARY')).toBeVisible();
+    const search = screen.getByRole('searchbox', { name: 'Search' });
+    expect(search).toHaveAttribute('placeholder', 'Search');
+    expect(search.closest('search')?.querySelector('svg')).toBeNull();
+    expect(screen.queryByText('SEARCH LIBRARY')).not.toBeInTheDocument();
     expect(screen.getByText('// FILTER')).toBeVisible();
     expect(screen.getAllByText('Nintendo Entertainment System').length).toBeGreaterThanOrEqual(1);
     expect(mocks.queryLibrary).toHaveBeenCalledWith({ sort: 'titleAsc', offset: 0 });
@@ -1473,7 +1476,7 @@ describe('AppShell M6.2 shell and library states', () => {
     render(<AppShell />);
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
 
-    const search = screen.getByRole('searchbox', { name: 'SEARCH LIBRARY' });
+    const search = screen.getByRole('searchbox', { name: 'Search' });
     fireEvent.change(search, { target: { value: 'Nothing%_\\' } });
     expect(mocks.queryLibrary).toHaveBeenCalledTimes(1);
     expect(
@@ -2087,7 +2090,7 @@ describe('AppShell M6.7 B1 library card selection', () => {
     );
     expect(screen.getByText('1 SELECTED')).toBeVisible();
 
-    fireEvent.change(screen.getByRole('searchbox', { name: 'SEARCH LIBRARY' }), {
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search' }), {
       target: { value: 'kirby' },
     });
     await waitFor(() =>

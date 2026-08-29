@@ -102,20 +102,12 @@ function LibrarySearch({
 }) {
   return (
     <search className="library-search">
-      <label className="library-search-label" htmlFor="library-search-input">
-        SEARCH LIBRARY
-      </label>
-      <svg aria-hidden="true" shapeRendering="crispEdges" viewBox="0 0 16 16">
-        <path
-          d="M2 2h9v2h2v2h1v5h-2V7h-1V5H4v6h6v2H2zM10 11h2v2h2v2h-2v-1h-2z"
-          fill="currentColor"
-        />
-      </svg>
       <input
         autoComplete="off"
+        aria-label="Search"
         id="library-search-input"
         onChange={(event) => onChange(event.target.value)}
-        placeholder="TITLE OR LOCAL NAME…"
+        placeholder="Search"
         spellCheck="false"
         type="search"
         value={value}
