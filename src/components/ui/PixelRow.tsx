@@ -21,7 +21,7 @@ export function PixelRow({
   return (
     <li className="pixel-row-shell">
       <span className="pixel-row-cursor" aria-hidden="true">
-        <PixelArrow width={16} height={22} />
+        <PixelArrow width={13} height={18} />
       </span>
       <button
         className={`pixel-row${active ? ' pixel-row--active' : ''}`}

@@ -72,7 +72,7 @@ describe('PixelArrow', () => {
 });
 
 describe('PixelRow focus cursor', () => {
-  it('renders the A6 cursor arrow at a whole multiple of the 8x11 cell grid', () => {
+  it('renders the A6 cursor arrow larger than body text, in the 8x11 glyph proportion', () => {
     const { container } = render(
       <ul>
         <PixelRow accent="var(--accent)" label="SNES" count={2} />
@@ -82,9 +82,9 @@ describe('PixelRow focus cursor', () => {
     const cursor = container.querySelector('.pixel-row-cursor');
     const svg = cursor?.querySelector('svg');
     expect(cursor).toHaveAttribute('aria-hidden', 'true');
-    // Deliberately larger than A6's mockup so the focus triangle reads at a distance; the size is
-    // a whole 2x of the cell grid so `crispEdges` keeps every step an exact pixel boundary.
-    expect(svg).toHaveAttribute('width', '16');
-    expect(svg).toHaveAttribute('height', '22');
+    // Deliberately larger than A6's mockup so the focus triangle reads at a distance, and kept in
+    // the 8:11 proportion of the cell grid so the arrowhead is never stretched.
+    expect(svg).toHaveAttribute('width', '13');
+    expect(svg).toHaveAttribute('height', '18');
   });
 });
