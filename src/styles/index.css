@@ -281,8 +281,8 @@ a:focus-visible {
   display: grid;
   flex: none;
   place-items: center;
-  width: 18px;
-  margin-right: -5px;
+  width: 22px;
+  margin-right: -6px;
   color: var(--text);
   opacity: 0;
   pointer-events: none;

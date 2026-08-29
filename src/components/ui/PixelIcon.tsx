@@ -7,16 +7,21 @@ export function PixelArrow({
   label,
   ...props
 }: PixelIconProps & { direction?: 'left' | 'right' }) {
+  // Solid pixel-art arrowhead on an 8x11 cell grid: one path segment per row, widths
+  // 1,2,4,5,7,8,7,5,4,2,1 from a vertical base on the flat side to a one-cell tip. The previous
+  // path was a hollow chevron outline that ran to x=-1 and was clipped by the viewBox, so it
+  // rendered as a lopsided blob rather than a triangle.
+  // Render at a whole multiple of the cell grid (8x11, 16x22, ...) to keep the steps crisp.
   const path =
     direction === 'left'
-      ? 'M1 0h1v1h1v1h1v1h-1v1h-1v1h-1v1h-1v-1h1v-1h1v-1h-1v-1h-1v-1h1z'
-      : 'M0 0h1v1h1v1h1v1h-1v1h-1v1h-1v1h-1v-1h1v-1h1v-1h-1v-1h-1v-1h1z';
+      ? 'M7 0h1v1H7zM6 1h2v1H6zM4 2h4v1H4zM3 3h5v1H3zM1 4h7v1H1zM0 5h8v1H0zM1 6h7v1H1zM3 7h5v1H3zM4 8h4v1H4zM6 9h2v1H6zM7 10h1v1H7z'
+      : 'M0 0h1v1H0zM0 1h2v1H0zM0 2h4v1H0zM0 3h5v1H0zM0 4h7v1H0zM0 5h8v1H0zM0 6h7v1H0zM0 7h5v1H0zM0 8h4v1H0zM0 9h2v1H0zM0 10h1v1H0z';
   return (
     <svg
       {...props}
-      viewBox="0 0 4 7"
-      width={props.width ?? 9}
-      height={props.height ?? 12}
+      viewBox="0 0 8 11"
+      width={props.width ?? 8}
+      height={props.height ?? 11}
       shapeRendering="crispEdges"
       aria-hidden={label ? undefined : true}
       aria-label={label}
