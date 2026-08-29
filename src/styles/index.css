@@ -902,11 +902,6 @@ a:focus-visible {
   width: min(100%, 700px);
 }
 
-.app-shell--settings {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
 .app-shell--scan {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -931,10 +926,6 @@ a:focus-visible {
 
 .scan-screen-content .scan-panel {
   width: 100%;
-}
-
-.app-shell--settings .app-main {
-  grid-column: 1;
 }
 
 .back-button {

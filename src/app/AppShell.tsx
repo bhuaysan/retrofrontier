@@ -128,7 +128,7 @@ export function AppShell() {
   const isLibraryRoute = route === 'library';
   const isSettingsRoute = route === 'settings';
   const gameRouteState = isGameRoute(route) ? route : null;
-  const usesLibraryChrome = isLibraryRoute || gameRouteState !== null;
+  const usesPersistentSidebar = isLibraryRoute || isSettingsRoute || gameRouteState !== null;
   const currentGameId = gameRouteState?.gameId ?? null;
   const [libraryFocusGameId, setLibraryFocusGameId] = useState<number | null>(null);
   const {
@@ -166,6 +166,7 @@ export function AppShell() {
   );
   const scan = useScanState({ onCompleted: onScanCompleted });
   const scanRunning = scan.status?.running === true;
+  const showsFooter = isLibraryRoute || gameRouteState !== null || scanRunning;
   const onFavoriteCommitted = useCallback(() => {
     void refreshSummary();
   }, [refreshSummary]);
@@ -239,10 +240,7 @@ export function AppShell() {
         : 'SCAN READY';
 
   return (
-    <div
-      className={`app-shell${scanRunning ? ' app-shell--scan' : usesLibraryChrome ? '' : ' app-shell--settings'}`}
-      data-theme={theme}
-    >
+    <div className={`app-shell${scanRunning ? ' app-shell--scan' : ''}`} data-theme={theme}>
       <header className="app-header">
         <button
           type="button"
@@ -259,8 +257,11 @@ export function AppShell() {
             value={library.searchInput}
           />
         ) : null}
-        {(isLibraryRoute || gameRouteState !== null) && !scanRunning ? (
-          <MobileRouteNav route={isLibraryRoute ? 'library' : null} navigate={navigateFromShell} />
+        {(isLibraryRoute || isSettingsRoute || gameRouteState !== null) && !scanRunning ? (
+          <MobileRouteNav
+            route={isLibraryRoute ? 'library' : isSettingsRoute ? 'settings' : null}
+            navigate={navigateFromShell}
+          />
         ) : null}
         <div className="theme-toggle" role="group" aria-label="Theme">
           <button
@@ -282,7 +283,7 @@ export function AppShell() {
         </div>
       </header>
 
-      {usesLibraryChrome && !scanRunning ? (
+      {usesPersistentSidebar && !scanRunning ? (
         <aside className="app-sidebar" aria-label="Library navigation">
           <section aria-labelledby="systems-heading">
             <p id="systems-heading" className="sidebar-label">
@@ -414,7 +415,7 @@ export function AppShell() {
         />
       )}
 
-      {usesLibraryChrome || scanRunning ? (
+      {showsFooter ? (
         <footer className="app-footer">
           <span>LOCAL LIBRARY</span>
           <span aria-hidden="true">·</span>

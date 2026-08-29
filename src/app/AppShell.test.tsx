@@ -395,7 +395,7 @@ describe('AppShell M6.2 shell and library states', () => {
     expect(screen.getAllByText('//', { selector: '.sidebar-prefix' })).toHaveLength(2);
   });
 
-  it('uses the Library shell only on Library and Game Detail, while Settings keeps the shared header without its sidebar or footer', async () => {
+  it('keeps the shared sidebar on Library, Settings, and Game Detail without adding Settings search', async () => {
     mocks.getLibrarySummary.mockResolvedValue({
       totalGames: 2,
       favoriteGames: 1,
@@ -411,12 +411,26 @@ describe('AppShell M6.2 shell and library states', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Settings/ }));
     expect(await screen.findByRole('heading', { level: 1, name: 'SETTINGS' })).toBeInTheDocument();
+    const settingsSidebar = screen.getByRole('complementary', { name: 'Library navigation' });
+    expect(settingsSidebar).toBeInTheDocument();
+    expect(within(settingsSidebar).getByRole('button', { name: 'Settings' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
     expect(
-      screen.queryByRole('complementary', { name: 'Library navigation' }),
-    ).not.toBeInTheDocument();
+      within(settingsSidebar).getByRole('button', { name: /Nintendo Entertainment System/ }),
+    ).toHaveTextContent('2');
+    const mobileNavigation = screen.getByRole('navigation', { name: 'Primary navigation' });
+    expect(within(mobileNavigation).getByRole('button', { name: 'SETTINGS' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    expect(screen.queryByRole('searchbox', { name: 'Search' })).not.toBeInTheDocument();
     expect(screen.queryByText('LOCAL LIBRARY')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Go to Library' })).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Theme' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'LIBRARY' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'METADATA' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'BACK TO LIBRARY' }));
     await screen.findByRole('heading', { name: 'LIBRARY' });
@@ -449,6 +463,10 @@ describe('AppShell M6.2 shell and library states', () => {
 
     expect(await screen.findByRole('heading', { name: 'SCAN IN PROGRESS' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'SETTINGS' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('complementary', { name: 'Library navigation' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('searchbox', { name: 'Search' })).not.toBeInTheDocument();
 
     act(() =>
       mocks.completedHandlers.forEach((handler) =>
@@ -471,6 +489,31 @@ describe('AppShell M6.2 shell and library states', () => {
 
     expect(await screen.findByRole('heading', { name: 'SETTINGS' })).toBeInTheDocument();
     expect(window.location.pathname).toBe('/settings');
+  });
+
+  it('lets Settings system rows return to the filtered Library', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    render(<AppShell />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Settings/ }));
+    const settingsSidebar = await screen.findByRole('complementary', {
+      name: 'Library navigation',
+    });
+    fireEvent.click(
+      within(settingsSidebar).getByRole('button', { name: /Nintendo Entertainment System/ }),
+    );
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'LIBRARY' })).toBeInTheDocument();
+    expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
+      systemId: 'nes',
+      sort: 'titleAsc',
+      offset: 0,
+    });
   });
 
   it('opens a game detail from a semantic card link and returns without a full-library detail query', async () => {

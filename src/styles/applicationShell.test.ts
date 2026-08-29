@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import applicationStyles from './index.css?raw';
 
 describe('application shell layout contract', () => {
-  it('widens only the desktop library shell track and preserves responsive shell rules', () => {
+  it('keeps the shared desktop shell track and responsive shell rules', () => {
     expect(applicationStyles).toMatch(
       /\.app-shell\s*\{[\s\S]*?grid-template-columns:\s*264px minmax\(0, 1fr\);/,
     );
