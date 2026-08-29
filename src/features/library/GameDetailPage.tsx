@@ -16,7 +16,12 @@ import type {
 } from '../../platform/ipc';
 import { GameCover } from './GameCover';
 
-import { getOverallReadiness, getReadinessRows, type ReadinessTone } from './readiness';
+import {
+  getOverallReadiness,
+  getReadinessRows,
+  type ReadinessRow,
+  type ReadinessTone,
+} from './readiness';
 import { systemAccent, systemAccentKey } from './systemAccents';
 import { systemShortLabel } from './systemLabels';
 
@@ -76,12 +81,15 @@ interface HeroInfoRow {
 }
 
 /**
- * B6's compact hero information block. Only authoritative normalized values become rows; a missing
- * optional field is omitted rather than rendered as a placeholder. Genre is already a hero chip and
- * the release year is already visible beside it, so a release row is added only when the
- * authoritative date carries more than that year.
+ * B6's compact hero information block for an enriched game. Only authoritative normalized values
+ * become rows; a missing optional field is omitted rather than rendered as a placeholder. Genre is
+ * already a hero chip and the release year is already visible beside it, so a release row is added
+ * only when the authoritative date carries more than that year.
  */
-function heroInfoRows(normalized: NormalizedMetadata | null, year: string | null): HeroInfoRow[] {
+function enrichedHeroRows(
+  normalized: NormalizedMetadata | null,
+  year: string | null,
+): HeroInfoRow[] {
   if (!normalized) return [];
   const rows: HeroInfoRow[] = [];
   const release = normalized.releaseDate?.trim();
@@ -99,6 +107,41 @@ function heroInfoRows(normalized: NormalizedMetadata | null, year: string | null
   }
   if (normalized.region) {
     rows.push({ key: 'region', label: 'REGION', value: normalized.region });
+  }
+  return rows;
+}
+
+/**
+ * A local-only game has no provider metadata, and none is invented for it. The hero is instead
+ * composed from truth M6 already owns: the local availability and shape of the content, and the
+ * at-a-glance readiness statuses that `readiness.ts` derived. The explanations, errors, and
+ * recovery guidance for those statuses stay in the readiness section below.
+ *
+ * Per-unit shape is projected only for a single content unit; a multi-unit game keeps that detail
+ * in the Local Content section instead of collapsing several units into one misleading row.
+ */
+function localHeroRows(
+  localDetail: LibraryGameDetail | null,
+  readinessRows: readonly ReadinessRow[],
+): HeroInfoRow[] {
+  if (!localDetail) return [];
+  const rows: HeroInfoRow[] = [];
+  const status = (id: ReadinessRow['id']) => readinessRows.find((row) => row.id === id)?.status;
+
+  const content = status('localContent');
+  if (content) {
+    rows.push({ key: 'content', label: 'CONTENT', value: content });
+  }
+  const [unit] = localDetail.contentUnits;
+  if (unit && localDetail.contentUnits.length === 1) {
+    rows.push({ key: 'format', label: 'FORMAT', value: contentKindLabel(unit.kind) });
+    rows.push({ key: 'path', label: 'PATH', value: unit.primaryRelativePath });
+  }
+  for (const id of ['runtime', 'core', 'bios'] as const) {
+    const value = status(id);
+    if (value) {
+      rows.push({ key: id, label: id.toLocaleUpperCase(), value });
+    }
   }
   return rows;
 }
@@ -284,12 +327,14 @@ function LocalContentSection({ detail }: { detail: LibraryGameDetail }) {
 
 function ReadinessSection({
   detail,
+  rows,
   systemStatus,
   readinessLoading,
   readinessError,
   onRetryReadiness,
 }: {
   detail: LibraryGameDetail | null;
+  rows: readonly ReadinessRow[];
   systemStatus: SystemStatus | null;
   readinessLoading: boolean;
   readinessError: IpcError | null;
@@ -304,7 +349,6 @@ function ReadinessSection({
         detail: 'Reading the current runtime, core, and BIOS snapshot…',
       }
     : getOverallReadiness(availability, systemStatus, contentUnits);
-  const rows = getReadinessRows(availability, systemStatus, contentUnits, readinessLoading);
 
   return (
     <section aria-labelledby="readiness-heading" className="game-detail-section">
@@ -449,10 +493,17 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
     wasActionPending.current = detail.metadataActionPending;
   }, [detail.metadataActionPending]);
 
+  // A candidate workflow is the one metadata state that genuinely needs more than the shared
+  // Detail content width; every ordinary state stays inside it.
+  const wide = metadataState ? hasSelectableCandidates(metadataState) : false;
+
   return (
     // The normalized data itself now belongs to the hero. What remains here is the provider
     // workflow and its state, which only takes visual weight when a decision or a failure is real.
-    <section aria-labelledby="metadata-heading" className="game-detail-section">
+    <section
+      aria-labelledby="metadata-heading"
+      className={`game-detail-section${wide ? ' game-detail-section--wide' : ''}`}
+    >
       <SectionHeading
         focusable
         headingId="metadata-heading"
@@ -565,7 +616,17 @@ export function GameDetailPage({
   const notFound = gameId === null || (detail.localLoaded && !localDetail && !detail.localError);
   const localError = detail.localError;
   const year = releaseYear(normalized?.releaseDate);
-  const infoRows = heroInfoRows(normalized, year);
+  const readinessRows = getReadinessRows(
+    localDetail?.availability ?? null,
+    systemStatus,
+    localDetail?.contentUnits ?? [],
+    readinessLoading,
+  );
+  // Real provider metadata always wins the hero. A local-only game falls back to the truthful
+  // local/readiness projection rather than to an almost empty right half.
+  const enrichedRows = enrichedHeroRows(normalized, year);
+  const infoRows =
+    enrichedRows.length > 0 ? enrichedRows : localHeroRows(localDetail, readinessRows);
   // Local telemetry is only worth hero space when it is a genuinely different identity from the
   // one already shown as the title.
   const localTitle = localDetail?.localTitle.trim() ?? '';
@@ -672,6 +733,17 @@ export function GameDetailPage({
             </div>
 
             <div className="game-detail-hero-copy">
+              {/* B6 leads with the game title; the compact identity chips sit underneath it. DOM
+                  order and visual order agree — nothing here is reordered in CSS. */}
+              <h1
+                className="game-detail-title"
+                id="game-detail-title"
+                ref={headingRef}
+                tabIndex={-1}
+              >
+                {title}
+              </h1>
+
               <div className="game-detail-chips">
                 <span className="game-detail-system" title={systemName}>
                   <span aria-hidden="true">{shortSystem}</span>
@@ -694,15 +766,6 @@ export function GameDetailPage({
                   </span>
                 ) : null}
               </div>
-
-              <h1
-                className="game-detail-title"
-                id="game-detail-title"
-                ref={headingRef}
-                tabIndex={-1}
-              >
-                {title}
-              </h1>
 
               {showLocalTitle ? (
                 <p className="game-detail-local-identity">LOCAL TITLE · {localTitle}</p>
@@ -734,6 +797,7 @@ export function GameDetailPage({
           <ReadinessSection
             detail={localDetail}
             onRetryReadiness={onRetryReadiness}
+            rows={readinessRows}
             readinessLoading={readinessLoading}
             readinessError={readinessError}
             systemStatus={systemStatus}

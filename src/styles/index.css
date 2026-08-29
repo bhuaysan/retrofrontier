@@ -1792,7 +1792,23 @@ a:focus-visible {
    dominant title, and compact identity; the truthful technical surfaces below stay secondary
    section rules rather than full-width dashboard panels. */
 .game-detail-main {
+  /* One B6-derived content column for the whole Detail page: the 280px cover column, B6's 28px
+     hero gap, and B6's 520px information box. Every secondary section shares it so the page stays
+     concentrated around the game instead of stretching diagnostics across a 1600px viewport. The
+     column stays left-aligned against the sidebar edge; nothing here is centred. */
+  --detail-content-width: 828px;
   gap: 26px;
+}
+
+.game-detail-hero,
+.game-detail-section {
+  width: 100%;
+  max-width: var(--detail-content-width);
+}
+
+/* Only a real candidate workflow earns more width than the shared column. */
+.game-detail-section--wide {
+  max-width: 1120px;
 }
 
 .game-detail-back {
@@ -1926,19 +1942,29 @@ a:focus-visible {
   letter-spacing: 0.04em;
 }
 
+/* B6 sets the Detail title at 20px Press Start 2P — a strong game title beside a 280px cover, not
+   an oversized page banner. It still outranks the 11px GameCard title by a wide margin. */
 .game-detail-title {
-  max-width: 28ch;
+  max-width: 26ch;
   margin: 0;
   font-family: var(--font-label);
-  font-size: clamp(17px, 2.4vw, 26px);
+  font-size: clamp(16px, 1.5vw, 20px);
   letter-spacing: 1px;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
-.game-detail-title:focus-visible {
-  color: var(--bg);
-  background: var(--text);
+/* The H1 takes programmatic focus on route entry. A6's inversion is the language for standalone
+   controls, so applying it here made a non-interactive heading read as a giant focused button.
+   A focused heading instead gets the same accent underline the rest of Detail already uses for
+   status emphasis: perceivable, design-consistent, and not a control affordance. */
+.game-detail-title:focus-visible,
+.game-detail-section-heading h2:focus-visible {
+  outline: none;
+  text-decoration: underline;
+  text-decoration-color: var(--accent-3);
+  text-decoration-thickness: 3px;
+  text-underline-offset: 6px;
 }
 
 .game-detail-local-identity,
@@ -1996,15 +2022,16 @@ a:focus-visible {
   letter-spacing: 0.06em;
 }
 
+/* Detail has the room to read a long developer, publisher, or relative path in full, so hero
+   values wrap onto a second line instead of being visually truncated into an ellipsis. */
 .game-detail-info dd {
   min-width: 0;
   margin: 0;
-  overflow: hidden;
+  overflow-wrap: anywhere;
   font-family: var(--font-meta);
   font-size: 20px;
+  line-height: 1.3;
   text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .game-detail-availability {
@@ -2099,9 +2126,12 @@ a:focus-visible {
   gap: 14px;
 }
 
+/* The trailing status is a fixed-width Press Start 2P run that cannot shrink, so at very narrow
+   widths it wraps under the rule instead of pushing the page into horizontal scroll. */
 .game-detail-section-heading {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 14px;
 }
 
@@ -2113,11 +2143,6 @@ a:focus-visible {
   letter-spacing: 1px;
   line-height: 1.5;
   white-space: nowrap;
-}
-
-.game-detail-section-heading h2:focus-visible {
-  color: var(--bg);
-  background: var(--text);
 }
 
 .game-detail-section-rule {
@@ -2142,9 +2167,11 @@ a:focus-visible {
   white-space: nowrap;
 }
 
+/* An ordinary provider state is two sentences. It reads at the same 520px the hero information
+   box uses, not as a full-width stripe. */
 .metadata-state-callout {
   display: flex;
-  max-width: 78ch;
+  max-width: 520px;
   padding: 12px 14px;
   flex-direction: column;
   gap: 5px;
@@ -2458,12 +2485,11 @@ a:focus-visible {
   display: block;
   min-width: 0;
   padding: 8px 10px;
-  overflow: hidden;
   color: var(--text);
   font-family: var(--font-meta);
   font-size: 18px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
   background: var(--bg-soft);
   border: 2px solid var(--border);
 }
@@ -2504,9 +2530,12 @@ a:focus-visible {
   line-height: 1.55;
 }
 
-/* B6 stacks the hero below 1080px. The cover column keeps its 280px ceiling so the game keeps a
-   cover-sized identity instead of a full-width image. */
-@media (max-width: 1080px) {
+/* B6 stacks the hero below 1080px, but B6 has no persistent 232px application sidebar consuming
+   viewport width. Measured against the real shell, the 280px cover and the hero information column
+   still sit side by side comfortably down to a ~980px viewport, so the stack happens there instead
+   of throwing the composition away while it still fits. The cover column keeps its 280px ceiling so
+   a stacked game keeps a cover-sized identity instead of a full-width image. */
+@media (max-width: 980px) {
   .game-detail-hero {
     grid-template-columns: minmax(0, 1fr);
     gap: 22px;

@@ -847,6 +847,21 @@ describe('GameDetailPage — B6 hero fidelity', () => {
     expect(screen.getByRole('main')).toHaveAttribute('aria-labelledby', 'game-detail-title');
   });
 
+  it('renders the game title before the identity chips in DOM order', () => {
+    renderDetail();
+
+    const heading = screen.getByRole('heading', { level: 1, name: 'Ridge Racer' });
+    const chips = hero().querySelector('.game-detail-chips');
+    expect(chips).not.toBeNull();
+    // B6 leads with the title. DOM order must agree with the visual order rather than relying on
+    // a CSS reorder, so the heading precedes the chip row in the document.
+    expect(
+      heading.compareDocumentPosition(chips as HTMLElement) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const heroChildren = Array.from((chips as HTMLElement).parentElement!.children);
+    expect(heroChildren.indexOf(heading)).toBeLessThan(heroChildren.indexOf(chips as HTMLElement));
+  });
+
   it('presents the compact system identity with the full catalog name still accessible', () => {
     renderDetail();
 
@@ -906,8 +921,23 @@ describe('GameDetailPage — B6 hero fidelity', () => {
     );
 
     expect(within(hero()).queryByText(/unknown|n\/a|no genre|no synopsis|----/i)).toBeNull();
-    expect(hero().querySelector('.game-detail-info')).toBeNull();
     expect(within(hero()).getByTitle('PlayStation')).toHaveTextContent('PS1');
+
+    // Nothing normalized survives, so the hero falls back to the truthful local/readiness
+    // projection instead of either fabricating provider fields or leaving the right half empty.
+    const info = hero().querySelector('.game-detail-info');
+    expect(info).not.toBeNull();
+    const scoped = within(info as HTMLElement);
+    expect(scoped.queryByText('DEVELOPER')).toBeNull();
+    expect(scoped.queryByText('PUBLISHER')).toBeNull();
+    expect(scoped.queryByText('RELEASE')).toBeNull();
+    expect(scoped.getByText('CONTENT')).toBeInTheDocument();
+    expect(scoped.getByText('RUNTIME')).toBeInTheDocument();
+    expect(scoped.getByText('CORE')).toBeInTheDocument();
+    expect(scoped.getByText('BIOS')).toBeInTheDocument();
+    // Two content units cannot be honestly collapsed into one FORMAT/PATH pair.
+    expect(scoped.queryByText('FORMAT')).toBeNull();
+    expect(scoped.queryByText('PATH')).toBeNull();
   });
 
   it('projects the real synopsis and key/value information into the hero once', () => {
@@ -1033,6 +1063,34 @@ describe('GameDetailPage — B6 hero fidelity', () => {
     ).toBeInTheDocument();
   });
 
+  it('shares one Detail content column and widens only for a real candidate workflow', () => {
+    const { unmount } = renderDetail();
+    // Hero and every secondary section share the same B6-derived content column.
+    expect(document.querySelector('.game-detail-hero')).not.toBeNull();
+    for (const section of document.querySelectorAll('.game-detail-section')) {
+      expect(section.classList.contains('game-detail-section--wide')).toBe(false);
+    }
+    unmount();
+
+    renderDetail(
+      detailModel({
+        metadata: {
+          ...metadata,
+          status: 'ambiguous',
+          metadata: null,
+          candidates: [
+            { providerGameId: 'a', title: 'Ridge Racer', releaseDate: '1994' },
+            { providerGameId: 'b', title: 'Ridge Racer Revolution', releaseDate: null },
+          ],
+        },
+      }),
+    );
+    const metadataPanel = screen.getByRole('region', { name: 'METADATA' });
+    expect(metadataPanel).toHaveClass('game-detail-section--wide');
+    const readiness = screen.getByRole('region', { name: 'EMULATION READINESS' });
+    expect(readiness).not.toHaveClass('game-detail-section--wide');
+  });
+
   it('uses product section language instead of implementation labels', () => {
     renderDetail();
 
@@ -1042,5 +1100,172 @@ describe('GameDetailPage — B6 hero fidelity', () => {
     const content = screen.getByRole('region', { name: 'LOCAL CONTENT' });
     expect(within(content).getByText('PlayStation/Ridge Racer.m3u')).toBeInTheDocument();
     expect(within(content).getAllByText('CONTENT ROOT #2')).toHaveLength(2);
+  });
+});
+
+/**
+ * The local-only SNES fixture from the M6.7C corrective comparison: a real scanned game with no
+ * provider metadata, no cover, one single-file unit, an unavailable runtime, an unresolved core
+ * policy, and a system that requires no BIOS.
+ */
+describe('GameDetailPage — local-only hero', () => {
+  const localOnlyDetail: LibraryGameDetail = {
+    gameId: 21,
+    systemId: 'snes',
+    localTitle: 'Gradius III (USA)',
+    availability: 'available',
+    favorite: false,
+    contentUnits: [
+      {
+        unitId: 31,
+        rootId: 1,
+        kind: 'singleFile',
+        localTitle: 'Gradius III (USA)',
+        primaryRelativePath: 'SNES/Gradius III (USA).sfc',
+        fileCount: 1,
+        availability: 'available',
+      },
+    ],
+  };
+
+  const localOnlyStatus: SystemStatus = {
+    id: 'snes',
+    displayName: 'Super Nintendo Entertainment System',
+    manufacturer: 'Nintendo',
+    aliases: ['SNES'],
+    supportedExtensions: ['.sfc', '.smc'],
+    core: {
+      policy: {
+        defaultCoreId: null,
+        approvedCoreIds: [],
+        decision: { kind: 'unresolved', researchItem: 'snes-core-policy' },
+      },
+      availability: {
+        runtimeState: 'notInstalled',
+        availableCoreIds: [],
+        defaultCoreAvailable: null,
+      },
+    },
+    bios: { policy: 'notRequired', ready: true, requirements: [] },
+    readiness: {
+      ready: false,
+      reasons: [{ kind: 'runtimeUnavailable', state: 'notInstalled' }],
+    },
+  };
+
+  function renderLocalOnly() {
+    return render(
+      <GameDetailPage
+        detail={detailModel({
+          localDetail: localOnlyDetail,
+          metadata: null,
+          gameId: 21,
+        } as Partial<GameDetailModel>)}
+        gameId={21}
+        onBackToLibrary={vi.fn()}
+        onRetryReadiness={vi.fn()}
+        readinessError={null}
+        systemStatus={localOnlyStatus}
+      />,
+    );
+  }
+
+  function localHero() {
+    const node = document.querySelector('.game-detail-hero');
+    if (!(node instanceof HTMLElement)) throw new Error('hero not rendered');
+    return node;
+  }
+
+  it('composes a useful hero from real local and readiness truth without inventing metadata', () => {
+    renderLocalOnly();
+
+    const headings = screen.getAllByRole('heading', { level: 1 });
+    expect(headings).toHaveLength(1);
+    expect(headings[0]).toHaveTextContent('Gradius III (USA)');
+
+    const chips = localHero().querySelector('.game-detail-chips');
+    expect(chips).not.toBeNull();
+    const heroChildren = Array.from((chips as HTMLElement).parentElement!.children);
+    expect(heroChildren.indexOf(headings[0])).toBeLessThan(
+      heroChildren.indexOf(chips as HTMLElement),
+    );
+
+    const badge = within(localHero()).getByTitle('Super Nintendo Entertainment System');
+    expect(badge).toHaveTextContent('SNES');
+
+    const info = localHero().querySelector('.game-detail-info');
+    expect(info).not.toBeNull();
+    const scoped = within(info as HTMLElement);
+    expect(scoped.getByText('CONTENT')).toBeInTheDocument();
+    expect(scoped.getByText('AVAILABLE')).toBeInTheDocument();
+    expect(scoped.getByText('FORMAT')).toBeInTheDocument();
+    expect(scoped.getByText('SINGLE FILE')).toBeInTheDocument();
+    expect(scoped.getByText('PATH')).toBeInTheDocument();
+    // The path is the real scanned relative path, not a fabricated absolute host path.
+    expect(scoped.getByText('SNES/Gradius III (USA).sfc')).toBeInTheDocument();
+    expect(scoped.getByText('RUNTIME')).toBeInTheDocument();
+    expect(scoped.getByText('UNAVAILABLE')).toBeInTheDocument();
+    expect(scoped.getByText('CORE')).toBeInTheDocument();
+    expect(scoped.getByText('UNKNOWN')).toBeInTheDocument();
+    expect(scoped.getByText('BIOS')).toBeInTheDocument();
+    expect(scoped.getByText('NOT REQUIRED')).toBeInTheDocument();
+  });
+
+  it('fabricates no provider metadata, launch action, or play history for a local-only game', () => {
+    renderLocalOnly();
+
+    const hero = localHero();
+    expect(hero.querySelector('.game-detail-chip')).toBeNull();
+    expect(hero.querySelector('.game-detail-year')).toBeNull();
+    expect(hero.querySelector('.game-detail-synopsis')).toBeNull();
+    expect(within(hero).queryByText('DEVELOPER')).toBeNull();
+    expect(within(hero).queryByText('PUBLISHER')).toBeNull();
+    expect(within(hero).queryByText('PLAYERS')).toBeNull();
+    expect(within(hero).queryByText('REGION')).toBeNull();
+    expect(within(hero).queryByText('RELEASE')).toBeNull();
+
+    expect(screen.queryByRole('button', { name: /^(start|play|launch|run game)$/i })).toBeNull();
+    expect(
+      screen.queryByText(/playtime|last played|save state|screenshot|coming soon/i),
+    ).toBeNull();
+
+    // The C4 accent placeholder stands in for the missing cover; no provider cover is claimed.
+    expect(
+      screen.getByRole('img', { name: 'No cover available for Gradius III (USA)' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Add Gradius III (USA) to favorites' }),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps every readiness requirement explained in the readiness section', () => {
+    renderLocalOnly();
+
+    const readiness = screen.getByRole('region', { name: 'EMULATION READINESS' });
+    expect(readiness.querySelectorAll('article')).toHaveLength(0);
+    const rows = within(readiness).getByRole('list', { name: 'Emulation requirements' });
+    expect(within(rows).getAllByRole('listitem')).toHaveLength(4);
+    // The hero carries the at-a-glance statuses; the section keeps the explanations behind them.
+    expect(
+      within(readiness).getAllByText('Managed runtime is not installed.').length,
+    ).toBeGreaterThan(0);
+    expect(
+      within(readiness).getAllByText('The approved system core policy is unresolved.').length,
+    ).toBeGreaterThan(0);
+    expect(
+      within(readiness).getByText('This system does not require a BIOS file.'),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the single local content unit truthful and compact', () => {
+    renderLocalOnly();
+
+    const content = screen.getByRole('region', { name: 'LOCAL CONTENT' });
+    expect(within(content).getByText('1 UNIT')).toBeInTheDocument();
+    expect(within(content).getByText('SINGLE FILE')).toBeInTheDocument();
+    expect(within(content).getByText('CONTENT ROOT #1')).toBeInTheDocument();
+    expect(within(content).getByText('1 FILE')).toBeInTheDocument();
+    const path = within(content).getByText('SNES/Gradius III (USA).sfc');
+    expect(path).toHaveAttribute('title', 'SNES/Gradius III (USA).sfc');
   });
 });
