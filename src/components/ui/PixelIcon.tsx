@@ -7,22 +7,15 @@ export function PixelArrow({
   label,
   ...props
 }: PixelIconProps & { direction?: 'left' | 'right' }) {
-  // Solid pixel-art arrowhead on a 5x7 cell grid: one path segment per row, widths 1,2,4,5,4,2,1
-  // from a vertical base on the flat side to a one-cell tip.
-  // The grid is deliberately coarse so the arrow can be drawn at 2px per cell (10x14). Every step
-  // is then an exact whole-pixel boundary, which is what keeps a stepped diagonal reading as pixel
-  // art; in-between sizes rasterise to a mix of one- and two-pixel steps and look lumpy.
-  const path =
-    direction === 'left'
-      ? 'M4 0h1v1H4zM3 1h2v1H3zM1 2h4v1H1zM0 3h5v1H0zM1 4h4v1H1zM3 5h2v1H3zM4 6h1v1H4z'
-      : 'M0 0h1v1H0zM0 1h2v1H0zM0 2h4v1H0zM0 3h5v1H0zM0 4h4v1H0zM0 5h2v1H0zM0 6h1v1H0z';
+  // A filled directional triangle with continuous diagonals keeps the shared arrow language smooth
+  // at both the small sidebar cursor size and the larger section-heading size.
+  const path = direction === 'left' ? 'M8.5 1L1.5 7L8.5 13Z' : 'M1.5 1L8.5 7L1.5 13Z';
   return (
     <svg
       {...props}
-      viewBox="0 0 5 7"
+      viewBox="0 0 10 14"
       width={props.width ?? 10}
       height={props.height ?? 14}
-      shapeRendering="crispEdges"
       aria-hidden={label ? undefined : true}
       aria-label={label}
       role={label ? 'img' : undefined}
