@@ -101,25 +101,18 @@ export function WarningIcon({ label, ...props }: PixelIconProps) {
 }
 
 /**
- * Hard-edged 12×12 pixel star for the Favorite action. The unfilled variant is the same silhouette
- * with a one-pixel interior cut out through `evenodd`, so both states stay crisp and unmistakably a
- * star at small sizes instead of closing into a blob the way a stroked outline did.
+ * Smooth vector star for the Favorite action. The unfilled variant keeps the same five-point
+ * silhouette as an outline so both states remain legible at the existing compact control size.
  */
 export function PixelStar({ filled }: { filled: boolean }) {
-  const silhouette =
-    'M5 0h2v2h-2zM4 2h4v2h-4zM0 4h12v1h-12zM1 5h10v1h-10zM2 6h8v1h-8z' +
-    'M3 7h6v1h-6zM2 8h8v1h-8zM1 9h3v1h-3zM8 9h3v1h-3zM0 10h3v1h-3z' +
-    'M9 10h3v1h-3zM0 11h2v1h-2zM10 11h2v1h-2z';
-  const interior =
-    'M5 2h2v2h-2zM4 4h4v1h-4zM2 5h8v1h-8zM3 6h6v1h-6zM4 7h4v1h-4z' +
-    'M3 8h1v1h-1zM8 8h1v1h-1zM2 9h1v1h-1zM9 9h1v1h-1zM1 10h1v1h-1zM10 10h1v1h-1z';
-
   return (
-    <svg aria-hidden="true" shapeRendering="crispEdges" viewBox="0 0 12 12">
+    <svg aria-hidden="true" height="16" viewBox="0 0 24 24" width="16">
       <path
-        d={filled ? silhouette : `${silhouette}${interior}`}
-        fill="currentColor"
-        fillRule="evenodd"
+        d="M12 2.5l2.93 5.94 6.56.95-4.75 4.63 1.12 6.54L12 17.47l-5.86 3.09 1.12-6.54-4.75-4.63 6.56-.95L12 2.5z"
+        fill={filled ? 'currentColor' : 'none'}
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="2"
       />
     </svg>
   );

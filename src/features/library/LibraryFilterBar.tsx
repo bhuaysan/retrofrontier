@@ -1,5 +1,6 @@
 import type { LibraryQueryModel } from '../../hooks/useLibraryQuery';
 import type { SystemLabel } from '../../hooks/useSystemCatalog';
+import { PixelStar } from '../../components/ui/PixelIcon';
 import { systemName } from './libraryLabels';
 
 interface LibraryFilterBarProps {
@@ -28,7 +29,7 @@ export function LibraryFilterBar({ library, systems }: LibraryFilterBarProps) {
         onClick={() => library.setFavoritesOnly(!library.favoritesOnly)}
         type="button"
       >
-        <span aria-hidden="true">★</span> FAVORITES ONLY
+        <PixelStar filled /> FAVORITES ONLY
       </button>
       <span aria-hidden="true" className="library-filter-spacer" />
       {library.refreshing ? (

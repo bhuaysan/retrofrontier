@@ -1,7 +1,7 @@
 import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { PixelArrow } from './PixelIcon';
+import { PixelArrow, PixelStar } from './PixelIcon';
 import { PixelRow } from './PixelRow';
 
 function arrowPath(direction: 'left' | 'right') {
@@ -35,6 +35,22 @@ describe('PixelArrow', () => {
     expect(width).toBe('10');
     expect(height).toBe('14');
     expect(shapeRendering).toBeNull();
+  });
+});
+
+describe('PixelStar', () => {
+  it.each([true, false])('uses smooth vector geometry when filled=%s', (filled) => {
+    const { container } = render(<PixelStar filled={filled} />);
+    const svg = container.querySelector('svg');
+    const path = svg?.querySelector('path');
+
+    expect(svg).toHaveAttribute('viewBox', '0 0 24 24');
+    expect(svg).toHaveAttribute('width', '16');
+    expect(svg).toHaveAttribute('height', '16');
+    expect(svg).not.toHaveAttribute('shape-rendering');
+    expect(path).toHaveAttribute('fill', filled ? 'currentColor' : 'none');
+    expect(path).toHaveAttribute('stroke', 'currentColor');
+    expect(path).toHaveAttribute('stroke-linejoin', 'round');
   });
 });
 
