@@ -3,16 +3,13 @@ import { PixelButton } from '../../components/ui/PixelButton';
 import type { LibraryQueryModel } from '../../hooks/useLibraryQuery';
 import type { SystemLabel } from '../../hooks/useSystemCatalog';
 import { GameCard } from './GameCard';
+import { systemName } from './libraryLabels';
 import { systemAccent } from './systemAccents';
 
 interface LibraryBrowserProps {
   library: LibraryQueryModel;
   systems: SystemLabel[];
   onOpenGame: (gameId: number) => void;
-}
-
-function systemName(systemId: string, systems: SystemLabel[]) {
-  return systems.find((system) => system.id === systemId)?.displayName ?? systemId;
 }
 
 function InitialLibraryLoading() {
@@ -33,15 +30,6 @@ function InitialLibraryLoading() {
 
 export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserProps) {
   const page = library.page;
-  const hasActiveQuery =
-    library.searchInput !== '' || library.systemId !== null || library.favoritesOnly;
-  const firstVisible = page && page.total > 0 ? page.offset + 1 : 0;
-  const lastVisible = page ? Math.min(page.total, page.offset + page.items.length) : 0;
-  const resultRange = page
-    ? page.total > 0
-      ? `${firstVisible}–${lastVisible} OF ${page.total}`
-      : '0 GAMES'
-    : 'READING…';
   const committedSearch = library.debouncedSearch;
   const canEchoSearch = committedSearch !== '' && library.searchInput === committedSearch;
   // A single bounded page cannot be navigated, so the pagination row is pure vertical cost there.
@@ -50,40 +38,6 @@ export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserP
 
   return (
     <section aria-label="Library results" className="library-browser">
-      <div aria-label="Library filters" className="library-filter-bar" role="group">
-        <span className="library-filter-label">// FILTER</span>
-        <button
-          aria-pressed={library.favoritesOnly}
-          className={`library-filter${library.favoritesOnly ? ' library-filter--active' : ''}`}
-          onClick={() => library.setFavoritesOnly(!library.favoritesOnly)}
-          type="button"
-        >
-          <span aria-hidden="true">★</span> FAVORITES ONLY
-        </button>
-        {hasActiveQuery && page?.items.length !== 0 ? (
-          <button className="library-filter-reset" onClick={library.resetQuery} type="button">
-            CLEAR SEARCH &amp; FILTERS
-          </button>
-        ) : null}
-        <span aria-hidden="true" className="library-filter-spacer" />
-        {library.refreshing ? (
-          <span aria-live="polite" className="library-refreshing" role="status">
-            UPDATING…
-          </span>
-        ) : null}
-        <p className="library-result-meta">
-          <span aria-live="polite" className="library-result-range">
-            {resultRange}
-          </span>
-          <span aria-hidden="true">·</span>
-          <span className="library-result-system">
-            {library.systemId
-              ? systemName(library.systemId, systems).toLocaleUpperCase()
-              : 'ALL SYSTEMS'}
-          </span>
-        </p>
-      </div>
-
       {library.favoriteError ? (
         <InlineError
           title="FAVORITE NOT UPDATED"

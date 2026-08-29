@@ -1680,6 +1680,27 @@ describe('AppShell M6.7A library composition', () => {
     expect(libraryHeadings[0]).toHaveAttribute('id', 'library-heading');
   });
 
+  it('renders the populated filter toolbar before the authoritative Library heading', async () => {
+    render(<AppShell />);
+
+    const filterBar = await screen.findByRole('group', { name: 'Library filters' });
+    const libraryHeading = await screen.findByRole('heading', { name: 'LIBRARY', level: 1 });
+
+    expect(
+      filterBar.compareDocumentPosition(libraryHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('keeps the main landmark labelled by the single Library heading', async () => {
+    render(<AppShell />);
+
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    const main = screen.getByRole('main');
+    expect(main).toHaveAttribute('aria-labelledby', 'library-heading');
+    expect(main.querySelectorAll('#library-heading')).toHaveLength(1);
+  });
+
   it('does not put a large scan-result panel in front of a healthy populated grid', async () => {
     render(<AppShell />);
 
@@ -1688,16 +1709,21 @@ describe('AppShell M6.7A library composition', () => {
     expect(screen.queryByText(/scan finished without recorded issues/i)).not.toBeInTheDocument();
   });
 
-  it('reports the successful zero-issue scan truthfully in a compact secondary strip', async () => {
+  it('removes persistent healthy scan history UI while preserving a non-visual completion announcement', async () => {
     render(<AppShell />);
 
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
-    const strip = screen.getByText('LAST SCAN').closest('p');
-    expect(strip).toBeVisible();
-    expect(strip).toHaveAttribute('role', 'status');
-    expect(strip).toHaveTextContent('RUN #7');
-    expect(strip).toHaveTextContent('2 GAMES');
-    expect(strip).toHaveTextContent('0 ISSUES');
+    expect(screen.queryByRole('heading', { name: 'SCAN COMPLETE' })).not.toBeInTheDocument();
+    expect(screen.queryByText('LAST SCAN')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'SCAN ISSUES' })).not.toBeInTheDocument();
+
+    const announcement = screen
+      .getByText(/scan finished successfully/i)
+      .closest<HTMLElement>('[role="status"]');
+    expect(announcement).not.toBeNull();
+    expect(announcement).toHaveClass('visually-hidden');
+    expect(announcement).toHaveTextContent('2 GAMES AVAILABLE');
+    expect(announcement).toHaveTextContent('0 ISSUES');
   });
 
   it('keeps a failed terminal scan prominent in a populated library', async () => {

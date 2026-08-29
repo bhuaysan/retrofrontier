@@ -812,34 +812,6 @@ a:focus-visible {
   color: var(--accent-6);
 }
 
-/* Secondary, shadowless counterpart to `.scan-panel`: same hard-edged RetroFrontier grammar,
-   deliberately one step quieter so a healthy run cannot outrank the game grid. */
-.scan-last-run {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  margin: 0;
-  padding: 8px 14px;
-  background: var(--bg-soft);
-  border: 2px solid var(--border);
-}
-
-.scan-last-run-label {
-  flex: none;
-  color: var(--text);
-  font-family: var(--font-label);
-  font-size: 9px;
-  letter-spacing: 0.12em;
-}
-
-.scan-last-run-detail {
-  color: var(--text-dim);
-  font-family: var(--font-meta);
-  font-size: 17px;
-  font-variant-numeric: tabular-nums;
-}
-
 .scan-issues {
   display: grid;
   gap: 16px;

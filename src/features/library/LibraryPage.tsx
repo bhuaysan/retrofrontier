@@ -22,6 +22,7 @@ import type { SystemLabel } from '../../hooks/useSystemCatalog';
 import type { ScanStateModel } from '../../hooks/useScanState';
 import { RootActionError } from '../settings/RootActionError';
 import { LibraryBrowser } from './LibraryBrowser';
+import { LibraryFilterBar } from './LibraryFilterBar';
 import { rootAvailabilityLabel } from './rootLabels';
 
 interface LibraryPageProps {
@@ -387,21 +388,6 @@ function ScanResultPanel({ result, totalGames }: { result: ScanSummary; totalGam
   );
 }
 
-// A healthy terminal run in an already populated library is history, not the headline. It keeps
-// its live announcement and every truthful counter, but yields the top of the screen to the grid.
-function ScanResultStrip({ result, totalGames }: { result: ScanSummary; totalGames: number }) {
-  return (
-    <p className="scan-last-run" role="status" aria-live="polite">
-      <span className="scan-last-run-label">LAST SCAN</span>
-      <span className="scan-last-run-detail">
-        RUN #{result.runId} · {formatDuration(result.durationMs)} · {number(totalGames)}{' '}
-        {totalGames === 1 ? 'GAME' : 'GAMES'} · {number(result.counters.issuesFound)}{' '}
-        {result.counters.issuesFound === 1 ? 'ISSUE' : 'ISSUES'}
-      </span>
-    </p>
-  );
-}
-
 function ScanIssuesPanel({ scan, roots }: { scan: ScanStateModel; roots: ContentRoot[] }) {
   const page = scan.issuePage;
   const showPreviousRunContext = Boolean(scan.status?.running && page?.scanRunId !== null);
@@ -578,7 +564,6 @@ export function LibraryPage({
     terminalResult !== null &&
     (terminalResult.state === 'failed' || terminalResult.counters.issuesFound > 0);
   const showResultPanel = terminalResult !== null && (resultNeedsAttention || !populated);
-  const showResultStrip = terminalResult !== null && !showResultPanel;
   // An empty issue page is not a diagnostic worth a panel; loading and error states still are.
   const showIssues = Boolean(
     scan.issueError ||
@@ -604,6 +589,7 @@ export function LibraryPage({
 
   return (
     <main aria-labelledby="library-heading" className="app-main" id="main-content">
+      {populated && <LibraryFilterBar library={library} systems={systems} />}
       <SectionHeading
         id="library-heading"
         title="LIBRARY"
@@ -667,6 +653,16 @@ export function LibraryPage({
             <ScanResultPanel result={terminalResult} totalGames={summary.totalGames} />
           )}
 
+          {populated &&
+            terminalResult?.state === 'completed' &&
+            terminalResult.counters.issuesFound === 0 && (
+              <p aria-atomic="true" aria-live="polite" className="visually-hidden" role="status">
+                Scan finished successfully. Library refreshed: {number(summary.totalGames)}{' '}
+                {summary.totalGames === 1 ? 'GAME' : 'GAMES'} AVAILABLE;{' '}
+                {number(terminalResult.counters.issuesFound)} ISSUES.
+              </p>
+            )}
+
           {summary.totalGames === 0 ? (
             <EmptyLibraryState
               onAddExternalFolder={onAddExternalFolder}
@@ -681,10 +677,6 @@ export function LibraryPage({
             />
           ) : (
             <LibraryBrowser library={library} onOpenGame={onOpenGame} systems={systems} />
-          )}
-
-          {showResultStrip && terminalResult && (
-            <ScanResultStrip result={terminalResult} totalGames={summary.totalGames} />
           )}
 
           {showIssues && <ScanIssuesPanel scan={scan} roots={roots} />}
