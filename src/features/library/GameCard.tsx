@@ -123,7 +123,7 @@ export function GameCard({
         <h3 aria-label={title} className="game-card-title" id={headingId} title={title}>
           <a
             aria-label={`Open ${title} details`}
-            className="game-card-title-link"
+            className="game-card-title-link game-card-detail-target"
             data-game-detail-link={item.gameId}
             href={routePath(gameRoute(item.gameId))}
             onClick={handleDetailClick}

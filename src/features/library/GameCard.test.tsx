@@ -68,10 +68,54 @@ describe('GameCard', () => {
     fireEvent.click(link);
 
     expect(onOpenGame).toHaveBeenCalledWith(1);
+    expect(onOpenGame).toHaveBeenCalledTimes(1);
     expect(link.closest('button')).toBeNull();
     expect(
       screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' }),
     ).not.toContainElement(link);
+  });
+
+  it('exposes exactly one stretched detail target and keeps Favorite outside the anchor', () => {
+    renderCard();
+
+    const card = screen.getByRole('article');
+    const detailLinks = within(card).getAllByRole('link');
+    const detailLink = screen.getByRole('link', { name: 'Open Kirby’s Adventure details' });
+    const favorite = screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' });
+
+    expect(detailLinks).toHaveLength(1);
+    expect(detailLink).toHaveClass('game-card-detail-target');
+    expect(detailLink).toHaveAttribute('href', '/games/1');
+    expect(detailLink).toHaveAttribute('data-game-detail-link', '1');
+    expect(favorite.closest('a')).toBeNull();
+    expect(card).toContainElement(favorite);
+  });
+
+  it('keeps the full-card detail target on unavailable cards', () => {
+    renderCard({ availability: 'unavailable', coverRef: null });
+
+    const card = screen.getByRole('article');
+    const detailLink = within(card).getByRole('link', {
+      name: 'Open Kirby’s Adventure details',
+    });
+
+    expect(detailLink).toHaveClass('game-card-detail-target');
+    expect(detailLink).toHaveAttribute('href', '/games/1');
+    expect(detailLink).toHaveAttribute('data-game-detail-link', '1');
+    expect(
+      within(card).getByRole('img', { name: 'No cover available for Kirby’s Adventure' }),
+    ).toBeVisible();
+  });
+
+  it('toggles Favorite exactly once without opening Game Detail', () => {
+    const { onOpenGame, onToggleFavorite } = renderCard();
+    const favorite = screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' });
+
+    fireEvent.click(favorite);
+
+    expect(onToggleFavorite).toHaveBeenCalledWith(item);
+    expect(onToggleFavorite).toHaveBeenCalledTimes(1);
+    expect(onOpenGame).not.toHaveBeenCalled();
   });
 
   it('leaves modified clicks to the native anchor', () => {

@@ -1540,6 +1540,7 @@ a:focus-visible {
   background: var(--surface);
   border: 2px solid var(--border);
   box-shadow: var(--shadow-rest);
+  cursor: pointer;
   transition:
     transform 0.14s cubic-bezier(0.16, 1, 0.3, 1),
     box-shadow 0.14s cubic-bezier(0.16, 1, 0.3, 1);
@@ -1696,6 +1697,16 @@ a:focus-visible {
   text-decoration: none;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The title remains the one semantic detail link; its transparent hit area makes the whole card
+   activate it without wrapping or duplicating interactive content. Favorite stays above it. */
+.game-card-detail-target::after {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  cursor: pointer;
+  content: '';
 }
 
 .game-card-system-row {
