@@ -73,13 +73,16 @@ a:focus-visible {
   min-height: 100vh;
   color: var(--text);
   background-color: var(--bg);
-  background-image: repeating-linear-gradient(
+  background-image: linear-gradient(
     to bottom,
     var(--scanline) 0,
     var(--scanline) 1px,
     transparent 1px,
     transparent 4px
   );
+  background-size: 100% 4px;
+  background-repeat: repeat-y;
+  background-position: 0 0;
   transition:
     background 0.25s ease,
     color 0.25s ease;
