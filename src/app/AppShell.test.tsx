@@ -426,7 +426,7 @@ describe('AppShell M6.2 shell and library states', () => {
       'page',
     );
     expect(screen.queryByRole('searchbox', { name: 'Search' })).not.toBeInTheDocument();
-    expect(screen.queryByText('LOCAL LIBRARY')).not.toBeInTheDocument();
+    expect(screen.getByText('LOCAL LIBRARY')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Go to Library' })).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Theme' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'LIBRARY' })).toBeInTheDocument();

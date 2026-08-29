@@ -166,7 +166,7 @@ export function AppShell() {
   );
   const scan = useScanState({ onCompleted: onScanCompleted });
   const scanRunning = scan.status?.running === true;
-  const showsFooter = isLibraryRoute || gameRouteState !== null || scanRunning;
+  const showsFooter = usesPersistentSidebar || scanRunning;
   const onFavoriteCommitted = useCallback(() => {
     void refreshSummary();
   }, [refreshSummary]);
