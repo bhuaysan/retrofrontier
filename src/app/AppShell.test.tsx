@@ -383,8 +383,86 @@ describe('AppShell M6.2 shell and library states', () => {
     expect(window.location.pathname).toBe('/settings');
 
     act(() => window.history.back());
-    expect(await screen.findByRole('heading', { name: 'LIBRARY' })).toBeInTheDocument();
-    expect(window.location.pathname).toBe('/library');
+    await waitFor(() => expect(window.location.pathname).toBe('/library'));
+    expect(await screen.findByRole('heading', { level: 1, name: 'LIBRARY' })).toBeInTheDocument();
+  });
+
+  it('uses the Library shell only on Library and Game Detail, while Settings keeps the shared header without its sidebar or footer', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    render(<AppShell />);
+
+    expect(
+      await screen.findByRole('complementary', { name: 'Library navigation' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('LOCAL LIBRARY')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Settings/ }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'SETTINGS' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('complementary', { name: 'Library navigation' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('LOCAL LIBRARY')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Go to Library' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Theme' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'BACK TO LIBRARY' }));
+    await screen.findByRole('heading', { name: 'LIBRARY' });
+    fireEvent.click(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }));
+    await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+    expect(screen.getByRole('complementary', { name: 'Library navigation' })).toBeInTheDocument();
+    expect(screen.getByText('LOCAL LIBRARY')).toBeInTheDocument();
+  });
+
+  it('returns to the underlying Settings route when a running scan reaches a terminal state', async () => {
+    mocks.getScanStatus.mockResolvedValue({
+      running: true,
+      progress: {
+        runId: 16,
+        phase: 'discovery',
+        counters: {
+          rootsDiscovered: 1,
+          rootsCompleted: 0,
+          filesDiscovered: 0,
+          filesProcessed: 0,
+          filesHashed: 0,
+          bytesHashed: 0,
+          issuesFound: 0,
+        },
+      },
+      lastResult: null,
+    });
+    window.history.replaceState({}, '', '/settings');
+    render(<AppShell />);
+
+    expect(await screen.findByRole('heading', { name: 'SCAN IN PROGRESS' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'SETTINGS' })).not.toBeInTheDocument();
+
+    act(() =>
+      mocks.completedHandlers.forEach((handler) =>
+        handler({
+          runId: 16,
+          state: 'completed',
+          counters: {
+            rootsDiscovered: 1,
+            rootsCompleted: 1,
+            filesDiscovered: 0,
+            filesProcessed: 0,
+            filesHashed: 0,
+            bytesHashed: 0,
+            issuesFound: 0,
+          },
+          durationMs: 100,
+        }),
+      ),
+    );
+
+    expect(await screen.findByRole('heading', { name: 'SETTINGS' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/settings');
   });
 
   it('opens a game detail from a semantic card link and returns without a full-library detail query', async () => {
@@ -712,9 +790,7 @@ describe('AppShell M6.2 shell and library states', () => {
     await waitFor(() =>
       expect(mocks.removeExternalContentRoot).toHaveBeenCalledWith({ rootId: 2 }),
     );
-    await waitFor(() =>
-      expect(screen.getByRole('heading', { name: 'CONTENT ROOTS' })).toHaveFocus(),
-    );
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'LIBRARY' })).toHaveFocus());
   });
 
   it('shows truthful progress, does not refresh the summary per progress event, and refreshes once on completion', async () => {
@@ -766,7 +842,7 @@ describe('AppShell M6.2 shell and library states', () => {
     );
   });
 
-  it('keeps the previous terminal issue page visible while a newer scan is running', async () => {
+  it('removes previous terminal issue content while a newer scan is running', async () => {
     mocks.getScanIssuePage.mockResolvedValue({
       issues: [
         {
@@ -807,9 +883,10 @@ describe('AppShell M6.2 shell and library states', () => {
       ),
     );
 
-    expect(await screen.findByText(/saved issues from terminal run #4/i)).toBeInTheDocument();
-    expect(screen.getByText(/current scan #5 is still running/i)).toBeInTheDocument();
-    expect(screen.getByText('Path unreadable')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'SCAN IN PROGRESS' })).toBeInTheDocument();
+    expect(screen.queryByText(/saved issues from terminal run #4/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/current scan #5 is still running/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Path unreadable')).not.toBeInTheDocument();
     expect(mocks.getScanIssuePage.mock.calls.length).toBe(issueCallsBeforeProgress);
   });
 
@@ -1816,7 +1893,7 @@ describe('AppShell M6.7A library composition', () => {
     expect(screen.queryByText('LAST SCAN')).not.toBeInTheDocument();
   });
 
-  it('keeps a running scan clearly visible above a populated grid', async () => {
+  it('replaces the underlying Library with a dedicated running Scan composition', async () => {
     mocks.getScanStatus.mockResolvedValue({
       running: true,
       progress: {
@@ -1830,7 +1907,15 @@ describe('AppShell M6.7A library composition', () => {
 
     expect(await screen.findByRole('heading', { name: 'SCAN IN PROGRESS' })).toBeVisible();
     expect(screen.queryByText('LAST SCAN')).not.toBeInTheDocument();
-    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    expect(screen.queryByRole('heading', { name: 'LIBRARY' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('complementary', { name: 'Library navigation' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('search')).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Library filters' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: /Open Kirby’s Adventure details/ }),
+    ).not.toBeInTheDocument();
   });
 });
 

@@ -222,79 +222,78 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
       aria-busy={
         provider.providerStatusLoading || provider.accountLoading || provider.credentialsPending
       }
-      aria-labelledby="metadata-provider-heading"
-      className="settings-panel metadata-provider-panel"
+      aria-labelledby="metadata-heading"
+      className="settings-panel metadata-provider-panel settings-group"
       role="region"
     >
       <div className="panel-heading">
-        <div>
-          <span className="settings-panel-kicker">ENRICHMENT</span>
-          <h2 id="metadata-provider-heading">METADATA PROVIDER</h2>
-        </div>
+        <h2 id="metadata-heading">METADATA</h2>
         <span aria-hidden="true" />
-        <span className="panel-meta">SCREENSCRAPER</span>
+        <span className="panel-meta">SETTINGS</span>
       </div>
-      <p className="metadata-provider-intro">
-        Metadata enrichment is optional and separate from your local library. Provider work never
-        changes ROM files, local availability, or emulation readiness.
-      </p>
-
-      {provider.providerStatusError ? (
-        <InlineError
-          title="PROVIDER STATUS UNAVAILABLE"
-          message="RetroFrontier could not read ScreenScraper status. Local content roots and cached metadata remain available."
-          actionLabel="RETRY PROVIDER STATUS"
-          onAction={() => void provider.refresh()}
-        />
-      ) : null}
-      {provider.providerStatusLoading && !status ? (
-        <p className="loading-inline" role="status">
-          READING PROVIDER STATUS…
-        </p>
-      ) : null}
-      {status && statusCopy ? (
-        <div className="metadata-provider-status-area">
-          <div
-            aria-live="polite"
-            className={`metadata-provider-status metadata-provider-status--${statusCopy.tone}`}
-            role="status"
-          >
-            <strong>{statusCopy.label}</strong>
-            <p>{statusCopy.description}</p>
-          </div>
-          {deferCopy &&
-          (deferCopy.label !== statusCopy.label ||
-            deferCopy.description !== statusCopy.description) ? (
-            <div className="metadata-provider-defer-note">
-              <strong>{deferCopy.label}</strong>
-              <p>{deferCopy.description}</p>
-            </div>
-          ) : null}
-          {quota ? (
-            <dl className="metadata-provider-summary">
-              <div>
-                <dt>QUOTA SNAPSHOT</dt>
-                <dd>{quota.quota}</dd>
-              </div>
-              <div>
-                <dt>BACKGROUND WORK</dt>
-                <dd>{quota.jobs}</dd>
-              </div>
-              <div>
-                <dt>QUOTA RECENCY</dt>
-                <dd>{quota.observed}</dd>
-              </div>
-            </dl>
-          ) : null}
+      <section aria-labelledby="metadata-provider-heading" className="metadata-provider-section">
+        <div className="metadata-row-heading">
+          <h3 id="metadata-provider-heading">SCREENSCRAPER</h3>
+          <span className="panel-meta">PROVIDER</span>
         </div>
-      ) : null}
+
+        {provider.providerStatusError ? (
+          <InlineError
+            title="PROVIDER STATUS UNAVAILABLE"
+            message="RetroFrontier could not read ScreenScraper status. Local content roots and cached metadata remain available."
+            actionLabel="RETRY PROVIDER STATUS"
+            onAction={() => void provider.refresh()}
+          />
+        ) : null}
+        {provider.providerStatusLoading && !status ? (
+          <p className="loading-inline" role="status">
+            READING PROVIDER STATUS…
+          </p>
+        ) : null}
+        {status && statusCopy ? (
+          <div className="metadata-provider-status-area">
+            <div
+              aria-live="polite"
+              className={`metadata-provider-status metadata-provider-status--${statusCopy.tone}`}
+              role="status"
+            >
+              <strong>{statusCopy.label}</strong>
+              <p>{statusCopy.description}</p>
+            </div>
+            {deferCopy &&
+            (deferCopy.label !== statusCopy.label ||
+              deferCopy.description !== statusCopy.description) ? (
+              <div className="metadata-provider-defer-note">
+                <strong>{deferCopy.label}</strong>
+                <p>{deferCopy.description}</p>
+              </div>
+            ) : null}
+            {quota ? (
+              <dl className="metadata-provider-summary">
+                <div>
+                  <dt>QUOTA SNAPSHOT</dt>
+                  <dd>{quota.quota}</dd>
+                </div>
+                <div>
+                  <dt>BACKGROUND WORK</dt>
+                  <dd>{quota.jobs}</dd>
+                </div>
+                <div>
+                  <dt>QUOTA RECENCY</dt>
+                  <dd>{quota.observed}</dd>
+                </div>
+              </dl>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
 
       <section aria-labelledby="metadata-account-heading" className="metadata-account-section">
         <div className="metadata-account-heading">
           <div>
-            <span className="settings-panel-kicker">OPTIONAL PERSONAL ACCESS</span>
+            <span className="settings-panel-kicker">PERSONAL ACCOUNT</span>
             <h3 id="metadata-account-heading" ref={accountHeading} tabIndex={-1}>
-              SCREENSCRAPER ACCOUNT
+              OPTIONAL SCREENSCRAPER ACCOUNT
             </h3>
           </div>
           {provider.accountLoading && !provider.account ? (
@@ -338,8 +337,7 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
           onSubmit={submitCredentials}
         >
           <p className="metadata-account-help" id="metadata-account-help">
-            Personal credentials are write-only here and are stored by the native secure-storage
-            boundary. They are never read back into this form.
+            Credentials are stored securely and are never displayed again.
           </p>
           <div className="metadata-account-fields">
             <label htmlFor="metadata-account-username">ACCOUNT NAME</label>
@@ -478,7 +476,6 @@ export function SettingsPage({
   const rootsHeading = useRef<HTMLHeadingElement>(null);
   const confirmationButton = useRef<HTMLButtonElement>(null);
   const removeTriggers = useRef(new Map<number, HTMLButtonElement>());
-  const managedRoot = roots.find((root) => root.kind === 'managed');
 
   useEffect(() => {
     if (pendingRemoval !== null) {
@@ -538,7 +535,6 @@ export function SettingsPage({
   const runAdd = () => void runOperation({ kind: 'add' }, onAddExternalFolder);
   const runOpen = () => void runOperation({ kind: 'open' }, onOpenManagedFolder);
   const runScan = () => void runOperation({ kind: 'scan' }, scan.startScan);
-
   return (
     <main aria-labelledby="settings-heading" className="app-main settings-main" id="main-content">
       <PixelButton
@@ -556,13 +552,7 @@ export function SettingsPage({
           SETTINGS
         </h1>
         <span aria-hidden="true" />
-        <span className="section-meta">LIBRARY ROOTS</span>
       </div>
-      <p className="settings-intro">
-        Manage the folders RetroFrontier is allowed to scan. Folder validation stays in the local
-        application service, and removing a root never deletes its files.
-      </p>
-
       {rootsError && (
         <InlineError
           title="CONTENT ROOTS UNAVAILABLE"
@@ -588,13 +578,15 @@ export function SettingsPage({
         />
       )}
 
-      <section className="settings-panel" aria-labelledby="roots-heading">
+      <section className="settings-panel settings-group" aria-labelledby="roots-heading">
         <div className="panel-heading">
           <h2 id="roots-heading" ref={rootsHeading} tabIndex={-1}>
-            CONTENT ROOTS
+            LIBRARY
           </h2>
           <span aria-hidden="true" />
-          <span className="panel-meta">{rootsLoading ? 'CHECKING' : `${roots.length} ROOTS`}</span>
+          <span className="panel-meta">
+            {rootsLoading ? 'CHECKING' : `${roots.length} FOLDERS`}
+          </span>
         </div>
         <div className="root-list">
           {rootsLoading && roots.length === 0 && (
@@ -671,19 +663,8 @@ export function SettingsPage({
             {scan.scanStartPending ? 'SCAN REQUESTED…' : 'RESCAN LIBRARY'}
           </PixelButton>
         </div>
-        <p className="settings-scope-note">
-          Emulator cores, display, controllers, and saves are configured in later milestones.
-        </p>
       </section>
-
       <MetadataProviderPanel provider={metadataProvider} />
-
-      {managedRoot && (
-        <p className="settings-managed-note" role="status">
-          Managed folder status: {rootAvailabilityLabel(managedRoot)} at{' '}
-          <span title={managedRoot.path}>{managedRoot.path}</span>.
-        </p>
-      )}
     </main>
   );
 }

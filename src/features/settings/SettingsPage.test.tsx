@@ -105,6 +105,10 @@ function renderPage() {
   );
 }
 
+function renderMetadataPage() {
+  return renderPage();
+}
+
 describe('SettingsPage metadata/provider section', () => {
   beforeEach(() => {
     mocks.getMetadataProviderStatus.mockReset().mockResolvedValue(providerStatus);
@@ -118,11 +122,10 @@ describe('SettingsPage metadata/provider section', () => {
 
     await waitFor(() => expect(screen.getByText('PROVIDER ONLINE')).toBeInTheDocument());
 
-    expect(screen.getByRole('heading', { name: 'CONTENT ROOTS' })).toBeInTheDocument();
-    expect(screen.getAllByText(managedRoot.path)).toHaveLength(2);
-    expect(screen.getByRole('heading', { name: 'METADATA PROVIDER' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'METADATA' })).toBeInTheDocument();
+    expect(screen.getByText(managedRoot.path)).toBeInTheDocument();
     expect(screen.getByText('OPTIONAL ACCOUNT NOT CONFIGURED')).toBeInTheDocument();
-    const providerSection = screen.getByRole('region', { name: /metadata provider/i });
+    const providerSection = screen.getByRole('region', { name: 'METADATA' });
     expect(within(providerSection).getAllByRole('status')).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ textContent: expect.stringContaining('PROVIDER ONLINE') }),
@@ -144,11 +147,24 @@ describe('SettingsPage metadata/provider section', () => {
     );
   });
 
+  it('uses one continuous settings page without invented tab navigation', async () => {
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('PROVIDER ONLINE')).toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: 'LIBRARY' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'METADATA' })).toBeInTheDocument();
+    expect(screen.getByText(managedRoot.path)).toBeInTheDocument();
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tabpanel')).not.toBeInTheDocument();
+    expect(screen.queryByText(/later milestones/i)).not.toBeInTheDocument();
+  });
+
   it('submits a personal account write-only and clears the password after authoritative refresh', async () => {
     mocks.getMetadataProviderAccount
       .mockResolvedValueOnce(notConfiguredAccount)
       .mockResolvedValue(configuredAccount);
-    renderPage();
+    renderMetadataPage();
     await waitFor(() =>
       expect(screen.getByText('OPTIONAL ACCOUNT NOT CONFIGURED')).toBeInTheDocument(),
     );
@@ -177,13 +193,12 @@ describe('SettingsPage metadata/provider section', () => {
         message: 'https://provider.invalid?password=fake-secret-never-render',
       })
       .mockResolvedValueOnce(providerStatus);
-    renderPage();
+    renderMetadataPage();
 
     await waitFor(() =>
       expect(screen.getByText('PROVIDER STATUS UNAVAILABLE')).toBeInTheDocument(),
     );
-    expect(screen.getByRole('heading', { name: 'CONTENT ROOTS' })).toBeInTheDocument();
-    expect(screen.getAllByText(managedRoot.path)).toHaveLength(2);
+    expect(screen.getByText(managedRoot.path)).toBeInTheDocument();
     expect(
       screen.queryByText(/provider\.invalid|fake-secret-never-render/i),
     ).not.toBeInTheDocument();
@@ -202,19 +217,19 @@ describe('SettingsPage metadata/provider section', () => {
       pendingJobs: 0,
       deferredJobs: 3,
     });
-    renderPage();
+    renderMetadataPage();
 
-    const section = await screen.findByRole('region', { name: /metadata provider/i });
+    const section = await screen.findByRole('region', { name: 'METADATA' });
     expect(within(section).getByText('PROVIDER OFFLINE')).toBeInTheDocument();
     expect(within(section).getByText(/cached metadata remains available/i)).toBeInTheDocument();
     expect(within(section).getByText('DAILY QUOTA DEFERRED')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'CONTENT ROOTS' })).toBeInTheDocument();
+    expect(screen.getByText(managedRoot.path)).toBeInTheDocument();
     expect(screen.queryByText(/999999|countdown|429|430|431/i)).not.toBeInTheDocument();
   });
 
   it('requires an explicit second action before clearing a personal account', async () => {
     mocks.getMetadataProviderAccount.mockResolvedValue(configuredAccount);
-    renderPage();
+    renderMetadataPage();
     await waitFor(() => expect(screen.getByText('PERSONAL ACCOUNT SAVED')).toBeInTheDocument());
 
     const clearTrigger = screen.getByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' });
@@ -236,7 +251,7 @@ describe('SettingsPage metadata/provider section', () => {
       code: 'metadata_unavailable',
       message: 'https://provider.invalid?password=fake-secret-never-render',
     });
-    renderPage();
+    renderMetadataPage();
     await waitFor(() =>
       expect(screen.getByText('OPTIONAL ACCOUNT NOT CONFIGURED')).toBeInTheDocument(),
     );
@@ -265,7 +280,7 @@ describe('SettingsPage metadata/provider section', () => {
   it('locks credential fields while an account save is in flight', async () => {
     const save = deferred<void>();
     mocks.setMetadataProviderCredentials.mockReturnValue(save.promise);
-    renderPage();
+    renderMetadataPage();
     await waitFor(() =>
       expect(screen.getByText('OPTIONAL ACCOUNT NOT CONFIGURED')).toBeInTheDocument(),
     );
@@ -294,7 +309,7 @@ describe('SettingsPage metadata/provider section', () => {
       state: 'vaultUnavailable',
       username: null,
     } satisfies ProviderAccountStatus);
-    renderPage();
+    renderMetadataPage();
 
     const clear = await screen.findByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' });
     expect(clear).toBeDisabled();
@@ -308,7 +323,7 @@ describe('SettingsPage metadata/provider section', () => {
       code: 'metadata_unavailable',
       message: 'internal account detail',
     });
-    renderPage();
+    renderMetadataPage();
 
     const clear = await screen.findByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' });
     expect(clear).toBeDisabled();
@@ -319,7 +334,7 @@ describe('SettingsPage metadata/provider section', () => {
 
   it('closes the account confirmation with Escape and restores focus to its trigger', async () => {
     mocks.getMetadataProviderAccount.mockResolvedValue(configuredAccount);
-    renderPage();
+    renderMetadataPage();
     const clear = await screen.findByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' });
     fireEvent.click(clear);
     const confirmation = await screen.findByRole('alertdialog', {

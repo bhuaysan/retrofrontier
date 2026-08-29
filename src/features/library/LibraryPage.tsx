@@ -284,7 +284,7 @@ function EmptyLibraryState({
   );
 }
 
-function ScanProgressPanel({ progress }: { progress: ScanProgress | null }) {
+export function ScanProgressPanel({ progress }: { progress: ScanProgress | null }) {
   const counters = progress?.counters;
   const determinate = Boolean(
     progress && progress.phase !== 'discovery' && counters && counters.filesDiscovered > 0,
@@ -300,7 +300,7 @@ function ScanProgressPanel({ progress }: { progress: ScanProgress | null }) {
       <div className="panel-heading">
         <h2 id="scan-active-heading">
           <span className="status-pulse" aria-hidden="true" />
-          SCAN IN PROGRESS
+          LIVE PROGRESS
         </h2>
         <span aria-hidden="true" />
         <span className="panel-meta">{progress ? `RUN #${progress.runId}` : 'STARTING'}</span>
@@ -656,7 +656,6 @@ export function LibraryPage({
               SENDING SCAN REQUEST…
             </p>
           )}
-          {isRunning && <ScanProgressPanel progress={scan.status?.progress ?? null} />}
           {showResultPanel && terminalResult && (
             <ScanResultPanel result={terminalResult} totalGames={summary.totalGames} />
           )}

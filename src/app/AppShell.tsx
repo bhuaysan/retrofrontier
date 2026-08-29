@@ -10,11 +10,12 @@ import { useScanState } from '../hooks/useScanState';
 import { useSystemCatalog } from '../hooks/useSystemCatalog';
 import { pickExternalContentRoot } from '../platform/folderPicker';
 import { openManagedRomFolder, type ScanSummary } from '../platform/ipc';
-import { LibraryPage } from '../features/library/LibraryPage';
+import { LibraryPage, ScanProgressPanel } from '../features/library/LibraryPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
 import { systemAccent } from '../features/library/systemAccents';
 import { GameDetailPage } from '../features/library/GameDetailPage';
 import { gameRoute, isGameRoute, useRoute } from './routes';
+import { PixelArrow } from '../components/ui/PixelIcon';
 
 type Theme = 'dark' | 'light';
 
@@ -135,6 +136,7 @@ export function AppShell() {
   const isLibraryRoute = route === 'library';
   const isSettingsRoute = route === 'settings';
   const gameRouteState = isGameRoute(route) ? route : null;
+  const usesLibraryChrome = isLibraryRoute || gameRouteState !== null;
   const currentGameId = gameRouteState?.gameId ?? null;
   const [libraryFocusGameId, setLibraryFocusGameId] = useState<number | null>(null);
   const {
@@ -171,6 +173,7 @@ export function AppShell() {
     [refreshSummary],
   );
   const scan = useScanState({ onCompleted: onScanCompleted });
+  const scanRunning = scan.status?.running === true;
   const onFavoriteCommitted = useCallback(() => {
     void refreshSummary();
   }, [refreshSummary]);
@@ -244,7 +247,10 @@ export function AppShell() {
         : 'SCAN READY';
 
   return (
-    <div className="app-shell" data-theme={theme}>
+    <div
+      className={`app-shell${scanRunning ? ' app-shell--scan' : usesLibraryChrome ? '' : ' app-shell--settings'}`}
+      data-theme={theme}
+    >
       <header className="app-header">
         <button
           type="button"
@@ -254,17 +260,16 @@ export function AppShell() {
         >
           RETRO<span>FRONTIER</span>
         </button>
-        {isLibraryRoute && summary && summary.totalGames > 0 ? (
+        {isLibraryRoute && !scanRunning && summary && summary.totalGames > 0 ? (
           <LibrarySearch
             onChange={library.setSearchInput}
             onClear={library.clearSearch}
             value={library.searchInput}
           />
         ) : null}
-        <MobileRouteNav
-          route={isLibraryRoute ? 'library' : isSettingsRoute ? 'settings' : null}
-          navigate={navigateFromShell}
-        />
+        {(isLibraryRoute || gameRouteState !== null) && !scanRunning ? (
+          <MobileRouteNav route={isLibraryRoute ? 'library' : null} navigate={navigateFromShell} />
+        ) : null}
         <div className="theme-toggle" role="group" aria-label="Theme">
           <button
             type="button"
@@ -285,67 +290,86 @@ export function AppShell() {
         </div>
       </header>
 
-      <aside className="app-sidebar" aria-label="Library navigation">
-        <section aria-labelledby="systems-heading">
-          <p id="systems-heading" className="sidebar-label">
-            // SYSTEMS
-          </p>
-          {catalogLoading && (
-            <p className="sidebar-catalog-status loading-inline" role="status">
-              CHECKING SYSTEM CATALOG…
+      {usesLibraryChrome && !scanRunning ? (
+        <aside className="app-sidebar" aria-label="Library navigation">
+          <section aria-labelledby="systems-heading">
+            <p id="systems-heading" className="sidebar-label">
+              // SYSTEMS
             </p>
-          )}
-          {catalogError && (
-            <InlineError
-              title="SYSTEM CATALOG UNAVAILABLE"
-              message="RetroFrontier could not load the supported systems. No system rows are shown; try again."
-              actionLabel="RETRY SYSTEMS"
-              onAction={() => void refreshCatalog()}
-            />
-          )}
-          <ul className="pixel-row-list">
-            <PixelRow
-              label="All systems"
-              count={summary?.totalGames ?? 0}
-              accent="var(--accent)"
-              active={isLibraryRoute && library.systemId === null}
-              activeMode="pressed"
-              onClick={() => {
-                library.setSystemId(null);
-                navigateFromShell('library');
-              }}
-            />
-            {catalogSystems.map((system) => (
-              <SystemSummaryRow
-                key={system.id}
-                label={system.displayName}
-                count={systemCounts.get(system.id) ?? 0}
-                accent={systemAccent(system.id)}
-                active={isLibraryRoute && library.systemId === system.id}
+            {catalogLoading && (
+              <p className="sidebar-catalog-status loading-inline" role="status">
+                CHECKING SYSTEM CATALOG…
+              </p>
+            )}
+            {catalogError && (
+              <InlineError
+                title="SYSTEM CATALOG UNAVAILABLE"
+                message="RetroFrontier could not load the supported systems. No system rows are shown; try again."
+                actionLabel="RETRY SYSTEMS"
+                onAction={() => void refreshCatalog()}
+              />
+            )}
+            <ul className="pixel-row-list">
+              <PixelRow
+                label="All systems"
+                count={summary?.totalGames ?? 0}
+                accent="var(--accent)"
+                active={isLibraryRoute && library.systemId === null}
+                activeMode="pressed"
                 onClick={() => {
-                  library.setSystemId(system.id);
+                  library.setSystemId(null);
                   navigateFromShell('library');
                 }}
               />
-            ))}
-          </ul>
-        </section>
+              {catalogSystems.map((system) => (
+                <SystemSummaryRow
+                  key={system.id}
+                  label={system.displayName}
+                  count={systemCounts.get(system.id) ?? 0}
+                  accent={systemAccent(system.id)}
+                  active={isLibraryRoute && library.systemId === system.id}
+                  onClick={() => {
+                    library.setSystemId(system.id);
+                    navigateFromShell('library');
+                  }}
+                />
+              ))}
+            </ul>
+          </section>
 
-        <nav className="sidebar-menu" aria-labelledby="menu-heading">
-          <p id="menu-heading" className="sidebar-label">
-            // MENU
-          </p>
-          <ul className="pixel-row-list">
-            <RouteRow
-              label="Settings"
-              active={isSettingsRoute}
-              onClick={() => navigateFromShell('settings')}
-            />
-          </ul>
-        </nav>
-      </aside>
+          <nav className="sidebar-menu" aria-labelledby="menu-heading">
+            <p id="menu-heading" className="sidebar-label">
+              // MENU
+            </p>
+            <ul className="pixel-row-list">
+              <RouteRow
+                label="Settings"
+                active={isSettingsRoute}
+                onClick={() => navigateFromShell('settings')}
+              />
+            </ul>
+          </nav>
+        </aside>
+      ) : null}
 
-      {isLibraryRoute ? (
+      {scanRunning ? (
+        <main
+          aria-labelledby="scan-screen-heading"
+          className="app-main scan-main"
+          id="main-content"
+        >
+          <div className="scan-screen-content">
+            <div className="section-heading">
+              <h1 id="scan-screen-heading">
+                <PixelArrow className="heading-arrow" />
+                SCAN IN PROGRESS
+              </h1>
+              <span aria-hidden="true" />
+            </div>
+            <ScanProgressPanel progress={scan.status?.progress ?? null} />
+          </div>
+        </main>
+      ) : isLibraryRoute ? (
         <LibraryPage
           summary={summary}
           summaryLoading={summaryLoading}
@@ -392,13 +416,15 @@ export function AppShell() {
         />
       )}
 
-      <footer className="app-footer">
-        <span>LOCAL LIBRARY</span>
-        <span aria-hidden="true">·</span>
-        <span>{footerStatus}</span>
-        <span className="footer-spacer" />
-        <span className="footer-note">ROM files stay on your disk</span>
-      </footer>
+      {usesLibraryChrome || scanRunning ? (
+        <footer className="app-footer">
+          <span>LOCAL LIBRARY</span>
+          <span aria-hidden="true">·</span>
+          <span>{footerStatus}</span>
+          <span className="footer-spacer" />
+          <span className="footer-note">ROM files stay on your disk</span>
+        </footer>
+      ) : null}
     </div>
   );
 }
