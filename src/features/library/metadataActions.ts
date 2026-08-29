@@ -28,7 +28,7 @@ const STATE_COPY: Record<GameMetadataState['status'], MetadataStateCopy> = {
   ambiguous: {
     label: 'MATCH REVIEW NEEDED',
     description:
-      'No provider candidates are available. Search again without changing local content.',
+      'Choose a provider candidate below, or search again without changing local content.',
   },
   deferred: {
     label: 'METADATA DEFERRED',

@@ -14,7 +14,9 @@ write-only optional account credentials, metadata request/refresh actions, and
 ordered candidate selection. Local library and cached metadata remain usable when
 the provider is offline. M6.6 completes the UI hardening pass: candidate/action projections remain
 DTO-driven, provider/account copy reflects normalized guarantees, and focus, heading, live-region,
-contrast, and async race behavior are covered without moving policy or secrets across IPC.
+positive/available-state contrast, and async race behavior are covered without moving policy or
+secrets across IPC. The focused corrective pass restores truthful copy for ambiguous candidate
+states; light-theme error/negative-status contrast remains mandatory M6.7 input.
 
 ## Prerequisites
 

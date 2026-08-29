@@ -158,6 +158,14 @@ describe('metadata action projection', () => {
     });
   });
 
+  it('acknowledges available candidates for an ambiguous state', () => {
+    expect(metadataStateCopy('ambiguous', null, candidates.length)).toEqual({
+      label: 'MATCH REVIEW NEEDED',
+      description:
+        'Choose a provider candidate below, or search again without changing local content.',
+    });
+  });
+
   it.each([
     'invalidRequest',
     'developerAuthenticationFailed',

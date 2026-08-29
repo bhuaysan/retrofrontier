@@ -2,8 +2,9 @@
 
 ## Current Priority
 
-The project has completed M6 Library UI, including the M6.6 hardening/accessibility/documentation
-pass. M7 launch/process behavior and later UI work remain; runtime trust and core-policy research
+M6 Library UI implementation and the M6.6 corrective pass are complete, but the final adversarial
+review delta has not yet verified closure. The branch is ready for focused delta review; M6 is not
+accepted. M7 launch/process behavior and later UI work remain; runtime trust and core-policy research
 remain explicit release gates.
 
 ## M0 — Planning and Repository Foundation
@@ -287,6 +288,29 @@ visible attribution presentation, which belongs to M6.
       - [ ] M5 account lifecycle does not yet write `Invalid` after provider authentication failure
       - [ ] platform opener executable/reaping hardening and stuck-scan recovery remain native/release
             work outside this UI slice
+      - [x] focused corrective pass restores truthful `ambiguous` candidate-state copy
+      - [ ] focused delta review and final M6 acceptance
+      - [ ] M66-MEDIUM-2 light-theme error/negative-status contrast (mandatory M6.7 input)
+      - [ ] M66-LOW-1 failed page-forward target can be committed by background refresh
+      - [ ] M66-LOW-2 quota recency freezes at provider-panel mount
+      - [ ] M66-LOW-3 terminal scan completion watermark is not monotonic
+      - [ ] M66-LOW-4 candidate panels lack state-specific discovery copy
+      - [ ] M66-LOW-5 account-clear is blocked by account-read failure
+      - [ ] M66-LOW-7 landmark names include decorative `//`
+      - [ ] M66-INFO-1 unused cover-image checksum fields in the DTO
+      - [ ] M66-INFO-2 M5 `Invalid` account state remains unreachable
+      - [ ] M66-INFO-3 metadata-operation fallback uses state generation
+      - [ ] M66-INFO-4 rapid pagination can duplicate bounded queries
+      - [ ] M66-INFO-5 deferral timer self-termination observation
+      - [ ] M66-INFO-6 adjacent sidebar cursor glyph remains a design observation
+      - [x] M66-LOW-6 required status/contrast/deferral documentation synchronization
+      - [ ] M6.3 LOW-6 bounded per-filter count contract remains deferred
+      - [ ] M6.3 LOW-7 design-approved 960×640 density remains deferred
+      - [ ] M6.4 INFO-3 modified-click native-link fallback remains deliberate
+      - [ ] full Unicode case folding remains a search-quality deferral
+      - [ ] metadata event volume beyond the bounded consumer remains deferred
+      - [ ] provider capability expansion remains governed by M5
+      - [ ] archive/ZIP import remains out of scope
 
 - [x] navigation shell
 - [x] empty state

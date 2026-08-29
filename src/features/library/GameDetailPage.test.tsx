@@ -307,6 +307,14 @@ describe('GameDetailPage', () => {
         .getAllByRole('heading', { level: 4 })
         .map((heading) => heading.textContent),
     ).toEqual(['Zelda Candidate', 'Another Zelda']);
+    const metadataPanel = screen.getByRole('region', { name: /normalized metadata/i });
+    expect(within(metadataPanel).getByRole('status')).toHaveTextContent(
+      'Choose a provider candidate below, or search again without changing local content.',
+    );
+    expect(
+      within(metadataPanel).queryByText(/no provider candidates are available/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'SEARCH AGAIN' })).toBeInTheDocument();
     expect(screen.queryByText(/%|confidence|score/i)).not.toBeInTheDocument();
     expect(screen.queryByText('candidate-a')).not.toBeInTheDocument();
     expect(screen.queryByText('candidate-b')).not.toBeInTheDocument();
@@ -477,7 +485,13 @@ describe('GameDetailPage', () => {
       }),
     );
 
-    expect(screen.getByText(/no provider candidates are available/i)).toBeInTheDocument();
+    const metadataPanel = screen.getByRole('region', { name: /normalized metadata/i });
+    expect(
+      within(metadataPanel).getAllByText(/no provider candidates are available/i),
+    ).toHaveLength(1);
+    expect(
+      within(metadataPanel).queryByText(/choose a provider candidate below/i),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole('list', { name: 'Metadata candidates' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /select candidate/i })).not.toBeInTheDocument();
   });

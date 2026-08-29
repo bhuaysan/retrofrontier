@@ -37,9 +37,10 @@
 - [x] M6.5 Metadata UX / Settings
 - [x] M6.6 Hardening / Accessibility / Documentation
 
-Current phase: M6.1 through M6.5 were accepted before this slice. M6.6 is implemented and verified
-as the final Library UI hardening slice. No CRITICAL or HIGH finding remains known. Final status is
-**M6 COMPLETE — READY FOR FINAL ADVERSARIAL REVIEW**; M7 has not started.
+Current phase: M6.1 through M6.5 were accepted before this slice. The M6.6 implementation was
+reviewed adversarially and received one blocking MEDIUM correction for ambiguous candidate-state
+copy. That focused correction is now implemented and verified; M6.6 is **READY FOR FOCUSED DELTA
+REVIEW**, and M6 is not yet accepted. M7 has not started.
 
 ## C. M6.1 — Backend Enablement
 
@@ -1175,7 +1176,7 @@ performed, so the watcher event-kind behaviour on FSEvents and ReadDirectoryChan
 from the `notify` backends rather than observed; neither backend emits `Access` events, so the
 filter cannot suppress a real change there.
 
-## O. Remaining Deferrals After M6.6
+## O. Deferrals After M6.6 Implementation (before final adversarial review)
 
 M6.5's accepted MEDIUM and LOW findings, the M6.5 delta MEDIUM/LOW/INFO observations, and the
 carried M6.3/M6.4 accessibility and truthfulness findings are resolved or explicitly accounted for
@@ -1190,7 +1191,7 @@ remain in their owning milestones. No known CRITICAL or HIGH finding remains.
 
 ## P. Current M6 Verdict
 
-`M6 COMPLETE — READY FOR FINAL ADVERSARIAL REVIEW`
+`M6.6 CORRECTIVE PASS COMPLETE — READY FOR FOCUSED DELTA REVIEW`
 
 ## Q. M6.5 Adversarial Corrective-Pass Verification
 
@@ -1253,3 +1254,104 @@ copyrighted BIOS, runtime binary, or unrelated process was used or modified.
 The safe runtime smoke limit remains the one documented in section M: an existing RetroFrontier
 instance owns the normal application lock/port, so it was not disturbed; isolated native startup
 was verified without touching user data, but live provider/game workflows were not claimed.
+
+## S. M6.6 Focused Corrective Pass After Final Adversarial Review
+
+The final adversarial review at `917c07de74738e0b48a23783be7d57d5f601f51f` returned **FIXES
+REQUIRED BEFORE M6 CAN CLOSE** with 0 CRITICAL, 0 HIGH, 2 MEDIUM, 7 LOW, and 6 INFO findings.
+Only M66-MEDIUM-1 blocked closure. This focused pass does not mark M6 accepted; its implementation
+status is **M6.6 CORRECTIVE PASS COMPLETE — READY FOR FOCUSED DELTA REVIEW**.
+
+### M66-MEDIUM-1 root cause and correction
+
+The M6.5 LOW-6 cleanup removed the duplicate empty-candidate paragraph from `GameDetailPage` and
+moved the zero-candidate explanation into `metadataStateCopy`. The M6.6 change then replaced the
+shared `STATE_COPY.ambiguous` description with the zero-candidate wording. `metadataStateCopy`
+only overrides that default when `candidateCount === 0`; therefore `ambiguous` with candidates
+fell through to the same denial copy even while `GameDetailPage` rendered the ordered picker.
+
+The smallest correction restores `STATE_COPY.ambiguous` to:
+
+> Choose a provider candidate below, or search again without changing local content.
+
+The existing `status === 'ambiguous' && candidateCount === 0` branch remains the one source of the
+empty-candidate explanation:
+
+> No provider candidates are available. Search again without changing local content.
+
+No candidate visibility condition, action projection, ordering, provider ID handling, or backend
+contract changed.
+
+### Regression coverage
+
+- `metadataActions.test.ts` — `acknowledges available candidates for an ambiguous state` asserts
+  `metadataStateCopy('ambiguous', null, 2)` acknowledges the available picker.
+- `GameDetailPage.test.tsx` — `renders ordered provider candidates without inventing confidence or
+  exposing provider IDs` now asserts the populated callout uses the candidate-present copy, does
+  not contain `No provider candidates are available`, keeps `SEARCH AGAIN`, and preserves the two
+  rows in backend-returned order with opaque IDs absent from the DOM.
+- `GameDetailPage.test.tsx` — `does not create a candidate picker when the backend returns no
+  candidates` asserts the zero-candidate explanation appears exactly once, the candidate-present
+  wording is absent, and the picker/select controls are absent.
+- Existing projection coverage retains the explicit
+  `metadataStateCopy('ambiguous', null, 0)` zero-candidate assertion, so the two cases remain
+  deliberately discriminated.
+
+### Non-blocking final-review findings
+
+M66-MEDIUM-2 remains open and is mandatory M6.7 accessibility input. The six measured light-theme
+error/negative-status text pairings remain at approximately 2.99:1–3.47:1; this pass makes no broad
+contrast, token, or theme change and does not claim the finding is resolved.
+
+The following M66 findings remain deferred and were not changed:
+
+- M66-LOW-1 — background refresh can commit a failed page-forward target.
+- M66-LOW-2 — quota recency is based on a panel-mount timestamp.
+- M66-LOW-3 — out-of-order terminal scan events can lower the completion watermark.
+- M66-LOW-4 — `stale`/`failed`/`noMatch` candidate panels lack copy pointing to the picker.
+- M66-LOW-5 — account-clear is disabled by an unrelated account-read failure.
+- M66-LOW-7 — landmark names include the decorative `//` prefix.
+- M66-INFO-1 — the metadata DTO carries unused cover-image checksums.
+- M66-INFO-2 — the M5 `Invalid` account state remains unreachable.
+- M66-INFO-3 — the metadata-operation fallback reads state generation rather than the ref.
+- M66-INFO-4 — rapid pagination clicks can issue duplicate bounded queries.
+- M66-INFO-5 — the deferral-expiry timer's self-terminating behavior is only an observation.
+- M66-INFO-6 — sidebar focus uses the design-mandated adjacent cursor glyph.
+
+M66-LOW-6 was addressed only as the documentation synchronization required for this corrective
+pass: the report, backlog, README, and development status now reflect the review verdict and the
+open M6.7 contrast input. No product hardening or unrelated LOW finding was taken on. Earlier
+M6.2–M6.5 deferrals remain as recorded in section O and the owning milestone documentation.
+
+### Architecture and security disposition
+
+This remains a frontend projection/copy correction. Rust production code did not change; DTO/IPC,
+Tauri commands/capabilities, provider matching or capability policy, credential handling, and
+dependencies did not change. No ADR is required, and no ROM, BIOS, runtime, provider, quota, or
+user-data operation was performed.
+
+### Corrective-pass verification
+
+- TDD red run at the reviewed HEAD: the two new discriminating assertions failed as expected — one
+  projection failure and one populated-Game-Detail callout failure.
+- TDD green focused run:
+  `pnpm exec vitest run src/features/library/metadataActions.test.ts src/features/library/GameDetailPage.test.tsx src/hooks/useGameDetail.test.tsx`
+  — PASS — 3 files, 105 tests.
+- `pnpm typecheck` — PASS — exit 0.
+- `pnpm lint` — PASS — exit 0.
+- `pnpm format:check` — PASS — all matched files use Prettier style.
+- `pnpm test` — PASS — 17 files, 247 tests.
+- `pnpm build` — PASS — TypeScript/Vite build; 54 modules transformed.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — PASS — exit 0.
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings`
+  — PASS — exit 0 with no warnings.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — PASS — 309 run; 308 passed, 0 failed,
+  1 ignored.
+- `cargo build --manifest-path src-tauri/Cargo.toml --release` — PASS — exit 0.
+- `pnpm tauri:build` — PASS — release application build completed at
+  `src-tauri/target/release/retrofrontier`.
+- `git diff --check` — PASS — no whitespace errors.
+
+No native smoke run was needed for this projection/copy-only correction. All checks used
+synthetic/legal fixtures; no live ScreenScraper request, credential, provider quota, ROM, BIOS,
+runtime binary, or user-data mutation was used.
