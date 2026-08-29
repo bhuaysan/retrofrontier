@@ -29,7 +29,7 @@ function arrowPath(direction: 'left' | 'right') {
 describe('PixelArrow', () => {
   it.each(['right', 'left'] as const)('draws every %s cell inside the viewBox', (direction) => {
     const { viewBox, path } = arrowPath(direction);
-    expect(viewBox).toBe('0 0 8 11');
+    expect(viewBox).toBe('0 0 5 7');
     const [, , boxWidth, boxHeight] = viewBox!.split(' ').map(Number);
 
     const rows = readRows(path);
@@ -51,10 +51,10 @@ describe('PixelArrow', () => {
     const widths = readRows(arrowPath('right').path).map((row) => row.width);
 
     expect(widths).toEqual([...widths].reverse());
-    expect(Math.max(...widths)).toBe(8);
-    expect(widths.filter((width) => width === 8)).toHaveLength(1);
+    expect(Math.max(...widths)).toBe(5);
+    expect(widths.filter((width) => width === 5)).toHaveLength(1);
 
-    const apex = widths.indexOf(8);
+    const apex = widths.indexOf(5);
     for (let index = 1; index <= apex; index += 1) {
       expect(widths[index]).toBeGreaterThan(widths[index - 1]);
     }
@@ -66,13 +66,13 @@ describe('PixelArrow', () => {
 
     // Right-pointing rows sit on the left edge; left-pointing rows end on the right edge.
     expect(right.every((row) => row.x === 0)).toBe(true);
-    expect(left.every((row) => row.x + row.width === 8)).toBe(true);
+    expect(left.every((row) => row.x + row.width === 5)).toBe(true);
     expect(left.map((row) => row.width)).toEqual(right.map((row) => row.width));
   });
 });
 
 describe('PixelRow focus cursor', () => {
-  it('renders the A6 cursor arrow larger than body text, in the 8x11 glyph proportion', () => {
+  it('renders the A6 cursor arrow at a whole 2px per cell of the 5x7 glyph grid', () => {
     const { container } = render(
       <ul>
         <PixelRow accent="var(--accent)" label="SNES" count={2} />
@@ -82,9 +82,10 @@ describe('PixelRow focus cursor', () => {
     const cursor = container.querySelector('.pixel-row-cursor');
     const svg = cursor?.querySelector('svg');
     expect(cursor).toHaveAttribute('aria-hidden', 'true');
-    // Deliberately larger than A6's mockup so the focus triangle reads at a distance, and kept in
-    // the 8:11 proportion of the cell grid so the arrowhead is never stretched.
-    expect(svg).toHaveAttribute('width', '13');
-    expect(svg).toHaveAttribute('height', '18');
+    // 10x14 is exactly 2px per cell, so `crispEdges` puts every step on a pixel boundary and no
+    // step is wider than its neighbours.
+    expect(svg).toHaveAttribute('width', '10');
+    expect(svg).toHaveAttribute('height', '14');
+    expect(svg).toHaveAttribute('viewBox', '0 0 5 7');
   });
 });
