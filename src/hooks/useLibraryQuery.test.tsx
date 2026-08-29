@@ -16,7 +16,6 @@ const mocks = vi.hoisted(() => {
 
   return {
     queryLibrary: vi.fn(),
-    setGameFavorite: vi.fn(),
     onMetadataStateChanged: vi.fn(),
     normalizeIpcError: (reason: unknown) =>
       reason instanceof MockIpcError
@@ -31,7 +30,6 @@ vi.mock('../platform/ipc', async (importOriginal) => {
   return {
     ...actual,
     queryLibrary: mocks.queryLibrary,
-    setGameFavorite: mocks.setGameFavorite,
     onMetadataStateChanged: mocks.onMetadataStateChanged,
     normalizeIpcError: mocks.normalizeIpcError,
   };
@@ -83,7 +81,6 @@ describe('useLibraryQuery', () => {
   beforeEach(() => {
     vi.useRealTimers();
     mocks.queryLibrary.mockReset().mockResolvedValue(firstPage);
-    mocks.setGameFavorite.mockReset().mockResolvedValue({ gameId: 1, favorite: true });
     mocks.onMetadataStateChanged.mockReset().mockResolvedValue(vi.fn());
   });
 
@@ -416,102 +413,6 @@ describe('useLibraryQuery', () => {
     await act(async () => pending.resolve(firstPage));
 
     expect(result.current.page).toBeNull();
-  });
-
-  it('suppresses duplicate favorite writes and refetches authoritative state', async () => {
-    const favoriteWrite = deferred<{ gameId: number; favorite: boolean }>();
-    const committed = vi.fn();
-    mocks.setGameFavorite.mockReturnValueOnce(favoriteWrite.promise);
-    mocks.queryLibrary.mockResolvedValueOnce(firstPage).mockResolvedValueOnce({
-      ...firstPage,
-      items: [{ ...firstPage.items[0], favorite: true }],
-    });
-    const { result } = renderHook(() =>
-      useLibraryQuery({ enabled: true, onFavoriteCommitted: committed }),
-    );
-    await waitFor(() => expect(result.current.page).not.toBeNull());
-
-    act(() => {
-      void result.current.toggleFavorite(firstPage.items[0]);
-      void result.current.toggleFavorite(firstPage.items[0]);
-    });
-    expect(mocks.setGameFavorite).toHaveBeenCalledTimes(1);
-    expect(mocks.setGameFavorite).toHaveBeenCalledWith({ gameId: 1, favorite: true });
-    expect(result.current.page?.items[0].favorite).toBe(false);
-
-    await act(async () => favoriteWrite.resolve({ gameId: 1, favorite: true }));
-    await waitFor(() => expect(result.current.page?.items[0].favorite).toBe(true));
-    expect(committed).toHaveBeenCalledTimes(1);
-    expect(result.current.favoritePendingIds.has(1)).toBe(false);
-  });
-
-  it('refetches the current query identity when a held favorite write finishes', async () => {
-    const favoriteWrite = deferred<{ gameId: number; favorite: boolean }>();
-    mocks.setGameFavorite.mockReturnValueOnce(favoriteWrite.promise);
-    mocks.queryLibrary
-      .mockResolvedValueOnce(firstPage)
-      .mockResolvedValueOnce(pageWith('SNES result'))
-      .mockResolvedValueOnce(pageWith('SNES favorite result'));
-    const { result } = renderHook(() => useLibraryQuery({ enabled: true }));
-    await waitFor(() => expect(result.current.page).toEqual(firstPage));
-
-    act(() => void result.current.toggleFavorite(firstPage.items[0]));
-    act(() => result.current.setSystemId('snes'));
-    await waitFor(() => expect(result.current.page?.items[0].displayTitle).toBe('SNES result'));
-
-    await act(async () => favoriteWrite.resolve({ gameId: 1, favorite: true }));
-    await waitFor(() =>
-      expect(result.current.page?.items[0].displayTitle).toBe('SNES favorite result'),
-    );
-    expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
-      systemId: 'snes',
-      sort: 'titleAsc',
-      offset: 0,
-    });
-  });
-
-  it('leaves card state truthful and reports favorite mutation failure', async () => {
-    mocks.setGameFavorite.mockRejectedValueOnce(
-      new mocks.IpcError('database_unavailable', 'Favorite failed.'),
-    );
-    const { result } = renderHook(() => useLibraryQuery({ enabled: true }));
-    await waitFor(() => expect(result.current.page).not.toBeNull());
-
-    await act(async () => result.current.toggleFavorite(firstPage.items[0]));
-    expect(result.current.page).toEqual(firstPage);
-    expect(result.current.favoriteError?.code).toBe('database_unavailable');
-  });
-
-  it('unfavorites from a later favorites-only page with one reset query', async () => {
-    const favoriteItem = { ...firstPage.items[0], favorite: true };
-    mocks.queryLibrary
-      .mockResolvedValueOnce({ ...firstPage, items: [favoriteItem], total: 61 })
-      .mockResolvedValueOnce({ ...firstPage, items: [favoriteItem], total: 61 })
-      .mockResolvedValueOnce({
-        ...firstPage,
-        items: [favoriteItem],
-        total: 61,
-        offset: 60,
-      })
-      .mockResolvedValueOnce({ items: [], total: 0, offset: 60, limit: 60 })
-      .mockResolvedValueOnce({ items: [], total: 0, offset: 0, limit: 60 });
-    mocks.setGameFavorite.mockResolvedValueOnce({ gameId: 1, favorite: false });
-    const { result } = renderHook(() => useLibraryQuery({ enabled: true }));
-    await waitFor(() => expect(result.current.page).not.toBeNull());
-    act(() => result.current.setFavoritesOnly(true));
-    await waitFor(() => expect(mocks.queryLibrary).toHaveBeenCalledTimes(2));
-    act(() => result.current.nextPage());
-    await waitFor(() => expect(result.current.page?.offset).toBe(60));
-
-    await act(async () => result.current.toggleFavorite(favoriteItem));
-    await waitFor(() => expect(result.current.page?.items).toEqual([]));
-
-    expect(mocks.queryLibrary).toHaveBeenCalledTimes(5);
-    expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
-      favoritesOnly: true,
-      sort: 'titleAsc',
-      offset: 0,
-    });
   });
 
   it('coalesces visible metadata invalidations and ignores off-page IDs', async () => {

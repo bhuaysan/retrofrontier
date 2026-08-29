@@ -18,11 +18,13 @@ import {
   type ScanSummary,
 } from '../../platform/ipc';
 import type { LibraryQueryModel } from '../../hooks/useLibraryQuery';
+import { useLibrarySelection } from '../../hooks/useLibrarySelection';
 import type { SystemLabel } from '../../hooks/useSystemCatalog';
 import type { ScanStateModel } from '../../hooks/useScanState';
 import { RootActionError } from '../settings/RootActionError';
 import { LibraryBrowser } from './LibraryBrowser';
 import { LibraryFilterBar } from './LibraryFilterBar';
+import { LibrarySelectionBar } from './LibrarySelectionBar';
 import { rootAvailabilityLabel } from './rootLabels';
 
 interface LibraryPageProps {
@@ -552,6 +554,9 @@ export function LibraryPage({
   restoreFocusGameId,
   onFocusRestored,
 }: LibraryPageProps) {
+  // B1 multi-select is transient presentation state owned by the Library composition, so the
+  // selection bar, the count, and every card's selected state all read one authority.
+  const selection = useLibrarySelection(library.page);
   const managedRoot = roots.find((root) => root.kind === 'managed');
   const isRunning = scan.status?.running === true;
   const lastResult = scan.status?.lastResult;
@@ -590,6 +595,9 @@ export function LibraryPage({
   return (
     <main aria-labelledby="library-heading" className="app-main" id="main-content">
       {populated && <LibraryFilterBar library={library} systems={systems} />}
+      {populated && selection.count > 0 ? (
+        <LibrarySelectionBar count={selection.count} onClear={selection.clear} />
+      ) : null}
       <SectionHeading
         id="library-heading"
         title="LIBRARY"
@@ -676,7 +684,12 @@ export function LibraryPage({
               scanRunning={isRunning}
             />
           ) : (
-            <LibraryBrowser library={library} onOpenGame={onOpenGame} systems={systems} />
+            <LibraryBrowser
+              library={library}
+              onOpenGame={onOpenGame}
+              selection={selection}
+              systems={systems}
+            />
           )}
 
           {showIssues && <ScanIssuesPanel scan={scan} roots={roots} />}

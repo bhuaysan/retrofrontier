@@ -2,6 +2,7 @@ import type { CSSProperties, MouseEvent } from 'react';
 
 import type { LibraryListItem, LibraryMetadataMatchState } from '../../platform/ipc';
 import { gameRoute, routePath } from '../../app/routes';
+import { PixelCheck } from '../../components/ui/PixelIcon';
 import { GameCover } from './GameCover';
 import { systemAccentKey } from './systemAccents';
 import { systemShortLabel } from './systemLabels';
@@ -10,9 +11,9 @@ interface GameCardProps {
   item: LibraryListItem;
   systemName: string;
   accent: string;
-  favoritePending: boolean;
+  selected: boolean;
   onOpenGame: (gameId: number) => void;
-  onToggleFavorite: (item: LibraryListItem) => void;
+  onToggleSelected: (gameId: number) => void;
 }
 
 /**
@@ -29,36 +30,13 @@ const METADATA_LABELS: Partial<Record<LibraryMetadataMatchState, string>> = {
   stale: 'METADATA STALE',
 };
 
-export function PixelStar({ filled }: { filled: boolean }) {
-  // Hard-edged 12×12 pixel star. The unfilled variant is the same silhouette with a one-pixel
-  // interior cut out through `evenodd`, so both states stay crisp and unmistakably a star at the
-  // small overlay size instead of closing into a blob the way a stroked outline did.
-  const silhouette =
-    'M5 0h2v2h-2zM4 2h4v2h-4zM0 4h12v1h-12zM1 5h10v1h-10zM2 6h8v1h-8z' +
-    'M3 7h6v1h-6zM2 8h8v1h-8zM1 9h3v1h-3zM8 9h3v1h-3zM0 10h3v1h-3z' +
-    'M9 10h3v1h-3zM0 11h2v1h-2zM10 11h2v1h-2z';
-  const interior =
-    'M5 2h2v2h-2zM4 4h4v1h-4zM2 5h8v1h-8zM3 6h6v1h-6zM4 7h4v1h-4z' +
-    'M3 8h1v1h-1zM8 8h1v1h-1zM2 9h1v1h-1zM9 9h1v1h-1zM1 10h1v1h-1zM10 10h1v1h-1z';
-
-  return (
-    <svg aria-hidden="true" shapeRendering="crispEdges" viewBox="0 0 12 12">
-      <path
-        d={filled ? silhouette : `${silhouette}${interior}`}
-        fill="currentColor"
-        fillRule="evenodd"
-      />
-    </svg>
-  );
-}
-
 export function GameCard({
   item,
   systemName,
   accent,
-  favoritePending,
+  selected,
   onOpenGame,
-  onToggleFavorite,
+  onToggleSelected,
 }: GameCardProps) {
   const title = item.displayTitle.trim() || item.localTitle.trim() || 'UNTITLED GAME';
   const headingId = `game-card-title-${item.gameId}`;
@@ -85,7 +63,9 @@ export function GameCard({
   return (
     <article
       aria-labelledby={headingId}
-      className={`game-card${unavailable ? ' game-card--unavailable' : ''}`}
+      className={`game-card${unavailable ? ' game-card--unavailable' : ''}${
+        selected ? ' game-card--selected' : ''
+      }`}
       data-system-accent={systemAccentKey(item.systemId)}
       style={{ '--system-accent': accent } as CSSProperties}
     >
@@ -105,17 +85,17 @@ export function GameCard({
             <span className="visually-hidden">{' local content'}</span>
           </p>
         ) : null}
+        {/* B1 selection control. It is a sibling of the stretched detail anchor, never a child of
+            it, and it is layered above that anchor's hit area, so pointer and keyboard activation
+            reach the selection toggle instead of the detail route. */}
         <button
-          aria-busy={favoritePending || undefined}
-          aria-label={
-            item.favorite ? `Remove ${title} from favorites` : `Add ${title} to favorites`
-          }
-          aria-pressed={item.favorite}
-          className="game-card-favorite"
-          onClick={() => onToggleFavorite(item)}
+          aria-label={selected ? `Deselect ${title}` : `Select ${title}`}
+          aria-pressed={selected}
+          className="game-card-select"
+          onClick={() => onToggleSelected(item.gameId)}
           type="button"
         >
-          <PixelStar filled={item.favorite} />
+          {selected ? <PixelCheck /> : null}
         </button>
       </div>
 

@@ -101,3 +101,53 @@ export function WarningIcon({ label, ...props }: PixelIconProps) {
     </svg>
   );
 }
+
+/**
+ * Hard-edged 12×12 pixel star for the Favorite action. The unfilled variant is the same silhouette
+ * with a one-pixel interior cut out through `evenodd`, so both states stay crisp and unmistakably a
+ * star at small sizes instead of closing into a blob the way a stroked outline did.
+ */
+export function PixelStar({ filled }: { filled: boolean }) {
+  const silhouette =
+    'M5 0h2v2h-2zM4 2h4v2h-4zM0 4h12v1h-12zM1 5h10v1h-10zM2 6h8v1h-8z' +
+    'M3 7h6v1h-6zM2 8h8v1h-8zM1 9h3v1h-3zM8 9h3v1h-3zM0 10h3v1h-3z' +
+    'M9 10h3v1h-3zM0 11h2v1h-2zM10 11h2v1h-2z';
+  const interior =
+    'M5 2h2v2h-2zM4 4h4v1h-4zM2 5h8v1h-8zM3 6h6v1h-6zM4 7h4v1h-4z' +
+    'M3 8h1v1h-1zM8 8h1v1h-1zM2 9h1v1h-1zM9 9h1v1h-1zM1 10h1v1h-1zM10 10h1v1h-1z';
+
+  return (
+    <svg aria-hidden="true" shapeRendering="crispEdges" viewBox="0 0 12 12">
+      <path
+        d={filled ? silhouette : `${silhouette}${interior}`}
+        fill="currentColor"
+        fillRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+/**
+ * B1 selection checkmark: the design reference's 5×5 pixel tick, drawn crisp at any size. It is
+ * project-owned geometry rather than a Unicode glyph or user-agent checkbox chrome, both of which
+ * render inconsistently against the 22px hard-edged control.
+ */
+export function PixelCheck({ label, ...props }: PixelIconProps) {
+  return (
+    <svg
+      {...props}
+      viewBox="0 0 5 5"
+      width={props.width ?? 10}
+      height={props.height ?? 10}
+      shapeRendering="crispEdges"
+      aria-hidden={label ? undefined : true}
+      aria-label={label}
+      role={label ? 'img' : undefined}
+    >
+      <path
+        d="M4 0h1v1h-1zM3 1h1v1h-1zM4 1h1v1h-1zM0 2h1v1h-1zM2 2h1v1h-1zM3 2h1v1h-1zM0 3h1v1h-1zM1 3h1v1h-1zM2 3h1v1h-1zM1 4h1v1h-1z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}

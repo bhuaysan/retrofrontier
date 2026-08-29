@@ -20,25 +20,25 @@ const item: LibraryListItem = {
   coverRef: 'rfmedia://localhost/cover/1',
 };
 
-function renderCard(overrides: Partial<LibraryListItem> = {}, favoritePending = false) {
-  const onToggleFavorite = vi.fn();
+function renderCard(overrides: Partial<LibraryListItem> = {}, selected = false) {
+  const onToggleSelected = vi.fn();
   const onOpenGame = vi.fn();
-  const { unmount } = render(
+  const { rerender, unmount } = render(
     <GameCard
-      item={{ ...item, ...overrides }}
-      systemName="Nintendo Entertainment System"
       accent="var(--accent)"
-      favoritePending={favoritePending}
+      item={{ ...item, ...overrides }}
       onOpenGame={onOpenGame}
-      onToggleFavorite={onToggleFavorite}
+      onToggleSelected={onToggleSelected}
+      selected={selected}
+      systemName="Nintendo Entertainment System"
     />,
   );
-  return { onOpenGame, onToggleFavorite, unmount };
+  return { onOpenGame, onToggleSelected, rerender, unmount };
 }
 
 describe('GameCard', () => {
   it('renders the compact B1 tile: title, compact system badge, and real release year', () => {
-    const { onToggleFavorite } = renderCard();
+    renderCard();
 
     expect(screen.getByRole('heading', { name: 'Kirby’s Adventure' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveAttribute(
@@ -47,11 +47,20 @@ describe('GameCard', () => {
     );
     expect(screen.getByText('NES')).toBeInTheDocument();
     expect(screen.getByText('1993')).toBeInTheDocument();
-    const favorite = screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' });
-    expect(favorite).toHaveAttribute('aria-pressed', 'false');
-    fireEvent.click(favorite);
-    expect(onToggleFavorite).toHaveBeenCalledWith(item);
-    expect(screen.getAllByRole('button')).toHaveLength(1);
+  });
+
+  it('renders exactly one B1 selection control and no Library favorite action', () => {
+    renderCard({ favorite: true });
+
+    const buttons = screen.getAllByRole('button');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toHaveAccessibleName('Select Kirby’s Adventure');
+    expect(buttons[0]).toHaveAttribute('aria-pressed', 'false');
+    expect(buttons[0]).toHaveClass('game-card-select');
+
+    // The Library card is no longer the Favorite mutation surface, even for a favorited game.
+    expect(screen.queryByRole('button', { name: /favorites/i })).not.toBeInTheDocument();
+    expect(document.querySelector('.game-card-favorite')).toBeNull();
   });
 
   it('keeps the detail target a real anchor without browser-link chrome', () => {
@@ -70,25 +79,25 @@ describe('GameCard', () => {
     expect(onOpenGame).toHaveBeenCalledWith(1);
     expect(onOpenGame).toHaveBeenCalledTimes(1);
     expect(link.closest('button')).toBeNull();
-    expect(
-      screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' }),
-    ).not.toContainElement(link);
   });
 
-  it('exposes exactly one stretched detail target and keeps Favorite outside the anchor', () => {
+  it('exposes exactly one stretched detail target, topologically separate from selection', () => {
     renderCard();
 
     const card = screen.getByRole('article');
     const detailLinks = within(card).getAllByRole('link');
     const detailLink = screen.getByRole('link', { name: 'Open Kirby’s Adventure details' });
-    const favorite = screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' });
+    const select = screen.getByRole('button', { name: 'Select Kirby’s Adventure' });
 
     expect(detailLinks).toHaveLength(1);
     expect(detailLink).toHaveClass('game-card-detail-target');
     expect(detailLink).toHaveAttribute('href', '/games/1');
     expect(detailLink).toHaveAttribute('data-game-detail-link', '1');
-    expect(favorite.closest('a')).toBeNull();
-    expect(card).toContainElement(favorite);
+    // Neither control may nest inside the other: the layering, not event luck, keeps them apart.
+    expect(select.closest('a')).toBeNull();
+    expect(detailLink.closest('button')).toBeNull();
+    expect(select).not.toContainElement(detailLink);
+    expect(card).toContainElement(select);
   });
 
   it('keeps the full-card detail target on unavailable cards', () => {
@@ -107,15 +116,62 @@ describe('GameCard', () => {
     ).toBeVisible();
   });
 
-  it('toggles Favorite exactly once without opening Game Detail', () => {
-    const { onOpenGame, onToggleFavorite } = renderCard();
-    const favorite = screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' });
+  it('toggles selection exactly once without opening Game Detail', () => {
+    const { onOpenGame, onToggleSelected } = renderCard();
+    const select = screen.getByRole('button', { name: 'Select Kirby’s Adventure' });
 
-    fireEvent.click(favorite);
+    fireEvent.click(select);
 
-    expect(onToggleFavorite).toHaveBeenCalledWith(item);
-    expect(onToggleFavorite).toHaveBeenCalledTimes(1);
+    expect(onToggleSelected).toHaveBeenCalledWith(1);
+    expect(onToggleSelected).toHaveBeenCalledTimes(1);
     expect(onOpenGame).not.toHaveBeenCalled();
+  });
+
+  it('toggles selection identically from the keyboard', () => {
+    const { onOpenGame, onToggleSelected } = renderCard();
+    const select = screen.getByRole('button', { name: 'Select Kirby’s Adventure' });
+
+    select.focus();
+    fireEvent.keyDown(select, { key: 'Enter' });
+    fireEvent.keyUp(select, { key: 'Enter' });
+    fireEvent.click(select);
+
+    expect(onToggleSelected).toHaveBeenCalledTimes(1);
+    expect(onOpenGame).not.toHaveBeenCalled();
+  });
+
+  it('renders the selected state with an accessible name, pressed state, and card marking', () => {
+    renderCard({}, true);
+
+    const select = screen.getByRole('button', { name: 'Deselect Kirby’s Adventure' });
+    expect(select).toHaveAttribute('aria-pressed', 'true');
+    // Selection is visible beyond the 22px control itself.
+    expect(screen.getByRole('article')).toHaveClass('game-card--selected');
+    expect(select.querySelector('svg')).not.toBeNull();
+  });
+
+  it('updates the selection control accessible name and state when selection changes', () => {
+    const { rerender, onToggleSelected } = renderCard();
+    expect(screen.getByRole('button', { name: 'Select Kirby’s Adventure' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+
+    rerender(
+      <GameCard
+        accent="var(--accent)"
+        item={item}
+        onOpenGame={vi.fn()}
+        onToggleSelected={onToggleSelected}
+        selected
+        systemName="Nintendo Entertainment System"
+      />,
+    );
+
+    const select = screen.getByRole('button', { name: 'Deselect Kirby’s Adventure' });
+    expect(select).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(select);
+    expect(onToggleSelected).toHaveBeenCalledWith(1);
   });
 
   it('leaves modified clicks to the native anchor', () => {
@@ -150,10 +206,10 @@ describe('GameCard', () => {
       const { unmount } = render(
         <GameCard
           accent="var(--accent)"
-          favoritePending={false}
           item={{ ...item, metadataMatchState: state }}
           onOpenGame={vi.fn()}
-          onToggleFavorite={vi.fn()}
+          onToggleSelected={vi.fn()}
+          selected={false}
           systemName="Nintendo Entertainment System"
         />,
       );
@@ -180,8 +236,8 @@ describe('GameCard', () => {
     expect(screen.queryByText(/US/)).not.toBeInTheDocument();
   });
 
-  it('keeps a visible, accessible missing-content indication for unavailable local content', () => {
-    renderCard({ availability: 'unavailable', favorite: true }, true);
+  it('keeps missing local content indicated, selectable, and browsable', () => {
+    const { onToggleSelected } = renderCard({ availability: 'unavailable', favorite: true });
 
     const flag = screen.getByText('MISSING');
     expect(flag).toBeVisible();
@@ -191,16 +247,15 @@ describe('GameCard', () => {
       'href',
       '/games/1',
     );
-    const favorite = screen.getByRole('button', {
-      name: 'Remove Kirby’s Adventure from favorites',
-    });
-    expect(favorite).not.toBeDisabled();
-    expect(favorite).toHaveAttribute('aria-busy', 'true');
-    expect(favorite).toHaveAttribute('aria-pressed', 'true');
+    // Selection never implies launchability, so a missing file stays selectable.
+    const select = screen.getByRole('button', { name: 'Select Kirby’s Adventure' });
+    expect(select).not.toBeDisabled();
+    fireEvent.click(select);
+    expect(onToggleSelected).toHaveBeenCalledWith(1);
   });
 
   it('renders the compact badge but keeps the full system name accessible', () => {
-    renderCard({ systemId: 'snes' }, false);
+    renderCard({ systemId: 'snes' });
 
     const badge = screen.getByText('SNES');
     expect(badge).toBeInTheDocument();
@@ -217,10 +272,10 @@ describe('GameCard', () => {
     render(
       <GameCard
         accent="var(--accent-3)"
-        favoritePending={false}
         item={{ ...item, systemId: 'atari_2600' as LibraryListItem['systemId'] }}
         onOpenGame={vi.fn()}
-        onToggleFavorite={vi.fn()}
+        onToggleSelected={vi.fn()}
+        selected={false}
         systemName="Atari 2600"
       />,
     );
@@ -286,14 +341,13 @@ describe('GameCard', () => {
   });
 
   it('tries a changed authoritative cover reference after an earlier cover failed', () => {
-    const onToggleFavorite = vi.fn();
     const { rerender } = render(
       <GameCard
         accent="var(--accent)"
-        favoritePending={false}
         item={item}
         onOpenGame={vi.fn()}
-        onToggleFavorite={onToggleFavorite}
+        onToggleSelected={vi.fn()}
+        selected={false}
         systemName="Nintendo Entertainment System"
       />,
     );
@@ -301,10 +355,10 @@ describe('GameCard', () => {
     rerender(
       <GameCard
         accent="var(--accent)"
-        favoritePending={false}
         item={{ ...item, coverRef: 'rfmedia://localhost/cover/1?revision=2' }}
         onOpenGame={vi.fn()}
-        onToggleFavorite={onToggleFavorite}
+        onToggleSelected={vi.fn()}
+        selected={false}
         systemName="Nintendo Entertainment System"
       />,
     );
@@ -316,14 +370,13 @@ describe('GameCard', () => {
   });
 
   it('retries a stable cover reference when a new authoritative DTO arrives', () => {
-    const onToggleFavorite = vi.fn();
     const { rerender } = render(
       <GameCard
         accent="var(--accent)"
-        favoritePending={false}
         item={item}
         onOpenGame={vi.fn()}
-        onToggleFavorite={onToggleFavorite}
+        onToggleSelected={vi.fn()}
+        selected={false}
         systemName="Nintendo Entertainment System"
       />,
     );
@@ -335,10 +388,10 @@ describe('GameCard', () => {
     rerender(
       <GameCard
         accent="var(--accent)"
-        favoritePending={false}
         item={{ ...item }}
         onOpenGame={vi.fn()}
-        onToggleFavorite={onToggleFavorite}
+        onToggleSelected={vi.fn()}
+        selected={false}
         systemName="Nintendo Entertainment System"
       />,
     );
@@ -373,10 +426,10 @@ describe('GameCard', () => {
     render(
       <GameCard
         accent="var(--accent-3)"
-        favoritePending={false}
         item={{ ...item, systemId: 'mega_drive' }}
         onOpenGame={vi.fn()}
-        onToggleFavorite={vi.fn()}
+        onToggleSelected={vi.fn()}
+        selected={false}
         systemName="Sega Mega Drive"
       />,
     );

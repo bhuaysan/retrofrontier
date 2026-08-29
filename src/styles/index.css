@@ -1312,6 +1312,53 @@ a:focus-visible {
   box-shadow: var(--shadow-rest);
 }
 
+/* B1 selection bar. Full content width, hard 2px border, accent fill, pixel shadow, no radius.
+   B1's "METADATEN KORRIGIEREN" action is intentionally absent: no metadata-correction workflow
+   exists yet, and a placeholder button would fabricate functionality. */
+.library-selection-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 12px 16px;
+  background: var(--accent);
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
+}
+
+.library-selection-count {
+  margin: 0;
+  color: #000;
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+
+.library-selection-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.library-selection-clear {
+  padding: 10px 12px;
+  color: var(--text);
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  background: var(--surface-2);
+  border: 2px solid var(--border);
+  box-shadow: 2px 2px 0 var(--shadow);
+  cursor: pointer;
+}
+
+.library-selection-clear:hover,
+.library-selection-clear:focus-visible {
+  color: var(--bg);
+  background: var(--text);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+
 .library-filter-spacer {
   flex: 1;
   min-width: 0;
@@ -1532,7 +1579,13 @@ a:focus-visible {
   transform: scale(1.04);
 }
 
-/* A6 V5 rule 3 — the image card zooms only for "open this game". Focusing the standalone favorite
+/* B1 selected card. Selection is more than the 22px control but is not keyboard focus: the
+   geometry, shadow, and scale are untouched and only the hard border takes the accent. */
+.game-card--selected {
+  border-color: var(--accent);
+}
+
+/* A6 V5 rule 3 — the image card zooms only for "open this game". Focusing the standalone selection
    control inverts that control instead (rule 2), so the two focus targets stay distinguishable. */
 .game-card:has(.game-card-title-link:focus-visible) {
   z-index: 2;
@@ -1600,16 +1653,18 @@ a:focus-visible {
   z-index: 1;
 }
 
-.game-card-favorite {
+/* B1 selection control: 22x22, hard 2px border, small pixel shadow, zero radius, layered above
+   the stretched detail anchor so pointer and keyboard activation reach it and never the route. */
+.game-card-select {
   position: absolute;
   top: 8px;
-  right: 8px;
+  left: 8px;
   display: grid;
   width: 22px;
   height: 22px;
-  padding: 4px;
+  padding: 0;
   place-items: center;
-  color: var(--text);
+  color: transparent;
   background: var(--surface);
   border: 2px solid var(--border);
   box-shadow: 2px 2px 0 var(--shadow);
@@ -1617,32 +1672,32 @@ a:focus-visible {
   z-index: 2;
 }
 
-.game-card-favorite svg {
+.game-card-select svg {
   display: block;
-  width: 100%;
-  height: 100%;
 }
 
-.game-card-favorite[aria-pressed='true'] {
+/* Selected: B1 accent fill with a crisp black pixel tick, legible in both themes. */
+.game-card-select[aria-pressed='true'] {
   color: #000;
-  background: var(--accent-2);
+  background: var(--accent);
 }
 
-/* A6 V5 rule 2 — standalone surface inverts foreground/background, no ring, no focus colour. */
-.game-card-favorite:hover:not([aria-busy='true']),
-.game-card-favorite:focus-visible {
-  color: var(--bg);
+/* A6 V5 rule 2 — a standalone surface inverts foreground/background; no ring, no focus colour.
+   Keyboard focus stays distinguishable from the selected fill, and it must not trigger the card's
+   rule-3 detail zoom, which is scoped to the detail anchor alone. */
+.game-card-select:hover,
+.game-card-select:focus-visible {
   background: var(--text);
 }
 
-.game-card-favorite:focus-visible {
+.game-card-select:focus-visible {
   transform: translate(-1px, -1px);
   box-shadow: 3px 3px 0 var(--shadow);
 }
 
-.game-card-favorite[aria-busy='true'] {
-  cursor: progress;
-  opacity: 0.65;
+.game-card-select[aria-pressed='true']:hover,
+.game-card-select[aria-pressed='true']:focus-visible {
+  color: var(--bg);
 }
 
 .game-card-copy {
@@ -1675,7 +1730,7 @@ a:focus-visible {
 }
 
 /* The title remains the one semantic detail link; its transparent hit area makes the whole card
-   activate it without wrapping or duplicating interactive content. Favorite stays above it. */
+   activate it without wrapping or duplicating interactive content. Selection stays above it. */
 .game-card-detail-target::after {
   position: absolute;
   inset: 0;

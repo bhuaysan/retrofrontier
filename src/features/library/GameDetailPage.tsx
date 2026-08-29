@@ -2,7 +2,7 @@ import { useEffect, useRef, type CSSProperties } from 'react';
 
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
-import { PixelArrow } from '../../components/ui/PixelIcon';
+import { PixelArrow, PixelStar } from '../../components/ui/PixelIcon';
 import { getMetadataAction, hasSelectableCandidates, metadataStateCopy } from './metadataActions';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
 import type {
@@ -14,7 +14,7 @@ import type {
   UnsupportedContentReason,
 } from '../../platform/ipc';
 import { GameCover } from './GameCover';
-import { PixelStar } from './GameCard';
+
 import { getOverallReadiness, getReadinessRows, type ReadinessTone } from './readiness';
 import { systemAccent } from './systemAccents';
 

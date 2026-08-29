@@ -4,9 +4,7 @@ import {
   normalizeIpcError,
   onMetadataStateChanged,
   queryLibrary,
-  setGameFavorite,
   type IpcError,
-  type LibraryListItem,
   type LibraryPage,
   type LibraryQueryRequest,
   type SystemId,
@@ -19,7 +17,6 @@ const METADATA_INVALIDATION_MAX_WAIT_MS = 1000;
 interface UseLibraryQueryOptions {
   enabled: boolean;
   scanCompletionRunId?: number | null;
-  onFavoriteCommitted?: () => void | Promise<void>;
 }
 
 export interface LibraryQueryModel {
@@ -35,14 +32,11 @@ export interface LibraryQueryModel {
   refreshing: boolean;
   pageLoading: boolean;
   error: IpcError | null;
-  favoriteError: IpcError | null;
-  favoritePendingIds: ReadonlySet<number>;
   retry: () => Promise<void>;
   clearSearch: () => void;
   resetQuery: () => void;
   previousPage: () => void;
   nextPage: () => void;
-  toggleFavorite: (item: LibraryListItem) => Promise<void>;
 }
 
 type LoadingChannel = 'initial' | 'refresh' | 'page';
@@ -50,7 +44,6 @@ type LoadingChannel = 'initial' | 'refresh' | 'page';
 export function useLibraryQuery({
   enabled,
   scanCompletionRunId = null,
-  onFavoriteCommitted,
 }: UseLibraryQueryOptions): LibraryQueryModel {
   const mounted = useRef(true);
   const pageRef = useRef<LibraryPage | null>(null);
@@ -58,7 +51,6 @@ export function useLibraryQuery({
   const initialLoadingOwner = useRef(0);
   const refreshingOwner = useRef(0);
   const pageLoadingOwner = useRef(0);
-  const favoritePendingRef = useRef(new Set<number>());
   const lastScanCompletionRunId = useRef<number | null>(null);
   // `page`/`pageRef` is the committed rendered position. The target is the latest logical
   // request position used by retries and bounded refreshes; it is not committed until success.
@@ -67,7 +59,6 @@ export function useLibraryQuery({
   const latestRunQuery = useRef<
     (requestedOffset?: number, requestedChannel?: LoadingChannel) => Promise<void>
   >(async () => {});
-  const favoriteCommittedHandler = useRef(onFavoriteCommitted);
 
   const [searchInput, setSearchInputState] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -81,16 +72,10 @@ export function useLibraryQuery({
   const [refreshing, setRefreshing] = useState(false);
   const [pageLoading, setPageLoading] = useState(false);
   const [error, setError] = useState<IpcError | null>(null);
-  const [favoriteError, setFavoriteError] = useState<IpcError | null>(null);
-  const [favoritePendingIds, setFavoritePendingIds] = useState<ReadonlySet<number>>(new Set());
 
   useEffect(() => {
     pageRef.current = page;
   }, [page]);
-
-  useEffect(() => {
-    favoriteCommittedHandler.current = onFavoriteCommitted;
-  }, [onFavoriteCommitted]);
 
   const setChannelLoading = useCallback((channel: LoadingChannel, value: boolean) => {
     if (channel === 'initial') setInitialLoading(value);
@@ -232,25 +217,6 @@ export function useLibraryQuery({
     [],
   );
 
-  const toggleFavorite = useCallback(async (item: LibraryListItem) => {
-    if (favoritePendingRef.current.has(item.gameId)) return;
-    favoritePendingRef.current.add(item.gameId);
-    setFavoritePendingIds(new Set(favoritePendingRef.current));
-    setFavoriteError(null);
-    try {
-      await setGameFavorite({ gameId: item.gameId, favorite: !item.favorite });
-      if (!mounted.current) return;
-      const currentQuery = latestQueryState.current;
-      await latestRunQuery.current(currentQuery.targetOffset, 'refresh');
-      await favoriteCommittedHandler.current?.();
-    } catch (reason: unknown) {
-      if (mounted.current) setFavoriteError(normalizeIpcError(reason));
-    } finally {
-      favoritePendingRef.current.delete(item.gameId);
-      if (mounted.current) setFavoritePendingIds(new Set(favoritePendingRef.current));
-    }
-  }, []);
-
   useEffect(() => {
     if (!enabled) return;
 
@@ -333,13 +299,10 @@ export function useLibraryQuery({
     refreshing,
     pageLoading,
     error,
-    favoriteError,
-    favoritePendingIds,
     retry,
     clearSearch,
     resetQuery,
     previousPage,
     nextPage,
-    toggleFavorite,
   };
 }

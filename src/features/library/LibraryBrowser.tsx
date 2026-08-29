@@ -1,6 +1,7 @@
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
 import type { LibraryQueryModel } from '../../hooks/useLibraryQuery';
+import type { LibrarySelectionModel } from '../../hooks/useLibrarySelection';
 import type { SystemLabel } from '../../hooks/useSystemCatalog';
 import { GameCard } from './GameCard';
 import { systemName } from './libraryLabels';
@@ -8,6 +9,7 @@ import { systemAccent } from './systemAccents';
 
 interface LibraryBrowserProps {
   library: LibraryQueryModel;
+  selection: LibrarySelectionModel;
   systems: SystemLabel[];
   onOpenGame: (gameId: number) => void;
 }
@@ -28,7 +30,7 @@ function InitialLibraryLoading() {
   );
 }
 
-export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserProps) {
+export function LibraryBrowser({ library, selection, systems, onOpenGame }: LibraryBrowserProps) {
   const page = library.page;
   const committedSearch = library.debouncedSearch;
   const canEchoSearch = committedSearch !== '' && library.searchInput === committedSearch;
@@ -38,13 +40,6 @@ export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserP
 
   return (
     <section aria-label="Library results" className="library-browser">
-      {library.favoriteError ? (
-        <InlineError
-          title="FAVORITE NOT UPDATED"
-          message="RetroFrontier could not save that favorite. The card still shows the last confirmed local state; try again."
-        />
-      ) : null}
-
       {library.error ? (
         <InlineError
           title={page ? 'LIBRARY REFRESH FAILED' : 'LIBRARY QUERY UNAVAILABLE'}
@@ -66,11 +61,11 @@ export function LibraryBrowser({ library, systems, onOpenGame }: LibraryBrowserP
             {page.items.map((item) => (
               <GameCard
                 accent={systemAccent(item.systemId)}
-                favoritePending={library.favoritePendingIds.has(item.gameId)}
                 item={item}
                 key={item.gameId}
                 onOpenGame={onOpenGame}
-                onToggleFavorite={(game) => void library.toggleFavorite(game)}
+                onToggleSelected={selection.toggle}
+                selected={selection.isSelected(item.gameId)}
                 systemName={systemName(item.systemId, systems)}
               />
             ))}

@@ -177,7 +177,6 @@ export function AppShell() {
   const library = useLibraryQuery({
     enabled: isLibraryRoute && Boolean(summary && summary.totalGames > 0),
     scanCompletionRunId: libraryScanCompletionRunId,
-    onFavoriteCommitted,
   });
   const gameDetail = useGameDetail({
     enabled: gameRouteState !== null && currentGameId !== null,

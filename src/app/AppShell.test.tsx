@@ -1433,26 +1433,17 @@ describe('AppShell M6.2 shell and library states', () => {
     );
   });
 
-  it('filters favorites and serializes authoritative card mutation', async () => {
+  it('keeps the Favorites Only filter working and unrelated to card selection', async () => {
     mocks.getLibrarySummary.mockResolvedValue({
       totalGames: 2,
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary
-      .mockResolvedValueOnce(populatedLibraryPage)
-      .mockResolvedValueOnce({
-        ...populatedLibraryPage,
-        items: [populatedLibraryPage.items[1]],
-        total: 1,
-      })
-      .mockResolvedValueOnce({
-        items: [],
-        total: 0,
-        offset: 0,
-        limit: 60,
-      });
-    mocks.setGameFavorite.mockResolvedValue({ gameId: 2, favorite: false });
+    mocks.queryLibrary.mockResolvedValueOnce(populatedLibraryPage).mockResolvedValueOnce({
+      ...populatedLibraryPage,
+      items: [populatedLibraryPage.items[1]],
+      total: 1,
+    });
     render(<AppShell />);
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
 
@@ -1467,16 +1458,23 @@ describe('AppShell M6.2 shell and library states', () => {
     );
     expect(favoritesFilter).toHaveAttribute('aria-pressed', 'true');
 
-    const removeFavorite = await screen.findByRole('button', {
-      name: 'Remove A Very Long Local Title Without Metadata from favorites',
+    // A favorited game can be selected, and selecting it never writes favorite state.
+    const select = await screen.findByRole('button', {
+      name: 'Select A Very Long Local Title Without Metadata',
     });
-    fireEvent.click(removeFavorite);
-    fireEvent.click(removeFavorite);
-    expect(mocks.setGameFavorite).toHaveBeenCalledTimes(1);
-    expect(mocks.setGameFavorite).toHaveBeenCalledWith({ gameId: 2, favorite: false });
+    fireEvent.click(select);
     expect(
-      await screen.findByRole('heading', { name: 'NO GAMES MATCH FILTERS' }),
-    ).toBeInTheDocument();
+      screen.getByRole('button', { name: 'Deselect A Very Long Local Title Without Metadata' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByText('1 SELECTED')).toBeVisible();
+    expect(mocks.setGameFavorite).not.toHaveBeenCalled();
+    expect(favoritesFilter).toHaveAttribute('aria-pressed', 'true');
+
+    // Clearing the selection leaves the persisted favorite and the Favorites filter untouched.
+    fireEvent.click(screen.getByRole('button', { name: 'CLEAR SELECTION' }));
+    expect(screen.queryByText('1 SELECTED')).not.toBeInTheDocument();
+    expect(mocks.setGameFavorite).not.toHaveBeenCalled();
+    expect(favoritesFilter).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('refreshes the bounded page once on completion and never on scan progress', async () => {
@@ -1833,5 +1831,207 @@ describe('AppShell M6.7A library composition', () => {
     expect(await screen.findByRole('heading', { name: 'SCAN IN PROGRESS' })).toBeVisible();
     expect(screen.queryByText('LAST SCAN')).not.toBeInTheDocument();
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+  });
+});
+
+// M6.7 B1 selection delta: the Library card is no longer the Favorite mutation surface; it carries
+// the B1 multi-select checkbox, and selection is transient frontend state owned by the Library
+// composition.
+describe('AppShell M6.7 B1 library card selection', () => {
+  const populatedSummary = {
+    totalGames: 2,
+    favoriteGames: 1,
+    systems: [{ systemId: 'nes' as const, gameCount: 2 }],
+  };
+
+  beforeEach(() => {
+    setupDefaults();
+    window.history.replaceState({}, '', '/library');
+    mocks.getLibrarySummary.mockResolvedValue(populatedSummary);
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+  });
+
+  it('renders one selection control per card and no Favorite star in the grid', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    expect(screen.getByRole('button', { name: 'Select Kirby’s Adventure' })).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'Select A Very Long Local Title Without Metadata' }),
+    ).toBeVisible();
+    expect(document.querySelectorAll('.game-card-select')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: /favorites$/i })).not.toBeInTheDocument();
+    expect(document.querySelector('.game-card-favorite')).toBeNull();
+  });
+
+  it('shows no selection bar until something is selected', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    expect(screen.queryByRole('group', { name: 'Library selection' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'CLEAR SELECTION' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument();
+  });
+
+  it('places the selection bar between the filter toolbar and the LIBRARY heading', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select Kirby’s Adventure' }));
+
+    const filterBar = screen.getByRole('group', { name: 'Library filters' });
+    const selectionBar = screen.getByRole('group', { name: 'Library selection' });
+    const libraryHeading = screen.getByRole('heading', { name: 'LIBRARY', level: 1 });
+
+    expect(
+      filterBar.compareDocumentPosition(selectionBar) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      selectionBar.compareDocumentPosition(libraryHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('counts one, then several, selected cards and never navigates to Game Detail', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select Kirby’s Adventure' }));
+    expect(screen.getByText('1 SELECTED')).toBeVisible();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Select A Very Long Local Title Without Metadata' }),
+    );
+    expect(screen.getByText('2 SELECTED')).toBeVisible();
+    expect(screen.queryByText('1 SELECTED')).not.toBeInTheDocument();
+
+    // Selection never leaves the Library route.
+    expect(window.location.pathname).toBe('/library');
+    expect(screen.getByRole('heading', { name: 'LIBRARY', level: 1 })).toBeVisible();
+    expect(mocks.getLibraryGameDetail).not.toHaveBeenCalled();
+  });
+
+  it('deselects the same card again without navigating', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select Kirby’s Adventure' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Deselect Kirby’s Adventure' }));
+
+    expect(screen.getByRole('button', { name: 'Select Kirby’s Adventure' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    expect(screen.queryByRole('group', { name: 'Library selection' })).not.toBeInTheDocument();
+    expect(window.location.pathname).toBe('/library');
+    expect(mocks.getLibraryGameDetail).not.toHaveBeenCalled();
+  });
+
+  it('clears every selected card from the selection bar', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select Kirby’s Adventure' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Select A Very Long Local Title Without Metadata' }),
+    );
+    expect(screen.getByText('2 SELECTED')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'CLEAR SELECTION' }));
+
+    expect(screen.queryByRole('group', { name: 'Library selection' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select Kirby’s Adventure' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Select A Very Long Local Title Without Metadata' }),
+    ).toHaveAttribute('aria-pressed', 'false');
+    expect(window.location.pathname).toBe('/library');
+  });
+
+  it('keeps a missing local file selectable and still browsable', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    expect(screen.getByText('MISSING')).toBeVisible();
+    const select = screen.getByRole('button', {
+      name: 'Select A Very Long Local Title Without Metadata',
+    });
+    expect(select).not.toBeDisabled();
+    fireEvent.click(select);
+
+    expect(screen.getByText('1 SELECTED')).toBeVisible();
+    expect(
+      screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
+    ).toHaveAttribute('href', '/games/2');
+  });
+
+  it('keeps the full-card detail target working while a card is selected', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select Kirby’s Adventure' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Kirby’s Adventure', level: 1 }),
+    ).toBeVisible();
+    expect(window.location.pathname).toBe('/games/1');
+  });
+
+  it('leaves no invisible selection behind when the committed query changes', async () => {
+    mocks.queryLibrary.mockReset();
+    mocks.queryLibrary.mockResolvedValueOnce(populatedLibraryPage).mockResolvedValue({
+      ...populatedLibraryPage,
+      items: [populatedLibraryPage.items[0]],
+      total: 1,
+    });
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'A Very Long Local Title Without Metadata' });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Select A Very Long Local Title Without Metadata' }),
+    );
+    expect(screen.getByText('1 SELECTED')).toBeVisible();
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'SEARCH LIBRARY' }), {
+      target: { value: 'kirby' },
+    });
+    await waitFor(() =>
+      expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
+        search: 'kirby',
+        sort: 'titleAsc',
+        offset: 0,
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Library selection' })).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument();
+  });
+
+  it('leaves no hidden selected cards behind after page navigation', async () => {
+    const firstPage = { ...populatedLibraryPage, total: 61 };
+    const secondPage = {
+      items: [{ ...populatedLibraryPage.items[0], gameId: 61, displayTitle: 'Page Two Game' }],
+      total: 61,
+      offset: 60,
+      limit: 60,
+    };
+    mocks.getLibrarySummary.mockResolvedValue({ ...populatedSummary, totalGames: 61 });
+    mocks.queryLibrary.mockReset();
+    mocks.queryLibrary.mockResolvedValueOnce(firstPage).mockResolvedValue(secondPage);
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select Kirby’s Adventure' }));
+    expect(screen.getByText('1 SELECTED')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'NEXT PAGE' }));
+
+    expect(await screen.findByRole('heading', { name: 'Page Two Game' })).toBeVisible();
+    expect(screen.queryByRole('group', { name: 'Library selection' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument();
   });
 });
