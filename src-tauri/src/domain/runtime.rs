@@ -8,7 +8,7 @@ use thiserror::Error;
 pub const RUNTIME_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const ACTIVE_POINTER_SCHEMA_VERSION: u32 = 1;
 pub const COMPLETE_MARKER_SCHEMA_VERSION: u32 = 1;
-pub const MANAGED_PROCESS_RECORD_SCHEMA_VERSION: u32 = 2;
+pub const MANAGED_PROCESS_RECORD_SCHEMA_VERSION: u32 = 3;
 pub const MAX_ACTIVE_POINTER_BYTES: u64 = 4 * 1024;
 pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub const MAX_TRUST_STATE_BYTES: u64 = 1024 * 1024;
@@ -98,16 +98,30 @@ pub enum ManagedProcessPhase {
     Running,
 }
 
+/// The durable managed-process identity record.
+///
+/// Schema 3 adds the launch and play-session identity, and makes the process identity optional so
+/// a conservative `launching` record can be written *before* the child is spawned. That closes the
+/// crash window between `exec` and persisting a PID, which is exactly where a live managed
+/// RetroArch could otherwise become invisible to RuntimeManager (ADR-011).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedProcessRecord {
     pub schema_version: u32,
     pub phase: ManagedProcessPhase,
-    pub pid: u32,
-    pub process_start_time_ticks: u64,
+    /// Unique per launch attempt, so a record can be attributed to the attempt that wrote it.
+    pub launch_id: SafeIdentifier,
+    /// The play session this managed process belongs to. History follows process identity; it
+    /// never replaces it.
+    pub play_session_id: i64,
     pub boot_id: String,
     pub installation_id: SafeIdentifier,
     pub expected_apprun_path: String,
+    /// Absent while `launching`, because the child does not exist yet.
+    #[serde(default)]
+    pub pid: Option<u32>,
+    #[serde(default)]
+    pub process_start_time_ticks: Option<u64>,
     /// AppRun may be a script. In that case `/proc/<pid>/exe` is the interpreter rather than the
     /// AppRun path; the launch service records that observed executable separately.
     #[serde(default)]
@@ -119,9 +133,8 @@ impl ManagedProcessRecord {
         if self.schema_version != MANAGED_PROCESS_RECORD_SCHEMA_VERSION {
             return Err(RuntimeError::ProcessRecordSchema);
         }
-        if self.pid == 0
-            || self.process_start_time_ticks == 0
-            || self.boot_id.trim().is_empty()
+        if self.boot_id.trim().is_empty()
+            || self.play_session_id <= 0
             || self.expected_apprun_path.is_empty()
             || !std::path::Path::new(&self.expected_apprun_path).is_absolute()
             || self
@@ -130,6 +143,27 @@ impl ManagedProcessRecord {
                 .is_some_and(|path| path.is_empty() || !std::path::Path::new(path).is_absolute())
         {
             return Err(RuntimeError::GameActive);
+        }
+        match self.phase {
+            // A running record must carry full process identity; PID alone is never identity.
+            ManagedProcessPhase::Running => {
+                if self.pid.is_none_or(|pid| pid == 0)
+                    || self.process_start_time_ticks.is_none_or(|ticks| ticks == 0)
+                    || self.expected_executable_path.is_none()
+                {
+                    return Err(RuntimeError::GameActive);
+                }
+            }
+            // A launching record is written before the child exists, so claiming an identity
+            // would be a lie that later liveness checks could not distinguish from a real one.
+            ManagedProcessPhase::Launching => {
+                if self.pid.is_some()
+                    || self.process_start_time_ticks.is_some()
+                    || self.expected_executable_path.is_some()
+                {
+                    return Err(RuntimeError::GameActive);
+                }
+            }
         }
         Ok(())
     }

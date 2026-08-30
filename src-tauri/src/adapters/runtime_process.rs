@@ -1,7 +1,7 @@
 use crate::adapters::runtime_paths::{fsync_directory, RuntimePaths};
 use crate::adapters::runtime_trust::atomic_replace;
 use crate::domain::runtime::{
-    parse_strict_json, ManagedProcessRecord, RuntimeError, SafeIdentifier,
+    parse_strict_json, ManagedProcessPhase, ManagedProcessRecord, RuntimeError, SafeIdentifier,
     MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
 };
 use std::fs;
@@ -42,24 +42,97 @@ impl ManagedProcessInspector for LinuxManagedProcessInspector {
             }
             Err(error) => return Err(error),
         };
-        if !record_targets_runtime(paths, &record) {
-            return match process_identity(&record) {
-                Ok(false) => {
-                    clear_process_record(paths)?;
-                    Ok(())
-                }
-                Ok(true) | Err(_) => Err(RuntimeError::GameActive),
-            };
-        }
-        match process_identity(&record) {
+
+        // Fail closed: only proof that no managed process survives may remove the record.
+        match managed_process_is_live(paths, &record) {
             Ok(true) => Err(RuntimeError::GameActive),
             Ok(false) => {
-                fs::remove_file(paths.game_process_record())?;
+                clear_process_record(paths)?;
                 Ok(())
             }
             Err(_) => Err(RuntimeError::GameActive),
         }
     }
+}
+
+/// Decide whether the recorded managed process can still be alive.
+///
+/// `Ok(false)` is a proof of absence, `Ok(true)` a proof of presence, and `Err` uncertainty. Only
+/// `Ok(false)` may lead to deleting the durable record.
+fn managed_process_is_live(
+    paths: &RuntimePaths,
+    record: &ManagedProcessRecord,
+) -> Result<bool, std::io::Error> {
+    // A record from a previous boot cannot describe a live process, whatever its phase.
+    if current_boot_id().map_err(std::io::Error::other)? != record.boot_id {
+        return Ok(false);
+    }
+    match record.phase {
+        ManagedProcessPhase::Running => process_identity(record),
+        // A launching record has no PID by construction, so liveness is decided by looking for any
+        // process of this user that could be the managed child. The scan deliberately
+        // over-detects: a false positive keeps runtime mutation blocked, a false negative would
+        // let an update run underneath a live emulator.
+        ManagedProcessPhase::Launching => managed_process_exists(paths, record),
+    }
+}
+
+/// Look for a live process that could be the managed RetroArch child.
+///
+/// A process qualifies when its resolved executable is inside the managed versions root, or when
+/// its `argv[0]` is the authenticated AppRun path. The second case exists because an AppRun may be
+/// a script, in which case `/proc/<pid>/exe` is the interpreter rather than the AppRun itself.
+fn managed_process_exists(
+    paths: &RuntimePaths,
+    record: &ManagedProcessRecord,
+) -> Result<bool, std::io::Error> {
+    let versions_root = fs::canonicalize(paths.versions_root())?;
+    let expected_apprun = Path::new(&record.expected_apprun_path);
+    let canonical_apprun = fs::canonicalize(expected_apprun).ok();
+    let self_pid = std::process::id();
+
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        if pid == self_pid {
+            continue;
+        }
+        // A process this user cannot inspect at all is not a process this user could have
+        // spawned, so a per-process read failure is skipped rather than treated as uncertainty.
+        if let Ok(executable) = fs::read_link(format!("/proc/{pid}/exe")) {
+            if let Ok(executable) = fs::canonicalize(&executable) {
+                if executable.starts_with(&versions_root) {
+                    return Ok(true);
+                }
+            }
+        }
+        let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        let Some(argv0) = cmdline.split(|byte| *byte == 0).next() else {
+            continue;
+        };
+        let Ok(argv0) = std::str::from_utf8(argv0) else {
+            continue;
+        };
+        if argv0.is_empty() {
+            continue;
+        }
+        let argv0 = Path::new(argv0);
+        if argv0 == expected_apprun
+            || canonical_apprun
+                .as_ref()
+                .is_some_and(|apprun| fs::canonicalize(argv0).is_ok_and(|path| &path == apprun))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Test and embedding hook for callers that have a managed-process supervisor of their own.
@@ -215,11 +288,13 @@ fn record_targets_runtime(paths: &RuntimePaths, record: &ManagedProcessRecord) -
 }
 
 fn process_identity(record: &ManagedProcessRecord) -> Result<bool, std::io::Error> {
-    let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-    if boot_id.trim() != record.boot_id {
-        return Ok(false);
-    }
-    let stat_path = PathBuf::from(format!("/proc/{}/stat", record.pid));
+    let (Some(pid), Some(expected_ticks)) = (record.pid, record.process_start_time_ticks) else {
+        // A running record without identity never validates, so this is defensive only.
+        return Err(std::io::Error::other(
+            "managed process record has no identity",
+        ));
+    };
+    let stat_path = PathBuf::from(format!("/proc/{pid}/stat"));
     let stat = match fs::read_to_string(&stat_path) {
         Ok(stat) => stat,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -228,10 +303,10 @@ fn process_identity(record: &ManagedProcessRecord) -> Result<bool, std::io::Erro
     let start_time_ticks = parse_start_time_ticks(&stat).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid /proc stat")
     })?;
-    if start_time_ticks != record.process_start_time_ticks {
+    if start_time_ticks != expected_ticks {
         return Ok(false);
     }
-    let exe_path = PathBuf::from(format!("/proc/{}/exe", record.pid));
+    let exe_path = PathBuf::from(format!("/proc/{pid}/exe"));
     let actual_exe = match fs::read_link(exe_path) {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -272,23 +347,45 @@ pub fn process_start_time_ticks(pid: u32) -> Result<u64, RuntimeError> {
     })
 }
 
-pub fn make_process_record(
-    phase: crate::domain::runtime::ManagedProcessPhase,
-    pid: u32,
+/// The conservative pre-spawn record. It names the launch and session but claims no process
+/// identity, because the child does not exist yet.
+pub fn make_launching_record(
+    launch_id: SafeIdentifier,
+    play_session_id: i64,
     installation_id: SafeIdentifier,
     expected_apprun_path: &Path,
 ) -> Result<ManagedProcessRecord, RuntimeError> {
     let record = ManagedProcessRecord {
         schema_version: MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
-        phase,
-        pid,
-        process_start_time_ticks: process_start_time_ticks(pid)?,
+        phase: crate::domain::runtime::ManagedProcessPhase::Launching,
+        launch_id,
+        play_session_id,
         boot_id: current_boot_id()?,
         installation_id,
-        expected_apprun_path: expected_apprun_path
-            .to_str()
-            .ok_or(RuntimeError::GameActive)?
-            .to_owned(),
+        expected_apprun_path: absolute_path(expected_apprun_path)?,
+        pid: None,
+        process_start_time_ticks: None,
+        expected_executable_path: None,
+    };
+    record.validate()?;
+    Ok(record)
+}
+
+/// Complete the record with strong process identity once the child exists.
+pub fn make_running_record(
+    launching: &ManagedProcessRecord,
+    pid: u32,
+) -> Result<ManagedProcessRecord, RuntimeError> {
+    let record = ManagedProcessRecord {
+        schema_version: MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
+        phase: crate::domain::runtime::ManagedProcessPhase::Running,
+        launch_id: launching.launch_id.clone(),
+        play_session_id: launching.play_session_id,
+        boot_id: current_boot_id()?,
+        installation_id: launching.installation_id.clone(),
+        expected_apprun_path: launching.expected_apprun_path.clone(),
+        pid: Some(pid),
+        process_start_time_ticks: Some(process_start_time_ticks(pid)?),
         expected_executable_path: Some(
             fs::read_link(format!("/proc/{pid}/exe"))
                 .map_err(|_| RuntimeError::GameActive)?
@@ -301,7 +398,16 @@ pub fn make_process_record(
     Ok(record)
 }
 
-fn current_boot_id() -> Result<String, RuntimeError> {
+fn absolute_path(path: &Path) -> Result<String, RuntimeError> {
+    if !path.is_absolute() {
+        return Err(RuntimeError::GameActive);
+    }
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or(RuntimeError::GameActive)
+}
+
+pub fn current_boot_id() -> Result<String, RuntimeError> {
     let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
     let boot_id = boot_id.trim();
     if boot_id.is_empty() {
@@ -315,8 +421,8 @@ fn current_boot_id() -> Result<String, RuntimeError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_start_time_ticks, read_process_record, LinuxManagedProcessInspector,
-        ManagedProcessInspector,
+        make_launching_record, make_running_record, parse_start_time_ticks, read_process_record,
+        LinuxManagedProcessInspector, ManagedProcessInspector,
     };
     use crate::adapters::runtime_paths::RuntimePaths;
     use crate::domain::runtime::{
@@ -324,7 +430,41 @@ mod tests {
         MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
     };
     use std::fs;
-    use tempfile::tempdir;
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command};
+    use tempfile::{tempdir, TempDir};
+
+    fn current_boot_id() -> String {
+        fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    fn fixture() -> (TempDir, RuntimePaths, SafeIdentifier, PathBuf) {
+        let directory = tempdir().unwrap();
+        let paths = RuntimePaths::new(directory.path());
+        paths.prepare().unwrap();
+        let installation_id: SafeIdentifier = "install-1".try_into().unwrap();
+        let installation = paths.version_path(&installation_id);
+        fs::create_dir_all(&installation).unwrap();
+        let apprun = installation.join("AppRun");
+        (directory, paths, installation_id, apprun)
+    }
+
+    /// A real executable inside the managed versions tree, so `/proc/<pid>/exe` resolves there.
+    fn managed_shell(apprun: &Path) {
+        fs::copy("/bin/sh", apprun).unwrap();
+    }
+
+    /// A live child whose executable is the managed AppRun. The trailing `:` keeps the shell from
+    /// replacing its own image with `sleep`.
+    fn spawn_managed_child(apprun: &Path) -> Child {
+        Command::new(apprun)
+            .args(["-c", "sleep 30; :"])
+            .spawn()
+            .unwrap()
+    }
 
     #[test]
     fn proc_stat_parser_handles_parentheses_in_process_names() {
@@ -333,44 +473,140 @@ mod tests {
     }
 
     #[test]
+    fn a_launching_record_carries_no_process_identity_and_a_running_record_requires_one() {
+        let (_directory, _paths, installation_id, apprun) = fixture();
+        managed_shell(&apprun);
+        let launch_id: SafeIdentifier = "launch-1".try_into().unwrap();
+
+        let launching =
+            make_launching_record(launch_id, 7, installation_id.clone(), &apprun).unwrap();
+        assert_eq!(
+            launching.schema_version,
+            MANAGED_PROCESS_RECORD_SCHEMA_VERSION
+        );
+        assert_eq!(launching.phase, ManagedProcessPhase::Launching);
+        assert_eq!(launching.play_session_id, 7);
+        assert!(launching.pid.is_none());
+        assert!(launching.process_start_time_ticks.is_none());
+        assert!(launching.expected_executable_path.is_none());
+        launching.validate().unwrap();
+
+        // A launching record that claims an identity is refused, so a later liveness check can
+        // never confuse a fabricated identity with a real one.
+        let dishonest = ManagedProcessRecord {
+            pid: Some(1),
+            ..launching.clone()
+        };
+        assert!(matches!(
+            dishonest.validate(),
+            Err(RuntimeError::GameActive)
+        ));
+
+        // A running record without full identity is refused; PID alone is never identity.
+        let incomplete = ManagedProcessRecord {
+            phase: ManagedProcessPhase::Running,
+            pid: Some(std::process::id()),
+            process_start_time_ticks: None,
+            expected_executable_path: None,
+            ..launching.clone()
+        };
+        assert!(matches!(
+            incomplete.validate(),
+            Err(RuntimeError::GameActive)
+        ));
+
+        let running = make_running_record(&launching, std::process::id()).unwrap();
+        assert_eq!(running.phase, ManagedProcessPhase::Running);
+        assert_eq!(running.launch_id, launching.launch_id);
+        assert_eq!(running.play_session_id, launching.play_session_id);
+        assert!(running.pid.is_some());
+        assert!(running.process_start_time_ticks.is_some());
+        assert!(running.expected_executable_path.is_some());
+        running.validate().unwrap();
+    }
+
+    #[test]
+    fn a_launching_record_blocks_while_a_managed_process_is_alive() {
+        let (_directory, paths, installation_id, apprun) = fixture();
+        managed_shell(&apprun);
+        let record =
+            make_launching_record("launch-1".try_into().unwrap(), 3, installation_id, &apprun)
+                .unwrap();
+        super::write_process_record(&paths, &record).unwrap();
+        let mut child = spawn_managed_child(&apprun);
+
+        assert!(matches!(
+            LinuxManagedProcessInspector.ensure_no_active_game(&paths),
+            Err(RuntimeError::GameActive)
+        ));
+        assert!(paths.game_process_record().exists());
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
+    }
+
+    #[test]
+    fn a_launching_record_from_a_previous_boot_is_cleared() {
+        let (_directory, paths, installation_id, apprun) = fixture();
+        managed_shell(&apprun);
+        let record = ManagedProcessRecord {
+            boot_id: "previous-boot".to_owned(),
+            ..make_launching_record("launch-1".try_into().unwrap(), 4, installation_id, &apprun)
+                .unwrap()
+        };
+        super::write_process_record(&paths, &record).unwrap();
+        let mut child = spawn_managed_child(&apprun);
+
+        // Even with a live managed process, a pre-reboot record cannot describe it.
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
     fn malformed_process_records_are_recovered_but_mismatched_live_identity_blocks() {
-        let directory = tempdir().unwrap();
-        let paths = RuntimePaths::new(directory.path());
-        paths.prepare().unwrap();
+        let (_directory, paths, installation_id, apprun) = fixture();
         fs::write(paths.game_process_record(), b"not json").unwrap();
         LinuxManagedProcessInspector
             .ensure_no_active_game(&paths)
             .unwrap();
         assert!(!paths.game_process_record().exists());
 
-        let installation_id: SafeIdentifier = "install-1".try_into().unwrap();
-        let installation = paths.version_path(&installation_id);
-        fs::create_dir_all(&installation).unwrap();
-        let apprun = installation.join("AppRun");
         fs::copy(std::env::current_exe().unwrap(), &apprun).unwrap();
         let record = ManagedProcessRecord {
             schema_version: MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
             phase: ManagedProcessPhase::Running,
-            pid: std::process::id(),
-            process_start_time_ticks: super::process_start_time_ticks(std::process::id()).unwrap(),
-            boot_id: fs::read_to_string("/proc/sys/kernel/random/boot_id")
-                .unwrap()
-                .trim()
-                .to_owned(),
+            launch_id: "launch-1".try_into().unwrap(),
+            play_session_id: 1,
+            boot_id: current_boot_id(),
             installation_id,
             expected_apprun_path: apprun.to_str().unwrap().to_owned(),
+            pid: Some(std::process::id()),
+            process_start_time_ticks: Some(
+                super::process_start_time_ticks(std::process::id()).unwrap(),
+            ),
             expected_executable_path: Some("/bin/sh".to_owned()),
         };
         super::write_process_record(&paths, &record).unwrap();
         assert!(matches!(
             LinuxManagedProcessInspector.ensure_no_active_game(&paths),
-            Err(crate::domain::runtime::RuntimeError::GameActive)
+            Err(RuntimeError::GameActive)
         ));
+        assert!(paths.game_process_record().exists());
 
         fs::remove_file(paths.game_process_record()).unwrap();
         let old_boot_record = ManagedProcessRecord {
             boot_id: "previous-boot".to_owned(),
-            ..record
+            ..record.clone()
         };
         super::write_process_record(&paths, &old_boot_record).unwrap();
         LinuxManagedProcessInspector
@@ -380,24 +616,87 @@ mod tests {
     }
 
     #[test]
-    fn current_process_record_schema_round_trips_and_incompatible_versions_remain_blocking() {
-        let directory = tempdir().unwrap();
-        let paths = RuntimePaths::new(directory.path());
-        paths.prepare().unwrap();
+    fn a_stale_pid_and_a_reused_pid_are_both_treated_as_gone() {
+        let (_directory, paths, installation_id, apprun) = fixture();
+        managed_shell(&apprun);
+        let launching =
+            make_launching_record("launch-1".try_into().unwrap(), 5, installation_id, &apprun)
+                .unwrap();
 
-        let installation_id = SafeIdentifier::new("install-1").unwrap();
-        let installation = paths.version_path(&installation_id);
-        fs::create_dir(&installation).unwrap();
-        let apprun = installation.join("AppRun");
+        // A PID that does not exist any more.
+        let stale = ManagedProcessRecord {
+            phase: ManagedProcessPhase::Running,
+            pid: Some(u32::MAX),
+            process_start_time_ticks: Some(1),
+            expected_executable_path: Some(apprun.to_str().unwrap().to_owned()),
+            ..launching.clone()
+        };
+        super::write_process_record(&paths, &stale).unwrap();
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
+
+        // A live PID whose start time differs is a reused PID, not the recorded process.
+        let mut child = spawn_managed_child(&apprun);
+        let reused = ManagedProcessRecord {
+            phase: ManagedProcessPhase::Running,
+            pid: Some(child.id()),
+            process_start_time_ticks: Some(
+                super::process_start_time_ticks(child.id()).unwrap() + 1,
+            ),
+            expected_executable_path: Some(apprun.to_str().unwrap().to_owned()),
+            ..launching
+        };
+        super::write_process_record(&paths, &reused).unwrap();
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn a_running_managed_child_keeps_runtime_mutation_blocked_until_it_exits() {
+        let (_directory, paths, installation_id, apprun) = fixture();
+        managed_shell(&apprun);
+        let launching =
+            make_launching_record("launch-1".try_into().unwrap(), 6, installation_id, &apprun)
+                .unwrap();
+        let mut child = spawn_managed_child(&apprun);
+        let running = make_running_record(&launching, child.id()).unwrap();
+        super::write_process_record(&paths, &running).unwrap();
+
+        assert!(matches!(
+            LinuxManagedProcessInspector.ensure_no_active_game(&paths),
+            Err(RuntimeError::GameActive)
+        ));
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
+    }
+
+    #[test]
+    fn current_process_record_schema_round_trips_and_incompatible_versions_remain_blocking() {
+        let (_directory, paths, installation_id, apprun) = fixture();
         fs::write(&apprun, b"placeholder").unwrap();
         let current = ManagedProcessRecord {
             schema_version: MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
             phase: ManagedProcessPhase::Launching,
-            pid: u32::MAX,
-            process_start_time_ticks: 1,
+            launch_id: "launch-1".try_into().unwrap(),
+            play_session_id: 2,
             boot_id: "current-boot".to_owned(),
             installation_id,
             expected_apprun_path: apprun.to_str().unwrap().to_owned(),
+            pid: None,
+            process_start_time_ticks: None,
             expected_executable_path: None,
         };
         super::write_process_record(&paths, &current).unwrap();
@@ -407,17 +706,19 @@ mod tests {
         );
         fs::remove_file(paths.game_process_record()).unwrap();
 
-        let old = serde_json::json!({
-            "schema_version": 1,
-            "phase": "launching",
+        // The pre-M7 record is not deleted; it is uncertain and keeps mutation blocked.
+        let previous = serde_json::json!({
+            "schema_version": 2,
+            "phase": "running",
             "pid": 1,
             "process_start_time_ticks": 1,
+            "boot_id": "previous-schema-boot",
             "installation_id": "install-1",
             "expected_apprun_path": "/tmp/runtime/install-1/AppRun"
         });
         fs::write(
             paths.game_process_record(),
-            serde_json::to_vec(&old).unwrap(),
+            serde_json::to_vec(&previous).unwrap(),
         )
         .unwrap();
         assert!(matches!(
@@ -433,8 +734,8 @@ mod tests {
         let newer = serde_json::json!({
             "schema_version": MANAGED_PROCESS_RECORD_SCHEMA_VERSION + 1,
             "phase": "launching",
-            "pid": 1,
-            "process_start_time_ticks": 1,
+            "launch_id": "launch-1",
+            "play_session_id": 1,
             "boot_id": "future-boot",
             "installation_id": "install-1",
             "expected_apprun_path": "/tmp/runtime/install-1/AppRun"
@@ -461,14 +762,13 @@ mod tests {
         let record = ManagedProcessRecord {
             schema_version: MANAGED_PROCESS_RECORD_SCHEMA_VERSION,
             phase: ManagedProcessPhase::Launching,
-            pid: u32::MAX,
-            process_start_time_ticks: 1,
-            boot_id: fs::read_to_string("/proc/sys/kernel/random/boot_id")
-                .unwrap()
-                .trim()
-                .to_owned(),
+            launch_id: "launch-1".try_into().unwrap(),
+            play_session_id: 1,
+            boot_id: current_boot_id(),
             installation_id,
             expected_apprun_path: expected_apprun.to_str().unwrap().to_owned(),
+            pid: None,
+            process_start_time_ticks: None,
             expected_executable_path: None,
         };
         fs::write(
