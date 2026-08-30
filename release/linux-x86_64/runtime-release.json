@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "manifest_id": "rf-runtime-linux-x86_64-001",
+  "release_id": "rf-runtime-1.22.2-linux-x86_64-001",
+  "release_sequence": 1,
+  "channel": "stable",
+  "min_retrofrontier_version": "0.1.0",
+  "retrofrontier_runtime_version": "1",
+  "retroarch_version": "1.22.2",
+  "retroarch_core_api": "1",
+  "save_state_policy": "isolated",
+  "manifest_target_name": "rf-runtime-linux-x86_64-001.manifest.json",
+  "policy_target_name": "runtime-policy.json",
+  "minimum_safe_release_sequence": 1,
+  "app_run_path": "runtime/retroarch/AppRun",
+
+  "inputs": [
+    {
+      "id": "retroarch-1.22.2-linux-x86_64-7z",
+      "url": "https://buildbot.libretro.com/stable/1.22.2/linux/x86_64/RetroArch.7z",
+      "sha256": "7d62da9a21397d6e1b9490785cedbeafd262781b50115076736fbe8a77ef30e9",
+      "size_bytes": 179361448,
+      "license": "GPL-3.0-only",
+      "provenance": "Official libretro stable buildbot, RetroArch 1.22.2 Linux x86_64, published 2025-11-20. Contains the AppImage plus a portable-home asset tree RetroFrontier does not use."
+    },
+    {
+      "id": "nestopia-libretro-linux-x86_64-zip",
+      "url": "https://buildbot.libretro.com/nightly/linux/x86_64/latest/nestopia_libretro.so.zip",
+      "sha256": "9ec90cae869191d6a1985b04c2e0c1f10a969c5ccd695028d1285ef313273620",
+      "size_bytes": 723373,
+      "license": "GPL-2.0-or-later",
+      "provenance": "Official libretro core buildbot, Linux x86_64, retrieved 2026-08-30. Upstream project github.com/libretro/nestopia."
+    },
+    {
+      "id": "bsnes-mercury-balanced-libretro-linux-x86_64-zip",
+      "url": "https://buildbot.libretro.com/nightly/linux/x86_64/latest/bsnes_mercury_balanced_libretro.so.zip",
+      "sha256": "d49103384d09b411eafb175999add943bdaa99794390cc36dff25202a03e05d1",
+      "size_bytes": 589198,
+      "license": "GPL-3.0-only",
+      "provenance": "Official libretro core buildbot, Linux x86_64, retrieved 2026-08-30. Upstream project github.com/libretro/bsnes-mercury, Balanced profile."
+    },
+    {
+      "id": "beetle-psx-libretro-linux-x86_64-zip",
+      "url": "https://buildbot.libretro.com/nightly/linux/x86_64/latest/mednafen_psx_libretro.so.zip",
+      "sha256": "07bcd1f680d9732640a6a648bc59a1792209b60f992ff2d60ad217c98c2eb4e5",
+      "size_bytes": 1746959,
+      "license": "GPL-2.0-only",
+      "provenance": "Official libretro core buildbot, Linux x86_64, retrieved 2026-08-30. Upstream project github.com/libretro/beetle-psx-libretro."
+    },
+    {
+      "id": "dolphin-libretro-linux-x86_64-zip",
+      "url": "https://buildbot.libretro.com/nightly/linux/x86_64/latest/dolphin_libretro.so.zip",
+      "sha256": "289ce0390dcc89f30913573b7b7afcc324f964754d1741e20bdf8e0a0181f14c",
+      "size_bytes": 6501960,
+      "license": "GPL-2.0-or-later",
+      "provenance": "Official libretro core buildbot, Linux x86_64, retrieved 2026-08-30. Upstream project github.com/libretro/dolphin."
+    },
+    {
+      "id": "dolphin-system-assets-zip",
+      "url": "https://buildbot.libretro.com/assets/system/Dolphin.zip",
+      "sha256": "a406e5207481806f358b726ccc674f169d6e1a0c0528ae135b76b9e9259ee313",
+      "size_bytes": 3195803,
+      "license": "GPL-2.0-or-later",
+      "provenance": "Official libretro system-assets buildbot, retrieved 2026-08-30. Ships dolphin-emu/Sys plus the Dolphin GPL-2.0 licence text. Never taken from a user's own Dolphin installation."
+    }
+  ],
+
+  "components": [
+    {
+      "id": "retroarch",
+      "kind": "runtime",
+      "target_name": "retroarch-1.22.2-linux-x86_64.AppImage",
+      "archive_format": "app_image",
+      "install_path": "runtime/retroarch",
+      "executable_relative_path": "usr/bin/retroarch",
+      "display_version": "1.22.2",
+      "source_revision": "69a4f0e",
+      "license": "GPL-3.0-only",
+      "systems": [],
+      "derivation": {
+        "kind": "seven_zip_member",
+        "input": "retroarch-1.22.2-linux-x86_64-7z",
+        "member": "RetroArch-Linux-x86_64/RetroArch-Linux-x86_64.AppImage"
+      },
+      "artifact_sha256": "794b0f65d4efa918e2ad05cac34b444a4f3207ed6c74834b7c14eb5fb15e1cc4",
+      "artifact_size_bytes": 10390008
+    },
+    {
+      "id": "nestopia",
+      "kind": "core",
+      "target_name": "nestopia_libretro.so.zip",
+      "archive_format": "zip",
+      "install_path": "cores/nestopia",
+      "executable_relative_path": "nestopia_libretro.so",
+      "display_version": null,
+      "source_revision": null,
+      "license": "GPL-2.0-or-later",
+      "systems": ["nes"],
+      "derivation": {
+        "kind": "upstream_file",
+        "input": "nestopia-libretro-linux-x86_64-zip"
+      },
+      "artifact_sha256": "9ec90cae869191d6a1985b04c2e0c1f10a969c5ccd695028d1285ef313273620",
+      "artifact_size_bytes": 723373
+    },
+    {
+      "id": "bsnes-mercury-balanced",
+      "kind": "core",
+      "target_name": "bsnes_mercury_balanced_libretro.so.zip",
+      "archive_format": "zip",
+      "install_path": "cores/bsnes-mercury-balanced",
+      "executable_relative_path": "bsnes_mercury_balanced_libretro.so",
+      "display_version": null,
+      "source_revision": null,
+      "license": "GPL-3.0-only",
+      "systems": ["snes"],
+      "derivation": {
+        "kind": "upstream_file",
+        "input": "bsnes-mercury-balanced-libretro-linux-x86_64-zip"
+      },
+      "artifact_sha256": "d49103384d09b411eafb175999add943bdaa99794390cc36dff25202a03e05d1",
+      "artifact_size_bytes": 589198
+    },
+    {
+      "id": "beetle-psx",
+      "kind": "core",
+      "target_name": "mednafen_psx_libretro.so.zip",
+      "archive_format": "zip",
+      "install_path": "cores/beetle-psx",
+      "executable_relative_path": "mednafen_psx_libretro.so",
+      "display_version": null,
+      "source_revision": null,
+      "license": "GPL-2.0-only",
+      "systems": ["playstation"],
+      "derivation": {
+        "kind": "upstream_file",
+        "input": "beetle-psx-libretro-linux-x86_64-zip"
+      },
+      "artifact_sha256": "07bcd1f680d9732640a6a648bc59a1792209b60f992ff2d60ad217c98c2eb4e5",
+      "artifact_size_bytes": 1746959
+    },
+    {
+      "id": "dolphin",
+      "kind": "core",
+      "target_name": "dolphin_libretro.so.zip",
+      "archive_format": "zip",
+      "install_path": "cores/dolphin",
+      "executable_relative_path": "dolphin_libretro.so",
+      "display_version": null,
+      "source_revision": null,
+      "license": "GPL-2.0-or-later",
+      "systems": ["nintendo_gamecube"],
+      "derivation": {
+        "kind": "upstream_file",
+        "input": "dolphin-libretro-linux-x86_64-zip"
+      },
+      "artifact_sha256": "289ce0390dcc89f30913573b7b7afcc324f964754d1741e20bdf8e0a0181f14c",
+      "artifact_size_bytes": 6501960
+    },
+    {
+      "id": "dolphin-sys",
+      "kind": "support_asset",
+      "target_name": "dolphin-sys.tar",
+      "archive_format": "tar",
+      "install_path": "runtime/support/dolphin-sys",
+      "executable_relative_path": null,
+      "display_version": null,
+      "source_revision": null,
+      "license": "GPL-2.0-or-later",
+      "systems": [],
+      "derivation": {
+        "kind": "zip_subtree_tar",
+        "input": "dolphin-system-assets-zip",
+        "subtree": "dolphin-emu/Sys"
+      },
+      "artifact_sha256": "591b8df55ad99064824244c33ae9640714dc1701251aa2d2ba65810876fbda90",
+      "artifact_size_bytes": 7959552
+    }
+  ]
+}
