@@ -167,8 +167,16 @@ impl LaunchApplicationService {
 
     /// Record a user-owned per-game core choice.
     ///
-    /// Only a core the catalog approves for that game's system may be stored, so an override can
-    /// never become an escape hatch out of approved policy.
+    /// The M7 contract admits an override only when the core is statically approved for the
+    /// game's system, maps to an authenticated managed runtime component, is currently verified as
+    /// installed, and is approved for that system by the authenticated release. That is exactly
+    /// what the launch resolver decides, so this reuses it rather than restating the rules: an
+    /// override can never become an escape hatch out of approved policy, and the two cannot drift
+    /// apart.
+    ///
+    /// The launch path still revalidates. Persistence validation only keeps invalid state from
+    /// being stored; a stored override can go stale afterwards, and only the launch may decide
+    /// whether it is still good.
     pub async fn set_core_override(
         &self,
         game_id: GameId,
@@ -179,14 +187,27 @@ impl LaunchApplicationService {
             .game(game_id)
             .await?
             .ok_or_else(|| AppError::Library("the requested game does not exist".to_owned()))?;
-        if !self
-            .catalog
-            .approves_core_for_system(game.system_id, core_id)
-        {
-            return Err(AppError::Library(
-                "that core is not approved for this system".to_owned(),
-            ));
-        }
+        let runtime = self.runtime.verified_launch_runtime().map_err(|error| {
+            tracing::warn!(error = %error, "a core override needs a verified managed runtime");
+            AppError::Library(
+                "the managed runtime is not verified, so no core can be selected".to_owned(),
+            )
+        })?;
+        RetroArchService::resolve_core(&self.catalog, game.system_id, Some(core_id), &runtime)
+            .map_err(|failure| {
+                AppError::Library(
+                    match failure.code {
+                        LaunchErrorCode::CoreNotInstalled => {
+                            "that core is not installed in the verified managed runtime"
+                        }
+                        LaunchErrorCode::CorePolicyUnresolved => {
+                            "no core policy is resolved for this system yet"
+                        }
+                        _ => "that core is not approved for this system",
+                    }
+                    .to_owned(),
+                )
+            })?;
         self.launch.set_core_override(game_id, core_id).await
     }
 
@@ -1084,6 +1105,24 @@ mod tests {
             );
         }
 
+        /// Edit the verified runtime the way a re-verification would, so the persistence contract
+        /// can be exercised against a runtime that no longer satisfies it.
+        fn edit_launch_runtime(&self, edit: impl FnOnce(&mut VerifiedLaunchRuntime)) {
+            let mut runtime = self.runtime.launch.lock().unwrap();
+            edit(runtime.as_mut().expect("a verified launch runtime"));
+        }
+
+        fn core_path(&self, component: &str) -> PathBuf {
+            self.runtime
+                .verified_launch_runtime()
+                .unwrap()
+                .cores
+                .get(&SafeIdentifier::new(component).unwrap())
+                .unwrap()
+                .core_path
+                .clone()
+        }
+
         fn write_bios(&self, filename: &str, contents: &[u8]) {
             fs::write(self.bios_root.join(filename), contents).unwrap();
         }
@@ -1939,5 +1978,114 @@ mod tests {
             harness.service.launch_game(GameId(1), None).await,
             LaunchResponse::Started { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn only_a_core_that_satisfies_the_whole_launch_contract_can_be_persisted() {
+        let harness = Harness::build(SystemId::Nes, Vec::new()).await;
+        let nestopia = CoreId::new("nestopia").unwrap();
+
+        // Statically approved, authenticated, and verified installed: this is the contract.
+        assert_eq!(
+            harness
+                .service
+                .set_core_override(GameId(1), &nestopia)
+                .await
+                .unwrap()
+                .core_id,
+            nestopia
+        );
+
+        // Approved by the catalog, but the authenticated release does not approve it for this
+        // system.
+        harness.edit_launch_runtime(|runtime| {
+            for core in runtime.cores.values_mut() {
+                core.systems.clear();
+            }
+        });
+        assert!(harness
+            .service
+            .set_core_override(GameId(1), &nestopia)
+            .await
+            .is_err());
+        harness.edit_launch_runtime(|runtime| {
+            for core in runtime.cores.values_mut() {
+                core.systems = vec![SafeIdentifier::new(SystemId::Nes.as_str()).unwrap()];
+            }
+        });
+
+        // Approved and authenticated, but not actually installed.
+        let core_path = harness.core_path("nestopia");
+        fs::remove_file(&core_path).unwrap();
+        assert!(harness
+            .service
+            .set_core_override(GameId(1), &nestopia)
+            .await
+            .is_err());
+        fs::write(&core_path, b"synthetic core").unwrap();
+
+        // Not resolvable to an authenticated managed component at all.
+        harness.edit_launch_runtime(|runtime| runtime.cores.clear());
+        assert!(harness
+            .service
+            .set_core_override(GameId(1), &nestopia)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unapproved_core_or_an_unresolved_system_can_never_be_persisted() {
+        let approved = Harness::build(SystemId::Nes, Vec::new()).await;
+        // A core approved only for another system.
+        assert!(approved
+            .service
+            .set_core_override(GameId(1), &CoreId::new("beetle-psx").unwrap())
+            .await
+            .is_err());
+        // A core no catalog definition claims.
+        assert!(approved
+            .service
+            .set_core_override(GameId(1), &CoreId::new("not-a-core").unwrap())
+            .await
+            .is_err());
+
+        // A system whose core policy is still unresolved approves nothing.
+        let unresolved = Harness::build(SystemId::Nintendo64, Vec::new()).await;
+        assert!(unresolved
+            .service
+            .set_core_override(GameId(1), &CoreId::new("nestopia").unwrap())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_persisted_override_is_still_revalidated_at_launch() {
+        let harness = Harness::build(SystemId::Nes, Vec::new()).await;
+        harness.set_app_run("sleep 5");
+        let nestopia = CoreId::new("nestopia").unwrap();
+        harness
+            .service
+            .set_core_override(GameId(1), &nestopia)
+            .await
+            .unwrap();
+
+        // Validating at persistence time does not make the stored value trustworthy later: the
+        // runtime can change underneath it.
+        fs::remove_file(harness.core_path("nestopia")).unwrap();
+
+        assert_eq!(
+            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            LaunchErrorCode::CoreNotInstalled
+        );
+        assert_eq!(
+            harness
+                .service
+                .core_override(GameId(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .core_id,
+            nestopia
+        );
     }
 }
