@@ -117,13 +117,12 @@ fn managed_process_exists(
     let self_pid = std::process::id();
 
     for entry in fs::read_dir("/proc")? {
-        // A directory entry that cannot be read at all names a process that has already gone or
-        // that this user cannot inspect, and neither can be the managed child this scan is looking
-        // for. Skipping it matches how a per-process read failure below is already treated;
-        // propagating it would turn ordinary `/proc` churn into a false "a game is running".
-        let Ok(entry) = entry else {
-            continue;
-        };
+        // A failed directory entry makes the scan itself incomplete, so it cannot support the
+        // proof of absence a `Launching` record needs. It propagates and stays `GameActive`.
+        // This is not the same as the per-process reads below: those skip a single process this
+        // user cannot inspect, which is still a complete scan of the processes it could have
+        // spawned, whereas an unusable entry may have been the managed child itself.
+        let entry = entry?;
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
