@@ -146,10 +146,18 @@ pub struct RuntimeManager {
 }
 
 impl RuntimeManager {
-    pub fn for_app(paths: RuntimePaths) -> Result<Self, RuntimeError> {
+    /// Compose the manager for the running application.
+    ///
+    /// A build with no approved release source keeps the deliberately failing
+    /// `UnavailableTrustedReleaseSource`, so "no source configured" stays a trust refusal inside
+    /// RuntimeManager rather than an absent capability the caller could route around.
+    pub fn for_app(
+        paths: RuntimePaths,
+        source: Option<Arc<dyn TrustedReleaseSource>>,
+    ) -> Result<Self, RuntimeError> {
         Self::new(
             paths,
-            Arc::new(UnavailableTrustedReleaseSource),
+            source.unwrap_or_else(|| Arc::new(UnavailableTrustedReleaseSource)),
             Arc::new(LinuxRuntimeArchiveExtractor),
             Arc::new(LinuxManagedProcessInspector),
             Arc::new(StructuralSmokeValidator),

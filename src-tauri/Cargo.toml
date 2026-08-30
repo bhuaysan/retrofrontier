@@ -11,15 +11,27 @@ build = "build.rs"
 name = "retrofrontier_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Maintainer-only Runtime Release construction and TUF publication. Never enabled for the shipped
+# application binary, so signing and repository-publication code stays out of the client.
+release-tools = ["dep:aws-lc-rs", "dep:jiff"]
+
+[[bin]]
+name = "rf-runtime-release"
+path = "src/bin/rf_runtime_release.rs"
+required-features = ["release-tools"]
+
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 async-trait = "0.1"
+aws-lc-rs = { version = "1.18", optional = true }
 backhand = { version = "=0.25.1", default-features = false, features = ["gzip", "lz4", "xz", "zstd"] }
 crc32fast = "1.5"
 fs4 = { version = "=1.1.0", features = ["sync"] }
 futures = "0.3"
+jiff = { version = "0.2", optional = true }
 md-5 = "0.11"
 notify = "8.2"
 serde = { version = "1.0.229", features = ["derive"] }
