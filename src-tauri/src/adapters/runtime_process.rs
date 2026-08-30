@@ -117,7 +117,13 @@ fn managed_process_exists(
     let self_pid = std::process::id();
 
     for entry in fs::read_dir("/proc")? {
-        let entry = entry?;
+        // A directory entry that cannot be read at all names a process that has already gone or
+        // that this user cannot inspect, and neither can be the managed child this scan is looking
+        // for. Skipping it matches how a per-process read failure below is already treated;
+        // propagating it would turn ordinary `/proc` churn into a false "a game is running".
+        let Ok(entry) = entry else {
+            continue;
+        };
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
@@ -527,6 +533,17 @@ mod tests {
     }
 
     /// A child that blocks on stdin, so it has no grandchildren to outlive it.
+    ///
+    /// Every test spawns through this. A shell given a command to run forks a grandchild that the
+    /// test never owns: killing and reaping the shell leaves that grandchild behind, and while it
+    /// is still between `fork` and `exec` it carries the shell's own executable and command line,
+    /// so the liveness scan correctly sees a live managed process the test believed it had
+    /// stopped. A shell reading commands from a pipe never forks, so the test controls exactly
+    /// one process.
+    ///
+    /// Spawning an executable that was just written can transiently fail with `ETXTBSY` when a
+    /// parallel test thread forked while the writing descriptor was still open, so the spawn is
+    /// retried briefly. This is a test-harness concern only.
     fn spawn_blocking_child(apprun: &Path) -> Child {
         for _ in 0..50 {
             match Command::new(apprun).stdin(Stdio::piped()).spawn() {
@@ -553,25 +570,6 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         panic!("the shebang AppRun should start before the wait budget is exhausted");
-    }
-
-    /// A live child whose executable is the managed AppRun. The trailing `:` keeps the shell from
-    /// replacing its own image with `sleep`.
-    ///
-    /// Spawning an executable that was just written can transiently fail with `ETXTBSY` when a
-    /// parallel test thread forked while the writing descriptor was still open, so the spawn is
-    /// retried briefly. This is a test-harness concern only.
-    fn spawn_managed_child(apprun: &Path) -> Child {
-        for _ in 0..50 {
-            match Command::new(apprun).args(["-c", "sleep 30; :"]).spawn() {
-                Ok(child) => return child,
-                Err(error) if error.raw_os_error() == Some(26) => {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                Err(error) => panic!("managed child should spawn: {error}"),
-            }
-        }
-        panic!("managed child should spawn before the retry budget is exhausted");
     }
 
     #[test]
@@ -641,7 +639,7 @@ mod tests {
             make_launching_record("launch-1".try_into().unwrap(), 3, installation_id, &apprun)
                 .unwrap();
         super::write_process_record(&paths, &record).unwrap();
-        let mut child = spawn_managed_child(&apprun);
+        let mut child = spawn_blocking_child(&apprun);
 
         assert!(matches!(
             LinuxManagedProcessInspector.ensure_no_active_game(&paths),
@@ -668,7 +666,7 @@ mod tests {
                 .unwrap()
         };
         super::write_process_record(&paths, &record).unwrap();
-        let mut child = spawn_managed_child(&apprun);
+        let mut child = spawn_blocking_child(&apprun);
 
         // Even with a live managed process, a pre-reboot record cannot describe it.
         LinuxManagedProcessInspector
@@ -746,7 +744,7 @@ mod tests {
         assert!(!paths.game_process_record().exists());
 
         // A live PID whose start time differs is a reused PID, not the recorded process.
-        let mut child = spawn_managed_child(&apprun);
+        let mut child = spawn_blocking_child(&apprun);
         let reused = ManagedProcessRecord {
             phase: ManagedProcessPhase::Running,
             pid: Some(child.id()),
@@ -773,7 +771,7 @@ mod tests {
         let launching =
             make_launching_record("launch-1".try_into().unwrap(), 6, installation_id, &apprun)
                 .unwrap();
-        let mut child = spawn_managed_child(&apprun);
+        let mut child = spawn_blocking_child(&apprun);
         let running = make_running_record(&launching, child.id()).unwrap();
         super::write_process_record(&paths, &running).unwrap();
 

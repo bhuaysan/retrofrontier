@@ -442,15 +442,20 @@ impl LaunchApplicationService {
             .and_then(|record| write_process_record(&paths, &record).map(|()| record));
         if let Err(error) = running_record {
             tracing::warn!(error = %error, "managed process identity could not be established");
-            let exited_on_its_own = matches!(child.try_exit(), Ok(Some(_)));
             return match child.terminate() {
                 // The child was positively observed and reaped, so nothing managed survives: the
                 // pre-spawn record may go and the session honestly closes as a failed start.
-                Ok(exit) => {
+                //
+                // Whether it ended on its own comes from that same reaping observation. Asking
+                // separately first raced the child: a game that exits instantly can be gone before
+                // identity capture even reads `/proc`, and a lost race reported an ordinary early
+                // exit as a failure to establish identity.
+                Ok(termination) => {
+                    let exit = termination.exit;
                     clear_record_after_proven_death(&paths);
                     self.close_session(session.id, PlaySessionOutcome::FailedToStart, exit.code())
                         .await;
-                    Err(LaunchFailure::new(if exited_on_its_own {
+                    Err(LaunchFailure::new(if termination.exited_on_its_own {
                         LaunchErrorCode::ProcessExitedDuringLaunch
                     } else {
                         LaunchErrorCode::ProcessIdentityFailed
