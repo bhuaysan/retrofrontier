@@ -24,6 +24,12 @@ token plus an AA correction for the black-on-accent active controls. The visual 
 hard-edge pixel art; the directional/sidebar cursor arrows and the Game Detail Favorite star are
 deliberate accepted vector exceptions and are not outstanding fidelity work.
 
+M7 adds the RetroArch launch subsystem for Linux x86_64: approved core policy for NES, SNES,
+PlayStation, and GameCube, authoritative PlayStation BIOS identities, a semantic
+`launch_game(gameId, contentUnitId?)` contract, RetroFrontier-owned RetroArch configuration and
+child environment, durable managed-process identity, play sessions, per-game core overrides, and the
+Game Detail Play interaction. See [`docs/RETROARCH_LAUNCH.md`](RETROARCH_LAUNCH.md).
+
 ## Prerequisites
 
 - Node.js 22 LTS
@@ -69,6 +75,28 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 Rust tests use temporary SQLite files. The application database is created in
 the OS-specific Tauri application-data directory, under its `database/`
 subdirectory; no source-tree database is used or committed.
+
+## Launch development checks
+
+The automated launch suite needs no ROM, no BIOS, no network, and no runtime download. Process
+lifecycle coverage uses a synthetic shell `AppRun` inside a synthetic managed installation, so it is
+deterministic in CI while still exercising the real durable process record and the real OS runtime
+mutation lock.
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml application::launch
+cargo test --manifest-path src-tauri/Cargo.toml services::retroarch
+cargo test --manifest-path src-tauri/Cargo.toml adapters::runtime_process
+cargo test --manifest-path src-tauri/Cargo.toml adapters::game_process
+cargo test --manifest-path src-tauri/Cargo.toml repositories::launch
+pnpm vitest run src/hooks/useGameLaunch.test.tsx src/features/library/GameDetailPage.test.tsx
+```
+
+RetroFrontier-owned RetroArch paths live under the OS application-data directory in `runtime-user/`,
+`saves/`, `states/`, `screenshots/`, and `logs/retroarch/`. Nothing is written beside user ROMs,
+into a user RetroArch configuration, or inside a replaceable runtime version tree. Real four-system
+qualification with legally owned content is a manual procedure documented in
+`docs/RETROARCH_LAUNCH.md`; it needs a production Runtime Release, which ADR-012 still gates.
 
 ## BIOS development checks
 

@@ -223,6 +223,14 @@ Possible states:
 
 A recorded game execution with game/content/core/runtime/time/exit information.
 
+M7 persists this in `play_sessions` with a constrained outcome: `running`, `completed`,
+`failedToStart`, `crashed`, or `interrupted`. A session is open exactly while it has no end time,
+and a closed session keeps its first verdict. It stores no raw process output or log blob.
+
+Play-session history is product data. It is never the authority on whether a managed process is
+alive; that answer comes only from the durable process record plus operating-system process
+identity.
+
 ### Save Data
 
 Normal emulator-managed persistent save data such as SRAM or memory-card data.
@@ -246,6 +254,11 @@ Optional per-game launch configuration such as:
 - input behavior
 
 Overrides must not mutate unrelated user RetroArch configuration.
+
+M7 implements only the core override, in `game_launch_overrides`. It stores a `CoreId`, never a
+filesystem path, and only a core the catalog approves for that game's system may be stored, so an
+override can never become an escape hatch out of approved policy. It is user-owned state in its own
+table, so scanner reconciliation and provider refresh cannot overwrite it.
 
 ## Relationships
 
@@ -282,7 +295,11 @@ RuntimeRelease
 6. Filesystem discovery and metadata identification are separate concerns.
 7. A game may exist before metadata lookup succeeds.
 8. BIOS validation should produce a user-actionable state rather than a cryptic launch failure.
-9. Launching resolves an explicit managed runtime, core, content unit, and configuration.
+9. Launching resolves an explicit managed runtime, core, content unit, and configuration. A game is
+   launchable only through a RetroFrontier identity: a `GameId` and optionally a `ContentUnitId`,
+   never a filesystem path supplied by the presentation layer. The launch target is the primary
+   descriptor, playlist, or standalone file of an available content unit, never a member track, and
+   multi-file content is never collapsed into a single-file model.
 10. Provider-specific metadata identifiers remain behind a provider abstraction.
 11. A logical `GameId` may be preserved across content ownership or reconciliation changes only
     when exact content evidence establishes one predecessor game. Ambiguous ownership is retained
@@ -296,6 +313,11 @@ RuntimeRelease
     stale rather than being deleted or silently kept.
 14. Provider-derived data is replaceable and user-owned decisions are not. A provider refresh may
     overwrite normalized metadata and media, and may never overwrite a user-owned record.
+15. A system with an unresolved core policy approves no core at all, so no override, fallback, or
+    installed component can make it launchable.
+16. Operating-system process identity, not persisted history, decides whether a managed emulator is
+    running. When identity cannot be established, RetroFrontier fails closed: runtime mutation stays
+    blocked, launches are refused, and the durable record is preserved rather than deleted.
 
 ## Identification Inputs
 
@@ -334,6 +356,11 @@ physical copies under one provisional game. Ambiguous matches create a new physi
 an inspectable issue. A transient hash read failure degrades availability but preserves previously
 verified file hashes and the unit fingerprint for later reconciliation. Local titles are derived
 from the primary path only when a unit is first created; M5 metadata matching is separate.
+
+M7 adds two further tables alongside this schema without altering it: `game_launch_overrides` holds
+the user-owned per-game core choice and `play_sessions` holds execution history. Both reference
+`games (id)` with restrictive delete behaviour, `play_sessions` also references
+`content_units (id)`, and neither is written by the scanner or by a metadata provider.
 
 M5 adds metadata tables alongside this schema without altering it: `provider_matches` and
 `provider_match_evidence` hold provider identity and the evidence bound to it,

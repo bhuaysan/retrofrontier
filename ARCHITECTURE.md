@@ -194,6 +194,21 @@ Never use a system `retroarch` from `PATH`.
 - monitor process
 - normalize result
 
+M7 implements this for Linux x86_64 as `RetroArchService` plus a `LaunchApplicationService`
+orchestration layer. React calls one semantic `launch_game(gameId, contentUnitId?)` command; it
+never supplies or receives an executable, core, BIOS, save, system, or content path. Content
+resolution launches the ordinal-zero descriptor, playlist, or standalone file of an available
+content unit, never a member track, and re-checks containment after canonicalization. Core
+resolution takes a valid per-game override, otherwise the approved system default, and requires an
+authenticated installed component whose release-declared systems include the launching system; an
+invalid override never falls through. Play sessions and per-game core overrides are persisted in
+their own user/product-owned tables.
+
+`RuntimeManager` keeps every existing responsibility and exposes only `verified_launch_runtime()`
+(absolute AppRun, core, and support-asset paths from the same single verification that produces
+runtime status) and `lock_for_launch()` (the existing runtime mutation lock). See
+[`docs/RETROARCH_LAUNCH.md`](docs/RETROARCH_LAUNCH.md).
+
 ### BiosService
 
 - discover user BIOS files under the OS-resolved `Documents/RetroFrontier/BIOS` root
@@ -210,10 +225,15 @@ identifiers. The catalog is validated at startup and in unit tests, and static s
 is not duplicated in SQLite.
 
 `CoreDefinition` and `CorePolicy` model approved managed cores separately from runtime state. A
-policy may name one default and approved alternatives, but the current matrix keeps each V1 choice
-explicitly unresolved where documentation has not approved a core. RetroFrontier never treats a
-catalog entry as installed and never accepts system RetroArch cores, arbitrary user core paths, or
-user-downloaded cores.
+policy may name one default and approved alternatives. M7 resolves policy for the four reference
+systems — NES/Nestopia, SNES/bsnes-mercury Balanced, PlayStation/Beetle PSX, and GameCube/Dolphin —
+and the remaining seven V1 systems stay explicitly unresolved, so no fallback can make them
+launchable. A `CoreDefinition` records its libretro name, licence, upstream source, supported
+platform targets, the authenticated managed component that installs it, and any managed support
+component it requires. Verified runtime component identifiers are translated through the catalog, so
+an installed but unapproved component is never reported as an available core. RetroFrontier never
+treats a catalog entry as installed and never accepts system RetroArch cores, arbitrary user core
+paths, or user-downloaded cores.
 
 `RuntimeManager::verified_snapshot()` is the read-only boundary for runtime availability. It
 returns the effective runtime status and core component IDs from one active-installation
@@ -341,6 +361,14 @@ contract.
 
 RetroFrontier is single-instance per OS user in V1. An OS-backed runtime mutation lock protects install, activation, rollback, repair, and cleanup even from an accidentally started second or older process. A durable game-process identity record plus liveness validation prevents activation after RetroFrontier crashes while its managed RetroArch process remains alive.
 
+M7 holds that same lock across the launch sequence, from before runtime verification until the
+durable `running` process record is committed, so an activation cannot interleave with the
+verification-to-spawn window. The record is written in a conservative pre-spawn `launching` phase
+first, closing the crash window between `exec` and persisting a PID. Only one managed game process
+may be active per user instance; an in-process launch mutex, in-process active-game state, the
+durable record, and the mutation lock cooperate, and a second attempt returns `gameAlreadyRunning`.
+Play-session history is product data and is never the authority on whether a process is alive.
+
 The Linux spike found that explicit core, save, and system directories alone are insufficient: core-info cache and core options also need explicit managed paths or disabling.
 
 ## Runtime Manifest
@@ -376,6 +404,20 @@ Do not rely on:
 - existing save directories
 
 The Rust launch contract must resolve an absolute managed executable and pass an explicit config, log path, core path, and content path. It must explicitly control libretro, core-info, system/BIOS, save, state, screenshot, assets, shader, playlist, cache, history, remap, autoconfig, core-option, and runtime-log paths as applicable. The child environment is constructed rather than blindly inherited. This isolates configuration and data paths; it is not a sandbox for native cores.
+
+M7 implements this as `AppRun --config <generated config> -L <managed core> <content target>`. There
+is exactly one generated configuration file, rewritten atomically before every launch, so no
+per-game configuration files exist. Every writable RetroArch directory lives under `runtime-user/`,
+`saves/`, `states/`, `screenshots/`, or `logs/retroarch/`; `libretro_directory` is the only value
+pointing into the verified immutable version tree because RetroArch only reads it. `system_directory`
+is a RetroFrontier-owned directory into which validated user BIOS files and verified managed support
+data such as Dolphin's `Sys` are linked, so user data never enters an authenticated runtime tree and
+user BIOS files are never modified, moved, renamed, or copied. The child environment is an allowlist
+of the desktop session variables the Linux qualification proved necessary plus a fixed minimal
+`PATH` and RetroFrontier-owned `XDG_*` base directories; `LD_PRELOAD`, `LD_LIBRARY_PATH`, and any
+`RETROARCH*`/`LIBRETRO*` variable are absent by construction. Missing host graphics, audio, or input
+capabilities are normalized into launch diagnostics rather than treated as a damaged runtime; only a
+missing display session blocks a launch.
 
 ## Scanner Pipeline
 

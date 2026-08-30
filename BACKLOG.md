@@ -2,10 +2,11 @@
 
 ## Current Priority
 
-M6 Library UI implementation and the M6.6 corrective pass are complete, but the final adversarial
-review delta has not yet verified closure. The branch is ready for focused delta review; M6 is not
-accepted. M7 launch/process behavior and later UI work remain; runtime trust and core-policy research
-remain explicit release gates.
+M7 RetroArch Launch is implemented on `feat/m7-retroarch-launch` and awaits review. M6 Library UI
+remains subject to its own final delta review. Runtime trust, production release hosting, and core
+policy for the remaining seven V1 systems remain explicit release gates, and no end-to-end emulation
+claim is made until a production Runtime Release exists and the manual four-system qualification in
+`docs/RETROARCH_LAUNCH.md` has been performed.
 
 ## M0 — Planning and Repository Foundation
 
@@ -341,19 +342,31 @@ visible attribution presentation, which belongs to M6.
 
 **Model:** Luna Max.
 
-- [ ] RetroArchService
-- [ ] explicit managed executable
-- [ ] core selection
-- [ ] explicit config
-- [ ] save/state/system paths
-- [ ] content launch target
-- [ ] prerequisite validation
-- [ ] child process
-- [ ] process monitoring
-- [ ] return to RetroFrontier
-- [ ] play sessions
-- [ ] per-game core override
-- [ ] normalized launch errors
+Implemented for Linux x86_64 against synthetic authenticated runtime fixtures. Core policy is
+resolved for NES, SNES, PlayStation, and GameCube only; the other seven V1 systems stay explicitly
+unresolved. See [`docs/RETROARCH_LAUNCH.md`](docs/RETROARCH_LAUNCH.md).
+
+- [x] RetroArchService
+- [x] explicit managed executable
+- [x] core selection
+- [x] explicit config
+- [x] save/state/system paths
+- [x] content launch target
+- [x] prerequisite validation
+- [x] child process
+- [x] process monitoring
+- [x] return to RetroFrontier
+- [x] play sessions
+- [x] per-game core override
+- [x] normalized launch errors
+
+Deferred from M7:
+
+- [ ] macOS and Windows launch adapters
+- [ ] core policy for the remaining seven V1 systems
+- [ ] per-game override management UI and non-core overrides
+- [ ] per-region PlayStation BIOS enforcement and SNES coprocessor firmware detection
+- [ ] real four-system Linux qualification, which needs an approved production Runtime Release
 
 ## M8 — Controller and Focus
 
