@@ -246,6 +246,14 @@ a:focus-visible {
   border-right: 3px solid var(--border);
 }
 
+/* At the normal desktop height, compact only the outer padding so every default navigation row
+   fits without a scrollbar. Shorter desktops retain the roomier padding and scroll locally. */
+@media (min-width: 861px) and (min-height: 800px) {
+  .app-sidebar {
+    padding-block: 11px;
+  }
+}
+
 .sidebar-menu {
   margin-top: auto;
 }

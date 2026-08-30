@@ -38,6 +38,20 @@ describe('application shell layout contract', () => {
     expect(shell).toMatch(/grid-template-rows:\s*auto minmax\(0, 1fr\) auto;/);
   });
 
+  it('uses the compact desktop sidebar padding that fits at 1280x800', () => {
+    const desktopStyles = applicationStyles.slice(
+      0,
+      applicationStyles.indexOf('@media (max-width: 860px)'),
+    );
+    const compactDesktopRule = desktopStyles.match(
+      /@media \(min-width: 861px\) and \(min-height: 800px\)\s*\{\s*\.app-sidebar\s*\{([\s\S]*?)\}\s*\}/,
+    );
+
+    // With the 12 system rows and the Settings row, the normal 677px track needs 22px less
+    // vertical padding. The compact rule preserves the full desktop spacing at 960px tall.
+    expect(compactDesktopRule?.[1]).toMatch(/padding-block:\s*11px;/);
+  });
+
   it('keeps .app-main the full-width scroll owner on every route', () => {
     // Settings caps only its inner content measure; narrowing `.app-main` would move the
     // main-region scrollbar inward on the Settings route only.
