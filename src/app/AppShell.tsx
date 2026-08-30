@@ -1,320 +1,268 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
-import { PixelButton } from '../components/ui/PixelButton';
+import { InlineError } from '../components/ui/InlineError';
 import { PixelRow } from '../components/ui/PixelRow';
-import {
-  getAppInfo,
-  getSystems,
-  getRuntimeStatus,
-  IpcError,
-  type AppInfo,
-  type RuntimeStatus,
-  type ReadinessReason,
-  type SystemId,
-  type SystemStatus,
-  type SystemsResponse,
-} from '../platform/ipc';
+import { useContentRoots } from '../hooks/useContentRoots';
+import { useLibrarySummary } from '../hooks/useLibrarySummary';
+import { useLibraryQuery } from '../hooks/useLibraryQuery';
+import { useGameDetail } from '../hooks/useGameDetail';
+import { useScanState } from '../hooks/useScanState';
+import { useSystemCatalog } from '../hooks/useSystemCatalog';
+import { pickExternalContentRoot } from '../platform/folderPicker';
+import { openManagedRomFolder, type ScanSummary } from '../platform/ipc';
+import { LibraryPage, ScanProgressPanel } from '../features/library/LibraryPage';
+import { SettingsPage } from '../features/settings/SettingsPage';
+import { systemAccent } from '../features/library/systemAccents';
+import { GameDetailPage } from '../features/library/GameDetailPage';
+import { gameRoute, isGameRoute, useRoute } from './routes';
+import { PixelArrow } from '../components/ui/PixelIcon';
 
 type Theme = 'dark' | 'light';
 
 const THEME_STORAGE_KEY = 'retrofrontier.theme';
 
-const fallbackSystems: Array<{ label: string; accent: string }> = [
-  { label: 'All systems', accent: 'var(--accent)' },
-  { label: 'Nintendo Entertainment System', accent: 'var(--accent)' },
-  { label: 'SNES', accent: 'var(--accent-2)' },
-  { label: 'Nintendo 64', accent: 'var(--accent-3)' },
-  { label: 'Game Boy', accent: 'var(--accent-4)' },
-  { label: 'Game Boy Color', accent: 'var(--accent-4)' },
-  { label: 'Game Boy Advance', accent: 'var(--accent-4)' },
-  { label: 'Mega Drive', accent: 'var(--accent-3)' },
-  { label: 'PlayStation', accent: 'var(--accent-5)' },
-  { label: 'Sega Saturn', accent: 'var(--accent-6)' },
-  { label: 'Sega Dreamcast', accent: 'var(--accent-6)' },
-  { label: 'Nintendo GameCube', accent: 'var(--accent-2)' },
-];
-
-const systemAccents: Record<SystemId, string> = {
-  nes: 'var(--accent)',
-  snes: 'var(--accent-2)',
-  nintendo_64: 'var(--accent-3)',
-  game_boy: 'var(--accent-4)',
-  game_boy_color: 'var(--accent-4)',
-  game_boy_advance: 'var(--accent-4)',
-  mega_drive: 'var(--accent-3)',
-  playstation: 'var(--accent-5)',
-  sega_saturn: 'var(--accent-6)',
-  sega_dreamcast: 'var(--accent-6)',
-  nintendo_gamecube: 'var(--accent-2)',
-};
-
 function initialTheme(): Theme {
-  const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
-  return savedTheme === 'light' ? 'light' : 'dark';
+  return window.localStorage.getItem(THEME_STORAGE_KEY) === 'light' ? 'light' : 'dark';
 }
 
-function EmptyLibraryIcon() {
+function RouteRow({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return <PixelRow label={label} accent="var(--text-dim)" active={active} onClick={onClick} />;
+}
+
+function MobileRouteNav({
+  route,
+  navigate,
+}: {
+  route: 'library' | 'settings' | null;
+  navigate: (route: 'library' | 'settings') => void;
+}) {
   return (
-    <svg
-      className="empty-library-icon"
-      viewBox="0 0 7 6"
-      shapeRendering="crispEdges"
-      aria-hidden="true"
-    >
-      <path d="M0 0h1v1h-1zM1 0h1v1h-1zM2 0h1v1h-1zM0 1h1v1h-1zM3 1h1v1h-1zM4 1h1v1h-1zM5 1h1v1h-1zM6 1h1v1h-1zM0 2h1v1h-1zM6 2h1v1h-1zM0 3h1v1h-1zM6 3h1v1h-1zM0 4h1v1h-1zM6 4h1v1h-1zM0 5h1v1h-1zM1 5h1v1h-1zM2 5h1v1h-1zM3 5h1v1h-1zM4 5h1v1h-1zM5 5h1v1h-1zM6 5h1v1h-1z" />
-    </svg>
+    <nav className="mobile-nav" aria-label="Primary navigation">
+      <button
+        type="button"
+        className={`mobile-nav-link${route === 'library' ? ' mobile-nav-link--active' : ''}`}
+        aria-current={route === 'library' ? 'page' : undefined}
+        onClick={() => navigate('library')}
+      >
+        LIBRARY
+      </button>
+      <button
+        type="button"
+        className={`mobile-nav-link${route === 'settings' ? ' mobile-nav-link--active' : ''}`}
+        aria-current={route === 'settings' ? 'page' : undefined}
+        onClick={() => navigate('settings')}
+      >
+        SETTINGS
+      </button>
+    </nav>
   );
 }
 
-function StatusValue({ children, tone = 'neutral' }: { children: ReactNode; tone?: string }) {
-  return <span className={`status-value status-value--${tone}`}>{children}</span>;
-}
-
-function runtimeLabel(status: RuntimeStatus | null, error: IpcError | null): string {
-  if (error) return 'UNAVAILABLE';
-  if (!status) return 'CHECKING';
-  return runtimeStateLabel(status.state);
-}
-
-function runtimeStateLabel(state: RuntimeStatus['state']): string {
-  switch (state) {
-    case 'notInstalled':
-      return 'NOT INSTALLED';
-    case 'rollbackAvailable':
-      return 'READY / ROLLBACK';
-    case 'broken':
-      return 'REPAIR REQUIRED';
-    case 'installing':
-      return 'INSTALLING';
-    case 'updating':
-      return 'UPDATING';
-    case 'repairing':
-      return 'REPAIRING';
-    case 'ready':
-      return 'READY';
-  }
-}
-
-function coreLabel(system: SystemStatus): { text: string; tone: string } {
-  if (system.core.policy.decision.kind === 'unresolved') {
-    return { text: 'POLICY TBD', tone: 'warning' };
-  }
-  if (
-    system.core.availability.runtimeState !== 'ready' &&
-    system.core.availability.runtimeState !== 'rollbackAvailable'
-  ) {
-    return { text: 'MISSING', tone: 'warning' };
-  }
-  return system.core.availability.defaultCoreAvailable
-    ? { text: 'READY', tone: 'good' }
-    : { text: 'MISSING', tone: 'warning' };
-}
-
-function biosLabel(system: SystemStatus): { text: string; tone: string } {
-  if (system.bios.policy === 'notRequired') {
-    return { text: 'NOT REQUIRED', tone: 'good' };
-  }
-  const required = system.bios.requirements.filter((requirement) => requirement.required);
-  const missing = required.filter((requirement) => requirement.state === 'missing').length;
-  const invalid = required.filter((requirement) => requirement.state === 'presentInvalid').length;
-  const uncovered = required.filter(
-    (requirement) => requirement.state === 'notCoveredByCatalog',
-  ).length;
-  if (missing > 0) return { text: `${missing} REQUIRED BIOS MISSING`, tone: 'warning' };
-  if (invalid > 0) return { text: `${invalid} BIOS INVALID`, tone: 'warning' };
-  if (uncovered > 0) return { text: 'IDENTITY TBD', tone: 'warning' };
-  if (system.bios.policy === 'optional') {
-    return { text: 'OPTIONAL', tone: 'neutral' };
-  }
-  return { text: 'READY', tone: 'good' };
-}
-
-function reasonLabel(reason: ReadinessReason): string {
-  switch (reason.kind) {
-    case 'corePolicyUnresolved':
-      return 'Default core decision is unresolved';
-    case 'runtimeUnavailable':
-      return `Managed runtime: ${runtimeStateLabel(reason.state)}`;
-    case 'missingCore':
-      return `Approved core missing: ${reason.coreId}`;
-    case 'missingRequiredBios':
-      return `Required BIOS missing: ${reason.requirementId}`;
-    case 'invalidRequiredBios':
-      return `Required BIOS invalid: ${reason.requirementId}`;
-    case 'biosIdentityNotCovered':
-      return `BIOS identity not covered: ${reason.requirementId}`;
-  }
-}
-
-function SystemStatusCard({ system }: { system: SystemStatus }) {
-  const core = coreLabel(system);
-  const bios = biosLabel(system);
+function SystemSummaryRow({
+  label,
+  count,
+  accent,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  accent: string;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
-    <article className="system-card" data-system-id={system.id}>
-      <div className="system-card-header">
-        <span
-          className="system-card-swatch"
-          style={{ background: systemAccents[system.id] }}
-          aria-hidden="true"
-        />
-        <div className="system-card-title">
-          <h3>{system.displayName}</h3>
-          <span>
-            {system.manufacturer} · {system.aliases.slice(0, 2).join(' / ')}
-          </span>
-        </div>
-        <StatusValue tone={system.readiness.ready ? 'good' : 'warning'}>
-          {system.readiness.ready ? 'READY' : 'NOT READY'}
-        </StatusValue>
-      </div>
+    <PixelRow
+      label={label}
+      count={count}
+      accent={accent}
+      active={active}
+      activeMode="pressed"
+      onClick={onClick}
+    />
+  );
+}
 
-      <div className="system-card-checks">
-        <div className="system-check-row">
-          <span className="system-check-label">CORE</span>
-          <StatusValue tone={core.tone}>{core.text}</StatusValue>
-        </div>
-        <div className="system-check-row">
-          <span className="system-check-label">BIOS</span>
-          <StatusValue tone={bios.tone}>{bios.text}</StatusValue>
-        </div>
-      </div>
-
-      {system.readiness.reasons.length > 0 && (
-        <ul className="system-card-reasons" aria-label={`${system.displayName} readiness reasons`}>
-          {system.readiness.reasons.map((reason) => (
-            <li
-              key={`${reason.kind}-${reason.kind === 'corePolicyUnresolved' ? 'policy' : reason.kind === 'runtimeUnavailable' ? reason.state : reason.kind === 'missingCore' ? reason.coreId : reason.requirementId}`}
-            >
-              {reasonLabel(reason)}
-            </li>
-          ))}
-        </ul>
-      )}
-    </article>
+function LibrarySearch({
+  value,
+  onChange,
+  onClear,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <search className="library-search">
+      <input
+        autoComplete="off"
+        aria-label="Search"
+        id="library-search-input"
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Search"
+        spellCheck="false"
+        type="search"
+        value={value}
+      />
+      {value ? (
+        <button aria-label="Clear library search" onClick={onClear} type="button">
+          CLEAR
+        </button>
+      ) : null}
+    </search>
   );
 }
 
 export function AppShell() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
-  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
-  const [error, setError] = useState<IpcError | null>(null);
-  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
-  const [runtimeError, setRuntimeError] = useState<IpcError | null>(null);
-  const [systemsResponse, setSystemsResponse] = useState<SystemsResponse | null>(null);
-  const [systemsError, setSystemsError] = useState<IpcError | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [libraryScanCompletionRunId, setLibraryScanCompletionRunId] = useState<number | null>(null);
+  const { route, navigate } = useRoute();
+  const isLibraryRoute = route === 'library';
+  const isSettingsRoute = route === 'settings';
+  const gameRouteState = isGameRoute(route) ? route : null;
+  const usesPersistentSidebar = isLibraryRoute || isSettingsRoute || gameRouteState !== null;
+  const currentGameId = gameRouteState?.gameId ?? null;
+  const [libraryFocusGameId, setLibraryFocusGameId] = useState<number | null>(null);
+  const {
+    summary,
+    loading: summaryLoading,
+    error: summaryError,
+    refresh: refreshSummary,
+  } = useLibrarySummary();
+  const {
+    roots,
+    loading: rootsLoading,
+    error: rootsError,
+    refresh: refreshRoots,
+    addExternalRoot,
+    removeExternalRoot,
+    updateRootEnabled,
+  } = useContentRoots();
+  const {
+    systems: catalogSystems,
+    statuses: catalogStatuses,
+    loading: catalogLoading,
+    error: catalogError,
+    refresh: refreshCatalog,
+  } = useSystemCatalog();
+  // A ROM scan changes local content only. Runtime state, approved cores, and BIOS files are all
+  // outside the scanned roots, so the system catalog is deliberately not refetched here:
+  // `useSystemCatalog.refresh()` clears the catalog before refetching, which blanked the sidebar
+  // and the readiness panel on every terminal scan.
+  const onScanCompleted = useCallback(
+    (result: ScanSummary) => {
+      setLibraryScanCompletionRunId(result.runId);
+      void refreshSummary();
+    },
+    [refreshSummary],
+  );
+  const scan = useScanState({ onCompleted: onScanCompleted });
+  const scanRunning = scan.status?.running === true;
+  const showsFooter = usesPersistentSidebar || scanRunning;
+  const onFavoriteCommitted = useCallback(() => {
+    void refreshSummary();
+  }, [refreshSummary]);
+  const library = useLibraryQuery({
+    enabled: isLibraryRoute && Boolean(summary && summary.totalGames > 0),
+    scanCompletionRunId: libraryScanCompletionRunId,
+  });
+  const gameDetail = useGameDetail({
+    enabled: gameRouteState !== null && currentGameId !== null,
+    gameId: currentGameId,
+    scanCompletionRunId: libraryScanCompletionRunId,
+    onFavoriteCommitted,
+  });
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
-  useEffect(() => {
-    let cancelled = false;
+  const onAddExternalFolder = useCallback(async () => {
+    const path = await pickExternalContentRoot();
+    if (path === null) {
+      return false;
+    }
+    await addExternalRoot(path);
+    await refreshSummary();
+    return true;
+  }, [addExternalRoot, refreshSummary]);
 
-    getAppInfo()
-      .then((info) => {
-        if (!cancelled) {
-          setAppInfo(info);
-          setError(null);
-        }
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setError(
-            reason instanceof IpcError
-              ? reason
-              : new IpcError('ipc_unavailable', 'The native foundation is unavailable.'),
-          );
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
+  const onOpenManagedFolder = useCallback(async () => {
+    await openManagedRomFolder();
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
+  const onOpenGame = useCallback(
+    (gameId: number) => {
+      setLibraryFocusGameId(gameId);
+      navigate(gameRoute(gameId));
+    },
+    [navigate],
+  );
 
-    getSystems()
-      .then((response) => {
-        if (!cancelled) {
-          setSystemsResponse(response);
-          setSystemsError(null);
-        }
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setSystemsError(
-            reason instanceof IpcError
-              ? reason
-              : new IpcError('systems_unavailable', 'Supported systems are unavailable.'),
-          );
-        }
-      });
+  const onBackToLibrary = useCallback(() => {
+    navigate('library');
+  }, [navigate]);
 
-    return () => {
-      cancelled = true;
-    };
+  const navigateFromShell = useCallback(
+    (nextRoute: 'library' | 'settings') => {
+      setLibraryFocusGameId(null);
+      navigate(nextRoute);
+    },
+    [navigate],
+  );
+
+  const onLibraryFocusRestored = useCallback(() => {
+    setLibraryFocusGameId(null);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
+  const detailSystemStatus = gameDetail.localDetail
+    ? (catalogStatuses.find((status) => status.id === gameDetail.localDetail?.systemId) ?? null)
+    : null;
 
-    getRuntimeStatus()
-      .then((status) => {
-        if (!cancelled) {
-          setRuntimeStatus(status);
-          setRuntimeError(null);
-        }
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setRuntimeError(
-            reason instanceof IpcError
-              ? reason
-              : new IpcError('runtime_unavailable', 'The managed runtime is unavailable.'),
-          );
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const ipcTone = appInfo ? 'good' : error ? 'warning' : 'neutral';
-  const databaseTone = appInfo?.databaseReady ? 'good' : error ? 'warning' : 'neutral';
-  const runtimeTone = runtimeError
-    ? 'warning'
-    : runtimeStatus?.state === 'broken' || runtimeStatus?.state === 'notInstalled'
-      ? 'warning'
-      : runtimeStatus
-        ? 'good'
-        : 'neutral';
-  const runtimeText = runtimeLabel(runtimeStatus, runtimeError);
-
-  const showFoundationNotice = (message: string) => {
-    setNotice(message);
-  };
-
-  const sidebarSystems = systemsResponse
-    ? [
-        { label: 'All systems', accent: 'var(--accent)' },
-        ...systemsResponse.systems.map((system) => ({
-          label: system.displayName,
-          accent: systemAccents[system.id],
-        })),
-      ]
-    : fallbackSystems;
+  const systemCounts = new Map(
+    (summary?.systems ?? []).map((system) => [system.systemId, system.gameCount]),
+  );
+  const footerStatus = scan.statusError
+    ? 'SCAN STATUS UNKNOWN'
+    : scan.statusLoading && !scan.status
+      ? 'CHECKING SCAN STATUS'
+      : scan.status?.running
+        ? 'SCAN IN PROGRESS'
+        : 'SCAN READY';
 
   return (
-    <div className="app-shell" data-theme={theme}>
+    <div className={`app-shell${scanRunning ? ' app-shell--scan' : ''}`} data-theme={theme}>
       <header className="app-header">
-        <div className="wordmark" aria-label="RetroFrontier">
+        <button
+          type="button"
+          className="wordmark"
+          aria-label="Go to Library"
+          onClick={() => navigateFromShell('library')}
+        >
           RETRO<span>FRONTIER</span>
-        </div>
+        </button>
+        {isLibraryRoute && !scanRunning && summary && summary.totalGames > 0 ? (
+          <LibrarySearch
+            onChange={library.setSearchInput}
+            onClear={library.clearSearch}
+            value={library.searchInput}
+          />
+        ) : null}
+        {(isLibraryRoute || isSettingsRoute || gameRouteState !== null) && !scanRunning ? (
+          <MobileRouteNav
+            route={isLibraryRoute ? 'library' : isSettingsRoute ? 'settings' : null}
+            navigate={navigateFromShell}
+          />
+        ) : null}
         <div className="theme-toggle" role="group" aria-label="Theme">
           <button
             type="button"
@@ -335,170 +283,147 @@ export function AppShell() {
         </div>
       </header>
 
-      <aside className="app-sidebar" aria-label="Library navigation">
-        <section className="sidebar-section" aria-labelledby="systems-heading">
-          <h2 id="systems-heading" className="sidebar-label">
-            // SYSTEMS
-          </h2>
-          <ul className="pixel-row-list">
-            {sidebarSystems.map((system, index) => (
-              <PixelRow
-                key={system.label}
-                label={system.label}
-                count={0}
-                accent={system.accent}
-                active={index === 0}
-                onClick={() =>
-                  showFoundationNotice(
-                    `${system.label} will be available with the library milestone.`,
-                  )
-                }
-              />
-            ))}
-          </ul>
-        </section>
-
-        <section className="sidebar-section" aria-labelledby="menu-heading">
-          <h2 id="menu-heading" className="sidebar-label">
-            // MENU
-          </h2>
-          <ul className="pixel-row-list">
-            <PixelRow
-              label="Settings"
-              count={0}
-              accent="var(--text-dim)"
-              onClick={() =>
-                showFoundationNotice('Settings screens arrive after the application foundation.')
-              }
-            />
-          </ul>
-        </section>
-      </aside>
-
-      <main className="app-main">
-        <div className="section-heading">
-          <h1>▶ SYSTEMS</h1>
-          <span aria-hidden="true" />
-          <span className="section-meta">M3</span>
-        </div>
-
-        <section className="systems-panel" aria-labelledby="systems-panel-heading">
-          <div className="panel-heading">
-            <h2 id="systems-panel-heading">SUPPORTED SYSTEMS</h2>
-            <span aria-hidden="true" />
-            <span className="panel-meta">
-              {systemsResponse ? `${systemsResponse.systems.length} SYSTEMS` : 'CHECKING'}
-            </span>
-          </div>
-          <p className="systems-intro">
-            Static platform policy lives in RetroFrontier. Core availability comes only from the
-            verified managed runtime. Put expected BIOS filenames directly in the BIOS root shown
-            below; system-specific subfolders are not searched yet.
-          </p>
-          <div className="systems-root-row">
-            <span className="system-check-label">BIOS ROOT</span>
-            <span className="systems-root-path">
-              {systemsResponse?.biosRoot ?? (systemsError ? 'UNAVAILABLE' : 'CHECKING')}
-            </span>
-            {systemsResponse && (
-              <StatusValue tone={systemsResponse.biosRootStatus === 'ready' ? 'good' : 'warning'}>
-                {systemsResponse.biosRootStatus === 'ready' ? 'AVAILABLE' : 'NOT AVAILABLE'}
-              </StatusValue>
+      {usesPersistentSidebar && !scanRunning ? (
+        <aside className="app-sidebar" aria-label="Library navigation">
+          <section aria-labelledby="systems-heading">
+            <p id="systems-heading" className="sidebar-label">
+              <span aria-hidden="true" className="sidebar-prefix">
+                //
+              </span>{' '}
+              SYSTEMS
+            </p>
+            {catalogLoading && (
+              <p className="sidebar-catalog-status loading-inline" role="status">
+                CHECKING SYSTEM CATALOG…
+              </p>
             )}
-          </div>
-          {!systemsResponse && !systemsError && (
-            <p className="systems-loading" role="status">
-              READING SYSTEM CATALOG…
-            </p>
-          )}
-          {systemsError && (
-            <p className="foundation-error" role="alert">
-              {systemsError.message}
-            </p>
-          )}
-          {systemsResponse && (
-            <div className="system-grid">
-              {systemsResponse.systems.map((system) => (
-                <SystemStatusCard key={system.id} system={system} />
+            {catalogError && (
+              <InlineError
+                title="SYSTEM CATALOG UNAVAILABLE"
+                message="RetroFrontier could not load the supported systems. No system rows are shown; try again."
+                actionLabel="RETRY SYSTEMS"
+                onAction={() => void refreshCatalog()}
+              />
+            )}
+            <ul className="pixel-row-list">
+              <PixelRow
+                label="All systems"
+                count={summary?.totalGames ?? 0}
+                accent="var(--accent)"
+                active={isLibraryRoute && library.systemId === null}
+                activeMode="pressed"
+                onClick={() => {
+                  library.setSystemId(null);
+                  navigateFromShell('library');
+                }}
+              />
+              {catalogSystems.map((system) => (
+                <SystemSummaryRow
+                  key={system.id}
+                  label={system.displayName}
+                  count={systemCounts.get(system.id) ?? 0}
+                  accent={systemAccent(system.id)}
+                  active={isLibraryRoute && library.systemId === system.id}
+                  onClick={() => {
+                    library.setSystemId(system.id);
+                    navigateFromShell('library');
+                  }}
+                />
               ))}
-            </div>
-          )}
-        </section>
+            </ul>
+          </section>
 
-        <section className="empty-state" aria-labelledby="empty-title">
-          <EmptyLibraryIcon />
-          <div className="empty-copy">
-            <h2 id="empty-title">LIBRARY IS EMPTY</h2>
-            <p>No games found yet. Scan a folder to start building your library.</p>
-          </div>
-          <PixelButton
-            type="button"
-            onClick={() =>
-              showFoundationNotice('Folder scanning is reserved for the library milestone.')
-            }
-          >
-            <span aria-hidden="true">▣</span>
-            SCAN A FOLDER
-          </PixelButton>
-        </section>
-
-        <section className="foundation-panel" aria-labelledby="foundation-heading">
-          <div className="panel-heading">
-            <h2 id="foundation-heading">FOUNDATION STATUS</h2>
-            <span aria-hidden="true" />
-            <span className="panel-meta">M3</span>
-          </div>
-          <div className="status-grid">
-            <div className="status-item">
-              <span className="status-label">IPC</span>
-              <StatusValue tone={ipcTone}>
-                {appInfo ? 'CONNECTED' : error ? 'UNAVAILABLE' : 'CONNECTING'}
-              </StatusValue>
-            </div>
-            <div className="status-item">
-              <span className="status-label">DATABASE</span>
-              <StatusValue tone={databaseTone}>
-                {appInfo?.databaseReady ? 'READY' : error ? 'UNKNOWN' : 'STARTING'}
-              </StatusValue>
-            </div>
-            <div className="status-item">
-              <span className="status-label">APP</span>
-              <StatusValue>
-                {appInfo ? `${appInfo.appName} ${appInfo.version}` : 'LOADING'}
-              </StatusValue>
-            </div>
-            <div className="status-item">
-              <span className="status-label">HOST</span>
-              <StatusValue>
-                {appInfo ? `${appInfo.platform} / ${appInfo.architecture}` : 'DETECTING'}
-              </StatusValue>
-            </div>
-            <div className="status-item">
-              <span className="status-label">RUNTIME</span>
-              <StatusValue tone={runtimeTone}>{runtimeText}</StatusValue>
-            </div>
-          </div>
-          {error && (
-            <p className="foundation-error" role="alert">
-              {error.message}
+          <nav className="sidebar-menu" aria-labelledby="menu-heading">
+            <p id="menu-heading" className="sidebar-label">
+              <span aria-hidden="true" className="sidebar-prefix">
+                //
+              </span>{' '}
+              MENU
             </p>
-          )}
-          {notice && (
-            <p className="foundation-notice" role="status">
-              {notice}
-            </p>
-          )}
-        </section>
-      </main>
+            <ul className="pixel-row-list">
+              <RouteRow
+                label="Settings"
+                active={isSettingsRoute}
+                onClick={() => navigateFromShell('settings')}
+              />
+            </ul>
+          </nav>
+        </aside>
+      ) : null}
 
-      <footer className="app-footer">
-        <span>RUNTIME: {runtimeText}</span>
-        <span aria-hidden="true">·</span>
-        <span>DATABASE: {appInfo?.databaseReady ? 'READY' : 'LOCAL'}</span>
-        <span className="footer-spacer" />
-        <span className="footer-key">A</span>
-        <span>FOUNDATION STATUS</span>
-      </footer>
+      {scanRunning ? (
+        <main
+          aria-labelledby="scan-screen-heading"
+          className="app-main scan-main"
+          id="main-content"
+        >
+          <div className="scan-screen-content">
+            <div className="section-heading">
+              <h1 id="scan-screen-heading">
+                <PixelArrow className="heading-arrow" />
+                SCAN IN PROGRESS
+              </h1>
+              <span aria-hidden="true" />
+            </div>
+            <ScanProgressPanel progress={scan.status?.progress ?? null} />
+          </div>
+        </main>
+      ) : isLibraryRoute ? (
+        <LibraryPage
+          summary={summary}
+          summaryLoading={summaryLoading}
+          summaryError={summaryError}
+          refreshSummary={refreshSummary}
+          roots={roots}
+          rootsLoading={rootsLoading}
+          rootsError={rootsError}
+          refreshRoots={refreshRoots}
+          systems={catalogSystems}
+          library={library}
+          scan={scan}
+          onAddExternalFolder={onAddExternalFolder}
+          onOpenManagedFolder={onOpenManagedFolder}
+          onManageRoots={() => navigateFromShell('settings')}
+          onOpenGame={onOpenGame}
+          restoreFocusGameId={libraryFocusGameId}
+          onFocusRestored={onLibraryFocusRestored}
+        />
+      ) : gameRouteState ? (
+        <GameDetailPage
+          detail={gameDetail}
+          gameId={currentGameId}
+          onBackToLibrary={onBackToLibrary}
+          onRetryReadiness={() => void refreshCatalog()}
+          readinessError={catalogError}
+          readinessLoading={catalogLoading}
+          systemStatus={detailSystemStatus}
+        />
+      ) : (
+        <SettingsPage
+          roots={roots}
+          rootsLoading={rootsLoading}
+          rootsError={rootsError}
+          refreshRoots={refreshRoots}
+          removeExternalRoot={removeExternalRoot}
+          updateRootEnabled={updateRootEnabled}
+          systems={catalogSystems}
+          scan={scan}
+          refreshSummary={refreshSummary}
+          onAddExternalFolder={onAddExternalFolder}
+          onOpenManagedFolder={onOpenManagedFolder}
+          onBackToLibrary={() => navigateFromShell('library')}
+        />
+      )}
+
+      {showsFooter ? (
+        <footer className="app-footer">
+          <span>LOCAL LIBRARY</span>
+          <span aria-hidden="true">·</span>
+          <span>{footerStatus}</span>
+          <span className="footer-spacer" />
+          <span className="footer-note">ROM files stay on your disk</span>
+        </footer>
+      ) : null}
     </div>
   );
 }

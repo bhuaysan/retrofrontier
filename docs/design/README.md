@@ -125,6 +125,10 @@ scan_issues(id, type, content_file_id, game_id_a, game_id_b) -- Duplikate/unbeka
 ## Assets
 - Cover/Screenshots im Prototyp sind CSS-Gradients (Platzhalter) — durch ScreenScraper-Boxart ersetzen.
 - Icons sind handgezeichnete Pixel-SVGs (inline `<path>`, `shape-rendering:crispEdges`) — als eigenständiges Icon-Set übernehmbar oder 1:1 weiterverwenden.
+- **Akzeptierte Ausnahmen von der Pixel-Regel (Stand M6.7, Produktentscheidung):** Zwei Elemente werden bewusst als glatte Vektorform gezeichnet und sind *keine* offene Fidelity-Arbeit. Sie dürfen nicht auf Pixel-Snapping zurückgesetzt werden.
+  - **Richtungs-/Sidebar-Cursor-Pfeile** (`PixelArrow`, Commit `64f5bbe`): gefülltes Dreieck mit durchgehenden Diagonalen statt 5×7-`crispEdges`-Treppe. Dieselbe Glyphe trägt sowohl die kleine Sidebar-Cursor-Größe als auch die größere Section-Heading-Größe.
+  - **Favorite-Stern in der Detail-Ansicht** (`PixelStar`, Commit `17a2986`): Vektor-Silhouette mit gestricheltem Umriss für den ungefüllten Zustand, damit gefüllt/ungefüllt in der kompakten Steuergröße unterscheidbar bleibt.
+  - Alle übrigen Icons (`FolderIcon`, `LibraryIcon`, `ExternalLinkIcon`, `WarningIcon`, `PixelCheck`) sowie sämtliche Box-Chrome folgen weiterhin der harten Pixel-Sprache.
 - Schriften: Google Fonts "Press Start 2P", "VT323", "Space Grotesk" (Lizenz: Open Font License, unkritisch für Bundling).
 
 ## Dateien in diesem Paket

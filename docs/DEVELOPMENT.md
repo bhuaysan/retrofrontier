@@ -2,9 +2,27 @@
 
 M4 establishes the local library scanner, durable content model, root management,
 and system-readiness snapshot boundary. M5 adds provider-backed metadata
-enrichment behind a provider-neutral boundary. Library UI, core selection UI, and
-game launching remain later milestones and are intentionally not part of the local
-workflow yet.
+enrichment behind a provider-neutral boundary. M6.1 adds bounded backend/IPC
+contracts, and M6.2 adds the library shell, empty/setup state, scan UX, and
+root-management entry points. M6.3 consumes the bounded query for local library
+browsing, debounced search, system/favorite filters, page controls, favorites,
+cached covers, and coalesced metadata invalidation. Core selection UI and game
+launching remain later milestones. M6.4 adds bounded game detail, normalized
+metadata, content-unit presentation, and display of the existing Rust-authoritative
+system readiness snapshot. M6.5 adds bounded provider/account status settings,
+write-only optional account credentials, metadata request/refresh actions, and
+ordered candidate selection. Local library and cached metadata remain usable when
+the provider is offline. M6.6 completes the UI hardening pass: candidate/action projections remain
+DTO-driven, provider/account copy reflects normalized guarantees, and focus, heading, live-region,
+positive/available-state contrast, and async race behavior are covered without moving policy or
+secrets across IPC. The focused corrective pass restores truthful copy for ambiguous candidate
+states. M6.7 completes design fidelity and polish: the header, sidebar, and footer form a
+stationary shared shell on every route, the sidebar contains its own vertical overflow at the
+960×640 minimum, Settings caps only its inner content measure rather than the shared `.app-main`
+scroll container, and the light-theme contrast work is closed by the semantic `--negative-text`
+token plus an AA correction for the black-on-accent active controls. The visual language is
+hard-edge pixel art; the directional/sidebar cursor arrows and the Game Detail Favorite star are
+deliberate accepted vector exceptions and are not outstanding fidelity work.
 
 ## Prerequisites
 
@@ -25,8 +43,9 @@ pnpm tauri:dev
 ```
 
 `pnpm dev` starts the Vite frontend by itself for browser-level work. Native
-IPC is only available inside the Tauri window, so the shell reports an IPC
-availability state when opened as a plain browser page.
+IPC is only available inside the Tauri window; a plain browser page cannot
+complete native reads or actions and is therefore not a supported native
+integration environment.
 
 The foundation build intentionally has bundling disabled. This verifies the
 desktop executable without claiming a Windows, macOS, or Linux release package.
@@ -108,7 +127,9 @@ recommend one. Its absence is not an error — RetroFrontier logs a warning and
 falls back to a session-only store, and the local library is unaffected.
 
 Rust stores personal accounts in the OS credential vault; SQLite holds only an opaque reference, and no read command
-returns a password. Tests never touch a real keychain: they inject an in-memory
+returns a password. The M6.5 Settings form submits credentials through the narrow
+write-only command, clears its password field after the command settles, and never
+renders or logs the password. Tests never touch a real keychain: they inject an in-memory
 vault, and the same in-memory vault is the session-only fallback on a host with no
 usable credential store.
 
@@ -117,7 +138,11 @@ HTTP boundary, the provider, the vault, the clock, and the jitter source are all
 injectable, and all fixtures are synthetic or sanitized.
 
 Cached covers live under the OS-specific Tauri application-data directory in
-`metadata/media/`. Nothing is written beside user ROMs or into the source tree.
+`metadata/media/`. Nothing is written beside user ROMs or into the source tree. The future WebView
+receives an opaque target-specific reference: `rfmedia://localhost/cover/<game-id>` on Linux/macOS
+desktop or `http://rfmedia.localhost/cover/<game-id>` on Windows. The native custom protocol resolves
+the durable cover row and validates cache containment and image content; the relative cache path is
+never serialized through IPC.
 
 ## Boundaries and conventions
 
@@ -141,6 +166,17 @@ replace if the IPC surface becomes large.
 `code` plus user-facing `message` to Tauri callers. The tracing subscriber is
 configured for development output and can gain an application-data file layer
 later without changing command or service code.
+
+M6.1 keeps the UI-facing library contracts in the same manually mirrored boundary: Rust DTOs use
+`serde(rename_all = "camelCase")`, and `src/platform/ipc.ts` mirrors the bounded list, summary,
+detail, favorite, scan-issue-page, and metadata-invalidation shapes. M6.2 adds frontend state and
+query orchestration for the shell, roots, scan UX, and saved issues. M6.3 adds `useLibraryQuery`,
+which owns bounded page identity, debounced search, filter resets, race-safe request/loading
+ownership, authoritative favorite refreshes, scan-completion refreshes, and visible-page metadata
+invalidation coalescing. Cards consume only the list DTO and opaque cached-cover reference. M6.4's
+`useGameDetail` independently reads one bounded local detail and one authoritative metadata detail,
+while readiness reuses the existing `get_systems` response; it does not fetch a full snapshot or
+provider payload.
 
 ## Design tokens
 

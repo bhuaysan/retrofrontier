@@ -1,17 +1,23 @@
 use crate::domain::library::{
-    roots_overlap, ContentRoot, LibrarySnapshot, ScanIssue, ScanIssueKind, ScanProgress,
-    ScanStatus, ScanSummary,
+    roots_overlap, ContentRoot, GameFavorite, GameId, LibraryGameDetail, LibraryMetadataMatchState,
+    LibraryPage, LibraryQuery, LibrarySnapshot, LibrarySummary, ScanIssue, ScanIssueKind,
+    ScanIssuePage, ScanProgress, ScanStatus, ScanSummary,
 };
+use crate::domain::metadata::MetadataProviderId;
 use crate::domain::system::{SystemCatalog, SystemId};
 use crate::error::AppError;
 use crate::repositories::library::LibraryRepository;
+use crate::repositories::metadata::MetadataRepository;
 use crate::services::library_scanner::{
     ScanEventSink, ScanService, LIBRARY_SCAN_COMPLETED_EVENT, LIBRARY_SCAN_PROGRESS_EVENT,
 };
+use crate::services::metadata_evidence::{evidence_is_current, MetadataEvidenceService};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+#[cfg(any(target_os = "windows", target_os = "macos", unix))]
+use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -23,8 +29,11 @@ const WATCHER_DEBOUNCE: Duration = Duration::from_millis(250);
 #[derive(Clone)]
 pub struct LibraryApplicationService {
     repository: LibraryRepository,
+    metadata_repository: MetadataRepository,
+    evidence: MetadataEvidenceService,
     coordinator: Arc<ScanCoordinator>,
     status: Arc<Mutex<ScanStatus>>,
+    managed_root: PathBuf,
     watcher: Option<Arc<LibraryWatcher>>,
     watcher_issues: Arc<Mutex<Vec<ScanIssue>>>,
 }
@@ -37,7 +46,9 @@ impl LibraryApplicationService {
         frontend_sink: Arc<dyn ScanEventSink>,
     ) -> Result<Self, AppError> {
         let managed_root = ensure_managed_root(&managed_root, &catalog)?;
-        let repository = LibraryRepository::new(pool);
+        let repository = LibraryRepository::new(pool.clone());
+        let metadata_repository = MetadataRepository::new(pool);
+        let evidence = MetadataEvidenceService::new(repository.clone());
         repository.upsert_managed_root(&managed_root).await?;
         repository.recover_interrupted_scan_runs().await?;
 
@@ -67,8 +78,11 @@ impl LibraryApplicationService {
 
         Ok(Self {
             repository,
+            metadata_repository,
+            evidence,
             coordinator,
             status,
+            managed_root: PathBuf::from(managed_root),
             watcher,
             watcher_issues,
         })
@@ -95,6 +109,14 @@ impl LibraryApplicationService {
         Ok(root)
     }
 
+    /// Opens the application-owned managed ROM root using the host file manager.
+    ///
+    /// The path is captured during bootstrap after `ensure_managed_root` has resolved it. The
+    /// frontend cannot provide or alter this path, and the process is started without a shell.
+    pub fn open_managed_rom_folder(&self) -> Result<(), AppError> {
+        open_managed_directory(&self.managed_root)
+    }
+
     pub async fn remove_external_content_root(
         &self,
         root_id: crate::domain::library::ContentRootId,
@@ -114,9 +136,7 @@ impl LibraryApplicationService {
                 .repository
                 .content_root(root_id)
                 .await?
-                .ok_or_else(|| {
-                    AppError::Library("the requested content root does not exist".to_owned())
-                })?;
+                .ok_or(AppError::ContentRootInvalidOperation)?;
             self.ensure_no_enabled_overlap(&root.path, Some(root_id))
                 .await?;
         }
@@ -152,6 +172,47 @@ impl LibraryApplicationService {
         Ok(issues)
     }
 
+    /// Bounded latest-run issue query for future M6 rendering. Transient watcher diagnostics stay
+    /// on the legacy aggregate command above; persisted scan issues have stable database ordering.
+    pub async fn get_scan_issue_page(
+        &self,
+        offset: u64,
+        limit: u32,
+    ) -> Result<ScanIssuePage, AppError> {
+        self.repository
+            .list_latest_scan_issues_page(offset, limit)
+            .await
+    }
+
+    pub async fn query_library(&self, request: &LibraryQuery) -> Result<LibraryPage, AppError> {
+        let mut page = self
+            .repository
+            .query_library(request, MetadataProviderId::ScreenScraper)
+            .await?;
+        self.validate_live_metadata_state(&mut page).await?;
+        Ok(page)
+    }
+
+    pub async fn get_library_summary(&self) -> Result<LibrarySummary, AppError> {
+        self.repository.get_library_summary().await
+    }
+
+    pub async fn get_library_game_detail(
+        &self,
+        game_id: GameId,
+    ) -> Result<Option<LibraryGameDetail>, AppError> {
+        self.repository.get_library_game_detail(game_id).await
+    }
+
+    pub async fn set_game_favorite(
+        &self,
+        game_id: GameId,
+        favorite: bool,
+    ) -> Result<GameFavorite, AppError> {
+        self.repository.set_game_favorite(game_id, favorite).await?;
+        Ok(GameFavorite { game_id, favorite })
+    }
+
     pub async fn get_library_snapshot(&self) -> Result<LibrarySnapshot, AppError> {
         self.repository.get_library_snapshot().await
     }
@@ -166,10 +227,46 @@ impl LibraryApplicationService {
                 continue;
             }
             if roots_overlap(&root.path, path) {
-                return Err(AppError::Library(format!(
-                    "content root overlaps enabled root {}",
-                    root.path
-                )));
+                return Err(AppError::ContentRootOverlap);
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies M5's live-evidence read invariant to the bounded UI page.
+    ///
+    /// Match snapshots and current M4 evidence are each loaded in bulk. Stale items retain the
+    /// list query's cached metadata and cover because staleness changes trust, not last-known-good
+    /// data availability.
+    async fn validate_live_metadata_state(&self, page: &mut LibraryPage) -> Result<(), AppError> {
+        let game_ids: Vec<GameId> = page
+            .items
+            .iter()
+            .filter(|item| item.metadata_match_state == LibraryMetadataMatchState::Matched)
+            .map(|item| item.game_id)
+            .collect();
+        if game_ids.is_empty() {
+            return Ok(());
+        }
+
+        let stored = self
+            .metadata_repository
+            .load_match_evidence_for_games(&game_ids, MetadataProviderId::ScreenScraper)
+            .await?;
+        let current = self.evidence.current_evidence_for_games(&game_ids).await?;
+
+        for item in &mut page.items {
+            if item.metadata_match_state != LibraryMetadataMatchState::Matched {
+                continue;
+            }
+            let snapshot = stored.get(&item.game_id);
+            let current_evidence = current.get(&item.game_id).and_then(Option::as_ref);
+            if !evidence_is_current(
+                snapshot.and_then(|match_evidence| match_evidence.evidence.as_ref()),
+                snapshot.and_then(|match_evidence| match_evidence.match_type),
+                current_evidence,
+            ) {
+                item.metadata_match_state = LibraryMetadataMatchState::Stale;
             }
         }
         Ok(())
@@ -346,8 +443,15 @@ impl LibraryWatcher {
         let callback_sender = sender.clone();
         let watcher = RecommendedWatcher::new(
             move |result: notify::Result<notify::Event>| match result {
-                Ok(_) => {
-                    let _ = callback_sender.send(WatcherMessage::Change);
+                Ok(event) => {
+                    if event_mutates_content(&event) {
+                        tracing::debug!(
+                            kind = ?event.kind,
+                            paths = ?event.paths,
+                            "library watcher accepted a content change"
+                        );
+                        let _ = callback_sender.send(WatcherMessage::Change);
+                    }
                 }
                 Err(error) => {
                     let _ = callback_sender.send(WatcherMessage::Failure(error.to_string()));
@@ -407,6 +511,24 @@ impl LibraryWatcher {
                 watched.remove(&path);
             }
         }
+    }
+}
+
+/// Decides whether a watcher event reports a content change that justifies another scan.
+///
+/// The inotify backend subscribes to `IN_OPEN` and `IN_CLOSE_NOWRITE`, so every read-only pass the
+/// scanner makes over a watched root reports back as `Access(Open)` on each enumerated directory
+/// and hashed file. Treating those as changes made the scanner trigger itself: scan -> open events
+/// -> watcher request -> scan. Only events that can actually change what a scan would find are
+/// accepted; `Access(Close(Write))` stays a change because it reports a completed write.
+fn event_mutates_content(event: &notify::Event) -> bool {
+    use notify::event::{AccessKind, AccessMode};
+    use notify::EventKind;
+
+    match &event.kind {
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) => false,
+        _ => true,
     }
 }
 
@@ -483,9 +605,7 @@ fn add_watcher_issue_from_path(sender: &Sender<WatcherMessage>, path: &str, deta
 
 fn ensure_managed_root(path: &Path, catalog: &SystemCatalog) -> Result<String, AppError> {
     if !path.is_absolute() {
-        return Err(AppError::Library(
-            "managed ROM root must be an absolute path".to_owned(),
-        ));
+        return Err(AppError::ContentRootInvalidPath);
     }
     ensure_directory(path, "managed ROM root")?;
     for system in catalog.systems() {
@@ -494,20 +614,23 @@ fn ensure_managed_root(path: &Path, catalog: &SystemCatalog) -> Result<String, A
             "managed system ROM folder",
         )?;
     }
-    let canonical = fs::canonicalize(path).map_err(AppError::Storage)?;
-    canonical.to_str().map(str::to_owned).ok_or_else(|| {
-        AppError::Library("managed ROM root is not representable as UTF-8".to_owned())
-    })
+    let canonical = fs::canonicalize(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppError::ContentRootUnavailable
+        } else {
+            AppError::Storage(error)
+        }
+    })?;
+    canonical
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| AppError::ContentRootInvalidPath)
 }
 
-fn ensure_directory(path: &Path, label: &str) -> Result<(), AppError> {
+fn ensure_directory(path: &Path, _label: &str) -> Result<(), AppError> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(AppError::Library(format!(
-            "{label} may not be a symbolic link"
-        ))),
-        Ok(metadata) if !metadata.is_dir() => {
-            Err(AppError::Library(format!("{label} is not a directory")))
-        }
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(AppError::ContentRootInvalidPath),
+        Ok(metadata) if !metadata.is_dir() => Err(AppError::ContentRootNotDirectory),
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir_all(path).map_err(AppError::Storage)
@@ -516,39 +639,83 @@ fn ensure_directory(path: &Path, label: &str) -> Result<(), AppError> {
     }
 }
 
-fn normalize_configured_path(path: &str, label: &str) -> Result<String, AppError> {
+fn open_managed_directory(path: &Path) -> Result<(), AppError> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| AppError::ContentRootUnavailable)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(AppError::ContentRootUnavailable);
+    }
+    let canonical = fs::canonicalize(path).map_err(|_| AppError::ContentRootUnavailable)?;
+    if canonical != path {
+        return Err(AppError::ContentRootUnavailable);
+    }
+
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "macos",
+        all(unix, not(target_os = "macos"))
+    ))]
+    {
+        build_managed_directory_command(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| AppError::ContentRootUnavailable)
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    {
+        let _ = path;
+        Err(AppError::ContentRootUnavailable)
+    }
+}
+
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    all(unix, not(target_os = "macos"))
+))]
+fn build_managed_directory_command(path: &Path) -> Command {
+    #[cfg(target_os = "windows")]
+    let mut command = Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = Command::new("xdg-open");
+
+    command.arg(path);
+    command
+}
+
+fn normalize_configured_path(path: &str, _label: &str) -> Result<String, AppError> {
     let requested = PathBuf::from(path.trim());
     if !requested.is_absolute() {
-        return Err(AppError::Library(format!(
-            "{label} must be an absolute path"
-        )));
+        return Err(AppError::ContentRootInvalidPath);
     }
     if requested
         .components()
         .any(|component| matches!(component, Component::ParentDir))
     {
-        return Err(AppError::Library(format!(
-            "{label} may not contain parent-directory traversal"
-        )));
+        return Err(AppError::ContentRootInvalidPath);
     }
 
     let normalized = match fs::symlink_metadata(&requested) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err(AppError::Library(format!(
-                "{label} may not be a symbolic link"
-            )));
+            return Err(AppError::ContentRootInvalidPath);
         }
-        Ok(metadata) if !metadata.is_dir() => {
-            return Err(AppError::Library(format!("{label} is not a directory")));
-        }
-        Ok(_) => fs::canonicalize(&requested).map_err(AppError::Storage)?,
+        Ok(metadata) if !metadata.is_dir() => return Err(AppError::ContentRootNotDirectory),
+        Ok(_) => fs::canonicalize(&requested).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                AppError::ContentRootUnavailable
+            } else {
+                AppError::Storage(error)
+            }
+        })?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => requested,
         Err(error) => return Err(AppError::Storage(error)),
     };
     normalized
         .to_str()
         .map(str::to_owned)
-        .ok_or_else(|| AppError::Library(format!("{label} is not representable as UTF-8")))
+        .ok_or(AppError::ContentRootInvalidPath)
 }
 
 fn now_timestamp() -> i64 {
@@ -560,14 +727,120 @@ fn now_timestamp() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_managed_root, ScanRequest, ScanSchedule};
+    use super::{
+        ensure_directory, ensure_managed_root, event_mutates_content, normalize_configured_path,
+        ScanRequest, ScanSchedule,
+    };
     use crate::adapters::database::Database;
-    use crate::domain::library::ContentRootAvailability;
+    use crate::domain::library::{
+        ContentRootAvailability, ContentRootId, ContentRootKind, LibraryQuery,
+    };
     use crate::domain::system::{SystemCatalog, SystemId};
+    use crate::error::AppError;
     use crate::services::library_scanner::NoopScanEventSink;
     use std::fs;
+    use std::path::Path;
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    /// Regression for the runaway-scan defect.
+    ///
+    /// The inotify backend subscribes to `IN_OPEN`, so a read-only scan pass over a watched root
+    /// reported back as a filesystem change and requested another scan, which read the root again.
+    /// A live watcher is driven here because the defect lives in the event kinds `notify` actually
+    /// produces for reads, not in a hand-written event value.
+    #[test]
+    fn a_read_only_scan_pass_reports_no_content_change() {
+        use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let directory = tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        fs::create_dir_all(root.join("NES")).unwrap();
+        fs::write(root.join("NES").join("game.nes"), [1, 2, 3]).unwrap();
+
+        let (sender, receiver) = mpsc::channel();
+        let mut watcher = RecommendedWatcher::new(
+            move |result: notify::Result<notify::Event>| {
+                if let Ok(event) = result {
+                    let _ = sender.send(event);
+                }
+            },
+            Config::default(),
+        )
+        .unwrap();
+        watcher.watch(&root, RecursiveMode::Recursive).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        while receiver.try_recv().is_ok() {}
+
+        fn read_only_pass(path: &Path) {
+            for entry in fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                if fs::symlink_metadata(entry.path()).unwrap().is_dir() {
+                    read_only_pass(&entry.path());
+                } else {
+                    let _ = fs::read(entry.path());
+                }
+            }
+        }
+        read_only_pass(&root);
+        std::thread::sleep(Duration::from_millis(400));
+
+        let observed: Vec<_> = receiver.try_iter().collect();
+        let mutating: Vec<_> = observed
+            .iter()
+            .filter(|event| event_mutates_content(event))
+            .map(|event| event.kind)
+            .collect();
+        assert!(
+            mutating.is_empty(),
+            "a read-only scan pass must not request another scan; got {mutating:?}"
+        );
+
+        fs::write(root.join("NES").join("added.nes"), [4, 5, 6]).unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            receiver
+                .try_iter()
+                .any(|event| event_mutates_content(&event)),
+            "a real content write must still request a scan"
+        );
+    }
+
+    #[test]
+    fn only_content_changing_watcher_events_request_a_scan() {
+        use notify::event::{
+            AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode,
+        };
+        use notify::{Event, EventKind};
+
+        for kind in [
+            EventKind::Access(AccessKind::Open(AccessMode::Any)),
+            EventKind::Access(AccessKind::Read),
+            EventKind::Access(AccessKind::Close(AccessMode::Read)),
+            EventKind::Access(AccessKind::Any),
+        ] {
+            assert!(
+                !event_mutates_content(&Event::new(kind)),
+                "{kind:?} must not request a scan"
+            );
+        }
+
+        for kind in [
+            EventKind::Create(CreateKind::File),
+            EventKind::Remove(RemoveKind::File),
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+            EventKind::Access(AccessKind::Close(AccessMode::Write)),
+            EventKind::Other,
+        ] {
+            assert!(
+                event_mutates_content(&Event::new(kind)),
+                "{kind:?} must request a scan"
+            );
+        }
+    }
 
     #[test]
     fn watcher_signals_coalesce_while_a_scan_is_running() {
@@ -607,6 +880,174 @@ mod tests {
         }
     }
 
+    #[test]
+    fn content_root_paths_return_granular_safe_errors() {
+        let directory = tempdir().unwrap();
+        let file = directory.path().join("not-a-directory");
+        fs::write(&file, b"fixture").unwrap();
+
+        assert!(matches!(
+            normalize_configured_path("relative/root", "test root"),
+            Err(AppError::ContentRootInvalidPath)
+        ));
+        assert!(matches!(
+            normalize_configured_path(
+                directory.path().join("../outside").to_str().unwrap(),
+                "test root"
+            ),
+            Err(AppError::ContentRootInvalidPath)
+        ));
+        assert!(matches!(
+            normalize_configured_path(file.to_str().unwrap(), "test root"),
+            Err(AppError::ContentRootNotDirectory)
+        ));
+        assert!(matches!(
+            ensure_directory(&file, "test root"),
+            Err(AppError::ContentRootNotDirectory)
+        ));
+        assert!(matches!(
+            ensure_managed_root(Path::new("relative/root"), &SystemCatalog::v1()),
+            Err(AppError::ContentRootInvalidPath)
+        ));
+    }
+
+    #[test]
+    fn managed_folder_open_rejects_a_missing_directory_without_spawning() {
+        let directory = tempdir().unwrap();
+        let missing = directory.path().join("missing");
+
+        assert!(matches!(
+            super::open_managed_directory(&missing),
+            Err(AppError::ContentRootUnavailable)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_folder_open_rejects_a_symlink_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let target = directory.path().join("target");
+        let link = directory.path().join("managed");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert!(matches!(
+            super::open_managed_directory(&link),
+            Err(AppError::ContentRootUnavailable)
+        ));
+    }
+
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "macos",
+        all(unix, not(target_os = "macos"))
+    ))]
+    #[test]
+    fn managed_folder_opener_uses_one_fixed_argument_without_a_shell() {
+        use std::ffi::OsStr;
+
+        let path = Path::new("/tmp/RetroFrontier; --no-shell");
+        let command = super::build_managed_directory_command(path);
+        let args: Vec<&OsStr> = command.get_args().collect();
+
+        #[cfg(target_os = "windows")]
+        assert_eq!(command.get_program(), OsStr::new("explorer.exe"));
+        #[cfg(target_os = "macos")]
+        assert_eq!(command.get_program(), OsStr::new("open"));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert_eq!(command.get_program(), OsStr::new("xdg-open"));
+        assert_eq!(args, vec![path.as_os_str()]);
+    }
+
+    /// Regression for the managed-ROM discovery pass.
+    ///
+    /// The managed root the UI shows is the same authoritative root the scanner enumerates, a
+    /// supported file in a catalog system folder reaches summary and query, and an unsupported
+    /// archive next to it is omitted without inventing a scan issue — that omission is current
+    /// product policy, not a discovery failure.
+    #[tokio::test]
+    async fn a_supported_file_in_the_managed_root_reaches_the_library_summary_and_query() {
+        let directory = tempdir().unwrap();
+        let managed_root = directory.path().join("Documents/RetroFrontier/ROMs");
+        let database = Database::open(directory.path().join("database.sqlite3"))
+            .await
+            .unwrap();
+        let service = super::LibraryApplicationService::initialize(
+            database.pool().clone(),
+            SystemCatalog::v1(),
+            managed_root.clone(),
+            Arc::new(NoopScanEventSink),
+        )
+        .await
+        .unwrap();
+
+        let roots = service.get_content_roots().await.unwrap();
+        let managed = roots
+            .iter()
+            .find(|root| root.kind == ContentRootKind::Managed)
+            .expect("the managed root must be persisted");
+        assert_eq!(
+            Path::new(&managed.path),
+            service.managed_root.as_path(),
+            "the root shown by the UI must be the root the scanner enumerates"
+        );
+        assert!(managed.enabled);
+
+        assert_eq!(service.get_library_summary().await.unwrap().total_games, 0);
+
+        fs::write(
+            managed_root.join("NES").join("Synthetic Test.nes"),
+            [1, 2, 3],
+        )
+        .unwrap();
+        fs::write(managed_root.join("NES").join("Archived.zip"), [4, 5, 6]).unwrap();
+
+        let summary = service.rescan_library().await.unwrap();
+        assert_eq!(
+            summary.state,
+            crate::domain::library::ScanRunState::Completed
+        );
+        assert_eq!(summary.counters.files_discovered, 1);
+
+        let library = service.get_library_summary().await.unwrap();
+        assert_eq!(library.total_games, 1);
+        assert_eq!(
+            library
+                .systems
+                .iter()
+                .find(|system| system.system_id == SystemId::Nes)
+                .map(|system| system.game_count),
+            Some(1)
+        );
+
+        let page = service
+            .query_library(&LibraryQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(page.total, 1);
+        let item = page.items.first().unwrap();
+        assert_eq!(item.system_id, SystemId::Nes);
+        assert_eq!(item.local_title, "Synthetic Test");
+
+        let detail = service
+            .get_library_game_detail(item.game_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.content_units.len(), 1);
+        assert_eq!(
+            detail.content_units[0].availability,
+            crate::domain::library::ContentUnitAvailability::Available
+        );
+
+        assert!(
+            service.get_scan_issues().await.unwrap().is_empty(),
+            "an unsupported archive is outside V1 scanner policy and must not create an issue"
+        );
+    }
+
     #[tokio::test]
     async fn root_lifecycle_persists_external_hints_without_touching_content() {
         let directory = tempdir().unwrap();
@@ -627,6 +1068,11 @@ mod tests {
         .await
         .unwrap();
 
+        assert_eq!(
+            service.managed_root,
+            fs::canonicalize(directory.path().join("managed")).unwrap()
+        );
+
         let external = service
             .add_external_content_root(external_root.to_str().unwrap(), Some(SystemId::Nes))
             .await
@@ -642,10 +1088,31 @@ mod tests {
         assert_eq!(service.get_content_roots().await.unwrap().len(), 2);
 
         let nested = external_root.join("nested");
-        assert!(service
-            .add_external_content_root(nested.to_str().unwrap(), None)
+        assert!(matches!(
+            service
+                .add_external_content_root(nested.to_str().unwrap(), None)
+                .await,
+            Err(AppError::ContentRootOverlap)
+        ));
+
+        let managed_id = service
+            .get_content_roots()
             .await
-            .is_err());
+            .unwrap()
+            .into_iter()
+            .find(|root| root.kind == ContentRootKind::Managed)
+            .unwrap()
+            .id;
+        assert!(matches!(
+            service.remove_external_content_root(managed_id).await,
+            Err(AppError::ContentRootInvalidOperation)
+        ));
+        assert!(matches!(
+            service
+                .set_content_root_enabled(ContentRootId(99_999), false)
+                .await,
+            Err(AppError::ContentRootInvalidOperation)
+        ));
 
         let summary = service.rescan_library().await.unwrap();
         assert_eq!(
@@ -654,6 +1121,26 @@ mod tests {
         );
         assert!(!service.get_scan_status().running);
         assert_eq!(service.get_library_snapshot().await.unwrap().games.len(), 1);
+        let game_id = service
+            .query_library(&LibraryQuery::default())
+            .await
+            .unwrap()
+            .items
+            .first()
+            .unwrap()
+            .game_id;
+        service.set_game_favorite(game_id, true).await.unwrap();
+        service.rescan_library().await.unwrap();
+        assert!(
+            service
+                .query_library(&LibraryQuery::default())
+                .await
+                .unwrap()
+                .items
+                .first()
+                .unwrap()
+                .favorite
+        );
 
         service
             .set_content_root_enabled(external.id, false)

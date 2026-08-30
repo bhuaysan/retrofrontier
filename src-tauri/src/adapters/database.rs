@@ -148,7 +148,7 @@ mod tests {
             .fetch_one(database.pool())
             .await
             .expect("migration history should be available");
-        assert_eq!(migration_count, 3);
+        assert_eq!(migration_count, 4);
         database.pool().close().await;
 
         let reopened = Database::open(&path)
@@ -165,7 +165,7 @@ mod tests {
                 .fetch_one(reopened.pool())
                 .await
                 .expect("migration history should remain stable");
-        assert_eq!(reopened_migration_count, 3);
+        assert_eq!(reopened_migration_count, 4);
 
         sqlx::migrate!("./migrations")
             .undo(reopened.pool(), 20260825000000)
@@ -424,7 +424,7 @@ mod tests {
             .fetch_one(reopened.pool())
             .await
             .expect("migration history should be available");
-        assert_eq!(migration_count, 3);
+        assert_eq!(migration_count, 4);
         let preserved: i64 = sqlx::query_scalar("SELECT id FROM games")
             .fetch_one(reopened.pool())
             .await

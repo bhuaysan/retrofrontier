@@ -334,6 +334,157 @@ pub struct LibrarySnapshot {
     pub games: Vec<GameSnapshot>,
 }
 
+/// The bounded, provider-neutral metadata state needed by a library list.
+///
+/// This deliberately collapses the provider relationship to a small UI state. The full M5
+/// metadata state remains available through its existing game-specific command. `Pending` covers
+/// both a game with no provider row yet and one with queued provider work; the list does not expose
+/// a separate `notRequested` state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LibraryMetadataMatchState {
+    Pending,
+    Matched,
+    NoMatch,
+    Ambiguous,
+    Deferred,
+    Failed,
+    Stale,
+}
+
+/// M6.1 currently needs one predictable title ordering. Keeping it an enum makes the IPC
+/// contract explicit without inventing an unbounded sorting framework.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LibrarySort {
+    #[default]
+    TitleAsc,
+}
+
+pub const DEFAULT_LIBRARY_PAGE_SIZE: u32 = 60;
+pub const MAX_LIBRARY_PAGE_SIZE: u32 = 60;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LibraryQuery {
+    pub search: Option<String>,
+    pub system_id: Option<SystemId>,
+    pub favorites_only: bool,
+    pub genre: Option<String>,
+    pub region: Option<String>,
+    pub availability: Option<GameAvailability>,
+    pub sort: LibrarySort,
+    /// Zero means the bounded default. Values above the backend maximum are capped.
+    pub limit: u32,
+    pub offset: u64,
+}
+
+impl LibraryQuery {
+    pub fn normalized_search(&self) -> Option<String> {
+        self.search
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    }
+
+    pub fn bounded_limit(&self) -> u32 {
+        let limit = if self.limit == 0 {
+            DEFAULT_LIBRARY_PAGE_SIZE
+        } else {
+            self.limit
+        };
+        limit.min(MAX_LIBRARY_PAGE_SIZE)
+    }
+}
+
+/// Opaque reference understood by the native cached-media protocol. It is not a filesystem path.
+///
+/// Tauri's custom protocol origin is target-specific: desktop WebViews on Windows address the
+/// handler through its localhost HTTP origin, while Linux and macOS use the registered scheme.
+#[cfg(any(windows, target_os = "android"))]
+pub const CACHED_COVER_REFERENCE_PREFIX: &str = "http://rfmedia.localhost/cover/";
+#[cfg(not(any(windows, target_os = "android")))]
+pub const CACHED_COVER_REFERENCE_PREFIX: &str = "rfmedia://localhost/cover/";
+
+pub fn cached_cover_reference(game_id: GameId) -> String {
+    format!("{CACHED_COVER_REFERENCE_PREFIX}{}", game_id.0)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryListItem {
+    pub game_id: GameId,
+    pub system_id: SystemId,
+    pub local_title: String,
+    pub metadata_title: Option<String>,
+    pub display_title: String,
+    pub sort_title: String,
+    pub availability: GameAvailability,
+    pub favorite: bool,
+    pub metadata_match_state: LibraryMetadataMatchState,
+    pub release_date: Option<String>,
+    pub genre: Option<String>,
+    pub region: Option<String>,
+    /// Present only when the durable media row says a cover is cached. The protocol still
+    /// revalidates the file before serving it, so a missing file is never trusted blindly.
+    pub cover_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryPage {
+    pub items: Vec<LibraryListItem>,
+    pub total: u64,
+    pub offset: u64,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibrarySystemCount {
+    pub system_id: SystemId,
+    pub game_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibrarySummary {
+    pub total_games: u64,
+    pub favorite_games: u64,
+    pub systems: Vec<LibrarySystemCount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryContentUnitSummary {
+    pub unit_id: ContentUnitId,
+    pub root_id: ContentRootId,
+    pub kind: ContentUnitKind,
+    pub local_title: String,
+    pub primary_relative_path: String,
+    pub file_count: u64,
+    pub availability: ContentUnitAvailability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryGameDetail {
+    pub game_id: GameId,
+    pub system_id: SystemId,
+    pub local_title: String,
+    pub availability: GameAvailability,
+    pub favorite: bool,
+    pub content_units: Vec<LibraryContentUnitSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameFavorite {
+    pub game_id: GameId,
+    pub favorite: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentHashes {
     pub crc32: String,
@@ -542,6 +693,19 @@ pub struct ScanIssue {
     pub created_at: UnixTimestamp,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanIssuePage {
+    pub issues: Vec<ScanIssue>,
+    pub scan_run_id: Option<ScanRunId>,
+    pub total: u64,
+    pub offset: u64,
+    pub limit: u32,
+}
+
+pub const DEFAULT_SCAN_ISSUE_PAGE_SIZE: u32 = 50;
+pub const MAX_SCAN_ISSUE_PAGE_SIZE: u32 = 100;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ScanPhase {
@@ -634,7 +798,8 @@ pub fn catalog_managed_folder_names(catalog: &SystemCatalog) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::ScanAuthority;
+    use super::{cached_cover_reference, ScanAuthority};
+    use crate::domain::library::GameId;
 
     #[test]
     fn scan_authority_walks_to_an_enumerated_ancestor() {
@@ -655,5 +820,15 @@ mod tests {
 
         assert!(!authority.can_reconcile_file("foo/game.nes"));
         assert!(authority.can_reconcile_file("foobar/game.nes"));
+    }
+
+    #[test]
+    fn cached_cover_reference_uses_the_current_target_origin() {
+        let reference = cached_cover_reference(GameId(42));
+
+        #[cfg(any(windows, target_os = "android"))]
+        assert_eq!(reference, "http://rfmedia.localhost/cover/42");
+        #[cfg(not(any(windows, target_os = "android")))]
+        assert_eq!(reference, "rfmedia://localhost/cover/42");
     }
 }

@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Core capabilities for the RetroFrontier desktop window.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:allow-open"]
 }

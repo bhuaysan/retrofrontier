@@ -195,6 +195,83 @@ export interface LibrarySnapshot {
   games: GameSnapshot[];
 }
 
+export type LibraryMetadataMatchState =
+  'pending' | 'matched' | 'noMatch' | 'ambiguous' | 'deferred' | 'failed' | 'stale';
+
+/** M6.1's bounded title ordering. Additional sort orders require an explicit product decision. */
+export type LibrarySort = 'titleAsc';
+
+export interface LibraryQueryRequest {
+  search?: string | null;
+  systemId?: SystemId | null;
+  favoritesOnly?: boolean;
+  genre?: string | null;
+  region?: string | null;
+  availability?: GameAvailability | null;
+  sort?: LibrarySort;
+  limit?: number;
+  offset?: number;
+}
+
+export interface LibraryListItem {
+  gameId: number;
+  systemId: SystemId;
+  localTitle: string;
+  metadataTitle: string | null;
+  displayTitle: string;
+  sortTitle: string;
+  availability: GameAvailability;
+  favorite: boolean;
+  metadataMatchState: LibraryMetadataMatchState;
+  releaseDate: string | null;
+  genre: string | null;
+  region: string | null;
+  /** Opaque native media-protocol reference; never a filesystem path or provider URL. */
+  coverRef: string | null;
+}
+
+export interface LibraryPage {
+  items: LibraryListItem[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface LibrarySystemCount {
+  systemId: SystemId;
+  gameCount: number;
+}
+
+export interface LibrarySummary {
+  totalGames: number;
+  favoriteGames: number;
+  systems: LibrarySystemCount[];
+}
+
+export interface LibraryContentUnitSummary {
+  unitId: number;
+  rootId: number;
+  kind: ContentUnitKind;
+  localTitle: string;
+  primaryRelativePath: string;
+  fileCount: number;
+  availability: ContentUnitAvailability;
+}
+
+export interface LibraryGameDetail {
+  gameId: number;
+  systemId: SystemId;
+  localTitle: string;
+  availability: GameAvailability;
+  favorite: boolean;
+  contentUnits: LibraryContentUnitSummary[];
+}
+
+export interface GameFavorite {
+  gameId: number;
+  favorite: boolean;
+}
+
 export type ScanIssueKind =
   | 'rootUnavailable'
   | 'unreadablePath'
@@ -224,6 +301,19 @@ export interface ScanIssue {
   relatedPath: string | null;
   detail: string | null;
   createdAt: number;
+}
+
+export interface ScanIssuePageRequest {
+  offset?: number;
+  limit?: number;
+}
+
+export interface ScanIssuePage {
+  issues: ScanIssue[];
+  scanRunId: number | null;
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 export type ScanPhase =
@@ -270,6 +360,14 @@ export interface ContentRootRequest {
 
 export interface SetContentRootEnabledRequest extends ContentRootRequest {
   enabled: boolean;
+}
+
+export interface LibraryGameRequest {
+  gameId: number;
+}
+
+export interface SetGameFavoriteRequest extends LibraryGameRequest {
+  favorite: boolean;
 }
 
 export type MetadataProviderId = 'screenScraper';
@@ -339,10 +437,7 @@ export interface ProviderMetadataRecord {
   provenance: MetadataProvenance;
 }
 
-/**
- * The single cached primary cover. `cacheRelativePath` is a reference into the app-owned media
- * cache; the frontend never resolves or owns filesystem paths itself.
- */
+/** The single cached primary cover, addressed only by an opaque native media reference. */
 export interface MediaAsset {
   gameId: number;
   providerId: MetadataProviderId;
@@ -350,7 +445,7 @@ export interface MediaAsset {
   state: MediaAssetState;
   providerMediaType: string | null;
   region: string | null;
-  cacheRelativePath: string | null;
+  mediaRef: string | null;
   contentType: string | null;
   sizeBytes: number | null;
   contentSha256: string | null;
@@ -460,16 +555,57 @@ export interface SetProviderCredentialsRequest {
 
 export const LIBRARY_SCAN_PROGRESS_EVENT = 'library-scan-progress';
 export const LIBRARY_SCAN_COMPLETED_EVENT = 'library-scan-completed';
+export const METADATA_STATE_CHANGED_EVENT = 'metadata-state-changed';
+
+export interface MetadataStateChanged {
+  gameId: number;
+  providerId: MetadataProviderId;
+}
+
+/** Stable codes currently emitted by the Rust `AppError` boundary. */
+export const STABLE_IPC_ERROR_CODES = [
+  'path_unavailable',
+  'storage_unavailable',
+  'database_unavailable',
+  'migration_failed',
+  'runtime_unavailable',
+  'catalog_invalid',
+  'bios_unavailable',
+  'bios_override_disabled',
+  'library_unavailable',
+  'content_root_invalid_path',
+  'content_root_unavailable',
+  'content_root_not_directory',
+  'content_root_overlap',
+  'content_root_invalid_operation',
+  'metadata_unavailable',
+] as const;
+
+export type StableIpcErrorCode = (typeof STABLE_IPC_ERROR_CODES)[number];
+export type ContentRootIpcErrorCode = Extract<
+  StableIpcErrorCode,
+  | 'content_root_invalid_path'
+  | 'content_root_unavailable'
+  | 'content_root_not_directory'
+  | 'content_root_overlap'
+  | 'content_root_invalid_operation'
+>;
+
+/**
+ * An unknown string remains valid so a newer native backend can be shown with a generic fallback
+ * until the frontend contract is updated.
+ */
+export type IpcErrorCode = StableIpcErrorCode | (string & {});
 
 export interface IpcErrorShape {
-  code: string;
+  code: IpcErrorCode;
   message: string;
 }
 
 export class IpcError extends Error implements IpcErrorShape {
-  readonly code: string;
+  readonly code: IpcErrorCode;
 
-  constructor(code: string, message: string) {
+  constructor(code: IpcErrorCode, message: string) {
     super(message);
     this.name = 'IpcError';
     this.code = code;
@@ -542,6 +678,15 @@ export async function addExternalContentRoot(
   }
 }
 
+/** Opens only the Rust-resolved application-owned managed ROM folder. */
+export async function openManagedRomFolder(): Promise<void> {
+  try {
+    await invoke('open_managed_rom_folder');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
 export async function removeExternalContentRoot(request: ContentRootRequest): Promise<void> {
   try {
     await invoke('remove_external_content_root', { request });
@@ -584,6 +729,48 @@ export async function getScanIssues(): Promise<ScanIssue[]> {
   }
 }
 
+export async function getScanIssuePage(request: ScanIssuePageRequest = {}): Promise<ScanIssuePage> {
+  try {
+    return await invoke<ScanIssuePage>('get_scan_issue_page', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function queryLibrary(request: LibraryQueryRequest = {}): Promise<LibraryPage> {
+  try {
+    return await invoke<LibraryPage>('query_library', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function getLibrarySummary(): Promise<LibrarySummary> {
+  try {
+    return await invoke<LibrarySummary>('get_library_summary');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function getLibraryGameDetail(
+  request: LibraryGameRequest,
+): Promise<LibraryGameDetail | null> {
+  try {
+    return await invoke<LibraryGameDetail | null>('get_library_game_detail', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function setGameFavorite(request: SetGameFavoriteRequest): Promise<GameFavorite> {
+  try {
+    return await invoke<GameFavorite>('set_game_favorite', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
 export async function getLibrarySnapshot(): Promise<LibrarySnapshot> {
   try {
     return await invoke<LibrarySnapshot>('get_library_snapshot');
@@ -609,6 +796,18 @@ export async function onLibraryScanCompleted(
 ): Promise<UnlistenFn> {
   try {
     return await listen<ScanSummary>(LIBRARY_SCAN_COMPLETED_EVENT, (event) =>
+      handler(event.payload),
+    );
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function onMetadataStateChanged(
+  handler: (event: MetadataStateChanged) => void,
+): Promise<UnlistenFn> {
+  try {
+    return await listen<MetadataStateChanged>(METADATA_STATE_CHANGED_EVENT, (event) =>
       handler(event.payload),
     );
   } catch (error: unknown) {

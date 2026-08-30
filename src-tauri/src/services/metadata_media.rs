@@ -32,6 +32,20 @@ pub enum MediaCacheError {
     ContentMismatch,
     #[error("the cover cache could not be written")]
     Unwritable,
+    #[error("the cached media reference is invalid")]
+    InvalidReference,
+    #[error("the cached media asset is missing")]
+    Missing,
+    #[error("the cached media asset is outside the app-owned cache")]
+    OutsideCache,
+    #[error("the cached media asset could not be read")]
+    Unreadable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveredCover {
+    pub bytes: Vec<u8>,
+    pub content_type: String,
 }
 
 /// A cover that is now safely on disk.
@@ -68,6 +82,54 @@ impl CoverCache {
             .is_some_and(|path| path.is_file())
     }
 
+    /// Reads a cached cover only after enforcing lexical and canonical containment.
+    ///
+    /// The protocol layer supplies the persisted content type, but the bytes are checked against
+    /// it again here. This keeps a corrupted row, a symlink, or a replaced file from turning the
+    /// narrow cover protocol into arbitrary app-data serving.
+    pub fn read_for_delivery(
+        &self,
+        relative_path: &str,
+        declared_content_type: Option<&str>,
+    ) -> Result<DeliveredCover, MediaCacheError> {
+        let path = self
+            .absolute_path(relative_path)
+            .ok_or(MediaCacheError::InvalidReference)?;
+        let media_root =
+            fs::canonicalize(self.paths.media_root()).map_err(|_| MediaCacheError::Missing)?;
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                MediaCacheError::Missing
+            } else {
+                MediaCacheError::Unreadable
+            }
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(MediaCacheError::InvalidReference);
+        }
+        let canonical_path = fs::canonicalize(&path).map_err(|_| MediaCacheError::Unreadable)?;
+        if !canonical_path.starts_with(&media_root) {
+            return Err(MediaCacheError::OutsideCache);
+        }
+
+        let bytes = fs::read(&canonical_path).map_err(|_| MediaCacheError::Unreadable)?;
+        if bytes.len() as u64 > MAX_COVER_BYTES {
+            return Err(MediaCacheError::TooLarge);
+        }
+        if bytes.len() < MIN_COVER_BYTES {
+            return Err(MediaCacheError::ContentMismatch);
+        }
+        let content_type = normalized_content_type(declared_content_type)?;
+        if !content_matches(&content_type, &bytes) {
+            return Err(MediaCacheError::ContentMismatch);
+        }
+
+        Ok(DeliveredCover {
+            bytes,
+            content_type,
+        })
+    }
+
     /// Validates and atomically publishes downloaded cover bytes.
     ///
     /// Every failure path leaves the previous cover untouched: validation happens before any
@@ -78,17 +140,7 @@ impl CoverCache {
         provider_id: MetadataProviderId,
         media: &DownloadedMedia,
     ) -> Result<PublishedCover, MediaCacheError> {
-        let content_type = media
-            .content_type
-            .as_deref()
-            .map(|value| value.split(';').next().unwrap_or(value).trim())
-            .filter(|value| {
-                ACCEPTED_COVER_CONTENT_TYPES
-                    .iter()
-                    .any(|accepted| accepted.eq_ignore_ascii_case(value))
-            })
-            .ok_or(MediaCacheError::UnsupportedContentType)?
-            .to_ascii_lowercase();
+        let content_type = normalized_content_type(media.content_type.as_deref())?;
 
         if media.bytes.len() as u64 > MAX_COVER_BYTES {
             return Err(MediaCacheError::TooLarge);
@@ -173,6 +225,18 @@ fn write_and_sync(path: &Path, bytes: &[u8]) -> Result<(), MediaCacheError> {
     Ok(())
 }
 
+fn normalized_content_type(value: Option<&str>) -> Result<String, MediaCacheError> {
+    value
+        .map(|value| value.split(';').next().unwrap_or(value).trim())
+        .filter(|value| {
+            ACCEPTED_COVER_CONTENT_TYPES
+                .iter()
+                .any(|accepted| accepted.eq_ignore_ascii_case(value))
+        })
+        .map(str::to_ascii_lowercase)
+        .ok_or(MediaCacheError::UnsupportedContentType)
+}
+
 /// Checks the container signature so a mislabelled or truncated payload is rejected.
 fn content_matches(content_type: &str, bytes: &[u8]) -> bool {
     match content_type {
@@ -220,6 +284,16 @@ mod tests {
         bytes.extend_from_slice(b"synthetic-cover-jpeg-payload");
         DownloadedMedia {
             content_type: Some("image/jpeg".to_owned()),
+            bytes,
+        }
+    }
+
+    fn synthetic_webp() -> DownloadedMedia {
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend_from_slice(&[0, 0, 0, 0]);
+        bytes.extend_from_slice(b"WEBPsynthetic-cover-webp-payload");
+        DownloadedMedia {
+            content_type: Some("image/webp".to_owned()),
             bytes,
         }
     }
@@ -422,5 +496,81 @@ mod tests {
 
         assert_eq!(cache.absolute_path("../../escape.png"), None);
         assert!(!cache.is_cached("../../escape.png"));
+    }
+
+    #[test]
+    fn delivery_accepts_only_valid_cached_png_jpeg_and_webp_bytes() {
+        let directory = tempdir().expect("temporary directory");
+        let cache = cache(directory.path());
+
+        for (game_id, media) in [
+            (GameId(20), synthetic_png()),
+            (GameId(21), synthetic_jpeg()),
+            (GameId(22), synthetic_webp()),
+        ] {
+            let published = cache
+                .publish(game_id, MetadataProviderId::ScreenScraper, &media)
+                .expect("synthetic image should publish");
+            let delivered = cache
+                .read_for_delivery(&published.relative_path, Some(&published.content_type))
+                .expect("published image should be deliverable");
+            assert_eq!(delivered.bytes, media.bytes);
+            assert_eq!(delivered.content_type, published.content_type);
+        }
+    }
+
+    #[test]
+    fn delivery_rejects_missing_invalid_and_unsupported_assets() {
+        let directory = tempdir().expect("temporary directory");
+        let cache = cache(directory.path());
+        let published = cache
+            .publish(
+                GameId(23),
+                MetadataProviderId::ScreenScraper,
+                &synthetic_png(),
+            )
+            .expect("synthetic image should publish");
+
+        assert_eq!(
+            cache.read_for_delivery("../../outside.png", Some("image/png")),
+            Err(MediaCacheError::InvalidReference)
+        );
+        assert_eq!(
+            cache.read_for_delivery("/etc/passwd", Some("image/png")),
+            Err(MediaCacheError::InvalidReference)
+        );
+        assert_eq!(
+            cache.read_for_delivery(&published.relative_path, Some("text/plain")),
+            Err(MediaCacheError::UnsupportedContentType)
+        );
+        assert_eq!(
+            cache.read_for_delivery(&published.relative_path, Some("image/jpeg")),
+            Err(MediaCacheError::ContentMismatch)
+        );
+        cache.remove(&published.relative_path);
+        assert_eq!(
+            cache.read_for_delivery(&published.relative_path, Some("image/png")),
+            Err(MediaCacheError::Missing)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delivery_rejects_a_symlinked_directory_that_points_outside_the_media_root() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().expect("temporary directory");
+        let cache = cache(directory.path());
+        let outside = directory.path().join("outside");
+        fs::create_dir_all(&outside).expect("outside directory");
+        fs::write(outside.join("cover.png"), synthetic_png().bytes).expect("outside fixture");
+        let media_directory = directory.path().join("metadata/media/covers");
+        fs::create_dir_all(&media_directory).expect("media directory");
+        symlink(&outside, media_directory.join("linked")).expect("symlink fixture");
+
+        assert_eq!(
+            cache.read_for_delivery("covers/linked/cover.png", Some("image/png")),
+            Err(MediaCacheError::OutsideCache)
+        );
     }
 }

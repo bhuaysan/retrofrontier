@@ -1,13 +1,17 @@
 use crate::domain::library::{
-    ContentFile, ContentFileAvailability, ContentFileId, ContentFileMembership, ContentFileRole,
-    ContentRoot, ContentRootAvailability, ContentRootId, ContentRootKind, ContentUnit,
-    ContentUnitAvailability, ContentUnitId, ContentUnitKind, Game, GameAvailability, GameId,
-    GameSnapshot, LibrarySnapshot, ScanCounters, ScanIssue, ScanIssueId, ScanIssueKind, ScanPhase,
-    ScanProgress, ScanRunId, ScanRunState, ScanStatus, ScanSummary, ScannedRoot,
+    cached_cover_reference, ContentFile, ContentFileAvailability, ContentFileId,
+    ContentFileMembership, ContentFileRole, ContentRoot, ContentRootAvailability, ContentRootId,
+    ContentRootKind, ContentUnit, ContentUnitAvailability, ContentUnitId, ContentUnitKind, Game,
+    GameAvailability, GameId, GameSnapshot, LibraryContentUnitSummary, LibraryGameDetail,
+    LibraryListItem, LibraryMetadataMatchState, LibraryPage, LibraryQuery, LibrarySnapshot,
+    LibrarySummary, LibrarySystemCount, ScanCounters, ScanIssue, ScanIssueId, ScanIssueKind,
+    ScanIssuePage, ScanPhase, ScanProgress, ScanRunId, ScanRunState, ScanStatus, ScanSummary,
+    ScannedRoot, DEFAULT_SCAN_ISSUE_PAGE_SIZE, MAX_SCAN_ISSUE_PAGE_SIZE,
 };
+use crate::domain::metadata::MetadataProviderId;
 use crate::domain::system::SystemId;
 use crate::error::AppError;
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -19,6 +23,33 @@ pub struct LibraryRepository {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReconciliationResult {
     pub issues_found: u64,
+}
+
+macro_rules! bind_library_query {
+    ($query:expr, $request:expr, $provider_id:expr, $search:expr, $genre:expr, $region:expr, $availability:expr) => {{
+        $query
+            // The three provider joins are all constrained to the provider selected by the
+            // application service. No provider payload is returned by this query.
+            .bind($provider_id)
+            .bind($provider_id)
+            .bind($provider_id)
+            .bind($request.system_id.map(SystemId::as_str))
+            .bind($request.system_id.map(SystemId::as_str))
+            .bind(if $request.favorites_only {
+                1_i64
+            } else {
+                0_i64
+            })
+            .bind($genre)
+            .bind($genre)
+            .bind($region)
+            .bind($region)
+            .bind($availability)
+            .bind($availability)
+            .bind($search)
+            .bind($search)
+            .bind($search)
+    }};
 }
 
 impl LibraryRepository {
@@ -85,9 +116,7 @@ impl LibraryRepository {
     ) -> Result<ContentRoot, AppError> {
         if let Some(existing) = self.find_content_root_by_path(path).await? {
             if existing.kind == ContentRootKind::Managed {
-                return Err(AppError::Library(
-                    "the managed content root cannot be configured as external".to_owned(),
-                ));
+                return Err(AppError::ContentRootInvalidOperation);
             }
         }
 
@@ -114,13 +143,12 @@ impl LibraryRepository {
     }
 
     pub async fn remove_external_root(&self, root_id: ContentRootId) -> Result<(), AppError> {
-        let root = self.content_root(root_id).await?.ok_or_else(|| {
-            AppError::Library("the requested content root does not exist".to_owned())
-        })?;
+        let root = self
+            .content_root(root_id)
+            .await?
+            .ok_or_else(|| AppError::ContentRootInvalidOperation)?;
         if root.kind == ContentRootKind::Managed {
-            return Err(AppError::Library(
-                "the managed content root cannot be removed".to_owned(),
-            ));
+            return Err(AppError::ContentRootInvalidOperation);
         }
 
         sqlx::query(
@@ -154,9 +182,7 @@ impl LibraryRepository {
         .await
         .map_err(AppError::Database)?;
         if changed.rows_affected() == 0 {
-            return Err(AppError::Library(
-                "the requested content root does not exist".to_owned(),
-            ));
+            return Err(AppError::ContentRootInvalidOperation);
         }
         if !enabled {
             self.mark_root_content_missing(root_id).await?;
@@ -312,6 +338,66 @@ impl LibraryRepository {
         .await
         .map_err(AppError::Database)?;
         rows.into_iter().map(scan_issue_from_row).collect()
+    }
+
+    /// Loads one bounded page from the latest persisted scan run. The legacy unbounded method
+    /// above remains for the M4 diagnostic contract; M6 UI callers use this method exclusively.
+    pub async fn list_latest_scan_issues_page(
+        &self,
+        offset: u64,
+        requested_limit: u32,
+    ) -> Result<ScanIssuePage, AppError> {
+        let limit = bounded_scan_issue_limit(requested_limit);
+        let offset = sqlite_offset(offset)?;
+        let scan_run_id: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM scan_runs WHERE state IN ('completed', 'failed') \
+             ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        let Some(scan_run_id) = scan_run_id else {
+            return Ok(ScanIssuePage {
+                issues: Vec::new(),
+                scan_run_id: None,
+                total: 0,
+                offset: u64::try_from(offset).map_err(|_| {
+                    AppError::Library("scan issue offset could not be represented".to_owned())
+                })?,
+                limit,
+            });
+        };
+        let total: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM scan_issues WHERE scan_run_id = ?")
+                .bind(scan_run_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(AppError::Database)?;
+        let rows = sqlx::query(
+            "SELECT i.id, i.scan_run_id, i.root_id, i.kind, i.relative_path, i.related_path, \
+             i.detail, i.created_at FROM scan_issues i \
+             WHERE i.scan_run_id = ? \
+             ORDER BY i.created_at DESC, i.id DESC LIMIT ? OFFSET ?",
+        )
+        .bind(scan_run_id)
+        .bind(i64::from(limit))
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        Ok(ScanIssuePage {
+            issues: rows
+                .into_iter()
+                .map(scan_issue_from_row)
+                .collect::<Result<_, _>>()?,
+            scan_run_id: Some(ScanRunId(scan_run_id)),
+            total: u64_value(total)?,
+            offset: u64::try_from(offset).map_err(|_| {
+                AppError::Library("scan issue offset could not be represented".to_owned())
+            })?,
+            limit,
+        })
     }
 
     pub async fn reconcile_root(
@@ -762,45 +848,308 @@ impl LibraryRepository {
         row.as_ref().map(game_from_row).transpose()
     }
 
-    /// Loads the content units of one game with their ordered file membership.
+    /// Returns the bounded list projection consumed by the M6 library UI.
     ///
-    /// This is the bounded read that metadata matching uses to obtain current M4 evidence.
-    pub async fn game_content_units(&self, game_id: GameId) -> Result<Vec<ContentUnit>, AppError> {
+    /// Count and page are separate aggregate/limited queries. The page joins normalized metadata,
+    /// provider state, user favorites, and durable media identity in bulk; it never joins physical
+    /// content files and therefore cannot expose scanner hashes or fingerprints.
+    pub async fn query_library(
+        &self,
+        request: &LibraryQuery,
+        provider_id: MetadataProviderId,
+    ) -> Result<LibraryPage, AppError> {
+        let limit = request.bounded_limit();
+        let offset = sqlite_offset(request.offset)?;
+        let search = normalized_search_filter(request.search.as_deref());
+        let genre = normalized_filter(request.genre.as_deref());
+        let region = normalized_filter(request.region.as_deref());
+        let availability = request.availability.map(GameAvailability::as_db);
+        let provider_id = provider_id.as_db();
+
+        let total: i64 = bind_library_query!(
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM games g \
+                 LEFT JOIN game_user_state us ON us.game_id = g.id \
+                 LEFT JOIN provider_metadata md ON md.game_id = g.id AND md.provider_id = ? \
+                 LEFT JOIN provider_matches pm ON pm.game_id = g.id AND pm.provider_id = ? \
+                 LEFT JOIN provider_media_assets ma ON ma.game_id = g.id \
+                     AND ma.provider_id = ? AND ma.kind = 'cover' \
+                 WHERE (? IS NULL OR g.system_id = ?) \
+                   AND (? = 0 OR COALESCE(us.favorite, 0) = 1) \
+                   AND (? IS NULL OR lower(COALESCE(md.genre, '')) = lower(?)) \
+                   AND (? IS NULL OR lower(COALESCE(md.region, '')) = lower(?)) \
+                   AND (? IS NULL OR g.availability = ?) \
+                   AND (? IS NULL OR lower(COALESCE(md.title, '')) LIKE '%' || lower(?) || '%' ESCAPE '\\' \
+                        OR lower(g.local_title) LIKE '%' || lower(?) || '%' ESCAPE '\\')"
+            ),
+            request,
+            provider_id,
+            search.as_deref(),
+            genre.as_deref(),
+            region.as_deref(),
+            availability
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        let rows = bind_library_query!(
+            sqlx::query(
+                "SELECT g.id AS game_id, g.system_id, g.local_title, g.availability, \
+                        md.title AS metadata_title, md.sort_title AS metadata_sort_title, \
+                        md.release_date, md.genre, md.region, \
+                        COALESCE(us.favorite, 0) AS favorite, pm.status AS metadata_status, \
+                        CASE WHEN ma.state = 'cached' \
+                                  AND ma.cache_relative_path IS NOT NULL \
+                                  AND lower(COALESCE(ma.content_type, '')) IN \
+                                      ('image/png', 'image/jpeg', 'image/webp') \
+                             THEN 1 ELSE 0 END AS cover_cached, \
+                        COALESCE(NULLIF(md.sort_title, ''), NULLIF(md.title, ''), g.local_title) \
+                            AS effective_sort_title \
+                 FROM games g \
+                 LEFT JOIN game_user_state us ON us.game_id = g.id \
+                 LEFT JOIN provider_metadata md ON md.game_id = g.id AND md.provider_id = ? \
+                 LEFT JOIN provider_matches pm ON pm.game_id = g.id AND pm.provider_id = ? \
+                 LEFT JOIN provider_media_assets ma ON ma.game_id = g.id \
+                     AND ma.provider_id = ? AND ma.kind = 'cover' \
+                 WHERE (? IS NULL OR g.system_id = ?) \
+                   AND (? = 0 OR COALESCE(us.favorite, 0) = 1) \
+                   AND (? IS NULL OR lower(COALESCE(md.genre, '')) = lower(?)) \
+                   AND (? IS NULL OR lower(COALESCE(md.region, '')) = lower(?)) \
+                   AND (? IS NULL OR g.availability = ?) \
+                   AND (? IS NULL OR lower(COALESCE(md.title, '')) LIKE '%' || lower(?) || '%' ESCAPE '\\' \
+                        OR lower(g.local_title) LIKE '%' || lower(?) || '%' ESCAPE '\\') \
+                 ORDER BY lower(effective_sort_title) ASC, g.id ASC LIMIT ? OFFSET ?"
+            ),
+            request,
+            provider_id,
+            search.as_deref(),
+            genre.as_deref(),
+            region.as_deref(),
+            availability
+        )
+        .bind(i64::from(limit))
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        Ok(LibraryPage {
+            items: rows
+                .iter()
+                .map(library_list_item_from_row)
+                .collect::<Result<_, _>>()?,
+            total: u64_value(total)?,
+            offset: request.offset,
+            limit,
+        })
+    }
+
+    /// Returns aggregate counts without materializing game rows.
+    pub async fn get_library_summary(&self) -> Result<LibrarySummary, AppError> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS total_games, \
+                    COALESCE(SUM(CASE WHEN COALESCE(us.favorite, 0) = 1 THEN 1 ELSE 0 END), 0) \
+                        AS favorite_games \
+             FROM games g LEFT JOIN game_user_state us ON us.game_id = g.id",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        let system_rows = sqlx::query(
+            "SELECT system_id, COUNT(*) AS game_count FROM games \
+             GROUP BY system_id ORDER BY system_id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        Ok(LibrarySummary {
+            total_games: u64_value(row.get("total_games"))?,
+            favorite_games: u64_value(row.get("favorite_games"))?,
+            systems: system_rows
+                .iter()
+                .map(|row| {
+                    Ok(LibrarySystemCount {
+                        system_id: system_id(&row.get::<String, _>("system_id"))?,
+                        game_count: u64_value(row.get("game_count"))?,
+                    })
+                })
+                .collect::<Result<_, AppError>>()?,
+        })
+    }
+
+    /// Returns only local content structure for one game. Physical-file hashes and content-unit
+    /// fingerprints are intentionally absent from this projection.
+    pub async fn get_library_game_detail(
+        &self,
+        game_id: GameId,
+    ) -> Result<Option<LibraryGameDetail>, AppError> {
+        let row = sqlx::query(
+            "SELECT g.id AS game_id, g.system_id, g.local_title, g.availability, \
+                    COALESCE(us.favorite, 0) AS favorite \
+             FROM games g LEFT JOIN game_user_state us ON us.game_id = g.id \
+             WHERE g.id = ?",
+        )
+        .bind(game_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        let Some(row) = row else { return Ok(None) };
+
         let unit_rows = sqlx::query(
-            "SELECT id, game_id, root_id, system_id, kind, local_title, primary_relative_path, \
-             fingerprint, availability, created_at, updated_at FROM content_units \
-             WHERE game_id = ? ORDER BY id ASC",
+            "SELECT cu.id AS unit_id, cu.root_id, cu.kind, cu.local_title, \
+                    cu.primary_relative_path, cu.availability, COUNT(cuf.content_file_id) AS file_count \
+             FROM content_units cu \
+             LEFT JOIN content_unit_files cuf ON cuf.content_unit_id = cu.id \
+             WHERE cu.game_id = ? \
+             GROUP BY cu.id, cu.root_id, cu.kind, cu.local_title, cu.primary_relative_path, cu.availability \
+             ORDER BY cu.id ASC",
         )
         .bind(game_id.0)
         .fetch_all(&self.pool)
         .await
         .map_err(AppError::Database)?;
-        let mut units = Vec::with_capacity(unit_rows.len());
-        for row in &unit_rows {
-            units.push(unit_from_row(row)?);
+
+        Ok(Some(LibraryGameDetail {
+            game_id: GameId(row.get("game_id")),
+            system_id: system_id(&row.get::<String, _>("system_id"))?,
+            local_title: row.get("local_title"),
+            availability: game_availability(&row.get::<String, _>("availability"))?,
+            favorite: row.get::<i64, _>("favorite") != 0,
+            content_units: unit_rows
+                .iter()
+                .map(|row| {
+                    Ok(LibraryContentUnitSummary {
+                        unit_id: ContentUnitId(row.get("unit_id")),
+                        root_id: ContentRootId(row.get("root_id")),
+                        kind: unit_kind(&row.get::<String, _>("kind"))?,
+                        local_title: row.get("local_title"),
+                        primary_relative_path: row.get("primary_relative_path"),
+                        file_count: u64_value(row.get("file_count"))?,
+                        availability: unit_availability_from_db(
+                            &row.get::<String, _>("availability"),
+                        )?,
+                    })
+                })
+                .collect::<Result<_, AppError>>()?,
+        }))
+    }
+
+    /// Upserts the one user-owned state currently required by M6.1.
+    pub async fn set_game_favorite(&self, game_id: GameId, favorite: bool) -> Result<(), AppError> {
+        let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM games WHERE id = ?")
+            .bind(game_id.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+        if exists.is_none() {
+            return Err(AppError::Library(
+                "the requested game does not exist".to_owned(),
+            ));
         }
 
-        let membership_rows = sqlx::query(
+        let now = now_timestamp();
+        sqlx::query(
+            "INSERT INTO game_user_state (game_id, favorite, created_at, updated_at) \
+             VALUES (?, ?, ?, ?) \
+             ON CONFLICT(game_id) DO UPDATE SET favorite = excluded.favorite, \
+                                                updated_at = excluded.updated_at",
+        )
+        .bind(game_id.0)
+        .bind(if favorite { 1_i64 } else { 0_i64 })
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        Ok(())
+    }
+
+    /// Loads the content units of one game with their ordered file membership.
+    ///
+    /// This is the bounded read that metadata matching uses to obtain current M4 evidence.
+    pub async fn game_content_units(&self, game_id: GameId) -> Result<Vec<ContentUnit>, AppError> {
+        let mut units = self.game_content_units_for_games(&[game_id]).await?;
+        Ok(units.remove(&game_id).unwrap_or_default())
+    }
+
+    /// Loads content units and memberships for several games with two bounded bulk reads.
+    ///
+    /// Metadata list validation uses this instead of reading each game's content separately. The
+    /// caller owns the page bound; this repository method never turns a page into an N+1 query.
+    pub async fn game_content_units_for_games(
+        &self,
+        game_ids: &[GameId],
+    ) -> Result<BTreeMap<GameId, Vec<ContentUnit>>, AppError> {
+        if game_ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let mut unit_query = QueryBuilder::<Sqlite>::new(
+            "SELECT id, game_id, root_id, system_id, kind, local_title, primary_relative_path, \
+             fingerprint, availability, created_at, updated_at FROM content_units \
+             WHERE game_id IN (",
+        );
+        {
+            let mut separated = unit_query.separated(", ");
+            for game_id in game_ids {
+                separated.push_bind(game_id.0);
+            }
+            separated.push_unseparated(") ORDER BY game_id ASC, id ASC");
+        }
+        let unit_rows = unit_query
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+
+        let mut units_by_game = BTreeMap::<GameId, Vec<ContentUnit>>::new();
+        let mut unit_locations = BTreeMap::<ContentUnitId, (GameId, usize)>::new();
+        for row in &unit_rows {
+            let unit = unit_from_row(row)?;
+            let game_id = unit.game_id;
+            let units = units_by_game.entry(game_id).or_default();
+            let index = units.len();
+            unit_locations.insert(unit.id, (game_id, index));
+            units.push(unit);
+        }
+
+        let mut membership_query = QueryBuilder::<Sqlite>::new(
             "SELECT cuf.content_unit_id, cuf.ordinal, cuf.role, \
              cf.id, cf.root_id, cf.relative_path, cf.size_bytes, cf.modified_at, cf.crc32, \
              cf.md5, cf.sha1, cf.availability FROM content_unit_files cuf \
              JOIN content_files cf ON cf.id = cuf.content_file_id \
              JOIN content_units cu ON cu.id = cuf.content_unit_id \
-             WHERE cu.game_id = ? ORDER BY cuf.content_unit_id ASC, cuf.ordinal ASC",
-        )
-        .bind(game_id.0)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(AppError::Database)?;
-        for row in membership_rows {
+             WHERE cu.game_id IN (",
+        );
+        {
+            let mut separated = membership_query.separated(", ");
+            for game_id in game_ids {
+                separated.push_bind(game_id.0);
+            }
+            separated.push_unseparated(") ORDER BY cuf.content_unit_id ASC, cuf.ordinal ASC");
+        }
+        let membership_rows = membership_query
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+        for row in &membership_rows {
             let unit_id = ContentUnitId(row.get("content_unit_id"));
-            let membership = membership_from_row(&row)?;
-            if let Some(unit) = units.iter_mut().find(|unit| unit.id == unit_id) {
+            let Some((game_id, index)) = unit_locations.get(&unit_id).copied() else {
+                continue;
+            };
+            let membership = membership_from_row(row)?;
+            if let Some(unit) = units_by_game
+                .get_mut(&game_id)
+                .and_then(|units| units.get_mut(index))
+            {
                 unit.files.push(membership);
             }
         }
 
-        Ok(units)
+        Ok(units_by_game)
     }
 
     pub async fn get_library_snapshot(&self) -> Result<LibrarySnapshot, AppError> {
@@ -1401,6 +1750,86 @@ fn content_root_from_row(row: sqlx::sqlite::SqliteRow) -> Result<ContentRoot, Ap
     })
 }
 
+fn library_list_item_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<LibraryListItem, AppError> {
+    let game_id = GameId(row.get("game_id"));
+    let local_title: String = row.get("local_title");
+    let metadata_title = non_empty(row.get("metadata_title"));
+    let display_title = metadata_title
+        .clone()
+        .unwrap_or_else(|| local_title.clone());
+    let match_state = library_metadata_match_state(row.get("metadata_status"))?;
+
+    Ok(LibraryListItem {
+        game_id,
+        system_id: system_id(&row.get::<String, _>("system_id"))?,
+        local_title,
+        metadata_title,
+        display_title,
+        sort_title: row.get("effective_sort_title"),
+        availability: game_availability(&row.get::<String, _>("availability"))?,
+        favorite: row.get::<i64, _>("favorite") != 0,
+        metadata_match_state: match_state,
+        release_date: non_empty(row.get("release_date")),
+        genre: non_empty(row.get("genre")),
+        region: non_empty(row.get("region")),
+        cover_ref: (row.get::<i64, _>("cover_cached") != 0)
+            .then(|| cached_cover_reference(game_id)),
+    })
+}
+
+fn library_metadata_match_state(
+    status: Option<String>,
+) -> Result<LibraryMetadataMatchState, AppError> {
+    match status.as_deref() {
+        // M5 uses `pending` for the absence of an accepted provider match, including work that
+        // has not been requested yet. Keep the list/detail projections on that same state.
+        None => Ok(LibraryMetadataMatchState::Pending),
+        Some("pending") => Ok(LibraryMetadataMatchState::Pending),
+        Some("matched") => Ok(LibraryMetadataMatchState::Matched),
+        Some("no_match") => Ok(LibraryMetadataMatchState::NoMatch),
+        Some("ambiguous") => Ok(LibraryMetadataMatchState::Ambiguous),
+        Some("deferred") => Ok(LibraryMetadataMatchState::Deferred),
+        Some("failed") => Ok(LibraryMetadataMatchState::Failed),
+        Some("stale") => Ok(LibraryMetadataMatchState::Stale),
+        Some(value) => Err(AppError::Library(format!(
+            "invalid provider match status in database: {value}"
+        ))),
+    }
+}
+
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
+fn normalized_filter(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn normalized_search_filter(value: Option<&str>) -> Option<String> {
+    normalized_filter(value).map(|value| {
+        value
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    })
+}
+
+fn bounded_scan_issue_limit(requested: u32) -> u32 {
+    if requested == 0 {
+        DEFAULT_SCAN_ISSUE_PAGE_SIZE
+    } else {
+        requested.min(MAX_SCAN_ISSUE_PAGE_SIZE)
+    }
+}
+
+fn sqlite_offset(value: u64) -> Result<i64, AppError> {
+    i64::try_from(value)
+        .map_err(|_| AppError::Library("the requested page offset is too large".to_owned()))
+}
+
 fn game_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Game, AppError> {
     Ok(Game {
         id: GameId(row.get("id")),
@@ -1551,4 +1980,846 @@ fn duration_ms(started_at: i64, completed_at: Option<i64>) -> u64 {
         .unwrap_or_else(now_timestamp)
         .saturating_sub(started_at)
         .max(0) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::database::Database;
+    use crate::domain::library::{DEFAULT_LIBRARY_PAGE_SIZE, MAX_LIBRARY_PAGE_SIZE};
+    use crate::domain::metadata::MetadataProviderId;
+    use crate::domain::system::SystemId;
+    use sqlx::SqlitePool;
+    use tempfile::TempDir;
+
+    const TEST_TIME: i64 = 1_700_000_000_000;
+
+    async fn fixture() -> (TempDir, SqlitePool) {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(directory.path().join("library.sqlite3"))
+            .await
+            .expect("database should open");
+        (directory, database.pool().clone())
+    }
+
+    async fn insert_root(pool: &SqlitePool) {
+        sqlx::query(
+            "INSERT INTO content_roots \
+             (id, path, kind, enabled, availability, created_at, updated_at) \
+             VALUES (1, '/synthetic/library', 'managed', 1, 'available', ?, ?)",
+        )
+        .bind(TEST_TIME)
+        .bind(TEST_TIME)
+        .execute(pool)
+        .await
+        .expect("synthetic content root");
+    }
+
+    async fn insert_game(
+        pool: &SqlitePool,
+        game_id: i64,
+        system: SystemId,
+        title: &str,
+        availability: GameAvailability,
+    ) {
+        sqlx::query(
+            "INSERT INTO games \
+             (id, system_id, local_title, availability, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(game_id)
+        .bind(system.as_str())
+        .bind(title)
+        .bind(availability.as_db())
+        .bind(TEST_TIME)
+        .bind(TEST_TIME)
+        .execute(pool)
+        .await
+        .expect("synthetic game");
+    }
+
+    async fn insert_metadata(
+        pool: &SqlitePool,
+        game_id: i64,
+        title: &str,
+        sort_title: Option<&str>,
+        genre: Option<&str>,
+        region: Option<&str>,
+    ) {
+        sqlx::query(
+            "INSERT INTO provider_metadata \
+             (game_id, provider_id, provider_game_id, title, sort_title, synopsis, release_date, \
+              developer, publisher, genre, players, region, source_credit, fetched_at, created_at, updated_at) \
+             VALUES (?, 'screenscraper', ?, ?, ?, NULL, ?, NULL, NULL, ?, NULL, ?, NULL, ?, ?, ?)",
+        )
+        .bind(game_id)
+        .bind(format!("provider-{game_id}"))
+        .bind(title)
+        .bind(sort_title)
+        .bind("1990-01-01")
+        .bind(genre)
+        .bind(region)
+        .bind(TEST_TIME)
+        .bind(TEST_TIME)
+        .bind(TEST_TIME)
+        .execute(pool)
+        .await
+        .expect("synthetic normalized metadata");
+    }
+
+    async fn insert_match(pool: &SqlitePool, game_id: i64, status: &str) {
+        let matched = status == "matched";
+        sqlx::query(
+            "INSERT INTO provider_matches \
+             (game_id, provider_id, status, match_type, provider_game_id, created_at, updated_at) \
+             VALUES (?, 'screenscraper', ?, ?, ?, ?, ?)",
+        )
+        .bind(game_id)
+        .bind(status)
+        .bind(matched.then_some("deterministic_sha1"))
+        .bind(matched.then(|| format!("provider-{game_id}")))
+        .bind(TEST_TIME)
+        .bind(TEST_TIME)
+        .execute(pool)
+        .await
+        .expect("synthetic provider match state");
+    }
+
+    async fn insert_cached_cover(pool: &SqlitePool, game_id: i64) {
+        sqlx::query(
+            "INSERT INTO provider_media_assets \
+             (game_id, provider_id, kind, state, cache_relative_path, content_type, created_at, updated_at) \
+             VALUES (?, 'screenscraper', 'cover', 'cached', ?, 'image/png', ?, ?)",
+        )
+        .bind(game_id)
+        .bind(format!("covers/screenscraper/{game_id}.png"))
+        .bind(TEST_TIME)
+        .bind(TEST_TIME)
+        .execute(pool)
+        .await
+        .expect("synthetic cached cover row");
+    }
+
+    fn ids(page: &LibraryPage) -> Vec<i64> {
+        page.items.iter().map(|item| item.game_id.0).collect()
+    }
+
+    fn assert_no_physical_identity(serialized: &str) {
+        let serialized = serialized.to_ascii_lowercase();
+        for field in ["crc32", "md5", "sha1", "fingerprint", "contentfiles"] {
+            assert!(
+                !serialized.contains(field),
+                "UI projection leaked physical identity field {field}: {serialized}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_library_returns_bounded_page_and_summary() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool);
+
+        let page = repository
+            .query_library(&LibraryQuery::default(), MetadataProviderId::ScreenScraper)
+            .await
+            .expect("empty library query");
+        assert!(page.items.is_empty());
+        assert_eq!(page.total, 0);
+        assert_eq!(page.offset, 0);
+        assert_eq!(page.limit, DEFAULT_LIBRARY_PAGE_SIZE);
+
+        let summary = repository
+            .get_library_summary()
+            .await
+            .expect("empty library summary");
+        assert_eq!(summary.total_games, 0);
+        assert_eq!(summary.favorite_games, 0);
+        assert!(summary.systems.is_empty());
+        assert!(repository
+            .get_library_game_detail(GameId(1))
+            .await
+            .expect("missing game detail")
+            .is_none());
+        let issues = repository
+            .list_latest_scan_issues_page(0, 0)
+            .await
+            .expect("empty scan issue page");
+        assert_eq!(issues.scan_run_id, None);
+        assert_eq!(issues.total, 0);
+        assert!(issues.issues.is_empty());
+    }
+
+    #[tokio::test]
+    async fn library_query_supports_bounded_pages_search_filters_and_stable_title_order() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        insert_game(
+            &pool,
+            1,
+            SystemId::Snes,
+            "Local Alpha",
+            GameAvailability::Available,
+        )
+        .await;
+        insert_metadata(
+            &pool,
+            1,
+            "Zeta Metadata",
+            Some("Zeta Metadata"),
+            Some("RPG"),
+            Some("US"),
+        )
+        .await;
+        insert_match(&pool, 1, "matched").await;
+        insert_game(
+            &pool,
+            2,
+            SystemId::Snes,
+            "Beta Local",
+            GameAvailability::Available,
+        )
+        .await;
+        insert_metadata(
+            &pool,
+            2,
+            "Alpha Metadata",
+            Some("Alpha Metadata"),
+            Some("Action"),
+            Some("EU"),
+        )
+        .await;
+        insert_match(&pool, 2, "stale").await;
+        insert_game(
+            &pool,
+            3,
+            SystemId::Nes,
+            "Gamma Local",
+            GameAvailability::Unavailable,
+        )
+        .await;
+        insert_match(&pool, 3, "no_match").await;
+        insert_game(
+            &pool,
+            4,
+            SystemId::Snes,
+            "Fallback Local",
+            GameAvailability::Available,
+        )
+        .await;
+        insert_match(&pool, 4, "ambiguous").await;
+        insert_game(
+            &pool,
+            5,
+            SystemId::Snes,
+            "Same Title",
+            GameAvailability::Available,
+        )
+        .await;
+        insert_match(&pool, 5, "pending").await;
+        insert_game(
+            &pool,
+            6,
+            SystemId::Snes,
+            "same title",
+            GameAvailability::Available,
+        )
+        .await;
+
+        let all = repository
+            .query_library(&LibraryQuery::default(), MetadataProviderId::ScreenScraper)
+            .await
+            .expect("library page");
+        assert_eq!(all.total, 6);
+        assert_eq!(ids(&all), vec![2, 4, 3, 5, 6, 1]);
+        assert_eq!(all.items[0].display_title, "Alpha Metadata");
+        assert_eq!(all.items[1].display_title, "Fallback Local");
+        assert_eq!(
+            all.items
+                .iter()
+                .find(|item| item.game_id == GameId(3))
+                .unwrap()
+                .metadata_match_state,
+            LibraryMetadataMatchState::NoMatch
+        );
+        assert_eq!(
+            all.items
+                .iter()
+                .find(|item| item.game_id == GameId(1))
+                .unwrap()
+                .metadata_match_state,
+            LibraryMetadataMatchState::Matched
+        );
+        assert_eq!(
+            all.items
+                .iter()
+                .find(|item| item.game_id == GameId(2))
+                .unwrap()
+                .metadata_match_state,
+            LibraryMetadataMatchState::Stale
+        );
+        assert_eq!(
+            all.items
+                .iter()
+                .find(|item| item.game_id == GameId(4))
+                .unwrap()
+                .metadata_match_state,
+            LibraryMetadataMatchState::Ambiguous
+        );
+        assert_eq!(
+            all.items
+                .iter()
+                .find(|item| item.game_id == GameId(5))
+                .unwrap()
+                .metadata_match_state,
+            LibraryMetadataMatchState::Pending
+        );
+        assert_eq!(
+            all.items
+                .iter()
+                .find(|item| item.game_id == GameId(6))
+                .unwrap()
+                .metadata_match_state,
+            LibraryMetadataMatchState::Pending,
+            "a game without a provider row uses the same pending state as queued work"
+        );
+
+        let mut request = LibraryQuery {
+            search: Some(" metadata ".to_owned()),
+            ..LibraryQuery::default()
+        };
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![2, 1]
+        );
+        request.search = Some("fallback".to_owned());
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![4]
+        );
+        request.search = Some("   ".to_owned());
+        assert_eq!(
+            repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()
+                .total,
+            6,
+            "whitespace-only search is the empty search"
+        );
+
+        request = LibraryQuery {
+            system_id: Some(SystemId::Nes),
+            ..LibraryQuery::default()
+        };
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![3]
+        );
+        request = LibraryQuery {
+            availability: Some(GameAvailability::Unavailable),
+            ..LibraryQuery::default()
+        };
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![3]
+        );
+        request = LibraryQuery {
+            genre: Some("aCtIoN".to_owned()),
+            ..LibraryQuery::default()
+        };
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![2]
+        );
+        request = LibraryQuery {
+            region: Some("us".to_owned()),
+            ..LibraryQuery::default()
+        };
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![1]
+        );
+
+        request = LibraryQuery {
+            limit: 2,
+            offset: 2,
+            ..LibraryQuery::default()
+        };
+        let page = repository
+            .query_library(&request, MetadataProviderId::ScreenScraper)
+            .await
+            .unwrap();
+        assert_eq!(page.total, 6);
+        assert_eq!(page.limit, 2);
+        assert_eq!(ids(&page), vec![3, 5]);
+
+        request.limit = u32::MAX;
+        let capped = repository
+            .query_library(&request, MetadataProviderId::ScreenScraper)
+            .await
+            .unwrap();
+        assert_eq!(capped.limit, MAX_LIBRARY_PAGE_SIZE);
+        assert!(capped.items.len() <= MAX_LIBRARY_PAGE_SIZE as usize);
+
+        request.offset = u64::MAX;
+        assert!(matches!(
+            repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await,
+            Err(AppError::Library(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn library_search_treats_like_metacharacters_as_literal_text() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        for (game_id, title) in [
+            (1, "Literal % Title"),
+            (2, "Literal _ Title"),
+            (3, "abc"),
+            (4, "aXc"),
+            (5, "a_c"),
+            (6, r"slash\title"),
+        ] {
+            insert_game(
+                &pool,
+                game_id,
+                SystemId::Nes,
+                title,
+                GameAvailability::Available,
+            )
+            .await;
+        }
+
+        let mut request = LibraryQuery {
+            search: Some("%".to_owned()),
+            ..LibraryQuery::default()
+        };
+        let percent = repository
+            .query_library(&request, MetadataProviderId::ScreenScraper)
+            .await
+            .unwrap();
+        assert_eq!(percent.total, 1);
+        assert_eq!(ids(&percent), vec![1]);
+
+        request.search = Some("_".to_owned());
+        let underscore = repository
+            .query_library(&request, MetadataProviderId::ScreenScraper)
+            .await
+            .unwrap();
+        assert_eq!(underscore.total, 2);
+        assert_eq!(ids(&underscore), vec![5, 2]);
+
+        request.search = Some("a_c".to_owned());
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![5],
+            "an underscore in the query must not match an arbitrary character"
+        );
+
+        request.search = Some(r"slash\title".to_owned());
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![6],
+            "a backslash in the query must remain literal"
+        );
+
+        request.search = Some("abc".to_owned());
+        assert_eq!(
+            ids(&repository
+                .query_library(&request, MetadataProviderId::ScreenScraper)
+                .await
+                .unwrap()),
+            vec![3],
+            "ordinary search text retains its existing semantics"
+        );
+    }
+
+    #[tokio::test]
+    async fn favorites_are_durable_filtered_and_composed_with_cached_cover_state() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        insert_game(
+            &pool,
+            1,
+            SystemId::Nes,
+            "Favorite Candidate",
+            GameAvailability::Available,
+        )
+        .await;
+        insert_cached_cover(&pool, 1).await;
+
+        let default_item = repository
+            .query_library(&LibraryQuery::default(), MetadataProviderId::ScreenScraper)
+            .await
+            .unwrap()
+            .items
+            .pop()
+            .unwrap();
+        assert!(!default_item.favorite);
+        let expected_cover_ref = cached_cover_reference(GameId(1));
+        assert_eq!(
+            default_item.cover_ref.as_deref(),
+            Some(expected_cover_ref.as_str())
+        );
+
+        repository.set_game_favorite(GameId(1), true).await.unwrap();
+        let favorites = repository
+            .query_library(
+                &LibraryQuery {
+                    favorites_only: true,
+                    ..LibraryQuery::default()
+                },
+                MetadataProviderId::ScreenScraper,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(&favorites), vec![1]);
+        assert!(favorites.items[0].favorite);
+        assert!(
+            repository
+                .get_library_game_detail(GameId(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .favorite
+        );
+        assert_eq!(
+            repository
+                .get_library_summary()
+                .await
+                .unwrap()
+                .favorite_games,
+            1
+        );
+
+        repository
+            .set_game_favorite(GameId(1), false)
+            .await
+            .unwrap();
+        let no_favorites = repository
+            .query_library(
+                &LibraryQuery {
+                    favorites_only: true,
+                    ..LibraryQuery::default()
+                },
+                MetadataProviderId::ScreenScraper,
+            )
+            .await
+            .unwrap();
+        assert!(no_favorites.items.is_empty());
+        let stored: i64 =
+            sqlx::query_scalar("SELECT favorite FROM game_user_state WHERE game_id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, 0, "clearing a favorite remains durable state");
+
+        assert!(
+            sqlx::query("UPDATE game_user_state SET favorite = 2 WHERE game_id = 1")
+                .execute(&pool)
+                .await
+                .is_err()
+        );
+        assert!(
+            sqlx::query("DELETE FROM games WHERE id = 1")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "user state intentionally restricts game deletion"
+        );
+    }
+
+    #[tokio::test]
+    async fn game_detail_is_bounded_and_never_serializes_physical_hashes() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        insert_root(&pool).await;
+        insert_game(
+            &pool,
+            1,
+            SystemId::Snes,
+            "Disc Summary",
+            GameAvailability::Available,
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO content_units \
+             (id, game_id, root_id, system_id, kind, local_title, primary_relative_path, \
+              fingerprint, availability, created_at, updated_at) \
+             VALUES (1, 1, 1, 'snes', 'cue_bin', 'Disc Summary', 'disc/game.cue', \
+                     'unit-fingerprint-secret', 'available', ?, ?)",
+        )
+        .bind(TEST_TIME)
+        .bind(TEST_TIME)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (file_id, path, role) in [
+            (1_i64, "disc/game.cue", "descriptor"),
+            (2, "disc/game.bin", "track"),
+        ] {
+            sqlx::query(
+                "INSERT INTO content_files \
+                 (id, root_id, relative_path, size_bytes, modified_at, crc32, md5, sha1, \
+                  availability, created_at, updated_at) \
+                 VALUES (?, 1, ?, 10, ?, 'AABBCCDD', 'd41d8cd98f00b204e9800998ecf8427e', \
+                         'da39a3ee5e6b4b0d3255bfef95601890afd80709', 'available', ?, ?)",
+            )
+            .bind(file_id)
+            .bind(path)
+            .bind(TEST_TIME)
+            .bind(TEST_TIME)
+            .bind(TEST_TIME)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO content_unit_files \
+                 (content_unit_id, content_file_id, ordinal, role) VALUES (1, ?, ?, ?)",
+            )
+            .bind(file_id)
+            .bind(file_id - 1)
+            .bind(role)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let detail = repository
+            .get_library_game_detail(GameId(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.content_units.len(), 1);
+        assert_eq!(detail.content_units[0].file_count, 2);
+        assert_eq!(
+            detail.content_units[0].primary_relative_path,
+            "disc/game.cue"
+        );
+        let detail_json = serde_json::to_string(&detail).unwrap();
+        assert_no_physical_identity(&detail_json);
+        assert!(!detail_json.contains("unit-fingerprint-secret"));
+        assert!(!detail_json.contains("AABBCCDD"));
+
+        let page = repository
+            .query_library(&LibraryQuery::default(), MetadataProviderId::ScreenScraper)
+            .await
+            .unwrap();
+        assert_no_physical_identity(&serde_json::to_string(&page).unwrap());
+    }
+
+    #[tokio::test]
+    async fn large_synthetic_library_queries_return_only_the_bounded_page() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        let mut transaction = pool.begin().await.unwrap();
+        for game_id in 1_i64..=500 {
+            sqlx::query(
+                "INSERT INTO games \
+                 (id, system_id, local_title, availability, created_at, updated_at) \
+                 VALUES (?, 'nes', ?, 'available', ?, ?)",
+            )
+            .bind(game_id)
+            .bind(format!("Synthetic Game {game_id:04}"))
+            .bind(TEST_TIME)
+            .bind(TEST_TIME)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        }
+        transaction.commit().await.unwrap();
+
+        let capped = repository
+            .query_library(
+                &LibraryQuery {
+                    limit: u32::MAX,
+                    ..LibraryQuery::default()
+                },
+                MetadataProviderId::ScreenScraper,
+            )
+            .await
+            .unwrap();
+        assert_eq!(capped.total, 500);
+        assert_eq!(capped.items.len(), MAX_LIBRARY_PAGE_SIZE as usize);
+        assert_eq!(capped.items.first().unwrap().game_id, GameId(1));
+        assert_eq!(capped.items.last().unwrap().game_id, GameId(60));
+
+        let tail = repository
+            .query_library(
+                &LibraryQuery {
+                    offset: 480,
+                    limit: 60,
+                    ..LibraryQuery::default()
+                },
+                MetadataProviderId::ScreenScraper,
+            )
+            .await
+            .unwrap();
+        assert_eq!(tail.total, 500);
+        assert_eq!(tail.items.len(), 20);
+        assert_eq!(tail.items.first().unwrap().game_id, GameId(481));
+        assert_eq!(tail.items.last().unwrap().game_id, GameId(500));
+    }
+
+    #[tokio::test]
+    async fn scan_issue_page_is_bounded_paginated_and_deterministically_ordered() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        let old_run: i64 = sqlx::query_scalar(
+            "INSERT INTO scan_runs (state, started_at) VALUES ('completed', ?) RETURNING id",
+        )
+        .bind(TEST_TIME)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let latest_run: i64 = sqlx::query_scalar(
+            "INSERT INTO scan_runs (state, started_at) VALUES ('completed', ?) RETURNING id",
+        )
+        .bind(TEST_TIME + 1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO scan_issues (scan_run_id, kind, relative_path, created_at) \
+             VALUES (?, 'unreadable_path', 'old-issue', ?)",
+        )
+        .bind(old_run)
+        .bind(TEST_TIME + 10_000)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for issue_id in 0_i64..205 {
+            sqlx::query(
+                "INSERT INTO scan_issues (scan_run_id, kind, relative_path, created_at) \
+                 VALUES (?, 'unreadable_path', ?, ?)",
+            )
+            .bind(latest_run)
+            .bind(format!("issue-{issue_id}"))
+            .bind(if issue_id < 2 {
+                TEST_TIME + 20_000
+            } else {
+                TEST_TIME + issue_id
+            })
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let first_page = repository.list_latest_scan_issues_page(0, 0).await.unwrap();
+        assert_eq!(first_page.total, 205);
+        assert_eq!(first_page.limit, DEFAULT_SCAN_ISSUE_PAGE_SIZE);
+        assert_eq!(
+            first_page.issues.len(),
+            DEFAULT_SCAN_ISSUE_PAGE_SIZE as usize
+        );
+        assert_eq!(
+            first_page.issues[0].relative_path.as_deref(),
+            Some("issue-1")
+        );
+        assert_eq!(
+            first_page.issues[1].relative_path.as_deref(),
+            Some("issue-0")
+        );
+        assert!(!first_page
+            .issues
+            .iter()
+            .any(|issue| issue.relative_path.as_deref() == Some("old-issue")));
+
+        let tail = repository
+            .list_latest_scan_issues_page(200, 50)
+            .await
+            .unwrap();
+        assert_eq!(tail.total, 205);
+        assert_eq!(tail.offset, 200);
+        assert_eq!(tail.issues.len(), 5);
+        assert_eq!(tail.issues[0].relative_path.as_deref(), Some("issue-6"));
+
+        let capped = repository
+            .list_latest_scan_issues_page(0, u32::MAX)
+            .await
+            .unwrap();
+        assert_eq!(capped.limit, MAX_SCAN_ISSUE_PAGE_SIZE);
+        assert_eq!(capped.issues.len(), MAX_SCAN_ISSUE_PAGE_SIZE as usize);
+
+        let running_run: i64 = sqlx::query_scalar(
+            "INSERT INTO scan_runs (state, started_at) VALUES ('running', ?) RETURNING id",
+        )
+        .bind(TEST_TIME + 2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO scan_issues (scan_run_id, kind, relative_path, created_at) \
+             VALUES (?, 'unreadable_path', 'running-issue', ?)",
+        )
+        .bind(running_run)
+        .bind(TEST_TIME + 30_000)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let during_new_run = repository
+            .list_latest_scan_issues_page(0, 50)
+            .await
+            .unwrap();
+        assert_eq!(
+            during_new_run.scan_run_id,
+            Some(ScanRunId(latest_run)),
+            "a running scan must not replace the latest persisted issue run"
+        );
+        assert_eq!(during_new_run.total, 205);
+        assert_eq!(during_new_run.issues.len(), 50);
+        assert!(during_new_run
+            .issues
+            .iter()
+            .all(|issue| issue.scan_run_id == Some(ScanRunId(latest_run))));
+
+        sqlx::query("UPDATE scan_runs SET state = 'completed', completed_at = ? WHERE id = ?")
+            .bind(TEST_TIME + 40_000)
+            .bind(running_run)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let completed_new_run = repository
+            .list_latest_scan_issues_page(0, 50)
+            .await
+            .unwrap();
+        assert_eq!(completed_new_run.scan_run_id, Some(ScanRunId(running_run)));
+        assert_eq!(completed_new_run.total, 1);
+        assert_eq!(completed_new_run.issues.len(), 1);
+        assert_eq!(
+            completed_new_run.issues[0].scan_run_id,
+            Some(ScanRunId(running_run))
+        );
+        assert_eq!(
+            completed_new_run.issues[0].relative_path.as_deref(),
+            Some("running-issue")
+        );
+    }
 }

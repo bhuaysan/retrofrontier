@@ -1,6 +1,7 @@
 use crate::application::AppState;
 use crate::domain::library::{
-    ContentRoot, ContentRootId, LibrarySnapshot, ScanIssue, ScanStatus, ScanSummary,
+    ContentRoot, ContentRootId, GameFavorite, GameId, LibraryGameDetail, LibraryPage, LibraryQuery,
+    LibrarySnapshot, LibrarySummary, ScanIssue, ScanIssuePage, ScanStatus, ScanSummary,
 };
 use crate::domain::system::SystemId;
 use crate::error::AppError;
@@ -26,6 +27,26 @@ pub struct SetContentRootEnabledRequest {
     pub enabled: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryGameRequest {
+    pub game_id: GameId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetGameFavoriteRequest {
+    pub game_id: GameId,
+    pub favorite: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ScanIssuePageRequest {
+    pub offset: u64,
+    pub limit: u32,
+}
+
 #[tauri::command]
 pub async fn get_content_roots(
     state: tauri::State<'_, AppState>,
@@ -44,6 +65,13 @@ pub async fn add_external_content_root(
         .library()
         .add_external_content_root(&request.path, request.system_hint)
         .await;
+    log_result(&result);
+    result
+}
+
+#[tauri::command]
+pub fn open_managed_rom_folder(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
+    let result = state.library().open_managed_rom_folder();
     log_result(&result);
     result
 }
@@ -91,6 +119,64 @@ pub async fn get_scan_issues(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<ScanIssue>, AppError> {
     let result = state.library().get_scan_issues().await;
+    log_result(&result);
+    result
+}
+
+#[tauri::command]
+pub async fn get_scan_issue_page(
+    request: ScanIssuePageRequest,
+    state: tauri::State<'_, AppState>,
+) -> Result<ScanIssuePage, AppError> {
+    let result = state
+        .library()
+        .get_scan_issue_page(request.offset, request.limit)
+        .await;
+    log_result(&result);
+    result
+}
+
+#[tauri::command]
+pub async fn query_library(
+    request: LibraryQuery,
+    state: tauri::State<'_, AppState>,
+) -> Result<LibraryPage, AppError> {
+    let result = state.library().query_library(&request).await;
+    log_result(&result);
+    result
+}
+
+#[tauri::command]
+pub async fn get_library_summary(
+    state: tauri::State<'_, AppState>,
+) -> Result<LibrarySummary, AppError> {
+    let result = state.library().get_library_summary().await;
+    log_result(&result);
+    result
+}
+
+#[tauri::command]
+pub async fn get_library_game_detail(
+    request: LibraryGameRequest,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<LibraryGameDetail>, AppError> {
+    let result = state
+        .library()
+        .get_library_game_detail(request.game_id)
+        .await;
+    log_result(&result);
+    result
+}
+
+#[tauri::command]
+pub async fn set_game_favorite(
+    request: SetGameFavoriteRequest,
+    state: tauri::State<'_, AppState>,
+) -> Result<GameFavorite, AppError> {
+    let result = state
+        .library()
+        .set_game_favorite(request.game_id, request.favorite)
+        .await;
     log_result(&result);
     result
 }

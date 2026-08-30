@@ -1,6 +1,7 @@
-# RetroFrontier metadata (M5)
+# RetroFrontier metadata (M5 and M6.1 boundary)
 
-This document describes the metadata implementation that ships with M5. It is an implementation
+This document describes the metadata implementation that ships with M5 and the M6.1 boundary that
+allows the later library UI to consume it. It is an implementation
 record, not new research. The provider evidence, ES-DE precedent, project decisions, and residual
 risks behind these choices are recorded in [`SCREENSCRAPER_SPIKE.md`](SCREENSCRAPER_SPIKE.md) and
 [ADR-007](adr/ADR-007-metadata-provider.md); nothing here upgrades a research finding into a
@@ -21,8 +22,9 @@ M5 adds provider-backed enrichment on top of the M4 local library:
 - optional personal provider credentials in the OS credential vault;
 - a thin typed IPC surface.
 
-M5 adds no library UI. It does not implement broad media scraping, a metadata editor, arbitrary
-manual metadata entry, provider-cache export, or additional providers.
+M5 adds no visual library UI. M6.1 adds only the native/IPC boundaries that a later UI can consume;
+it does not implement broad media scraping, a metadata editor, arbitrary manual metadata entry,
+provider-cache export, or additional providers.
 
 ## Layering
 
@@ -402,6 +404,21 @@ refuses absolute paths and traversal, so a corrupted row cannot be turned into a
 filesystem read. Nothing is ever written beside user ROMs, inside managed ROM roots, inside BIOS
 roots, or into source-controlled paths.
 
+### WebView delivery boundary (M6.1)
+
+The UI never receives the persisted `cache_relative_path`. A bounded library item or readable
+metadata state exposes only an opaque target-specific reference: `rfmedia://localhost/cover/<game-id>`
+on Linux/macOS desktop, and `http://rfmedia.localhost/cover/<game-id>` on Windows. The native
+Tauri custom-protocol registration and reference generator own this platform distinction. The
+strongest boundary is that the WebView supplies only an opaque local game identity; the persisted
+cache path never crosses into React. Rust loads the current cached cover row, then reuses the cover
+cache's lexical/canonical containment and PNG/JPEG/WebP validation before returning bytes. Those
+containment checks are defence-in-depth against corrupted persisted cache paths, not the identity
+boundary itself. Traversal, absolute paths, symlinks that leave the cache, missing files, unsupported
+types, and invalid content produce safe protocol failures. The CSP already permits the two required
+origins; no generic file-serving route exists. Provider URLs and credentials never cross this
+boundary.
+
 ## Offline behaviour
 
 Offline is a first-class state, observable as repeated transport failure.
@@ -453,8 +470,21 @@ no provider logic, SQL, filesystem access, or retry behaviour.
 | `get_metadata_provider_account`        | Configured yes/no, state, account name — never a password     |
 
 The DTOs have no field for a developer credential, a password, a raw provider payload, an
-authenticated URL, or a SQL/domain internal. The cover is exposed as a cache-relative reference;
-React never resolves or owns filesystem paths.
+authenticated URL, or a SQL/domain internal. The cover is exposed as an opaque native media
+reference; React never resolves or owns filesystem paths.
+
+Metadata changes that affect visible game state emit `metadata-state-changed` after the relevant
+database write. Its payload is only `{ gameId, providerId }`; it is an invalidation signal, and M6.3
+/M6.4 refetch the bounded library/detail or existing metadata state rather than treating the event
+as a data source. It remains a per-game invalidation signal: bulk enrichment can emit many events.
+M6.3 debounces/coalesces visible-page events, while M6.4 debounces only the currently open game;
+neither refetches the entire library immediately for every event.
+
+The M6 list and M5 detail use one coherent provider-match vocabulary. `pending` means that no
+accepted provider match is currently available, including a game that has not been requested yet or
+has queued work; there is no separate `notRequested` state in the UI contract. `stale` means that
+the last-known-good match no longer agrees with current local evidence, while its cached normalized
+metadata and cover remain usable.
 
 ## Testing
 
@@ -475,6 +505,9 @@ There is no opt-in live provider test in M5. Adding one later would require sepa
 - Portable export or backup of the provider cache is not implemented.
 - Exact visible attribution is an M6 responsibility. M5 preserves provider identity and the
   available source credit to support it, and hard-codes no legal attribution sentence.
+- Library title search escapes `\`, `%`, and `_` as literal text, but its SQLite `lower()` matching
+  remains ASCII-oriented in the current configuration. Full Unicode case folding is deferred; the
+  M6.1 corrective pass adds no folded-search column or replacement search subsystem.
 - ScreenScraper Web API v2 is documented as beta and may change without notice.
 - Application developer credentials are recoverable from a distributed binary.
 - The provider publishes no authoritative quota reset instant, so re-probing is conservative rather

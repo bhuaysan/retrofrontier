@@ -2,8 +2,10 @@
 
 ## Current Priority
 
-The project has completed its local-library foundation. Metadata-provider, launch, and UI work remain
-later milestones; runtime trust and core-policy research remain explicit release gates.
+M6 Library UI implementation and the M6.6 corrective pass are complete, but the final adversarial
+review delta has not yet verified closure. The branch is ready for focused delta review; M6 is not
+accepted. M7 launch/process behavior and later UI work remain; runtime trust and core-policy research
+remain explicit release gates.
 
 ## M0 — Planning and Repository Foundation
 
@@ -273,18 +275,67 @@ visible attribution presentation, which belongs to M6.
 
 **Model:** Luna Max.
 
-- [ ] navigation shell
-- [ ] empty state
-- [ ] library UI
-- [ ] GameCard
-- [ ] search
-- [ ] system filters
-- [ ] favorites
-- [ ] game details
-- [ ] runtime readiness
-- [ ] BIOS readiness
-- [ ] scan progress/issues
-- [ ] settings entry points
+- [x] M6.1 backend enablement: bounded library queries, summaries, local detail, favorites, issue
+      pages, typed root errors, cached-cover delivery, and metadata invalidation contracts
+- [x] M6.2 shell / empty library / scan UX (complete and reviewed)
+- [x] M6.3 library browsing
+- [x] M6.4 game detail / readiness
+- [x] M6.5 metadata UX / settings
+- [x] M6.6 hardening / accessibility / documentation
+      - [x] accepted M6.5 candidate/action, provider/account truthfulness, focus, contrast, and
+            regression findings
+      - [x] carried M6.2–M6.4 focus, heading, readiness, scan, and visual hardening findings
+      - [ ] M5 account lifecycle does not yet write `Invalid` after provider authentication failure
+      - [ ] platform opener executable/reaping hardening and stuck-scan recovery remain native/release
+            work outside this UI slice
+      - [x] focused corrective pass restores truthful `ambiguous` candidate-state copy
+      - [x] M66-MEDIUM-2 light-theme error/negative-status contrast — CLOSED in M6.7E by the
+            semantic `--negative-text` token (`#743c00` light, `#ffb26c` dark)
+      - [ ] M66-LOW-1 failed page-forward target can be committed by background refresh
+      - [ ] M66-LOW-2 quota recency freezes at provider-panel mount
+      - [ ] M66-LOW-3 terminal scan completion watermark is not monotonic
+      - [ ] M66-LOW-4 candidate panels lack state-specific discovery copy
+      - [ ] M66-LOW-5 account-clear is blocked by account-read failure
+      - [ ] M66-LOW-7 landmark names include decorative `//`
+      - [ ] M66-INFO-1 unused cover-image checksum fields in the DTO
+      - [ ] M66-INFO-2 M5 `Invalid` account state remains unreachable
+      - [ ] M66-INFO-3 metadata-operation fallback uses state generation
+      - [ ] M66-INFO-4 rapid pagination can duplicate bounded queries
+      - [ ] M66-INFO-5 deferral timer self-termination observation
+      - [ ] M66-INFO-6 adjacent sidebar cursor glyph remains a design observation
+- [x] M6.7 design fidelity / polish
+      - [x] M6.7A library composition, M6.7B game card fidelity, M6.7C game detail fidelity,
+            M6.7D settings and scan fidelity, M6.7E accessibility and theme polish
+      - [x] stationary shared shell chrome across every route, including Settings
+      - [x] final corrective pass: HIGH-1 sidebar vertical overflow containment
+      - [x] final corrective pass: MED-1 light-theme active-control contrast (6.35:1)
+      - [x] final corrective pass: MED-3 Settings no longer narrows the shared `.app-main`
+      - [x] final corrective pass: MED-4 M6.7 documentation closure
+      - [x] MED-2 smooth cursor / vector Favorite star — CLOSED AS INVALID, accepted product
+            exception to the hard-edge pixel language; must not be restored to pixel snapping
+      - [ ] final delta review and M6 acceptance
+      - The remaining M66 LOW/INFO items above are accepted follow-ups, not M6 closure blockers.
+      - [x] M66-LOW-6 required status/contrast/deferral documentation synchronization
+      - [ ] M6.3 LOW-6 bounded per-filter count contract remains deferred
+      - [ ] M6.3 LOW-7 design-approved 960×640 density remains deferred
+      - [ ] M6.4 INFO-3 modified-click native-link fallback remains deliberate
+      - [ ] full Unicode case folding remains a search-quality deferral
+      - [ ] metadata event volume beyond the bounded consumer remains deferred
+      - [ ] provider capability expansion remains governed by M5
+      - [ ] archive/ZIP import remains out of scope
+
+- [x] navigation shell
+- [x] empty state
+- [x] library UI
+- [x] GameCard
+- [x] search
+- [x] system filters
+- [x] favorites
+- [x] game details
+- [x] runtime readiness
+- [x] BIOS readiness
+- [x] scan progress/issues
+- [x] settings entry points
 
 ## M7 — RetroArch Launch
 

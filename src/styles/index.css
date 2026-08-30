@@ -1,4 +1,4 @@
-/* The design handoff is the source of truth; do not duplicate its token values here. */
+/* RetroFrontier — M6 UI styles. Tokens remain the design source of truth. */
 @import '../../docs/design/tokens.css';
 
 :root {
@@ -13,51 +13,82 @@
   box-sizing: border-box;
 }
 
-html,
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+html {
+  height: 100%;
+  min-width: 320px;
+  overflow: hidden;
+  scrollbar-color: var(--text-dim) var(--bg-soft);
+}
+
 body,
 #root {
+  height: 100%;
   min-width: 320px;
-  min-height: 100%;
+  min-height: 0;
   margin: 0;
+  overflow: hidden;
 }
 
 body {
-  min-height: 100vh;
-  background: var(--bg);
   color: var(--text);
+  background: var(--bg);
   font-family: var(--font-body);
   transition:
     background 0.25s ease,
     color 0.25s ease;
 }
 
-button {
+button,
+a {
   font: inherit;
 }
 
-button:focus-visible {
+button {
+  color: inherit;
+}
+
+button:focus-visible,
+a:focus-visible {
   outline: none;
 }
 
 ::selection {
-  background: var(--accent);
   color: #000;
+  background: var(--accent);
 }
 
 .app-shell {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 264px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   color: var(--text);
   background-color: var(--bg);
-  background-image: repeating-linear-gradient(
+  background-image: linear-gradient(
     to bottom,
     var(--scanline) 0,
     var(--scanline) 1px,
     transparent 1px,
     transparent 4px
   );
+  background-size: 100% 4px;
+  background-repeat: repeat-y;
+  background-position: 0 0;
   transition:
     background 0.25s ease,
     color 0.25s ease;
@@ -68,20 +99,31 @@ button:focus-visible {
   grid-column: 1 / -1;
   align-items: center;
   gap: 16px;
+  /* 51px LibrarySearch control + 14px vertical padding + 3px divider. */
+  min-height: 82px;
   padding: 14px 24px;
   background: var(--surface);
   border-bottom: 3px solid var(--border);
 }
 
 .wordmark {
+  padding: 0;
   font-family: var(--font-label);
   font-size: 13px;
   letter-spacing: 1px;
   user-select: none;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
 }
 
 .wordmark span {
   color: var(--accent-2);
+}
+
+.wordmark:focus-visible {
+  color: var(--bg);
+  background: var(--text);
 }
 
 .theme-toggle {
@@ -112,20 +154,108 @@ button:focus-visible {
   background: var(--accent-3);
 }
 
+/* Light `--accent-3` under black ink measures 4.18:1. Reuse the `.pixel-row--active` correction
+   so the same accent carries black label text at AA without introducing a new colour. */
+[data-theme='light'] .theme-option--active {
+  background: color-mix(in srgb, var(--accent-3) 78%, white);
+}
+
 .theme-option:hover,
 .theme-option:focus-visible {
   color: var(--bg);
   background: var(--text);
 }
 
+.mobile-nav {
+  display: none;
+}
+
+.library-search {
+  display: flex;
+  flex: 1 1 360px;
+  max-width: 540px;
+  min-width: 220px;
+  align-items: center;
+  margin-left: clamp(8px, 3vw, 42px);
+  color: var(--text-dim);
+  background: var(--bg-soft);
+  border: 2px solid var(--border);
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+
+.library-search:focus-within {
+  color: var(--text);
+  box-shadow:
+    0 0 0 3px var(--text) inset,
+    3px 3px 0 var(--shadow);
+}
+
+.library-search input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  color: var(--text);
+  font-family: var(--font-meta);
+  font-size: 20px;
+  caret-color: var(--accent);
+  background: transparent;
+  border: 0;
+  outline: 0;
+}
+
+.library-search input::placeholder {
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 20px;
+  opacity: 1;
+}
+
+.library-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.library-search button {
+  align-self: stretch;
+  padding: 0 10px;
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 7px;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid var(--border);
+  cursor: pointer;
+}
+
+.library-search button:hover,
+.library-search button:focus-visible {
+  color: var(--bg);
+  background: var(--text);
+}
+
 .app-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  /* Grid items default to min-height: auto, so a tall sidebar would push the shell rows past the
+     viewport and drag the stationary header/footer out of view. Contain the overflow here. */
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 22px 16px;
   background: var(--bg-soft);
   border-right: 3px solid var(--border);
 }
 
-.sidebar-section + .sidebar-section {
-  margin-top: 26px;
+/* At the normal desktop height, compact only the outer padding so every default navigation row
+   fits without a scrollbar. Shorter desktops retain the roomier padding and scroll locally. */
+@media (min-width: 861px) and (min-height: 800px) {
+  .app-sidebar {
+    padding-block: 11px;
+  }
+}
+
+.sidebar-menu {
+  margin-top: auto;
 }
 
 .sidebar-label {
@@ -135,6 +265,10 @@ button:focus-visible {
   font-family: var(--font-label);
   font-size: 9px;
   letter-spacing: 2px;
+}
+
+.sidebar-catalog-status {
+  margin: 0 4px;
 }
 
 .pixel-row-list {
@@ -150,14 +284,16 @@ button:focus-visible {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .pixel-row-cursor {
+  display: grid;
+  flex: none;
+  place-items: center;
   width: 18px;
   margin-right: -5px;
   color: var(--text);
-  font-family: var(--font-label);
-  font-size: 13px;
   opacity: 0;
   pointer-events: none;
 }
@@ -183,8 +319,7 @@ button:focus-visible {
     background 0.08s ease;
 }
 
-.pixel-row:hover,
-.pixel-row:focus-visible {
+.pixel-row:hover {
   background: var(--surface);
   transform: translateX(2px);
 }
@@ -196,10 +331,20 @@ button:focus-visible {
   box-shadow: 3px 3px 0 var(--shadow);
 }
 
-.pixel-row--active:hover,
-.pixel-row--active:focus-visible {
-  color: var(--bg);
-  background: var(--text);
+.pixel-row--active:hover {
+  color: #000;
+  background: var(--accent-3);
+}
+
+.pixel-row:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.pixel-row:disabled:hover {
+  background: transparent;
+  transform: none;
 }
 
 .system-swatch {
@@ -229,154 +374,20 @@ button:focus-visible {
   color: #000;
 }
 
+[data-theme='light'] .pixel-row--active {
+  background: var(--accent-3);
+  background: color-mix(in srgb, var(--accent-3) 78%, white);
+}
+
 .app-main {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 20px;
   min-width: 0;
-  padding: 26px 28px 48px;
-}
-
-.systems-panel {
-  max-width: 1120px;
-  padding: 18px 20px 22px;
-  background: var(--surface);
-  border: 2px solid var(--border);
-  box-shadow: var(--shadow-rest);
-}
-
-.systems-intro {
-  max-width: 72ch;
-  margin: 16px 0 18px;
-  color: var(--text-dim);
-  font-size: 15px;
-  line-height: 1.55;
-}
-
-.systems-root-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px 14px;
-  margin-bottom: 20px;
-  padding: 10px 12px;
-  background: var(--bg-soft);
-  border: 2px solid var(--border);
-}
-
-.systems-root-path {
-  flex: 1;
-  min-width: 210px;
-  color: var(--text-dim);
-  font-family: var(--font-meta);
-  font-size: 19px;
-}
-
-.systems-loading {
-  margin: 28px 0 10px;
-  color: var(--text-dim);
-  font-family: var(--font-meta);
-  font-size: 21px;
-  text-align: center;
-}
-
-.system-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 16px;
-}
-
-.system-card {
-  min-width: 0;
-  padding: 14px 14px 15px;
-  background: var(--bg-soft);
-  border: 2px solid var(--border);
-  box-shadow: 3px 3px 0 var(--shadow);
-}
-
-.system-card-header {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
-  padding-bottom: 13px;
-  border-bottom: 2px solid var(--border);
-}
-
-.system-card-swatch {
-  flex: none;
-  width: 18px;
-  height: 18px;
-  margin-top: 2px;
-  border: 2px solid var(--border);
-}
-
-.system-card-title {
-  flex: 1;
-  min-width: 0;
-}
-
-.system-card-title h3 {
-  margin: 0;
-  overflow: hidden;
-  font-size: 15px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.system-card-title span {
-  display: block;
-  margin-top: 4px;
-  overflow: hidden;
-  color: var(--text-dim);
-  font-family: var(--font-meta);
-  font-size: 17px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.system-card-header .status-value {
-  flex: none;
-  max-width: 120px;
-  font-size: 16px;
-  text-align: right;
-}
-
-.system-card-checks {
-  display: grid;
-  gap: 8px;
-  padding: 13px 0 2px;
-}
-
-.system-check-row {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.system-check-label {
-  min-width: 48px;
-  color: var(--text-dim);
-  font-family: var(--font-label);
-  font-size: 8px;
-  letter-spacing: 1px;
-}
-
-.system-check-row .status-value {
-  font-size: 18px;
-}
-
-.system-card-reasons {
-  display: grid;
-  gap: 4px;
-  margin: 12px 0 0;
-  padding: 10px 0 0 18px;
-  color: var(--text-dim);
-  border-top: 2px dashed var(--text-dim);
-  font-family: var(--font-meta);
-  font-size: 17px;
-  line-height: 1.25;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 26px 28px 60px;
 }
 
 .section-heading,
@@ -387,11 +398,16 @@ button:focus-visible {
 }
 
 .section-heading h1,
+.section-heading h2,
 .panel-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   margin: 0;
   font-family: var(--font-label);
   font-size: 13px;
   letter-spacing: 1px;
+  line-height: 1.5;
 }
 
 .section-heading > span:first-of-type,
@@ -401,48 +417,85 @@ button:focus-visible {
   background: var(--border);
 }
 
+.heading-arrow {
+  flex: none;
+  color: var(--accent-3);
+}
+
 .section-meta,
 .panel-meta {
+  flex: none;
   color: var(--text-dim);
   font-family: var(--font-meta);
   font-size: 18px;
+  white-space: nowrap;
 }
 
-.empty-state {
-  display: grid;
-  place-items: center;
-  gap: 22px;
-  max-width: 520px;
-  margin: auto;
-  padding: 34px 12px 26px;
-  text-align: center;
+.loading-panel,
+.loading-inline,
+.empty-inline,
+.request-status {
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 21px;
 }
 
-.empty-library-icon {
-  width: 64px;
-  height: 55px;
-  fill: var(--text-dim);
-}
-
-.empty-copy {
+.loading-panel {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 12px;
+  justify-content: center;
+  min-height: 180px;
+  padding: 28px;
+  border: 2px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-rest);
 }
 
-.empty-copy h2 {
-  margin: 0;
+.loading-block {
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  animation: loading-block 1.1s steps(2, end) infinite;
+}
+
+.inline-error,
+.root-action-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 16px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
+}
+
+.inline-error-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--negative-text);
+}
+
+.inline-error-copy {
+  display: grid;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+}
+
+.inline-error-copy strong {
+  color: var(--negative-text);
   font-family: var(--font-label);
-  font-size: 13px;
+  font-size: 9px;
   letter-spacing: 1px;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
-.empty-copy p {
+.inline-error-copy p {
   margin: 0;
-  font-size: 20px;
-  font-weight: 500;
-  line-height: 1.6;
+  font-size: 15px;
+  line-height: 1.5;
 }
 
 .pixel-button {
@@ -450,10 +503,13 @@ button:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 14px 18px;
+  min-height: 44px;
+  padding: 12px 16px;
   color: #000;
   font-family: var(--font-label);
   font-size: 9px;
+  line-height: 1.4;
+  text-align: center;
   background: var(--accent);
   border: 2px solid var(--border);
   box-shadow: 3px 3px 0 var(--shadow);
@@ -485,70 +541,781 @@ button:focus-visible {
   box-shadow: 4px 4px 0 var(--shadow);
 }
 
-.foundation-panel {
-  max-width: 760px;
+.pixel-button:disabled {
+  color: var(--text-dim);
+  background: var(--bg-soft);
+  cursor: wait;
+  opacity: 0.7;
+  transform: none;
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+
+.library-empty {
+  display: grid;
+  gap: 26px;
+  width: min(100%, 900px);
+  margin: 0 auto;
+}
+
+.empty-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 24px 12px 10px;
+  text-align: center;
+}
+
+.empty-library-icon {
+  color: var(--text-dim);
+}
+
+.empty-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.empty-copy h2 {
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: 13px;
+  letter-spacing: 1px;
+  line-height: 1.6;
+}
+
+.empty-copy p {
+  max-width: 52ch;
+  margin: 0;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+}
+
+.action-progress,
+.request-status {
+  margin: 0;
+}
+
+.root-overview,
+.scan-panel,
+.scan-issues,
+.settings-panel {
+  width: min(100%, 900px);
   padding: 18px 20px 20px;
   background: var(--surface);
   border: 2px solid var(--border);
   box-shadow: var(--shadow-rest);
 }
 
-.status-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
-  margin-top: 18px;
+.root-overview {
+  margin: 0 auto;
 }
 
-.status-item {
+.root-overview-row {
   display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px 0 12px;
+}
+
+.root-icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.root-overview-copy {
+  display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 5px;
   min-width: 0;
-  padding-top: 12px;
-  border-top: 2px solid var(--border);
 }
 
-.status-label {
-  color: var(--text-dim);
+.root-overview-copy strong {
+  color: var(--accent);
   font-family: var(--font-label);
-  font-size: 8px;
+  font-size: 9px;
   letter-spacing: 1px;
 }
 
-.status-value {
+.root-path {
+  display: block;
+  min-width: 0;
   overflow: hidden;
-  color: var(--text);
+  color: var(--text-dim);
   font-family: var(--font-meta);
   font-size: 19px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.status-value--good {
-  color: var(--accent);
-}
-
-.status-value--warning {
-  color: var(--accent-6);
-}
-
-.foundation-error,
-.foundation-notice {
-  margin: 18px 0 0;
-  padding: 10px 12px;
+.root-overview-footer {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  justify-content: space-between;
+  padding-top: 12px;
+  color: var(--text-dim);
   font-size: 14px;
   line-height: 1.5;
+  border-top: 2px solid var(--border);
+}
+
+.text-link {
+  flex: none;
+  padding: 2px 0;
+  color: var(--accent);
+  font-family: var(--font-label);
+  font-size: 8px;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.text-link:hover,
+.text-link:focus-visible {
+  color: var(--bg);
+  background: var(--text);
+}
+
+.scan-panel {
+  display: grid;
+  gap: 18px;
+  margin: 0 auto;
+}
+
+.scan-panel--active {
+  border-color: var(--accent);
+}
+
+.scan-panel--active .panel-heading h2 {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.status-pulse {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+  animation: scan-pulse 1.2s steps(2, end) infinite;
+}
+
+.scan-phase-row,
+.scan-result-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.scan-phase-row strong,
+.scan-result-summary strong {
+  font-size: 15px;
+}
+
+.scan-phase-row span,
+.scan-result-summary span {
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 20px;
+}
+
+.scan-progress {
+  display: block;
+  width: 100%;
+  height: 14px;
+  overflow: hidden;
+  border: 2px solid var(--border);
+  background: var(--bg-soft);
+  appearance: none;
+}
+
+.scan-progress::-webkit-progress-bar {
+  background: var(--bg-soft);
+}
+
+.scan-progress::-webkit-progress-value {
+  background: var(--accent);
+}
+
+.scan-progress::-moz-progress-bar {
+  background: var(--accent);
+}
+
+.scan-progress--indeterminate {
+  position: relative;
+}
+
+.scan-progress--indeterminate span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 30%;
+  background: var(--accent);
+  animation: rf-chase 1.1s steps(8) infinite;
+}
+
+.scan-counter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.scan-counter-grid > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 2px solid var(--border);
+}
+
+.scan-counter-grid span {
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 1px;
+}
+
+.scan-counter-grid strong {
+  font-family: var(--font-meta);
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.scan-truth-note,
+.scan-panel--result > p {
+  max-width: 70ch;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.scan-panel--result {
+  gap: 16px;
+}
+
+.scan-panel--result:not(.scan-panel--failed) .panel-heading h2 {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.scan-panel--failed .panel-heading h2 {
+  color: var(--negative-text);
+}
+
+.scan-issues {
+  display: grid;
+  gap: 16px;
+  margin: 0 auto;
+}
+
+.issue-context,
+.issue-empty,
+.issue-refresh {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.issue-context {
+  padding: 10px 12px;
+  background: var(--bg-soft);
+  border: 2px dashed var(--text-dim);
+}
+
+.issue-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
   border: 2px solid var(--border);
 }
 
-.foundation-error {
-  color: #000;
-  background: var(--accent-6);
+.issue-row {
+  display: grid;
+  gap: 6px;
+  padding: 13px 14px;
+  background: var(--surface-2);
 }
 
-.foundation-notice {
+.issue-row + .issue-row {
+  border-top: 2px solid var(--border);
+}
+
+.issue-row-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.issue-row-heading strong {
+  color: var(--negative-text);
+  font-size: 15px;
+}
+
+.issue-row-heading span {
+  max-width: 58%;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issue-row p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.issue-row .issue-detail {
+  color: var(--text-dim);
+}
+
+.issue-paths {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.issue-paths code {
+  max-width: 100%;
+  padding: 3px 6px;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-meta);
+  font-size: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--bg-soft);
+  border: 1px solid var(--text-dim);
+}
+
+/* `.app-main` stays the full-width shared scroll owner on every route; only the Settings content
+   measure is capped, so the main-region scrollbar keeps its normal right edge. */
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: min(100%, 700px);
+}
+
+.app-shell--scan {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.app-shell--scan .app-main {
+  grid-column: 1;
+}
+
+.scan-main {
+  display: grid;
+  place-items: start center;
+  padding-top: 48px;
+}
+
+.scan-screen-content {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  width: min(100%, 760px);
+}
+
+.scan-screen-content .scan-panel {
+  width: 100%;
+}
+
+.back-button {
+  align-self: flex-start;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 0;
+  width: min(100%, 640px);
+  padding: 0;
+}
+
+.settings-group > .panel-heading {
+  padding: 14px 16px;
+}
+
+.root-list {
+  display: grid;
+  gap: 0;
+  border-top: 2px solid var(--border);
+}
+
+.root-card {
+  display: grid;
+  gap: 7px;
+  padding: 13px 16px;
+  background: var(--surface);
+  border: 0;
+}
+
+.root-card--managed {
   background: var(--surface-2);
+}
+
+.root-card + .root-card {
+  border-top: 2px solid var(--border);
+}
+
+.root-card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.root-card-heading > div {
+  display: grid;
+  flex: 1;
+  gap: 5px;
+  min-width: 0;
+}
+
+.root-card-heading h3 {
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 1px;
+  line-height: 1.5;
+}
+
+.root-card-heading div span {
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 18px;
+}
+
+.root-status {
+  flex: none;
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 1px;
+  text-align: right;
+}
+
+.root-status--available {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.root-status--partiallyAvailable,
+.root-status--unavailable,
+.root-status--unsafe,
+.root-status--disabled {
+  color: var(--negative-text);
+}
+
+.root-card > .root-path {
+  padding: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  background: transparent;
+  border: 0;
+}
+
+.root-card-actions,
+.settings-panel-actions,
+.root-confirm-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.root-protected {
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.root-confirm-actions {
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.root-confirm-actions > span {
+  flex: 1;
+  min-width: 220px;
+  color: var(--negative-text);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.root-confirm-actions[role='alertdialog'] {
+  flex-basis: 100%;
+}
+
+.settings-panel-actions {
+  padding: 14px 16px;
+  border-top: 2px solid var(--border);
+}
+
+.metadata-provider-panel {
+  gap: 0;
+}
+
+.settings-panel-kicker {
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+}
+
+.metadata-provider-section,
+.metadata-account-section {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.metadata-provider-status-area {
+  display: grid;
+  gap: 8px;
+}
+
+.metadata-provider-status,
+.metadata-provider-defer-note,
+.metadata-account-status {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-left: 3px solid var(--text-dim);
+  padding-left: 10px;
+}
+
+.metadata-provider-status strong,
+.metadata-provider-defer-note strong,
+.metadata-account-status strong {
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  line-height: 1.5;
+}
+
+.metadata-provider-status p,
+.metadata-provider-defer-note p,
+.metadata-account-status p {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.metadata-provider-status--online,
+.metadata-account-status--online {
+  border-top-color: var(--accent);
+}
+
+.metadata-provider-status--offline,
+.metadata-provider-status--deferred,
+.metadata-account-status--attention {
+  border-top-color: var(--accent-6);
+}
+
+.metadata-provider-status--unavailable,
+.metadata-account-status--unavailable {
+  border-top-color: var(--accent-6);
+}
+
+.metadata-account-status--neutral {
+  border-top-color: var(--text-dim);
+}
+
+.metadata-provider-defer-note {
+  background: var(--bg-soft);
+  border-top-color: var(--accent-6);
+}
+
+.metadata-provider-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 14px;
+  margin: 0;
+  padding: 4px 0 0 13px;
+}
+
+.metadata-provider-summary > div {
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.metadata-provider-summary dt {
+  margin: 0;
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+}
+
+.metadata-provider-summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-meta);
+  font-size: 17px;
+}
+
+.metadata-account-section {
+  border-top: 2px solid var(--border);
+}
+
+.metadata-row-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.metadata-row-heading h3 {
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.metadata-account-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.metadata-account-heading > div {
+  display: grid;
+  gap: 6px;
+}
+
+.metadata-account-heading h3 {
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+}
+
+.metadata-account-form {
+  display: grid;
+  gap: 14px;
+  max-width: 720px;
+}
+
+.metadata-account-help {
+  max-width: 68ch;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.metadata-account-error {
+  color: var(--negative-text);
+}
+
+.metadata-account-fields {
+  display: grid;
+  grid-template-columns: minmax(140px, 190px) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.metadata-account-fields label {
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+}
+
+.metadata-account-fields input {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-family: var(--font-meta);
+  font-size: 20px;
+  background: var(--bg-soft);
+  border: 2px solid var(--border);
+  border-radius: 0;
+  outline: 0;
+}
+
+.metadata-account-fields input:focus {
+  box-shadow: 0 0 0 3px var(--text) inset;
+}
+
+.metadata-account-actions {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.metadata-clear-confirmation {
+  display: grid;
+  flex: 1 1 100%;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px;
+  background: var(--bg-soft);
+  border: 2px solid var(--border);
+}
+
+.metadata-clear-confirmation > span {
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+}
+
+.metadata-clear-confirmation p {
+  grid-column: 1 / -1;
+  max-width: 68ch;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .app-footer {
@@ -569,23 +1336,1304 @@ button:focus-visible {
   flex: 1;
 }
 
-.footer-key {
-  padding: 5px 7px;
-  color: #000;
-  font-family: var(--font-label);
-  font-size: 8px;
+.footer-note {
+  color: var(--text-dim);
+}
+
+.library-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.library-filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 8px 14px;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
+}
+
+/* B1 selection bar. Full content width, hard 2px border, accent fill, pixel shadow, no radius.
+   B1's "METADATEN KORRIGIEREN" action is intentionally absent: no metadata-correction workflow
+   exists yet, and a placeholder button would fabricate functionality. */
+.library-selection-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 12px 16px;
   background: var(--accent);
   border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
+}
+
+.library-selection-count {
+  margin: 0;
+  color: #000;
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+
+.library-selection-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.library-selection-clear {
+  padding: 10px 12px;
+  color: var(--text);
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  background: var(--surface-2);
+  border: 2px solid var(--border);
+  box-shadow: 2px 2px 0 var(--shadow);
+  cursor: pointer;
+}
+
+.library-selection-clear:hover,
+.library-selection-clear:focus-visible {
+  color: var(--bg);
+  background: var(--text);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+
+.library-filter-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+.library-filter-label {
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+
+.library-filter,
+.library-filter-reset {
+  padding: 6px 10px;
+  border: 2px solid var(--border);
+  cursor: pointer;
+}
+
+.library-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-dim);
+  background: var(--surface);
+  box-shadow: 3px 3px 0 var(--shadow);
+  padding-block: 5px;
+  padding-inline: 14px;
+  font-family: var(--font-meta);
+  font-size: 20px;
+  line-height: 1.15;
+}
+
+.library-filter-reset {
+  margin-left: auto;
+  color: var(--text);
+  background: var(--surface-2);
+  box-shadow: 2px 2px 0 var(--shadow);
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.library-filter:hover,
+.library-filter:focus-visible,
+.library-filter-reset:hover,
+.library-filter-reset:focus-visible {
+  color: var(--bg);
+  background: var(--text);
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--shadow);
+}
+
+.library-filter--active {
+  color: #000;
+  background: var(--accent-2);
   box-shadow: 2px 2px 0 var(--shadow);
 }
 
-@media (max-width: 1080px) {
-  .status-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+.library-refreshing,
+.library-result-meta,
+.library-page-status,
+.library-loading-copy {
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 17px;
+  letter-spacing: 0.025em;
+}
+
+.library-refreshing {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.library-result-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  margin: 0;
+}
+
+.library-result-range {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.library-result-system {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 20px 18px;
+  min-width: 0;
+}
+
+.library-initial-loading {
+  display: grid;
+  gap: 14px;
+}
+
+.game-card-skeleton {
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
+  animation: loading-block 1.1s steps(2, end) infinite;
+}
+
+.game-card-skeleton-media {
+  display: block;
+  flex: none;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background: var(--surface-2);
+  border-bottom: 2px solid var(--border);
+}
+
+.game-card-skeleton-copy {
+  display: block;
+  flex: 1;
+  min-height: 62px;
+  padding: 8px 10px 10px;
+  background: var(--surface);
+}
+
+.game-card-skeleton-copy::before,
+.game-card-skeleton-copy::after {
+  display: block;
+  height: 10px;
+  background: var(--bg-soft);
+  content: '';
+}
+
+.game-card-skeleton-copy::before {
+  width: 88%;
+  margin-bottom: 10px;
+}
+
+.game-card-skeleton-copy::after {
+  width: 62%;
+}
+
+.library-no-results {
+  display: grid;
+  place-items: center;
+  gap: 16px;
+  min-height: 220px;
+  padding: 60px 24px;
+  text-align: center;
+  border: 2px dashed var(--text-dim);
+}
+
+.library-no-results h2 {
+  margin: 0 0 10px;
+  font-family: var(--font-label);
+  font-size: 12px;
+  letter-spacing: 0.07em;
+}
+
+.library-no-results p {
+  max-width: 65ch;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.library-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding-top: 8px;
+}
+
+.library-page-status {
+  min-width: 138px;
+  color: var(--text);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* C4/B1 render black on every accent, and B6's Detail cover and system badge follow the same
+   rule. Light `--accent-3` is the one pairing that cannot carry badge text in black at AA, so
+   only its ink is adjusted; no accent is diluted and no surface is washed toward white. */
+.game-card,
+.game-detail-hero {
+  --system-accent-ink: #000;
+}
+
+[data-theme='light'] .game-card[data-system-accent='accent-3'],
+[data-theme='light'] .game-detail-hero[data-system-accent='accent-3'] {
+  --system-accent-ink: #ffffff;
+}
+
+/* GameCard — B1 tile geometry, C4 placeholder rule, A6 V5 focus language. */
+.game-card {
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
+  cursor: pointer;
+  transition:
+    transform 0.14s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: center bottom;
+}
+
+.game-card:hover {
+  z-index: 1;
+  box-shadow: var(--shadow-hover);
+  transform: scale(1.04);
+}
+
+/* B1 selected card. Selection is more than the 22px control but is not keyboard focus: the
+   geometry, shadow, and scale are untouched and only the hard border takes the accent. */
+.game-card--selected {
+  border-color: var(--accent);
+}
+
+/* A6 V5 rule 3 — the image card zooms only for "open this game". Focusing the standalone selection
+   control inverts that control instead (rule 2), so the two focus targets stay distinguishable. */
+.game-card:has(.game-card-title-link:focus-visible) {
+  z-index: 2;
+  box-shadow: var(--shadow-focus);
+  transform: scale(1.08);
+}
+
+.game-card-media {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  background: var(--surface-2);
+  border-bottom: 2px solid var(--border);
+}
+
+.game-card-cover,
+.game-card-placeholder {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.game-card-cover {
+  object-fit: cover;
+}
+
+.game-card-placeholder {
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  color: var(--system-accent-ink);
+  text-align: center;
+  background: var(--system-accent);
+}
+
+.game-card-placeholder span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-family: var(--font-label);
+  font-size: 11px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.game-card-flag {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  margin: 0;
+  padding: 3px 7px;
+  overflow: hidden;
+  color: #000;
+  font-family: var(--font-meta);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  background: var(--accent-6);
+  border-top: 2px solid var(--border);
+  border-right: 2px solid var(--border);
+  z-index: 1;
+}
+
+/* B1 selection control: 22x22, hard 2px border, small pixel shadow, zero radius, layered above
+   the stretched detail anchor so pointer and keyboard activation reach it and never the route. */
+.game-card-select {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  color: transparent;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  box-shadow: 2px 2px 0 var(--shadow);
+  cursor: pointer;
+  z-index: 2;
+}
+
+.game-card-select svg {
+  display: block;
+}
+
+/* Selected: B1 accent fill with a crisp black pixel tick, legible in both themes. */
+.game-card-select[aria-pressed='true'] {
+  color: #000;
+  background: var(--accent);
+}
+
+/* A6 V5 rule 2 — a standalone surface inverts foreground/background; no ring, no focus colour.
+   Keyboard focus stays distinguishable from the selected fill, and it must not trigger the card's
+   rule-3 detail zoom, which is scoped to the detail anchor alone. */
+.game-card-select:hover,
+.game-card-select:focus-visible {
+  background: var(--text);
+}
+
+.game-card-select:focus-visible {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+
+.game-card-select[aria-pressed='true']:hover,
+.game-card-select[aria-pressed='true']:focus-visible {
+  color: var(--bg);
+}
+
+.game-card-copy {
+  display: flex;
+  padding: 8px 10px 10px;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.game-card-title {
+  min-width: 0;
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+/* The detail target stays a real anchor; the card owns its appearance, so no user-agent link
+   colour, underline, or visited treatment leaks into the tile. */
+.game-card-title-link,
+.game-card-title-link:visited,
+.game-card-title-link:hover,
+.game-card-title-link:focus-visible {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The title remains the one semantic detail link; its transparent hit area makes the whole card
+   activate it without wrapping or duplicating interactive content. Selection stays above it. */
+.game-card-detail-target::after {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  cursor: pointer;
+  content: '';
+}
+
+.game-card-system-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+}
+
+.game-card-system {
+  min-width: 0;
+  padding: 1px 8px;
+  overflow: hidden;
+  color: var(--system-accent-ink);
+  font-family: var(--font-meta);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--system-accent);
+  border: 2px solid var(--border);
+}
+
+.game-card-year {
+  flex: none;
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Missing local content is desaturated, never hidden. The C4 placeholder is real text, so it is
+   only greyed — dropping its opacity too would push the 11 px title under AA against the card
+   surface. Real cover art carries no text and keeps the extra dimming. */
+.game-card--unavailable .game-card-cover,
+.game-card--unavailable .game-card-placeholder {
+  filter: grayscale(0.9);
+}
+
+.game-card--unavailable .game-card-cover {
+  opacity: 0.72;
+}
+
+/* Game Detail — B6 composition. The game dominates: one hero with the cover column, one
+   dominant title, and compact identity; the truthful technical surfaces below stay secondary
+   section rules rather than full-width dashboard panels. */
+.game-detail-main {
+  /* One B6-derived content column for the whole Detail page: the 280px cover column, B6's 28px
+     hero gap, and B6's 520px information box. Every secondary section shares it so the page stays
+     concentrated around the game instead of stretching diagnostics across a 1600px viewport. The
+     column stays left-aligned against the sidebar edge; nothing here is centred. */
+  --detail-content-width: 828px;
+  gap: 26px;
+}
+
+.game-detail-hero,
+.game-detail-section {
+  width: 100%;
+  max-width: var(--detail-content-width);
+}
+
+/* Only a real candidate workflow earns more width than the shared column. */
+.game-detail-section--wide {
+  max-width: 1120px;
+}
+
+.game-detail-back {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 8px;
+  padding: 7px 16px;
+  color: var(--text);
+  font-family: var(--font-meta);
+  font-size: 20px;
+  background: var(--chip-bg);
+  border: 2px solid var(--border);
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+
+.game-detail-back:hover,
+.game-detail-back:focus-visible {
+  color: var(--bg);
+  background: var(--text);
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--shadow);
+}
+
+.game-detail-hero {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+
+.game-detail-cover-column {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.game-detail-cover-frame {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 3px solid var(--border);
+  box-shadow: 6px 6px 0 var(--shadow);
+}
+
+.game-detail-cover,
+.game-detail-placeholder {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.game-detail-cover {
+  object-fit: cover;
+}
+
+/* C4: the missing cover is the system accent itself, never a diluted variant of it. */
+.game-detail-placeholder {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--system-accent-ink);
+  text-align: center;
+  background: var(--system-accent);
+}
+
+.game-detail-placeholder span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-family: var(--font-label);
+  font-size: clamp(10px, 1vw, 15px);
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+
+/* B6's cover-action rhythm. Only the real M6 Favorite action lives here; the launch action
+   belongs to M7 and is deliberately absent rather than faked. */
+.game-detail-cover-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.game-detail-hero-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.game-detail-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.game-detail-system {
+  min-width: 0;
+  padding: 1px 9px;
+  overflow: hidden;
+  color: var(--system-accent-ink);
+  font-family: var(--font-meta);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--system-accent);
+  border: 2px solid var(--border);
+}
+
+.game-detail-chip {
+  padding: 1px 9px;
+  color: var(--text);
+  font-family: var(--font-meta);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  background: var(--surface-2);
+  border: 2px solid var(--border);
+}
+
+.game-detail-year {
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 19px;
+  letter-spacing: 0.04em;
+}
+
+/* B6 sets the Detail title at 20px Press Start 2P — a strong game title beside a 280px cover, not
+   an oversized page banner. It still outranks the 11px GameCard title by a wide margin. */
+.game-detail-title {
+  max-width: 26ch;
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: clamp(16px, 1.5vw, 20px);
+  letter-spacing: 1px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* The H1 takes programmatic focus on route entry. A6's inversion is the language for standalone
+   controls, so applying it here made a non-interactive heading read as a giant focused button.
+   A focused heading instead gets the same accent underline the rest of Detail already uses for
+   status emphasis: perceivable, design-consistent, and not a control affordance. */
+.game-detail-title:focus-visible,
+.game-detail-section-heading h2:focus-visible {
+  outline: none;
+  text-decoration: underline;
+  text-decoration-color: var(--accent-3);
+  text-decoration-thickness: 3px;
+  text-underline-offset: 6px;
+}
+
+.game-detail-local-identity,
+.game-detail-provenance,
+.game-detail-content-item-meta {
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 18px;
+  letter-spacing: 0.025em;
+}
+
+.game-detail-local-identity {
+  margin: -6px 0 0;
+}
+
+.game-detail-synopsis {
+  max-width: 62ch;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+/* B6's compact key/value block — a bordered pixel-shadow surface with dashed row rules, not a
+   full-width metadata dashboard. */
+.game-detail-info {
+  width: 100%;
+  max-width: 520px;
+  margin: 2px 0 0;
+  padding: 4px 16px;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
+}
+
+.game-detail-info > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding: 8px 0;
+  border-top: 1px dashed var(--text-dim);
+}
+
+.game-detail-info > div:first-child {
+  border-top: none;
+}
+
+.game-detail-info dt {
+  flex: none;
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+}
+
+/* Detail has the room to read a long developer, publisher, or relative path in full, so hero
+   values wrap onto a second line instead of being visually truncated into an ellipsis. */
+.game-detail-info dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-meta);
+  font-size: 20px;
+  line-height: 1.3;
+  text-align: right;
+}
+
+.game-detail-availability {
+  font-family: var(--font-meta);
+  font-size: 17px;
+  letter-spacing: 0.03em;
+}
+
+.game-detail-availability--unavailable {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-6);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.game-detail-favorite {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 12px 10px;
+  color: var(--text);
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  background: var(--surface-2);
+  border: 2px solid var(--border);
+  box-shadow: 3px 3px 0 var(--shadow);
+  cursor: pointer;
+}
+
+.game-detail-favorite svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.game-detail-favorite:hover:not([aria-busy='true']),
+.game-detail-favorite:focus-visible {
+  color: var(--bg);
+  background: var(--text);
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--shadow);
+}
+
+.game-detail-favorite[aria-pressed='true'] {
+  color: #000;
+  background: var(--accent-2);
+}
+
+.game-detail-favorite[aria-busy='true'] {
+  cursor: progress;
+  opacity: 0.65;
+}
+
+.game-detail-action-error,
+.game-detail-inline-status,
+.game-detail-loading-secondary {
+  margin: 0;
+  font-family: var(--font-meta);
+  font-size: 18px;
+}
+
+.game-detail-action-error {
+  color: var(--negative-text);
+}
+
+.game-detail-inline-status {
+  color: var(--text-dim);
+}
+
+.game-detail-loading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-height: 96px;
+  padding: 24px 28px;
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 21px;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
+}
+
+.game-detail-loading-secondary {
+  color: var(--text-dim);
+}
+
+/* B6 section rule. The secondary surfaces are sections under a hard rule, not stacked panels. */
+.game-detail-section {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* The trailing status is a fixed-width Press Start 2P run that cannot shrink, so at very narrow
+   widths it wraps under the rule instead of pushing the page into horizontal scroll. */
+.game-detail-section-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.game-detail-section-heading h2 {
+  flex: none;
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: 13px;
+  letter-spacing: 1px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.game-detail-section-rule {
+  flex: 1;
+  min-width: 12px;
+  height: 3px;
+  background: var(--border);
+}
+
+.game-detail-kicker {
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+}
+
+.game-detail-section-meta {
+  flex: none;
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 18px;
+  white-space: nowrap;
+}
+
+/* An ordinary provider state is two sentences. It reads at the same 520px the hero information
+   box uses, not as a full-width stripe. */
+.metadata-state-callout {
+  display: flex;
+  max-width: 520px;
+  padding: 12px 14px;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--surface-2);
+  border-top: 3px solid var(--text-dim);
+}
+
+.metadata-state-callout strong {
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.metadata-state-callout p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.metadata-state-callout--matched {
+  border-top-color: var(--accent);
+}
+
+.metadata-state-callout--stale {
+  border-top-color: var(--accent-6);
+}
+
+.metadata-state-detail {
+  color: var(--text) !important;
+}
+
+.metadata-action-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.metadata-action-row .game-detail-inline-status {
+  color: var(--text-dim);
+}
+
+.metadata-selection-summary,
+.metadata-candidate-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: var(--bg-soft);
+  border: 2px solid var(--border);
+}
+
+.metadata-selection-summary {
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.metadata-selection-summary > div {
+  display: grid;
+  gap: 5px;
+}
+
+.metadata-selection-summary strong,
+.metadata-candidate-heading h3 {
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+}
+
+.metadata-selection-summary p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.metadata-candidate-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.metadata-candidate-heading > div {
+  display: grid;
+  gap: 6px;
+}
+
+.metadata-candidate-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.metadata-candidate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 2px solid var(--border);
+}
+
+.metadata-candidate--selected {
+  background: var(--accent-3);
+}
+
+.metadata-candidate-copy {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.metadata-candidate-copy > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.metadata-candidate-index {
+  flex: none;
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 21px;
+}
+
+.metadata-candidate h4 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+}
+
+.metadata-candidate-copy > div > span {
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 17px;
+}
+
+.metadata-candidate--selected .metadata-candidate-index,
+.metadata-candidate--selected .metadata-candidate-copy > div > span {
+  color: #000;
+}
+
+.metadata-candidate-action {
+  flex: none;
+}
+
+.game-detail-readiness-summary,
+.game-detail-empty-copy,
+.game-detail-guidance {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+/* Compact requirement rows. Every requirement keeps its label, its status word, and its
+   supporting sentence; none of them becomes a dashboard card. */
+.readiness-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
+}
+
+.readiness-row {
+  display: grid;
+  align-items: baseline;
+  gap: 2px 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-top: 2px solid var(--border);
+}
+
+.readiness-row:first-child {
+  border-top: none;
+}
+
+.readiness-row-label {
+  min-width: 0;
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.readiness-row-detail {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.readiness-status {
+  flex: none;
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.readiness-status--ready {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.readiness-status--missing,
+.readiness-status--unavailable {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-6);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.readiness-status--unknown {
+  color: var(--text-dim);
+}
+
+.game-detail-guidance {
+  padding-top: 2px;
+  color: var(--text);
+}
+
+.game-detail-content-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.game-detail-content-item {
+  display: flex;
+  min-width: 0;
+  padding: 13px 14px;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--surface);
+  border: 2px solid var(--border);
+}
+
+.game-detail-content-item-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.game-detail-content-item-heading > div {
+  min-width: 0;
+}
+
+.game-detail-content-item h3 {
+  margin: 0 0 5px;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.game-detail-content-kind {
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+}
+
+.game-detail-unit-status {
+  flex: none;
+  font-family: var(--font-meta);
+  font-size: 18px;
+}
+
+.game-detail-unit-status--available {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.game-detail-unit-status--incomplete,
+.game-detail-unit-status--missing {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-6);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.game-detail-relative-path {
+  display: block;
+  min-width: 0;
+  padding: 8px 10px;
+  color: var(--text);
+  font-family: var(--font-meta);
+  font-size: 18px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  background: var(--bg-soft);
+  border: 2px solid var(--border);
+}
+
+.game-detail-content-item-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 17px;
+}
+
+.game-detail-not-found {
+  display: grid;
+  max-width: 760px;
+  min-height: 220px;
+  place-content: center;
+  justify-items: start;
+  gap: 14px;
+  padding: 36px 28px;
+  background: var(--surface);
+  border: 2px dashed var(--text-dim);
+  box-shadow: var(--shadow-rest);
+}
+
+.game-detail-not-found h2 {
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.game-detail-not-found p {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+/* B6 stacks the hero below 1080px, but B6 has no persistent 264px application sidebar consuming
+   viewport width. Measured against the real shell, the 280px cover and the hero information column
+   still sit side by side comfortably down to a ~980px viewport, so the stack happens there instead
+   of throwing the composition away while it still fits. The cover column keeps its 280px ceiling so
+   a stacked game keeps a cover-sized identity instead of a full-width image. */
+@media (max-width: 980px) {
+  .game-detail-hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 22px;
+  }
+
+  .game-detail-cover-column {
+    max-width: 280px;
+  }
+}
+
+@keyframes loading-block {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes scan-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes rf-chase {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
   }
 }
 
 @media (max-width: 860px) {
+  .app-header {
+    min-height: 0;
+  }
+
   .app-shell {
     grid-template-columns: 1fr;
   }
@@ -594,51 +2642,225 @@ button:focus-visible {
     display: none;
   }
 
-  .app-main {
-    padding: 24px 20px 40px;
+  .mobile-nav {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
   }
 
-  .systems-panel {
-    padding: 16px;
-  }
-}
-
-@media (max-width: 560px) {
-  .app-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .theme-toggle {
+  .library-search {
+    max-width: none;
     margin-left: 0;
   }
 
+  .mobile-nav-link {
+    padding: 8px 10px;
+    color: var(--text-dim);
+    font-family: var(--font-label);
+    font-size: 8px;
+    background: transparent;
+    border: 2px solid transparent;
+    cursor: pointer;
+  }
+
+  .mobile-nav-link--active {
+    color: #000;
+    background: var(--accent-3);
+    border-color: var(--border);
+    box-shadow: 2px 2px 0 var(--shadow);
+  }
+
+  [data-theme='light'] .mobile-nav-link--active {
+    background: color-mix(in srgb, var(--accent-3) 78%, white);
+  }
+
+  .mobile-nav-link:hover,
+  .mobile-nav-link:focus-visible {
+    color: var(--bg);
+    background: var(--text);
+  }
+
+  .app-main {
+    padding: 24px 20px 44px;
+  }
+
+  .game-detail-cover-column {
+    max-width: 240px;
+  }
+}
+
+@media (max-width: 620px) {
+  .app-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 14px 16px;
+  }
+
+  .mobile-nav {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .mobile-nav-link {
+    flex: 1;
+  }
+
+  .theme-toggle {
+    margin-left: auto;
+  }
+
+  .library-search {
+    order: 4;
+    flex-basis: 100%;
+  }
+
+  .library-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+
+  /* C4 sizes its placeholder for the 158 px floor; the narrow fallback tile needs one step less
+     so a long title still wraps inside the 3:4 media frame. */
+  .game-card-placeholder span {
+    font-size: 10px;
+  }
+
+  .library-no-results {
+    padding: 24px;
+  }
+
+  .library-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .library-pagination .pixel-button {
+    width: 100%;
+  }
+
+  .section-heading,
+  .panel-heading {
+    gap: 9px;
+  }
+
   .section-heading h1,
+  .section-heading h2,
   .panel-heading h2 {
-    font-size: 11px;
+    font-size: 10px;
   }
 
-  .status-grid {
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
+  .section-meta,
+  .panel-meta {
+    font-size: 16px;
   }
 
-  .system-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .system-card-header {
+  .root-overview-row {
+    align-items: flex-start;
     flex-wrap: wrap;
   }
 
-  .system-card-header .status-value {
-    width: 100%;
-    margin-left: 28px;
-    text-align: left;
+  .root-overview-copy {
+    min-width: calc(100% - 48px);
   }
 
-  .app-footer {
-    font-size: 16px;
+  .root-overview-row .pixel-button {
+    width: 100%;
+    margin-left: 32px;
+  }
+
+  .root-overview-footer {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .empty-actions,
+  .empty-actions .pixel-button,
+  .settings-panel-actions,
+  .settings-panel-actions .pixel-button {
+    width: 100%;
+  }
+
+  .scan-counter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .issue-row-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .issue-row-heading span {
+    max-width: 100%;
+  }
+
+  .root-card-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .root-card-actions .pixel-button {
+    width: 100%;
+  }
+
+  .root-confirm-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .root-confirm-actions > span {
+    min-width: 0;
+  }
+
+  .metadata-provider-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .game-detail-content-item-heading,
+  .metadata-candidate-heading,
+  .metadata-account-heading {
+    flex-direction: column;
+  }
+
+  .game-detail-content-item-meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .metadata-selection-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .metadata-account-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .metadata-account-fields label {
+    margin-top: 4px;
+  }
+
+  .metadata-account-actions,
+  .metadata-account-actions .pixel-button {
+    width: 100%;
+  }
+
+  .metadata-candidate {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .metadata-candidate-action {
+    width: 100%;
+  }
+
+  .metadata-clear-confirmation {
+    grid-template-columns: 1fr;
+  }
+
+  .metadata-clear-confirmation .pixel-button {
+    width: 100%;
   }
 }
 
@@ -647,6 +2869,12 @@ button:focus-visible {
   *::before,
   *::after {
     scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .scan-progress--indeterminate span {
+    transform: translateX(100%);
   }
 }

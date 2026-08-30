@@ -15,7 +15,7 @@ use crate::adapters::credentials::{
     SecretString, UserCredentials,
 };
 use crate::adapters::metadata_paths::MetadataPaths;
-use crate::domain::library::{ContentUnit, GameId, UnixTimestamp};
+use crate::domain::library::{cached_cover_reference, ContentUnit, GameId, UnixTimestamp};
 use crate::domain::metadata::{
     evidence_for_unit, GameMetadataState, MatchEvidence, MatchType, MediaAssetKind,
     MediaAssetState, MetadataJob, MetadataJobKind, MetadataProviderId, MetadataProviderStatus,
@@ -25,6 +25,9 @@ use crate::domain::metadata::{
 use crate::error::AppError;
 use crate::repositories::library::LibraryRepository;
 use crate::repositories::metadata::{MediaAssetWrite, MetadataRepository, ProviderMatchWrite};
+use crate::services::metadata_evidence::{
+    effective_match_status, evidence_is_current, MetadataEvidenceService,
+};
 use crate::services::metadata_matching::{classify_deterministic_match, DeterministicOutcome};
 use crate::services::metadata_media::CoverCache;
 use crate::services::metadata_provider::{
@@ -35,6 +38,7 @@ use crate::services::metadata_queue::{
     failure_action, plan, provider_deferral_ms, Clock, FailureAction, JitterSource, MinuteBudget,
     SchedulingDecision,
 };
+use serde::Serialize;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -51,6 +55,47 @@ pub const CREDENTIAL_VAULT_SERVICE: &str = "RetroFrontier";
 /// Generously longer than any legitimate job: a job issues at most three provider calls, each
 /// bounded by the transport's 30 s request timeout.
 pub const JOB_CLAIM_LEASE_MS: i64 = 10 * 60 * 1_000;
+
+pub const METADATA_STATE_CHANGED_EVENT: &str = "metadata-state-changed";
+
+/// Minimal invalidation signal for visible library/detail state. The UI refetches authoritative
+/// bounded state after receiving it; no normalized metadata, provider payload, URL, or job data is
+/// sent through the event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataStateChanged {
+    pub game_id: GameId,
+    pub provider_id: MetadataProviderId,
+}
+
+pub trait MetadataStateEventSink: Send + Sync {
+    fn state_changed(&self, event: MetadataStateChanged);
+}
+
+#[derive(Debug, Default)]
+pub struct NoopMetadataStateEventSink;
+
+impl MetadataStateEventSink for NoopMetadataStateEventSink {
+    fn state_changed(&self, _event: MetadataStateChanged) {}
+}
+
+pub struct TauriMetadataStateEventSink {
+    app: tauri::AppHandle,
+}
+
+impl TauriMetadataStateEventSink {
+    pub fn new(app: tauri::AppHandle) -> Self {
+        Self { app }
+    }
+}
+
+impl MetadataStateEventSink for TauriMetadataStateEventSink {
+    fn state_changed(&self, event: MetadataStateChanged) {
+        if let Err(error) = tauri::Emitter::emit(&self.app, METADATA_STATE_CHANGED_EVENT, event) {
+            tracing::warn!(error = %error, "could not emit metadata state invalidation");
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct MetadataConfig {
@@ -151,6 +196,7 @@ impl ProviderCredentialSource for ProviderCredentialState {
 pub struct MetadataApplicationService {
     repository: MetadataRepository,
     library: LibraryRepository,
+    evidence: MetadataEvidenceService,
     provider: Arc<dyn MetadataProvider>,
     covers: Arc<CoverCache>,
     vault: Arc<dyn CredentialVault>,
@@ -169,6 +215,7 @@ pub struct MetadataApplicationService {
     config: MetadataConfig,
     provider_id: MetadataProviderId,
     developer_credentials_configured: bool,
+    event_sink: Arc<dyn MetadataStateEventSink>,
 }
 
 impl MetadataApplicationService {
@@ -189,6 +236,7 @@ impl MetadataApplicationService {
     ) -> Result<Self, AppError> {
         let repository = MetadataRepository::new(pool.clone());
         let library = LibraryRepository::new(pool);
+        let evidence = MetadataEvidenceService::new(library.clone());
         let provider_id = provider.provider_id();
         let covers = Arc::new(CoverCache::new(paths));
         covers.clean_partial_downloads();
@@ -220,6 +268,7 @@ impl MetadataApplicationService {
         Ok(Self {
             repository,
             library,
+            evidence,
             provider,
             covers,
             vault,
@@ -238,7 +287,22 @@ impl MetadataApplicationService {
             config,
             provider_id,
             developer_credentials_configured,
+            event_sink: Arc::new(NoopMetadataStateEventSink),
         })
+    }
+
+    /// Installs the process-level event sink after construction. Tests retain the no-op default so
+    /// metadata application behavior remains independent of a running Tauri window.
+    pub fn with_event_sink(mut self, event_sink: Arc<dyn MetadataStateEventSink>) -> Self {
+        self.event_sink = event_sink;
+        self
+    }
+
+    fn notify_state_changed(&self, game_id: GameId) {
+        self.event_sink.state_changed(MetadataStateChanged {
+            game_id,
+            provider_id: self.provider_id,
+        });
     }
 
     pub fn provider_id(&self) -> MetadataProviderId {
@@ -305,17 +369,12 @@ impl MetadataApplicationService {
             .provider_match
             .as_ref()
             .and_then(|provider_match| provider_match.evidence.as_ref());
-        let evidence_is_current = match (stored_evidence, match_type) {
-            (Some(stored_evidence), _) => current_evidence
-                .as_ref()
-                .is_some_and(|current| stored_evidence.agrees_with(current)),
-            (None, Some(match_type)) => !match_type.is_deterministic(),
-            (None, None) => true,
-        };
-
-        if status == ProviderMatchStatus::Matched && !evidence_is_current {
-            status = ProviderMatchStatus::Stale;
-        }
+        status = effective_match_status(
+            status,
+            match_type,
+            stored_evidence,
+            current_evidence.as_ref(),
+        );
         let deterministic = status == ProviderMatchStatus::Matched
             && match_type.is_some_and(MatchType::is_deterministic);
 
@@ -596,13 +655,16 @@ impl MetadataApplicationService {
                 continue;
             };
             let current = self.current_evidence(game_id).await?;
-            let agrees = current
-                .as_ref()
-                .is_some_and(|current| stored_evidence.agrees_with(current));
+            let agrees = evidence_is_current(
+                Some(stored_evidence),
+                provider_match.match_type,
+                current.as_ref(),
+            );
             if !agrees {
                 self.repository
                     .mark_match_stale(game_id, self.provider_id, now)
                     .await?;
+                self.notify_state_changed(game_id);
                 self.repository
                     .enqueue_job(game_id, self.provider_id, MetadataJobKind::Identify, now)
                     .await?;
@@ -823,7 +885,8 @@ impl MetadataApplicationService {
                         failure,
                         now,
                     )
-                    .await?
+                    .await?;
+                self.notify_state_changed(job.game_id);
             }
         }
 
@@ -892,6 +955,7 @@ impl MetadataApplicationService {
                 self.clock.now_ms(),
             )
             .await?;
+        self.notify_state_changed(game_id);
         Ok(())
     }
 
@@ -924,6 +988,7 @@ impl MetadataApplicationService {
                 self.clock.now_ms(),
             )
             .await?;
+        self.notify_state_changed(game_id);
         Ok(())
     }
 
@@ -1118,6 +1183,7 @@ impl MetadataApplicationService {
                 self.repository
                     .mark_match_stale(game_id, self.provider_id, now)
                     .await?;
+                self.notify_state_changed(game_id);
                 return Ok(JobOutcome::Requeue);
             }
             None => {
@@ -1126,6 +1192,7 @@ impl MetadataApplicationService {
                 self.repository
                     .mark_match_stale(game_id, self.provider_id, now)
                     .await?;
+                self.notify_state_changed(game_id);
                 self.persist_unsupported(
                     game_id,
                     UnsupportedContentReason::MissingContentEvidence,
@@ -1155,6 +1222,7 @@ impl MetadataApplicationService {
         self.persist_normalized(game_id, record).await?;
         // A cover failure must not undo a successful metadata attachment.
         self.store_cover_for_match(game_id, record).await;
+        self.notify_state_changed(game_id);
         Ok(JobOutcome::Done)
     }
 
@@ -1195,6 +1263,7 @@ impl MetadataApplicationService {
             .await?;
         self.persist_normalized(game_id, &record).await?;
         self.store_cover_for_match(game_id, &record).await;
+        self.notify_state_changed(game_id);
         Ok(JobOutcome::Done)
     }
 
@@ -1224,7 +1293,9 @@ impl MetadataApplicationService {
             .await?;
         self.repository
             .replace_candidates(provider_match_id, candidates, now)
-            .await
+            .await?;
+        self.notify_state_changed(game_id);
+        Ok(())
     }
 
     async fn persist_ambiguous(
@@ -1252,7 +1323,9 @@ impl MetadataApplicationService {
             .await?;
         self.repository
             .replace_candidates(provider_match_id, candidates, now)
-            .await
+            .await?;
+        self.notify_state_changed(game_id);
+        Ok(())
     }
 
     // ---------------------------------------------------------------------------------- refresh
@@ -1276,14 +1349,17 @@ impl MetadataApplicationService {
         // so this becomes a re-identification instead.
         if let Some(stored_evidence) = provider_match.evidence.as_ref() {
             let current = self.current_evidence(game_id).await?;
-            let agrees = current
-                .as_ref()
-                .is_some_and(|current| stored_evidence.agrees_with(current));
+            let agrees = evidence_is_current(
+                Some(stored_evidence),
+                provider_match.match_type,
+                current.as_ref(),
+            );
             if !agrees {
                 let now = self.clock.now_ms();
                 self.repository
                     .mark_match_stale(game_id, self.provider_id, now)
                     .await?;
+                self.notify_state_changed(game_id);
                 self.repository
                     .enqueue_job(game_id, self.provider_id, MetadataJobKind::Identify, now)
                     .await?;
@@ -1321,6 +1397,7 @@ impl MetadataApplicationService {
                 self.clock.now_ms(),
             )
             .await?;
+        self.notify_state_changed(game_id);
         Ok(JobOutcome::Done)
     }
 
@@ -1343,14 +1420,17 @@ impl MetadataApplicationService {
         // re-identified rather than re-fetched, so a stale relationship is never re-trusted.
         if let Some(stored_evidence) = provider_match.evidence.as_ref() {
             let current = self.current_evidence(game_id).await?;
-            let agrees = current
-                .as_ref()
-                .is_some_and(|current| stored_evidence.agrees_with(current));
+            let agrees = evidence_is_current(
+                Some(stored_evidence),
+                provider_match.match_type,
+                current.as_ref(),
+            );
             if !agrees {
                 let now = self.clock.now_ms();
                 self.repository
                     .mark_match_stale(game_id, self.provider_id, now)
                     .await?;
+                self.notify_state_changed(game_id);
                 self.repository
                     .enqueue_job(game_id, self.provider_id, MetadataJobKind::Identify, now)
                     .await?;
@@ -1371,7 +1451,10 @@ impl MetadataApplicationService {
         };
 
         match self.store_cover(game_id, &record).await {
-            Ok(CoverOutcome::Published) | Ok(CoverOutcome::Unchanged) => Ok(JobOutcome::Done),
+            Ok(CoverOutcome::Published) | Ok(CoverOutcome::Unchanged) => {
+                self.notify_state_changed(game_id);
+                Ok(JobOutcome::Done)
+            }
             // The provider holds no eligible cover. Retrying that up to the attempt limit would
             // spend provider budget on an answer that cannot change, so the job finishes and the
             // asset row records why.
@@ -1385,6 +1468,7 @@ impl MetadataApplicationService {
                         self.clock.now_ms(),
                     )
                     .await?;
+                self.notify_state_changed(game_id);
                 Ok(JobOutcome::Done)
             }
             Err(failure) => Ok(JobOutcome::ProviderFailure(failure)),
@@ -1560,8 +1644,7 @@ impl MetadataApplicationService {
 
     /// Current M4 evidence for one game, or `None` when no unit qualifies.
     async fn current_evidence(&self, game_id: GameId) -> Result<Option<MatchEvidence>, AppError> {
-        let units = self.library.game_content_units(game_id).await?;
-        Ok(units.iter().find_map(|unit| evidence_for_unit(unit).ok()))
+        self.evidence.current_evidence(game_id).await
     }
 
     async fn ensure_game_exists(&self, game_id: GameId) -> Result<(), AppError> {
@@ -1577,15 +1660,22 @@ impl MetadataApplicationService {
         &self,
         cover: Option<crate::domain::metadata::MediaAsset>,
     ) -> Option<crate::domain::metadata::MediaAsset> {
-        let cover = cover?;
+        let mut cover = cover?;
         match cover.cache_relative_path.as_deref() {
-            Some(path) if self.covers.is_cached(path) => Some(cover),
+            Some(path) if self.covers.is_cached(path) => {
+                cover.media_ref = Some(cached_cover_reference(cover.game_id));
+                Some(cover)
+            }
             Some(_) => Some(crate::domain::metadata::MediaAsset {
                 state: MediaAssetState::Missing,
                 cache_relative_path: None,
+                media_ref: None,
                 ..cover
             }),
-            None => Some(cover),
+            None => {
+                cover.media_ref = None;
+                Some(cover)
+            }
         }
     }
 }
@@ -1690,9 +1780,13 @@ mod tests {
     use super::*;
     use crate::adapters::credentials::InMemoryCredentialVault;
     use crate::adapters::database::Database;
-    use crate::domain::library::ContentUnitKind;
+    use crate::application::library::LibraryApplicationService;
+    use crate::domain::library::{
+        cached_cover_reference, ContentUnitKind, LibraryMetadataMatchState, LibraryQuery,
+    };
     use crate::domain::metadata::{MetadataJobState, NormalizedMetadata};
-    use crate::domain::system::SystemId;
+    use crate::domain::system::{SystemCatalog, SystemId};
+    use crate::services::library_scanner::NoopScanEventSink;
     use crate::services::metadata_provider::{
         CandidateSearchRequest, DownloadedMedia, ProviderMediaLocator, ProviderResponse,
         ProviderResult, ProviderRomRecord,
@@ -2053,27 +2147,56 @@ mod tests {
         clock: Arc<ManualClock>,
         app_data: &std::path::Path,
     ) -> Arc<MetadataApplicationService> {
+        build_service_with_event_sink(
+            pool,
+            provider,
+            vault,
+            clock,
+            app_data,
+            Arc::new(NoopMetadataStateEventSink),
+        )
+        .await
+    }
+
+    async fn build_service_with_event_sink(
+        pool: SqlitePool,
+        provider: Arc<FakeProvider>,
+        vault: Arc<InMemoryCredentialVault>,
+        clock: Arc<ManualClock>,
+        app_data: &std::path::Path,
+        event_sink: Arc<dyn MetadataStateEventSink>,
+    ) -> Arc<MetadataApplicationService> {
         let credentials = Arc::new(ProviderCredentialState::new(Some(DeveloperCredentials {
             developer_id: SecretString::new("fake-dev-id"),
             developer_password: SecretString::new("fake-dev-password"),
         })));
-        Arc::new(
-            MetadataApplicationService::initialize(
-                pool,
-                provider,
-                vault,
-                credentials,
-                MetadataPaths::new(app_data),
-                clock,
-                Arc::new(NoJitter),
-                MetadataConfig {
-                    max_concurrency: 4,
-                    batch_size: 25,
-                },
-            )
-            .await
-            .expect("metadata service should initialize"),
+        let service = MetadataApplicationService::initialize(
+            pool,
+            provider,
+            vault,
+            credentials,
+            MetadataPaths::new(app_data),
+            clock,
+            Arc::new(NoJitter),
+            MetadataConfig {
+                max_concurrency: 4,
+                batch_size: 25,
+            },
         )
+        .await
+        .expect("metadata service should initialize");
+        Arc::new(service.with_event_sink(event_sink))
+    }
+
+    #[derive(Default)]
+    struct RecordingMetadataStateEventSink {
+        events: Mutex<Vec<MetadataStateChanged>>,
+    }
+
+    impl MetadataStateEventSink for RecordingMetadataStateEventSink {
+        fn state_changed(&self, event: MetadataStateChanged) {
+            self.events.lock().unwrap().push(event);
+        }
     }
 
     /// Inserts an M4 single-file game directly, so metadata tests do not depend on the scanner.
@@ -2233,6 +2356,70 @@ mod tests {
 
     // ------------------------------------------------------------------------- matching pipeline
 
+    #[test]
+    fn metadata_state_changed_event_serializes_only_its_invalidation_identity() {
+        let event = MetadataStateChanged {
+            game_id: GameId(42),
+            provider_id: MetadataProviderId::ScreenScraper,
+        };
+        let value = serde_json::to_value(event).expect("event should serialize");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "gameId": 42,
+                "providerId": "screenScraper"
+            })
+        );
+        assert_eq!(value.as_object().unwrap().len(), 2);
+        assert!(!value.to_string().contains("https://"));
+        assert!(!value.to_string().contains("password"));
+        assert!(!value.to_string().contains("payload"));
+    }
+
+    #[tokio::test]
+    async fn metadata_invalidation_is_emitted_after_durable_state_is_written() {
+        let harness = Harness::new().await;
+        let sink = Arc::new(RecordingMetadataStateEventSink::default());
+        let service = build_service_with_event_sink(
+            harness.pool.clone(),
+            harness.provider.clone(),
+            harness.vault.clone(),
+            harness.clock.clone(),
+            &harness.app_data,
+            sink.clone(),
+        )
+        .await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "The Example Quest"),
+            None,
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("event"), None)));
+
+        service.request_enrichment(game_id).await.unwrap();
+        for _ in 0..4 {
+            service.process_ready_jobs(8).await.unwrap();
+        }
+
+        let persisted_status: String = sqlx::query_scalar(
+            "SELECT status FROM provider_matches \
+             WHERE game_id = ? AND provider_id = 'screenscraper'",
+        )
+        .bind(game_id.0)
+        .fetch_one(&harness.pool)
+        .await
+        .unwrap();
+        assert_eq!(persisted_status, "matched");
+        let events = sink.events.lock().unwrap().clone();
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|event| event.game_id == game_id));
+        assert!(events
+            .iter()
+            .all(|event| event.provider_id == MetadataProviderId::ScreenScraper));
+    }
+
     #[tokio::test]
     async fn an_exact_sha1_match_attaches_metadata_provider_identity_and_a_cover() {
         let harness = Harness::new().await;
@@ -2284,6 +2471,17 @@ mod tests {
             .service
             .covers()
             .is_cached(cover.cache_relative_path.as_deref().unwrap()));
+        let serialized = serde_json::to_string(&cover).unwrap();
+        assert!(!serialized.contains("cacheRelativePath"));
+        let expected_media_ref = cached_cover_reference(GameId(1));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&serialized).unwrap()["mediaRef"],
+            expected_media_ref
+        );
+        assert!(!serialized.contains("https://provider.invalid"));
+        assert!(!serialized.contains(SHA1));
+        assert!(!serialized.contains(MD5));
+        assert!(!serialized.contains(CRC32));
     }
 
     #[tokio::test]
@@ -2656,6 +2854,32 @@ mod tests {
         let read_state = harness.state(game_id).await;
         assert_eq!(read_state.status, ProviderMatchStatus::Stale);
         assert!(!read_state.deterministic);
+
+        // The bounded M6 list must apply the same live check before the sweep persists stale.
+        let library_service = LibraryApplicationService::initialize(
+            harness.pool.clone(),
+            SystemCatalog::v1(),
+            harness._directory.path().join("library-ui-root"),
+            Arc::new(NoopScanEventSink),
+        )
+        .await
+        .expect("library service should initialize for the list read");
+        let list = library_service
+            .query_library(&LibraryQuery::default())
+            .await
+            .expect("library list should load stale evidence");
+        let item = list
+            .items
+            .iter()
+            .find(|item| item.game_id == game_id)
+            .expect("the matched game should be in the list");
+        assert_eq!(item.metadata_match_state, LibraryMetadataMatchState::Stale);
+        assert_eq!(item.metadata_title.as_deref(), Some("The Example Quest"));
+        assert_eq!(item.display_title, "The Example Quest");
+        let expected_cover_ref = cached_cover_reference(game_id);
+        assert_eq!(item.cover_ref.as_deref(), Some(expected_cover_ref.as_str()));
+        assert_eq!(read_state.status, ProviderMatchStatus::Stale);
+        drop(library_service);
 
         let stale = harness.service.revalidate_matches().await.unwrap();
         assert_eq!(stale, 1);
