@@ -94,17 +94,25 @@ fn managed_process_is_live(
 /// matches too. A false positive only keeps runtime mutation blocked, whereas a false negative
 /// would let an update run underneath a live emulator.
 ///
-/// The AppRun is used as a match key only while it still resolves inside the managed versions
-/// root, so a record naming a host path can never make an arbitrary process look managed.
+/// The AppRun is a valid match key only while it belongs to the managed versions tree, so a record
+/// naming a host path can never make an arbitrary process look managed.
 fn managed_process_exists(
     paths: &RuntimePaths,
     record: &ManagedProcessRecord,
 ) -> Result<bool, std::io::Error> {
     let versions_root = fs::canonicalize(paths.versions_root())?;
     let expected_apprun = Path::new(&record.expected_apprun_path);
-    let contained_apprun = fs::canonicalize(expected_apprun)
+    let canonical_apprun = fs::canonicalize(expected_apprun)
         .ok()
         .filter(|apprun| apprun.starts_with(&versions_root));
+    // An installation can be moved or removed underneath a process that is still running, and the
+    // recorded AppRun then no longer resolves. The absolute path `write_process_record` already
+    // validated against this tree stays a legitimate match key in that case: it is a command line
+    // the managed launch composed itself, so matching it can only over-detect.
+    let contained = canonical_apprun.is_some()
+        || (expected_apprun.is_absolute()
+            && (expected_apprun.starts_with(&versions_root)
+                || expected_apprun.starts_with(paths.versions_root())));
     let apprun_file_name = expected_apprun.file_name().map(ToOwned::to_owned);
     let self_pid = std::process::id();
 
@@ -128,9 +136,9 @@ fn managed_process_exists(
                 }
             }
         }
-        let Some(canonical_apprun) = contained_apprun.as_ref() else {
+        if !contained {
             continue;
-        };
+        }
         let Ok(cmdline) = read_capped(&format!("/proc/{pid}/cmdline"), CMDLINE_SCAN_LIMIT) else {
             continue;
         };
@@ -145,6 +153,9 @@ fn managed_process_exists(
             if argument == expected_apprun {
                 return Ok(true);
             }
+            let Some(canonical_apprun) = canonical_apprun.as_ref() else {
+                continue;
+            };
             // Canonicalizing every argument of every process would cost a syscall per argument,
             // so only arguments that could name the same file are resolved. A differently spelled
             // path still keeps the AppRun's file name.
@@ -496,9 +507,23 @@ mod tests {
 
     /// An AppRun that is a `#!` script. Linux runs the *interpreter*, which lives outside the
     /// managed versions tree, so neither `/proc/<pid>/exe` nor `argv[0]` names the AppRun.
+    ///
+    /// The script announces itself before blocking, so a test can wait until the interpreter has
+    /// finished reading it.
     fn shebang_apprun(apprun: &Path) {
-        fs::write(apprun, "#!/bin/sh\nread line\n").unwrap();
+        fs::write(
+            apprun,
+            format!(
+                "#!/bin/sh\n: > '{}'\nread line\n",
+                started_marker(apprun).display()
+            ),
+        )
+        .unwrap();
         make_executable(apprun);
+    }
+
+    fn started_marker(apprun: &Path) -> PathBuf {
+        apprun.with_file_name("apprun-started")
     }
 
     /// A child that blocks on stdin, so it has no grandchildren to outlive it.
@@ -513,6 +538,21 @@ mod tests {
             }
         }
         panic!("managed child should spawn before the retry budget is exhausted");
+    }
+
+    /// A shebang child that is known to be running its script rather than still starting up.
+    fn spawn_started_child(apprun: &Path) -> Child {
+        let marker = started_marker(apprun);
+        let mut child = spawn_blocking_child(apprun);
+        for _ in 0..500 {
+            if marker.exists() {
+                return child;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the shebang AppRun should start before the wait budget is exhausted");
     }
 
     /// A live child whose executable is the managed AppRun. The trailing `:` keeps the shell from
@@ -859,7 +899,7 @@ mod tests {
             make_launching_record("launch-1".try_into().unwrap(), 8, installation_id, &apprun)
                 .unwrap();
         super::write_process_record(&paths, &record).unwrap();
-        let mut child = spawn_blocking_child(&apprun);
+        let mut child = spawn_started_child(&apprun);
 
         // The interpreter is the host shell, so the executable is outside the managed tree and
         // the AppRun appears only as an *argument* of the interpreter.
@@ -898,6 +938,35 @@ mod tests {
                 .unwrap();
         super::write_process_record(&paths, &record).unwrap();
         let mut child = spawn_blocking_child(&apprun);
+
+        assert!(matches!(
+            LinuxManagedProcessInspector.ensure_no_active_game(&paths),
+            Err(RuntimeError::GameActive)
+        ));
+        assert!(paths.game_process_record().exists());
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
+    }
+
+    #[test]
+    fn a_launching_record_still_blocks_when_the_installation_moves_under_a_live_process() {
+        let (_directory, paths, installation_id, apprun) = fixture();
+        shebang_apprun(&apprun);
+        let record =
+            make_launching_record("launch-1".try_into().unwrap(), 11, installation_id, &apprun)
+                .unwrap();
+        super::write_process_record(&paths, &record).unwrap();
+        let mut child = spawn_started_child(&apprun);
+        // The installation is renamed away underneath the live child, so the recorded AppRun no
+        // longer resolves. It still names the managed tree, so it stays a valid match key.
+        let installation = apprun.parent().unwrap();
+        fs::rename(installation, installation.with_file_name("moved")).unwrap();
 
         assert!(matches!(
             LinuxManagedProcessInspector.ensure_no_active_game(&paths),

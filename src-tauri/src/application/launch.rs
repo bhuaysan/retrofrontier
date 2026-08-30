@@ -224,10 +224,30 @@ impl LaunchApplicationService {
                 match (record.phase, session) {
                     (ManagedProcessPhase::Running, Some(session)) => {
                         let running = running_session(&session);
+                        let game_id = running.game_id;
                         self.set_active(Some(running), false);
-                        self.watch_adopted_process(session.id);
+                        self.watch_until_absent(
+                            None,
+                            session.id,
+                            Some(game_id),
+                            PlaySessionOutcome::Interrupted,
+                        );
                     }
-                    _ => self.set_active(None, true),
+                    // The record survives but no honest running session can be described — a
+                    // pre-spawn `Launching` record, or one whose session is already closed. Stay
+                    // blocked and let the liveness boundary release the record and the session
+                    // once the child is proven gone.
+                    (_, session) => {
+                        self.set_active(None, true);
+                        if let Some(session) = session {
+                            self.watch_until_absent(
+                                None,
+                                session.id,
+                                None,
+                                PlaySessionOutcome::Interrupted,
+                            );
+                        }
+                    }
                 }
             }
             Err(_) => {
@@ -387,7 +407,8 @@ impl LaunchApplicationService {
         let mut child = match self.retroarch.spawn(&context) {
             Ok(child) => child,
             Err(failure) => {
-                let _ = clear_process_record(&paths);
+                // The spawn never reached a running child, so no managed process exists.
+                clear_record_after_proven_death(&paths);
                 self.close_session(session.id, PlaySessionOutcome::FailedToStart, None)
                     .await;
                 return Err(failure);
@@ -400,21 +421,44 @@ impl LaunchApplicationService {
             .and_then(|record| write_process_record(&paths, &record).map(|()| record));
         if let Err(error) = running_record {
             tracing::warn!(error = %error, "managed process identity could not be established");
-            let exit = child.terminate().ok();
-            let _ = clear_process_record(&paths);
-            let already_exited = matches!(child.try_exit(), Ok(Some(_))) || exit.is_some();
-            self.close_session(session.id, PlaySessionOutcome::FailedToStart, None)
-                .await;
-            return Err(LaunchFailure::new(if already_exited {
-                LaunchErrorCode::ProcessExitedDuringLaunch
-            } else {
-                LaunchErrorCode::ProcessIdentityFailed
-            })
-            .with_exit_code(exit.and_then(ProcessExit::code)));
+            let exited_on_its_own = matches!(child.try_exit(), Ok(Some(_)));
+            return match child.terminate() {
+                // The child was positively observed and reaped, so nothing managed survives: the
+                // pre-spawn record may go and the session honestly closes as a failed start.
+                Ok(exit) => {
+                    clear_record_after_proven_death(&paths);
+                    self.close_session(session.id, PlaySessionOutcome::FailedToStart, exit.code())
+                        .await;
+                    Err(LaunchFailure::new(if exited_on_its_own {
+                        LaunchErrorCode::ProcessExitedDuringLaunch
+                    } else {
+                        LaunchErrorCode::ProcessIdentityFailed
+                    })
+                    .with_exit_code(exit.code()))
+                }
+                // Termination failed, so the child may still be alive. The pre-spawn `Launching`
+                // record stays in place — it keeps runtime mutation and every further launch
+                // blocked — and the session stays open rather than claiming a closed failed start
+                // underneath a possibly live process. The liveness boundary releases both once it
+                // has proved the child gone.
+                Err(error) => {
+                    tracing::warn!(error = %error, "the managed child could not be terminated");
+                    self.set_active(None, true);
+                    self.publish(None);
+                    self.watch_until_absent(
+                        Some(child),
+                        session.id,
+                        None,
+                        PlaySessionOutcome::FailedToStart,
+                    );
+                    Err(LaunchFailure::new(LaunchErrorCode::ProcessIdentityFailed))
+                }
+            };
         }
 
         if let Some(exit) = self.settle(&mut child).await {
-            let _ = clear_process_record(&paths);
+            // `settle` only returns an exit it positively reaped.
+            clear_record_after_proven_death(&paths);
             self.close_session(session.id, PlaySessionOutcome::FailedToStart, exit.code())
                 .await;
             return Err(
@@ -428,7 +472,7 @@ impl LaunchApplicationService {
         let running = running_session(&session);
         self.set_active(Some(running.clone()), false);
         self.publish(None);
-        self.monitor(child, session.id);
+        self.monitor(child, session.id, running.game_id);
 
         Ok(LaunchResponse::Started {
             session: running,
@@ -458,33 +502,57 @@ impl LaunchApplicationService {
     /// Wait for the managed child on a blocking task and close everything down afterwards.
     ///
     /// RetroArch exiting must never terminate RetroFrontier, and the Tauri UI thread is never
-    /// blocked while a game runs.
-    fn monitor(&self, child: SpawnedGame, session_id: PlaySessionId) {
+    /// blocked while a game runs. A wait that fails is not evidence of death, so the durable
+    /// record survives it and the decision moves to `watch_until_absent`.
+    fn monitor(&self, child: SpawnedGame, session_id: PlaySessionId, game_id: GameId) {
         let service = self.clone();
         tokio::spawn(async move {
-            let exit = tokio::task::spawn_blocking(move || child.wait()).await;
-            let (outcome, exit_code) = match exit {
-                Ok(Ok(exit)) if exit.is_clean() => (PlaySessionOutcome::Completed, exit.code()),
+            // The handle comes back from the blocking task so an unobserved exit can keep being
+            // re-checked instead of being assumed.
+            let waited = tokio::task::spawn_blocking(move || {
+                let mut child = child;
+                let exit = child.wait();
+                (child, exit)
+            })
+            .await;
+            let (child, exit) = match waited {
+                Ok((child, Ok(exit))) => (Some(child), Some(exit)),
+                Ok((child, Err(error))) => {
+                    tracing::warn!(error = %error, "the managed child could not be reaped");
+                    (Some(child), None)
+                }
+                // The blocking task itself failed, so the child handle went with it.
+                Err(error) => {
+                    tracing::warn!(error = %error, "the managed process monitor stopped");
+                    (None, None)
+                }
+            };
+            let Some(exit) = exit else {
+                // Death is unproven. Block, keep the durable record, and let the liveness
+                // boundary decide when the process may be declared gone.
+                service.set_active(None, true);
+                service.publish(None);
+                service.watch_until_absent(
+                    child,
+                    session_id,
+                    Some(game_id),
+                    PlaySessionOutcome::Interrupted,
+                );
+                return;
+            };
+            let outcome = if exit.is_clean() {
+                PlaySessionOutcome::Completed
+            } else {
                 // A non-zero exit after a successful start is a crash of the emulator, not
                 // evidence that the managed runtime is corrupt.
-                Ok(Ok(exit)) => (PlaySessionOutcome::Crashed, exit.code()),
-                // The exit could not be observed, so the session honestly ends as interrupted.
-                Ok(Err(_)) | Err(_) => (PlaySessionOutcome::Interrupted, None),
+                PlaySessionOutcome::Crashed
             };
-            let paths = service.runtime.runtime_paths();
-            if let Err(error) = clear_process_record(&paths) {
-                tracing::warn!(error = %error, "the managed process record could not be cleared");
-            }
+            let exit_code = exit.code();
+            // The child was positively observed and reaped.
+            clear_record_after_proven_death(&service.runtime.runtime_paths());
             service.close_session(session_id, outcome, exit_code).await;
-            let game_id = service
-                .active
-                .lock()
-                .expect("launch state lock")
-                .running
-                .as_ref()
-                .map(|running| running.game_id);
             service.set_active(None, false);
-            service.publish(game_id.map(|game_id| ExitedGameSession {
+            service.publish(Some(ExitedGameSession {
                 session_id,
                 game_id,
                 outcome,
@@ -493,38 +561,45 @@ impl LaunchApplicationService {
         });
     }
 
-    /// Poll a process adopted from a previous application run until it is proven gone.
+    /// Poll until the managed child is *proven* gone, then finalize the session.
     ///
-    /// RetroFrontier cannot `wait()` on a process it did not fork, so no exit code is available
-    /// and the session honestly ends as interrupted.
-    fn watch_adopted_process(&self, session_id: PlaySessionId) {
+    /// This is the single way out of process uncertainty. It covers a process adopted from a
+    /// previous application run — which RetroFrontier cannot `wait()` on, so no exit code is
+    /// available — and a child of this run whose exit or termination could not be observed.
+    ///
+    /// The durable record is deleted here only after the child has been positively reaped;
+    /// otherwise the verdict belongs to `ManagedProcessInspector`, which deletes the record itself
+    /// once it has independently proved absence. Runtime mutation and any further launch stay
+    /// blocked for the whole interval.
+    fn watch_until_absent(
+        &self,
+        mut child: Option<SpawnedGame>,
+        session_id: PlaySessionId,
+        game_id: Option<GameId>,
+        outcome: PlaySessionOutcome,
+    ) {
         let service = self.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(service.config.adoption_poll_interval).await;
-                let paths = service.runtime.runtime_paths();
-                if read_process_record(&paths).is_ok_and(|record| record.is_none()) {
-                    break;
+                if let Some(child) = child.as_mut() {
+                    if matches!(child.try_exit(), Ok(Some(_))) {
+                        clear_record_after_proven_death(&service.runtime.runtime_paths());
+                        break;
+                    }
                 }
+                // `ensure_no_active_game` succeeds only once the inspector has proved the record's
+                // process absent, and it is the component that clears the record in that case.
                 if service.runtime.ensure_no_active_game().is_ok() {
                     break;
                 }
+                tokio::time::sleep(service.config.adoption_poll_interval).await;
             }
-            let game_id = service
-                .active
-                .lock()
-                .expect("launch state lock")
-                .running
-                .as_ref()
-                .map(|running| running.game_id);
-            service
-                .close_session(session_id, PlaySessionOutcome::Interrupted, None)
-                .await;
+            service.close_session(session_id, outcome, None).await;
             service.set_active(None, false);
             service.publish(game_id.map(|game_id| ExitedGameSession {
                 session_id,
                 game_id,
-                outcome: PlaySessionOutcome::Interrupted,
+                outcome,
                 exit_code: None,
             }));
         });
@@ -658,6 +733,18 @@ impl LaunchApplicationService {
     }
 }
 
+/// Delete the durable managed-process record.
+///
+/// SAFETY INVARIANT (ADR-011): every caller must already hold proof that no managed child
+/// survives — either no process was ever created, or its exit was positively observed and reaped.
+/// Where death cannot be proven the record is left in place and `watch_until_absent` defers to
+/// `ManagedProcessInspector`, the only other component allowed to delete it.
+fn clear_record_after_proven_death(paths: &RuntimePaths) {
+    if let Err(error) = clear_process_record(paths) {
+        tracing::warn!(error = %error, "the managed process record could not be cleared");
+    }
+}
+
 fn content_option(unit: &ContentUnit) -> LaunchContentOption {
     LaunchContentOption {
         content_unit_id: unit.id,
@@ -703,7 +790,9 @@ pub fn is_process_authority(_session: &PlaySession) -> bool {
 mod tests {
     use super::{LaunchApplicationService, LaunchConfig, LaunchEventSink, LaunchRuntime};
     use crate::adapters::database::Database;
-    use crate::adapters::game_process::LinuxGameProcessLauncher;
+    use crate::adapters::game_process::{
+        GameProcessLauncher, LinuxGameProcessLauncher, ProcessFaults, SpawnRequest, SpawnedGame,
+    };
     use crate::adapters::runtime_lock::RuntimeMutationLock;
     use crate::adapters::runtime_paths::RuntimePaths;
     use crate::adapters::runtime_process::{
@@ -798,11 +887,41 @@ mod tests {
         }
     }
 
+    /// A launcher that arms fault injection on every child it starts, and can run one side
+    /// effect the moment a child exists. Both exist so uncertain-death handling can be proved
+    /// without depending on the OS `waitpid`/`kill` calls failing by chance.
+    #[derive(Default)]
+    struct FaultyLauncher {
+        faults: ProcessFaults,
+        on_spawn: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    }
+
+    impl FaultyLauncher {
+        fn on_spawn(&self, effect: impl FnOnce() + Send + 'static) {
+            *self.on_spawn.lock().unwrap() = Some(Box::new(effect));
+        }
+    }
+
+    impl GameProcessLauncher for FaultyLauncher {
+        fn spawn(&self, request: &SpawnRequest) -> Result<SpawnedGame, std::io::Error> {
+            let mut child = LinuxGameProcessLauncher.spawn(request)?;
+            child.inject_faults(self.faults.clone());
+            if let Some(effect) = self.on_spawn.lock().unwrap().take() {
+                effect();
+            }
+            Ok(child)
+        }
+    }
+
     struct Harness {
         _app_data: TempDir,
         _content: TempDir,
         bios_root: PathBuf,
         app_run: PathBuf,
+        /// The synthetic runtime written by `set_app_run_until_stopped` creates this file when it
+        /// starts, and ends when `stop_file` appears.
+        started_file: PathBuf,
+        stop_file: PathBuf,
         runtime: Arc<TestRuntime>,
         library_repository: LibraryRepository,
         launch_repository: LaunchRepository,
@@ -816,6 +935,14 @@ mod tests {
 
     impl Harness {
         async fn build(system: SystemId, missing_host: Vec<HostPrerequisite>) -> Self {
+            Self::build_with(system, missing_host, Arc::new(LinuxGameProcessLauncher)).await
+        }
+
+        async fn build_with(
+            system: SystemId,
+            missing_host: Vec<HostPrerequisite>,
+            launcher: Arc<dyn GameProcessLauncher>,
+        ) -> Self {
             let app_data = tempfile::tempdir().unwrap();
             let content = tempfile::tempdir().unwrap();
             let bios_root = app_data.path().join("user-bios");
@@ -846,7 +973,7 @@ mod tests {
             let bios = BiosService::from_catalog(&bios_root, &catalog).unwrap();
             let retroarch = Arc::new(RetroArchService::new(
                 LaunchPaths::new(app_data.path()),
-                Arc::new(LinuxGameProcessLauncher),
+                launcher,
                 Arc::new(StaticHost {
                     missing: missing_host,
                 }),
@@ -871,6 +998,8 @@ mod tests {
             );
 
             Self {
+                started_file: app_data.path().join("synthetic-runtime-started"),
+                stop_file: app_data.path().join("stop-the-synthetic-runtime"),
                 _app_data: app_data,
                 _content: content,
                 bios_root,
@@ -905,6 +1034,54 @@ mod tests {
             fs::write(&self.app_run, format!("#!/bin/sh\n{script}\n")).unwrap();
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&self.app_run, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        /// A synthetic runtime that announces itself and then stays alive until `stop` is called.
+        fn set_app_run_until_stopped(&self) {
+            self.set_app_run(&format!(
+                ": > '{}'\nwhile [ ! -f '{}' ]; do sleep 0.02; done",
+                self.started_file.display(),
+                self.stop_file.display()
+            ));
+        }
+
+        /// Block until the synthetic runtime is executing its script rather than still starting
+        /// up. Until then the interpreter has not finished reading the AppRun, and moving it
+        /// would kill the child instead of leaving it alive.
+        fn await_started(&self) {
+            for _ in 0..1000 {
+                if self.started_file.exists() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("the synthetic runtime never started");
+        }
+
+        fn stop(&self) {
+            fs::write(&self.stop_file, b"stop").unwrap();
+        }
+
+        async fn await_blocked(&self, service: &LaunchApplicationService) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !service.get_launch_state().blocked && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(
+                service.get_launch_state().blocked,
+                "the launch never blocked"
+            );
+        }
+
+        async fn await_unblocked(&self, service: &LaunchApplicationService) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while service.get_launch_state().blocked && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(
+                !service.get_launch_state().blocked,
+                "the launch never became available again"
+            );
         }
 
         fn write_bios(&self, filename: &str, contents: &[u8]) {
@@ -1615,5 +1792,152 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn a_monitor_that_cannot_observe_the_exit_keeps_the_record_until_absence_is_proven() {
+        let launcher = Arc::new(FaultyLauncher::default());
+        // Neither waiting nor polling can observe this child, so its death is never provable from
+        // the process handle alone.
+        launcher.faults.fail_wait(true);
+        launcher.faults.fail_try_exit(true);
+        let harness = Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
+        harness.set_app_run_until_stopped();
+
+        let session = started_session(&harness.service.launch_game(GameId(1), None).await);
+        harness.await_blocked(&harness.service).await;
+
+        // Uncertainty is fail-closed: the durable record survives, runtime mutation stays
+        // blocked, a second launch is refused, and the session is not closed.
+        let record = read_process_record(&harness.runtime.paths)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.phase, ManagedProcessPhase::Running);
+        assert_eq!(record.play_session_id, session.0);
+        assert!(matches!(
+            harness.runtime.ensure_no_active_game(),
+            Err(RuntimeError::GameActive)
+        ));
+        assert_eq!(
+            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            LaunchErrorCode::GameAlreadyRunning
+        );
+        assert_eq!(
+            harness
+                .launch_repository
+                .session(session)
+                .await
+                .unwrap()
+                .unwrap()
+                .outcome,
+            PlaySessionOutcome::Running
+        );
+
+        // Only proven absence releases the record, the session, and the next launch.
+        harness.stop();
+        assert_eq!(
+            harness.await_outcome(session).await,
+            PlaySessionOutcome::Interrupted
+        );
+        harness.await_unblocked(&harness.service).await;
+        assert!(read_process_record(&harness.runtime.paths)
+            .unwrap()
+            .is_none());
+        harness.runtime.ensure_no_active_game().unwrap();
+
+        launcher.faults.fail_wait(false);
+        launcher.faults.fail_try_exit(false);
+        harness.set_app_run("sleep 5");
+        assert!(matches!(
+            harness.service.launch_game(GameId(1), None).await,
+            LaunchResponse::Started { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_child_that_cannot_be_terminated_keeps_the_launching_record_and_the_open_session() {
+        let launcher = Arc::new(FaultyLauncher::default());
+        launcher.faults.fail_terminate(true);
+        let harness = Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
+        harness.set_app_run_until_stopped();
+
+        // Break the Running-record transition the moment the child exists: the AppRun no longer
+        // resolves inside the managed installation, so its identity cannot be durably recorded.
+        let app_directory = harness.app_run.parent().unwrap().to_path_buf();
+        let hidden = app_directory.with_file_name("app-hidden");
+        let (from, to) = (app_directory.clone(), hidden.clone());
+        let started = harness.started_file.clone();
+        launcher.on_spawn(move || {
+            for _ in 0..1000 {
+                if started.exists() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            fs::rename(&from, &to).unwrap();
+        });
+
+        let failure = harness.service.launch_game(GameId(1), None).await;
+        assert_eq!(
+            failure_code(&failure),
+            LaunchErrorCode::ProcessIdentityFailed
+        );
+
+        // The child could not be proven dead, so the pre-spawn record stays exactly as written.
+        let record = read_process_record(&harness.runtime.paths)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.phase, ManagedProcessPhase::Launching);
+        assert!(record.pid.is_none());
+        assert!(matches!(
+            harness.runtime.ensure_no_active_game(),
+            Err(RuntimeError::GameActive)
+        ));
+        assert!(harness.service.get_launch_state().blocked);
+        assert_eq!(
+            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            LaunchErrorCode::GameAlreadyRunning
+        );
+        // No closed failed-to-start session is claimed while the child may still be alive.
+        assert_eq!(
+            harness
+                .launch_repository
+                .session(PlaySessionId(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .outcome,
+            PlaySessionOutcome::Running
+        );
+
+        // This is exactly the durable state a restart reconciles from: a surviving pre-spawn
+        // record naming an open session, which `reconcile_on_startup` reads as blocked.
+        assert_eq!(record.play_session_id, 1);
+        assert!(!harness
+            .launch_repository
+            .open_sessions()
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Once the child is proven gone, the record and the session both reconcile.
+        harness.stop();
+        assert_eq!(
+            harness.await_outcome(PlaySessionId(1)).await,
+            PlaySessionOutcome::FailedToStart
+        );
+        harness.await_unblocked(&harness.service).await;
+        assert!(read_process_record(&harness.runtime.paths)
+            .unwrap()
+            .is_none());
+
+        // And launching is available again.
+        fs::rename(&hidden, &app_directory).unwrap();
+        launcher.faults.fail_terminate(false);
+        harness.set_app_run("sleep 5");
+        assert!(matches!(
+            harness.service.launch_game(GameId(1), None).await,
+            LaunchResponse::Started { .. }
+        ));
     }
 }

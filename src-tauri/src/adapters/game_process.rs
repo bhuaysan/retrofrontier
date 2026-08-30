@@ -47,10 +47,51 @@ impl ProcessExit {
     }
 }
 
+/// Test-only fault injection for the managed-process boundary.
+///
+/// Uncertain-death handling has to be provable, and forcing the OS `waitpid`/`kill` calls to fail
+/// is not something a test can do deterministically. Faults are injected here instead, through a
+/// shared handle so a test can also lift them again while the process under test keeps running.
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+pub struct ProcessFaults {
+    inner: std::sync::Arc<std::sync::Mutex<Faults>>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default, Clone, Copy)]
+struct Faults {
+    wait: bool,
+    try_exit: bool,
+    terminate: bool,
+}
+
+#[cfg(test)]
+impl ProcessFaults {
+    pub fn fail_wait(&self, fail: bool) {
+        self.inner.lock().expect("process fault lock").wait = fail;
+    }
+
+    pub fn fail_try_exit(&self, fail: bool) {
+        self.inner.lock().expect("process fault lock").try_exit = fail;
+    }
+
+    pub fn fail_terminate(&self, fail: bool) {
+        self.inner.lock().expect("process fault lock").terminate = fail;
+    }
+
+    fn injected(&self, select: impl Fn(&Faults) -> bool) -> Option<std::io::Error> {
+        select(&self.inner.lock().expect("process fault lock"))
+            .then(|| std::io::Error::other("injected managed-process failure"))
+    }
+}
+
 /// A live managed child. Waiting happens on a blocking task, never on the UI thread.
 #[derive(Debug)]
 pub struct SpawnedGame {
     child: Child,
+    #[cfg(test)]
+    faults: ProcessFaults,
 }
 
 impl SpawnedGame {
@@ -58,9 +99,19 @@ impl SpawnedGame {
         self.child.id()
     }
 
+    /// Arm test-only failures on this child. Production code never calls this.
+    #[cfg(test)]
+    pub fn inject_faults(&mut self, faults: ProcessFaults) {
+        self.faults = faults;
+    }
+
     /// Has the child already ended? Used immediately after spawn so an emulator that fails at
     /// startup is reported as an early exit rather than as a broken process identity.
     pub fn try_exit(&mut self) -> Result<Option<ProcessExit>, std::io::Error> {
+        #[cfg(test)]
+        if let Some(error) = self.faults.injected(|faults| faults.try_exit) {
+            return Err(error);
+        }
         Ok(self.child.try_wait()?.map(ProcessExit::from_status))
     }
 
@@ -68,7 +119,14 @@ impl SpawnedGame {
     ///
     /// This runs when process identity could not be established or durably recorded. Leaving the
     /// child alive would make it invisible to RuntimeManager's safety checks.
+    ///
+    /// `Ok` is a positive observation that the child has exited and been reaped. `Err` proves
+    /// nothing about the child, so a caller must keep treating it as possibly alive.
     pub fn terminate(&mut self) -> Result<ProcessExit, std::io::Error> {
+        #[cfg(test)]
+        if let Some(error) = self.faults.injected(|faults| faults.terminate) {
+            return Err(error);
+        }
         match self.child.try_wait()? {
             Some(status) => Ok(ProcessExit::from_status(status)),
             None => {
@@ -79,7 +137,14 @@ impl SpawnedGame {
     }
 
     /// Block until the child ends. The caller runs this on a blocking task.
-    pub fn wait(mut self) -> Result<ProcessExit, std::io::Error> {
+    ///
+    /// The handle is borrowed rather than consumed so that a failed wait — which proves nothing
+    /// about the child — leaves the caller able to keep re-checking it.
+    pub fn wait(&mut self) -> Result<ProcessExit, std::io::Error> {
+        #[cfg(test)]
+        if let Some(error) = self.faults.injected(|faults| faults.wait) {
+            return Err(error);
+        }
         Ok(ProcessExit::from_status(self.child.wait()?))
     }
 }
@@ -112,7 +177,11 @@ impl GameProcessLauncher for LinuxGameProcessLauncher {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let child = command.spawn()?;
-        Ok(SpawnedGame { child })
+        Ok(SpawnedGame {
+            child,
+            #[cfg(test)]
+            faults: ProcessFaults::default(),
+        })
     }
 }
 
@@ -180,10 +249,10 @@ mod tests {
     fn a_clean_exit_and_a_non_zero_exit_are_distinct_normalized_results() {
         let (directory, program) = synthetic_runtime("exit \"$1\"");
 
-        let clean = spawn_with_retry(&request(&program, directory.path(), &["0"]));
+        let mut clean = spawn_with_retry(&request(&program, directory.path(), &["0"]));
         assert_eq!(clean.wait().unwrap(), ProcessExit::Code(0));
 
-        let failed = spawn_with_retry(&request(&program, directory.path(), &["3"]));
+        let mut failed = spawn_with_retry(&request(&program, directory.path(), &["3"]));
         let exit = failed.wait().unwrap();
         assert_eq!(exit, ProcessExit::Code(3));
         assert!(!exit.is_clean());
@@ -229,7 +298,7 @@ mod tests {
         std::env::set_var("RF_HOST_ONLY", "leaked");
         let output = directory.path().join("environment.txt");
 
-        let child = spawn_with_retry(&request(
+        let mut child = spawn_with_retry(&request(
             &program,
             directory.path(),
             &[output.to_str().unwrap()],
