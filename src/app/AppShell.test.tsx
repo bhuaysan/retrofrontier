@@ -56,6 +56,9 @@ const mocks = vi.hoisted(() => {
     openManagedRomFolder: vi.fn(),
     onLibraryScanProgress: vi.fn(),
     onLibraryScanCompleted: vi.fn(),
+    getLaunchState: vi.fn(),
+    launchGame: vi.fn(),
+    onGameLaunchStateChanged: vi.fn(),
     onMetadataStateChanged: vi.fn(),
     progressHandlers: new Set<(progress: ScanProgress) => void>(),
     completedHandlers: new Set<(summary: ScanSummary) => void>(),
@@ -88,6 +91,9 @@ vi.mock('../platform/ipc', () => ({
   onLibraryScanProgress: mocks.onLibraryScanProgress,
   onLibraryScanCompleted: mocks.onLibraryScanCompleted,
   onMetadataStateChanged: mocks.onMetadataStateChanged,
+  getLaunchState: mocks.getLaunchState,
+  launchGame: mocks.launchGame,
+  onGameLaunchStateChanged: mocks.onGameLaunchStateChanged,
 }));
 
 vi.mock('../platform/folderPicker', () => ({
@@ -292,9 +298,14 @@ function setupDefaults() {
     mocks.onLibraryScanProgress,
     mocks.onLibraryScanCompleted,
     mocks.onMetadataStateChanged,
+    mocks.getLaunchState,
+    mocks.launchGame,
+    mocks.onGameLaunchStateChanged,
   ]) {
     mock.mockReset();
   }
+  mocks.getLaunchState.mockResolvedValue({ running: null, blocked: false });
+  mocks.onGameLaunchStateChanged.mockResolvedValue(() => undefined);
   mocks.getLibrarySummary.mockResolvedValue({ totalGames: 0, favoriteGames: 0, systems: [] });
   mocks.queryLibrary.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
   mocks.getLibraryGameDetail.mockResolvedValue(populatedGameDetail);
@@ -539,7 +550,9 @@ describe('AppShell M6.2 shell and library states', () => {
     expect(mocks.getGameMetadata).toHaveBeenCalledWith({ gameId: 1 });
     expect(mocks.getLibraryGameDetail).toHaveBeenCalledTimes(1);
     expect(mocks.getGameMetadata).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole('button', { name: /launch|play/i })).not.toBeInTheDocument();
+    // M7 adds the Play action to Game Detail; the shell still loads exactly one bounded detail
+    // and one metadata read for the opened game.
+    expect(screen.getByRole('button', { name: /^play /i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('link', { name: /back to library/i }));
     const returnedCardHeading = await screen.findByRole('heading', { name: 'Kirby’s Adventure' });

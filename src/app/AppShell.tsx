@@ -6,6 +6,7 @@ import { useContentRoots } from '../hooks/useContentRoots';
 import { useLibrarySummary } from '../hooks/useLibrarySummary';
 import { useLibraryQuery } from '../hooks/useLibraryQuery';
 import { useGameDetail } from '../hooks/useGameDetail';
+import { useGameLaunch } from '../hooks/useGameLaunch';
 import { useScanState } from '../hooks/useScanState';
 import { useSystemCatalog } from '../hooks/useSystemCatalog';
 import { pickExternalContentRoot } from '../platform/folderPicker';
@@ -224,6 +225,9 @@ export function AppShell() {
     setLibraryFocusGameId(null);
   }, []);
 
+  // Launch state is application-wide: a game keeps running while the user browses elsewhere, so
+  // the shell owns the hook rather than the detail screen.
+  const gameLaunch = useGameLaunch();
   const detailSystemStatus = gameDetail.localDetail
     ? (catalogStatuses.find((status) => status.id === gameDetail.localDetail?.systemId) ?? null)
     : null;
@@ -391,6 +395,7 @@ export function AppShell() {
       ) : gameRouteState ? (
         <GameDetailPage
           detail={gameDetail}
+          launch={gameLaunch}
           gameId={currentGameId}
           onBackToLibrary={onBackToLibrary}
           onRetryReadiness={() => void refreshCatalog()}

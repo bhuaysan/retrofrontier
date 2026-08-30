@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { GameMetadataState, LibraryGameDetail, SystemStatus } from '../../platform/ipc';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
+import type { GameLaunchModel } from '../../hooks/useGameLaunch';
 import { GameDetailPage } from './GameDetailPage';
 
 const localDetail: LibraryGameDetail = {
@@ -139,15 +140,33 @@ function detailModel(overrides: Partial<GameDetailModel> = {}): GameDetailModel 
   };
 }
 
+function launchModel(overrides: Partial<GameLaunchModel> = {}): GameLaunchModel {
+  return {
+    phase: 'idle',
+    running: null,
+    blocked: false,
+    pendingGameId: null,
+    failure: null,
+    contentOptions: null,
+    diagnostics: [],
+    launch: vi.fn().mockResolvedValue(undefined),
+    dismissFailure: vi.fn(),
+    cancelContentSelection: vi.fn(),
+    ...overrides,
+  };
+}
+
 function renderDetail(
   model: GameDetailModel = detailModel(),
   status: SystemStatus | null = systemStatus(),
   readinessLoading = false,
+  launch: GameLaunchModel = launchModel(),
 ) {
   return render(
     <GameDetailPage
       detail={model}
       gameId={7}
+      launch={launch}
       onBackToLibrary={vi.fn()}
       onRetryReadiness={vi.fn()}
       readinessLoading={readinessLoading}
@@ -191,7 +210,8 @@ describe('GameDetailPage', () => {
     expect(within(readiness).getByText('PARTIALLY AVAILABLE')).toBeInTheDocument();
     expect(within(readiness).getAllByText('AVAILABLE')).toHaveLength(3);
     expect(within(readiness).queryByText('NOT REQUIRED')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /launch|play/i })).not.toBeInTheDocument();
+    // M7 owns the Play action; save states and controller mapping remain later milestones.
+    expect(screen.getByRole('button', { name: /^play /i })).toBeInTheDocument();
     expect(screen.queryByText(/save state/i)).not.toBeInTheDocument();
     expect(screen.queryByText('provider-id-hidden')).not.toBeInTheDocument();
     expect(screen.queryByText('must-not-render')).not.toBeInTheDocument();
@@ -458,6 +478,7 @@ describe('GameDetailPage', () => {
     view.rerender(
       <GameDetailPage
         detail={detailModel({ metadataActionPending: true })}
+        launch={launchModel()}
         gameId={7}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={vi.fn()}
@@ -468,6 +489,7 @@ describe('GameDetailPage', () => {
     view.rerender(
       <GameDetailPage
         detail={detailModel()}
+        launch={launchModel()}
         gameId={7}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={vi.fn()}
@@ -537,6 +559,7 @@ describe('GameDetailPage', () => {
     view.rerender(
       <GameDetailPage
         detail={detailModel({ metadata: { ...metadata, jobs: [] } })}
+        launch={launchModel()}
         gameId={7}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={vi.fn()}
@@ -773,6 +796,7 @@ describe('GameDetailPage', () => {
     render(
       <GameDetailPage
         detail={detailModel()}
+        launch={launchModel()}
         gameId={7}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={retryReadiness}
@@ -792,6 +816,7 @@ describe('GameDetailPage', () => {
     render(
       <GameDetailPage
         detail={detailModel({ localDetail: null })}
+        launch={launchModel()}
         gameId={7}
         onBackToLibrary={onBackToLibrary}
         onRetryReadiness={vi.fn()}
@@ -984,6 +1009,7 @@ describe('GameDetailPage — B6 hero fidelity', () => {
     render(
       <GameDetailPage
         detail={detailModel()}
+        launch={launchModel()}
         gameId={7}
         onBackToLibrary={onBackToLibrary}
         onRetryReadiness={vi.fn()}
@@ -1162,6 +1188,7 @@ describe('GameDetailPage — local-only hero', () => {
           gameId: 21,
         } as Partial<GameDetailModel>)}
         gameId={21}
+        launch={launchModel()}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={vi.fn()}
         readinessError={null}
@@ -1267,5 +1294,184 @@ describe('GameDetailPage — local-only hero', () => {
     expect(within(content).getByText('1 FILE')).toBeInTheDocument();
     const path = within(content).getByText('SNES/Gradius III (USA).sfc');
     expect(path).toHaveAttribute('title', 'SNES/Gradius III (USA).sfc');
+  });
+});
+
+describe('GameDetailPage launch interaction', () => {
+  it('starts the game through the semantic launch contract, never a path', () => {
+    const launch = launchModel();
+    renderDetail(detailModel(), systemStatus(), false, launch);
+
+    fireEvent.click(screen.getByRole('button', { name: /^play /i }));
+
+    expect(launch.launch).toHaveBeenCalledWith(7);
+    expect(launch.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the launching state while the backend has not answered', () => {
+    renderDetail(
+      detailModel(),
+      systemStatus(),
+      false,
+      launchModel({ phase: 'launching', pendingGameId: 7 }),
+    );
+
+    const play = screen.getByRole('button', { name: /is running|^play /i });
+    expect(play).toHaveTextContent('LAUNCHING…');
+    expect(play).toBeDisabled();
+    expect(screen.getByText('STARTING RETROARCH…')).toBeInTheDocument();
+  });
+
+  it('shows the running state and its diagnostics while RetroArch owns the screen', () => {
+    renderDetail(
+      detailModel(),
+      systemStatus(),
+      false,
+      launchModel({
+        phase: 'running',
+        running: {
+          sessionId: 3,
+          gameId: 7,
+          contentUnitId: 1,
+          coreId: 'beetle-psx',
+          startedAt: 1_756_000_000_000,
+        },
+        diagnostics: [{ kind: 'audioService', message: 'No audio service was available.' }],
+      }),
+    );
+
+    const play = screen.getByRole('button', { name: /is running/i });
+    expect(play).toHaveTextContent('RUNNING');
+    expect(play).toBeDisabled();
+    expect(
+      screen.getByText('RETROARCH IS RUNNING · RETROFRONTIER RETURNS WHEN IT EXITS'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('No audio service was available.')).toBeInTheDocument();
+  });
+
+  it('refuses a second launch while another game is running', () => {
+    renderDetail(
+      detailModel(),
+      systemStatus(),
+      false,
+      launchModel({
+        phase: 'running',
+        running: {
+          sessionId: 3,
+          gameId: 99,
+          contentUnitId: 1,
+          coreId: 'nestopia',
+          startedAt: 1_756_000_000_000,
+        },
+      }),
+    );
+
+    const play = screen.getByRole('button', { name: /^play /i });
+    expect(play).toHaveTextContent('ANOTHER GAME IS RUNNING');
+    expect(play).toBeDisabled();
+  });
+
+  it('renders a normalized launch failure with an actionable hint', () => {
+    const launch = launchModel({
+      failure: {
+        code: 'biosMissing',
+        message: 'A required BIOS file is missing.',
+        context: {
+          systemId: 'playstation',
+          coreId: null,
+          biosRequirementIds: ['playstation-bios'],
+          runtimeState: null,
+          hostPrerequisite: null,
+          exitCode: null,
+          contentOptions: [],
+        },
+      },
+    });
+    renderDetail(detailModel(), systemStatus(), false, launch);
+
+    expect(screen.getByText('BIOS MISSING')).toBeInTheDocument();
+    expect(
+      screen.getByText(/A required BIOS file is missing\. Check the BIOS requirements/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'DISMISS' }));
+    expect(launch.dismissFailure).toHaveBeenCalled();
+  });
+
+  it('offers the launchable versions and relaunches with the chosen unit', () => {
+    const launch = launchModel({
+      contentOptions: [
+        {
+          contentUnitId: 11,
+          kind: 'chd',
+          localTitle: 'Disc 1',
+          fileCount: 1,
+          availability: 'available',
+        },
+        {
+          contentUnitId: 12,
+          kind: 'm3u',
+          localTitle: 'Full set',
+          fileCount: 3,
+          availability: 'available',
+        },
+      ],
+    });
+    renderDetail(detailModel(), systemStatus(), false, launch);
+
+    expect(screen.getByRole('heading', { name: 'CHOOSE A VERSION' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Full set · M3U PLAYLIST · 3 FILES/ }));
+
+    expect(launch.launch).toHaveBeenCalledWith(7, 12);
+  });
+
+  it('reports an unverifiable previous game process instead of offering a launch', () => {
+    renderDetail(detailModel(), systemStatus(), false, launchModel({ blocked: true }));
+
+    expect(screen.getByRole('button', { name: /^play /i })).toBeDisabled();
+    expect(
+      screen.getByText('A PREVIOUS GAME PROCESS COULD NOT BE VERIFIED · RESTART RETROFRONTIER'),
+    ).toBeInTheDocument();
+  });
+
+  it('returns to the normal detail state once the game has exited', () => {
+    const { rerender } = render(
+      <GameDetailPage
+        detail={detailModel()}
+        gameId={7}
+        launch={launchModel({
+          phase: 'running',
+          running: {
+            sessionId: 3,
+            gameId: 7,
+            contentUnitId: 1,
+            coreId: 'beetle-psx',
+            startedAt: 1_756_000_000_000,
+          },
+        })}
+        onBackToLibrary={vi.fn()}
+        onRetryReadiness={vi.fn()}
+        readinessError={null}
+        systemStatus={systemStatus()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /is running/i })).toBeDisabled();
+
+    rerender(
+      <GameDetailPage
+        detail={detailModel()}
+        gameId={7}
+        launch={launchModel()}
+        onBackToLibrary={vi.fn()}
+        onRetryReadiness={vi.fn()}
+        readinessError={null}
+        systemStatus={systemStatus()}
+      />,
+    );
+
+    const play = screen.getByRole('button', { name: /^play /i });
+    expect(play).toHaveTextContent('PLAY');
+    expect(play).toBeEnabled();
+    expect(screen.queryByText(/RETROARCH IS RUNNING/)).not.toBeInTheDocument();
   });
 });
