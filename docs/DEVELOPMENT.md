@@ -16,7 +16,13 @@ the provider is offline. M6.6 completes the UI hardening pass: candidate/action 
 DTO-driven, provider/account copy reflects normalized guarantees, and focus, heading, live-region,
 positive/available-state contrast, and async race behavior are covered without moving policy or
 secrets across IPC. The focused corrective pass restores truthful copy for ambiguous candidate
-states; light-theme error/negative-status contrast remains mandatory M6.7 input.
+states. M6.7 completes design fidelity and polish: the header, sidebar, and footer form a
+stationary shared shell on every route, the sidebar contains its own vertical overflow at the
+960×640 minimum, Settings caps only its inner content measure rather than the shared `.app-main`
+scroll container, and the light-theme contrast work is closed by the semantic `--negative-text`
+token plus an AA correction for the black-on-accent active controls. The visual language is
+hard-edge pixel art; the directional/sidebar cursor arrows and the Game Detail Favorite star are
+deliberate accepted vector exceptions and are not outstanding fidelity work.
 
 ## Prerequisites
 

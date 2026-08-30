@@ -24,8 +24,13 @@ refresh actions, and ordered candidate resolution while preserving local-first o
 M6.6 hardens the same UI with truthful zero-candidate metadata recovery, provider/account status
 copy, bounded race handling, keyboard focus custody, semantic headings, and documented
 positive/available-state contrast coverage. Its focused corrective pass restores truthful copy for
-ambiguous candidate states; remaining light-theme error/negative-status contrast is mandatory M6.7
-input. M7 owns launching. M6.1 provides the bounded library-query, summary, local-detail, favorite,
+ambiguous candidate states. M6.7 is the design-fidelity and polish phase: it aligns the library,
+game card, game detail, settings, and scan surfaces with the design references, makes the header,
+sidebar, and footer a stationary shared shell on every route, contains sidebar overflow at the
+960×640 minimum, and closes the light-theme contrast work through the semantic `--negative-text`
+token and an AA correction for the black-on-accent active controls. RetroFrontier's visual language
+is hard-edge pixel art; the directional/sidebar cursor arrows and the Game Detail Favorite star are
+deliberate accepted vector exceptions. M7 owns launching. M6.1 provides the bounded library-query, summary, local-detail, favorite,
 scan-issue, cached-cover, and metadata-invalidation IPC foundations consumed by the current UI.
 
 ## Stack

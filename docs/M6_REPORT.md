@@ -1191,7 +1191,11 @@ remain in their owning milestones. No known CRITICAL or HIGH finding remains.
 
 ## P. Current M6 Verdict
 
-`M6.6 CORRECTIVE PASS COMPLETE — READY FOR FOCUSED DELTA REVIEW`
+`M6.7 FINAL CORRECTIVE PASS COMPLETE — READY FOR FINAL DELTA REVIEW`
+
+The M6.6 corrective pass verdict recorded here previously — `M6.6 CORRECTIVE PASS COMPLETE —
+READY FOR FOCUSED DELTA REVIEW` — was superseded by M6.7 (section T) and by the final corrective
+pass (section U).
 
 ## Q. M6.5 Adversarial Corrective-Pass Verification
 
@@ -1299,9 +1303,12 @@ contract changed.
 
 ### Non-blocking final-review findings
 
-M66-MEDIUM-2 remains open and is mandatory M6.7 accessibility input. The six measured light-theme
-error/negative-status text pairings remain at approximately 2.99:1–3.47:1; this pass makes no broad
-contrast, token, or theme change and does not claim the finding is resolved.
+M66-MEDIUM-2 was open at the time of this pass and was carried as mandatory M6.7 accessibility
+input. The six measured light-theme error/negative-status text pairings were then at approximately
+2.99:1–3.47:1; that pass made no broad contrast, token, or theme change and did not claim the
+finding was resolved. **M66-MEDIUM-2 is now CLOSED** — see section T; M6.7 introduced the semantic
+`--negative-text` token (`#743c00` light, `#ffb26c` dark) and the finding is no longer open or
+future M6.7 work.
 
 The following M66 findings remain deferred and were not changed:
 
@@ -1355,3 +1362,206 @@ user-data operation was performed.
 No native smoke run was needed for this projection/copy-only correction. All checks used
 synthetic/legal fixtures; no live ScreenScraper request, credential, provider quota, ROM, BIOS,
 runtime binary, or user-data mutation was used.
+
+## T. M6.7 Fidelity and Polish Phase
+
+M6.7 is the design-fidelity and polish phase that follows M6.6 acceptance. It changed no Rust
+production code, no DTO/IPC surface, no provider or credential handling, and no milestone
+boundary: launching, controller navigation, saves, collections, statistics, metadata editing, and
+packaging remain in their owning milestones.
+
+### M6.7 slices
+
+- **M6.7A — library composition.** Library toolbar composition and the shared search field were
+  aligned with the B1/B2/B3 references.
+- **M6.7B — game card fidelity.** Card geometry, the C4 cover-placeholder rule, and full-card
+  activation were brought to the reference; the scanline raster was stabilized so it no longer
+  drifted against the card grid.
+- **M6.7C — game detail fidelity.** Detail hero, cover column, and metadata geometry were aligned
+  with B6.
+- **M6.7D — settings and scan fidelity.** The B9 settings composition and the scan panels were
+  aligned with the references.
+- **M6.7E — accessibility and theme polish.** This slice closed the carried contrast work and
+  finished the shared shell chrome.
+
+### Major final M6.7 decisions
+
+1. **Semantic negative-text token.** `--negative-text` was introduced (`#743c00` light,
+   `#ffb26c` dark) and applied to every critical error/negative-status text surface. The
+   decorative `--accent-6` was deliberately left unchanged so no accent was diluted to satisfy a
+   text-contrast requirement. This closes M66-MEDIUM-2.
+2. **Stationary application chrome.** The header, sidebar, and footer are a shared, stationary
+   shell on every route; only the main region scrolls. The Settings route participates in the same
+   shell rather than replacing it, and the header reserves the measured Library search height so
+   its height does not change between routes.
+3. **Desktop sidebar measure.** The desktop sidebar track is 264px, which is the width the system
+   rows and their counts actually need at the 960×640 minimum.
+4. **Dark pixel shadow.** The dark-theme `--shadow` was strengthened to `#353535` while the light
+   value and all shadow offsets were kept, so the hard-edge shadow geometry is unchanged.
+5. **Smooth directional/sidebar cursor geometry.** See "Accepted pixel-fidelity exceptions".
+6. **Vector Favorite star.** See "Accepted pixel-fidelity exceptions".
+
+### Accepted pixel-fidelity exceptions
+
+RetroFrontier generally follows a hard-edge pixel visual language: hand-drawn pixel SVG icons with
+`shape-rendering="crispEdges"`, hard borders, no rounding, and pixel-shadow boxes instead of soft
+shadows. That remains the default for the icon set (`FolderIcon`, `LibraryIcon`,
+`ExternalLinkIcon`, `WarningIcon`, `PixelCheck`) and for all box chrome.
+
+Two elements are **deliberate, accepted product exceptions** to that language. They are finished
+product decisions, not unfinished fidelity work, and they must not be reported as defects or
+"restored" to a pixel-snapped treatment:
+
+- **Directional / sidebar cursor arrows** (`PixelArrow`, commit `64f5bbe`). The arrow is a filled
+  triangle with continuous diagonals rather than a 5×7 `crispEdges` staircase. The same glyph is
+  used at the small sidebar cursor size and the larger section-heading size; a pixel-snapped
+  staircase could not stay legible and consistent across both sizes.
+- **Game Detail Favorite star** (`PixelStar`, commit `17a2986`). The star is a vector silhouette
+  with a stroked outline for the unfilled state, so that filled and unfilled remain distinguishable
+  at the existing compact control size.
+
+The current `PixelIcon` regression tests encode this treatment deliberately. They must not be
+changed merely to reintroduce pixel snapping for these two elements.
+
+The earlier M6.7 commits `d3a4842`, `2d38974`, and `d4815f1` did explore a pixel-snapped cursor
+before `64f5bbe` replaced it. That history is accurate and is not restated as though the vector
+treatment had always been the plan.
+
+## U. Final M6 Corrective Pass After the Final Adversarial Review
+
+The final independent review of `dce0c93f6aedd01c8888155f740a09973dcecbd7` returned
+`NOT READY — FIXES REQUIRED`. This pass addresses HIGH-1, MED-1, MED-3, and MED-4. It changed no
+Rust code, no DTO/IPC surface, no provider/credential handling, and no milestone boundary.
+
+### HIGH-1 — sidebar vertical overflow (FIXED, verified)
+
+Root cause: `.app-sidebar` is a grid item of `.app-shell`, and a grid item's default
+`min-height: auto` prevents it from shrinking below its content. With eleven system rows plus the
+`All systems` row and the bottom-anchored Settings menu, the sidebar's content height exceeds its
+grid track at short viewport heights. Because the sidebar had neither `min-height: 0` nor its own
+scroll containment, the shell row grew instead.
+
+Measured at 960×640 on the reviewed HEAD, in a rendered Chromium at the real device size:
+
+- sidebar content height 676px against a 517px track;
+- the Settings row's bottom edge at y=758 — 118px below the 640px viewport, unreachable by mouse;
+- focusing Settings scrolled `.app-shell` itself to `scrollTop: 118`, moving the header to
+  `y: -118` and the footer to `y: 481`. The stationary-shell contract was broken.
+
+Fix (`src/styles/index.css`): `.app-sidebar` now declares `min-height: 0` together with
+`overflow-y: auto` and `overflow-x: hidden`. The sidebar owns its own vertical overflow; nothing
+else in the shell changed.
+
+Verified after the fix, rendered at the same sizes:
+
+- **960×640** — sidebar content 698px in a 517px track, `overflowsY: true`, sidebar scrolls
+  (`scrollTop: 181`). `.app-shell` reports `scrollHeight 640 === clientHeight 640`, `scrollTop: 0`,
+  and does not overflow in either axis. Header stays at `y: 0`, footer at `y: 599`. Document and
+  body do not scroll (`scrollHeight 640 === clientHeight 640`), and no element overflows
+  horizontally. Settings is reachable and activates by both mouse click and keyboard focus;
+  focusing it changes neither the header y, the footer y, nor `.app-shell`'s scroll position.
+- **1280×800** — sidebar content fits its track, `overflowsY: false`, so no sidebar scrollbar
+  appears. Shell chrome is stable and the composition is unchanged.
+- Sidebar width remains 264px at every verified size.
+
+Regression coverage: `src/styles/applicationShell.test.ts` — *contains sidebar overflow inside its
+own grid track* asserts `.app-sidebar`'s `min-height: 0` and `overflow-y: auto` and that
+`.app-shell` keeps `overflow: hidden` and its `auto minmax(0, 1fr) auto` rows, so the shell can
+never become the scroll surface again.
+
+### MED-1 — light-theme active-control contrast (FIXED, verified)
+
+Root cause: `.theme-option--active` and `.mobile-nav-link--active` render black text on the raw
+light-theme `--accent-3` (`#7c5cc4`), which measures **4.18:1** — below the 4.5:1 AA requirement.
+`.pixel-row--active` already had a light-theme correction for exactly this accent; the other two
+black-on-accent-3 controls had not been given it.
+
+Fix: the established `color-mix(in srgb, var(--accent-3) 78%, white)` treatment from
+`.pixel-row--active` is reused for `[data-theme='light'] .theme-option--active` and
+`[data-theme='light'] .mobile-nav-link--active`. No new colour was invented, no accent was diluted
+in the token file, and the dark theme is unchanged (dark `--accent-3` already measures 6.16:1
+against black).
+
+Measured in rendered Chromium with the product's own LIGHT theme control active and no
+hover/focus state applied:
+
+| Control | Foreground | Background | Contrast |
+| --- | --- | --- | --- |
+| `.theme-option--active` | `rgb(0,0,0)` | `color(srgb 0.599294 0.501412 0.819529)` | **6.35:1** |
+| `.mobile-nav-link--active` | `rgb(0,0,0)` | `color(srgb 0.599294 0.501412 0.819529)` | **6.35:1** |
+
+Both clear AA. Regression coverage: `src/styles/tokens.test.ts` — *lifts every black-on-accent
+active control to AA in the light theme* recomputes the mix from the token file, asserts the raw
+accent fails AA and the corrected value passes, and requires the correction on all three
+black-on-accent-3 selectors, so the check is no longer limited to the negative/error token.
+
+### MED-3 — Settings scroll-container width (FIXED, verified)
+
+Root cause: `SettingsPage` applied `app-main settings-main` to the same element, and
+`.settings-main { width: min(100%, 700px) }` narrowed the shared main-region scroll owner itself
+rather than the Settings content measure.
+
+Measured at 1440×900 on the reviewed HEAD:
+
+| Route | `.app-main` x | width | right edge |
+| --- | --- | --- | --- |
+| Library | 264 | 1176 | 1440 |
+| Game Detail | 264 | 1176 | 1440 |
+| Settings | 264 | **700** | **964** |
+
+The Settings scrollbar therefore sat 476px inside the window edge instead of at the main region's
+right edge.
+
+Fix: `.settings-main` was removed. `SettingsPage` keeps `.app-main` alone on the `<main>` element
+and wraps its children in a single `<div className="settings-content">` that carries the 700px
+measure and reproduces the shared `.app-main` flex-column/20px-gap rhythm. The `<main>` keeps its
+`aria-labelledby`, `id="main-content"`, heading semantics, aria relationships, root dialogs, and
+provider/account state; no behavior changed.
+
+Measured at 1440×900 after the fix:
+
+| Route | `.app-main` x | width | right edge | `.settings-content` |
+| --- | --- | --- | --- | --- |
+| Library | 264 | 1176 | 1440 | — |
+| Game Detail | 264 | 1176 | 1440 | — |
+| Settings | 264 | **1176** | **1440** | x=292, width **700** |
+
+All three routes now occupy the identical main region; Settings content stays intentionally narrow
+inside it, and the scrollbar sits at the normal main-region edge. Regression coverage:
+`src/styles/applicationShell.test.ts` — *keeps `.app-main` the full-width scroll owner on every
+route* asserts `.settings-main` no longer exists, that `.settings-content` owns the 700px measure,
+and that `.app-main` declares no `width` of its own.
+
+### MED-2 — CLOSED AS INVALID, ACCEPTED PRODUCT EXCEPTION
+
+MED-2 reported the smooth directional/sidebar cursor geometry and the vector Favorite star as
+fidelity defects. Both are accepted product decisions, recorded in section T under "Accepted
+pixel-fidelity exceptions". Commits `64f5bbe` and `17a2986` were preserved unchanged, the old 5×7
+`crispEdges` cursor and the old pixel Favorite star were **not** restored, and the `PixelIcon`
+regression tests were **not** changed to reintroduce pixel snapping.
+
+### MED-4 — documentation closure
+
+`docs/M6_REPORT.md` (this section and section T), `BACKLOG.md`, `README.md`,
+`docs/DEVELOPMENT.md`, and `docs/design/README.md` were synchronized: M6.7 and this corrective pass
+are recorded, M66-MEDIUM-2 is marked closed and no longer described as mandatory future M6.7 work,
+the accepted pixel-fidelity exceptions are documented in both the M6 report and the design icon
+documentation, and the remaining LOW/INFO findings are recorded as accepted follow-ups rather than
+closure blockers.
+
+### Deliberately unchanged follow-ups
+
+The following remain accepted follow-ups and were not touched by this pass. None of them is a
+closure blocker: failed page-forward target surviving a background refresh (M66-LOW-1);
+quota-recency timer freeze (M66-LOW-2); non-monotonic terminal scan completion watermark
+(M66-LOW-3); generic candidate-discovery copy in some states (M66-LOW-4); account-clear disabled by
+an account-read failure (M66-LOW-5); rapid same-tick pagination duplicate reads (M66-INFO-4); dead
+AppShell conditions; unused media checksum DTO fields (M66-INFO-1); deferred per-filter count work
+(M6.3 LOW-6); broader Unicode case folding; metadata event-volume optimisation; provider capability
+expansion; and archive/ZIP import.
+
+### Architecture and security disposition
+
+Frontend layout and contrast only. Rust production code, DTO/IPC, Tauri commands/capabilities,
+provider matching and capability policy, credential handling, and dependencies did not change. No
+ADR is required, and no ROM, BIOS, runtime, provider, quota, or user-data operation was performed.

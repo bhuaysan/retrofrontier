@@ -289,8 +289,8 @@ visible attribution presentation, which belongs to M6.
       - [ ] platform opener executable/reaping hardening and stuck-scan recovery remain native/release
             work outside this UI slice
       - [x] focused corrective pass restores truthful `ambiguous` candidate-state copy
-      - [ ] focused delta review and final M6 acceptance
-      - [ ] M66-MEDIUM-2 light-theme error/negative-status contrast (mandatory M6.7 input)
+      - [x] M66-MEDIUM-2 light-theme error/negative-status contrast — CLOSED in M6.7E by the
+            semantic `--negative-text` token (`#743c00` light, `#ffb26c` dark)
       - [ ] M66-LOW-1 failed page-forward target can be committed by background refresh
       - [ ] M66-LOW-2 quota recency freezes at provider-panel mount
       - [ ] M66-LOW-3 terminal scan completion watermark is not monotonic
@@ -303,6 +303,18 @@ visible attribution presentation, which belongs to M6.
       - [ ] M66-INFO-4 rapid pagination can duplicate bounded queries
       - [ ] M66-INFO-5 deferral timer self-termination observation
       - [ ] M66-INFO-6 adjacent sidebar cursor glyph remains a design observation
+- [x] M6.7 design fidelity / polish
+      - [x] M6.7A library composition, M6.7B game card fidelity, M6.7C game detail fidelity,
+            M6.7D settings and scan fidelity, M6.7E accessibility and theme polish
+      - [x] stationary shared shell chrome across every route, including Settings
+      - [x] final corrective pass: HIGH-1 sidebar vertical overflow containment
+      - [x] final corrective pass: MED-1 light-theme active-control contrast (6.35:1)
+      - [x] final corrective pass: MED-3 Settings no longer narrows the shared `.app-main`
+      - [x] final corrective pass: MED-4 M6.7 documentation closure
+      - [x] MED-2 smooth cursor / vector Favorite star — CLOSED AS INVALID, accepted product
+            exception to the hard-edge pixel language; must not be restored to pixel snapping
+      - [ ] final delta review and M6 acceptance
+      - The remaining M66 LOW/INFO items above are accepted follow-ups, not M6 closure blockers.
       - [x] M66-LOW-6 required status/contrast/deferral documentation synchronization
       - [ ] M6.3 LOW-6 bounded per-filter count contract remains deferred
       - [ ] M6.3 LOW-7 design-approved 960×640 density remains deferred
