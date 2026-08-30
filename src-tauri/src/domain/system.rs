@@ -1,7 +1,9 @@
 use crate::domain::bios::{
     BiosDigest, BiosFileIdentity, BiosModelError, BiosPolicy, BiosRequirement,
 };
-use crate::domain::core::{CoreDefinition, CoreId, CorePolicy, CorePolicyDecision, CoreTarget};
+use crate::domain::core::{
+    CoreDefinition, CoreId, CorePolicy, CorePolicyDecision, CoreSupportAsset, CoreTarget,
+};
 use crate::domain::runtime::{RuntimeArchitecture, RuntimePlatform, SafeIdentifier};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -580,6 +582,7 @@ fn v1_cores() -> Vec<CoreDefinition> {
             default_for_systems: vec![system_id],
             license: license.to_owned(),
             source_url: source_url.to_owned(),
+            support_assets: Vec::new(),
         }
     };
 
@@ -608,14 +611,23 @@ fn v1_cores() -> Vec<CoreDefinition> {
             "GPL-2.0",
             "https://github.com/libretro/beetle-psx-libretro",
         ),
-        core(
-            "dolphin",
-            "dolphin_libretro",
-            "Dolphin",
-            SystemId::NintendoGameCube,
-            "GPL-2.0",
-            "https://github.com/libretro/dolphin",
-        ),
+        CoreDefinition {
+            // The core documents that it needs its `Sys` directory below RetroArch's system
+            // directory. RetroFrontier links it there from the verified managed component; an
+            // unrelated user Dolphin installation is never searched or trusted.
+            support_assets: vec![CoreSupportAsset {
+                component_id: CoreId::new("dolphin-sys").expect("static component id"),
+                system_directory_path: "dolphin-emu/Sys".to_owned(),
+            }],
+            ..core(
+                "dolphin",
+                "dolphin_libretro",
+                "Dolphin",
+                SystemId::NintendoGameCube,
+                "GPL-2.0",
+                "https://github.com/libretro/dolphin",
+            )
+        },
     ]
 }
 
@@ -1059,6 +1071,7 @@ mod tests {
             default_for_systems: vec![SystemId::Nes],
             license: "GPL-2.0".to_owned(),
             source_url: "https://example.invalid/synthetic-core".to_owned(),
+            support_assets: Vec::new(),
         };
         let nes = system(
             SystemId::Nes,

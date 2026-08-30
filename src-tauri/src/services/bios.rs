@@ -44,6 +44,31 @@ impl BiosService {
         })
     }
 
+    // The launch application service consumes this in a later M7 slice.
+    #[allow(dead_code)]
+    /// The validated BIOS files for one system, as filename plus absolute user path.
+    ///
+    /// Only dumps whose authoritative identity matched are returned, so the launch layer can only
+    /// ever expose a verified file to the emulator. The files stay where the user put them; they
+    /// are never modified, moved, renamed, or copied.
+    pub fn validated_files(
+        &self,
+        discovery: &BiosDiscovery,
+        system_id: crate::domain::system::SystemId,
+    ) -> Vec<(String, PathBuf)> {
+        let root = Path::new(&discovery.root);
+        discovery
+            .requirements
+            .iter()
+            .filter(|requirement| requirement.system_id == system_id)
+            .filter(|requirement| requirement.state == BiosRequirementStatusState::PresentValid)
+            .filter_map(|requirement| {
+                let filename = requirement.matched_filename.clone()?;
+                Some((filename.clone(), root.join(filename)))
+            })
+            .collect()
+    }
+
     pub fn default_root(&self) -> &Path {
         &self.default_root
     }

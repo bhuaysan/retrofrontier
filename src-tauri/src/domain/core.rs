@@ -100,6 +100,19 @@ pub struct CoreTarget {
     pub architecture: RuntimeArchitecture,
 }
 
+/// Authenticated managed support data an approved core needs beside the core itself.
+///
+/// Dolphin's `Sys` directory is the M7 case: the core refuses to work correctly without it, and it
+/// must come from the verified managed runtime rather than from an unrelated user installation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreSupportAsset {
+    /// The authenticated `RuntimeComponent::id` that installs the support data.
+    pub component_id: CoreId,
+    /// Where the core expects it, relative to RetroArch's system directory.
+    pub system_directory_path: String,
+}
+
 /// A core's static policy identity. It contains no TUF signatures, hashes, or mutable installed
 /// state; those remain owned by RuntimeManager and its trusted release boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -118,6 +131,8 @@ pub struct CoreDefinition {
     pub license: String,
     /// Upstream project the approved managed component is built from.
     pub source_url: String,
+    /// Authenticated managed support components this core requires.
+    pub support_assets: Vec<CoreSupportAsset>,
 }
 
 impl CoreDefinition {
