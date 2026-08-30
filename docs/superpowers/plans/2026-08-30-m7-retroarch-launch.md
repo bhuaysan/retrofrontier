@@ -62,7 +62,7 @@
 
 - [ ] **Step 1 (RED):** Assert a `running` record still requires PID, start-time ticks, boot id, and an absolute observed executable; that a `launching` record requires all PID fields to be absent; that schema 2 and schema 4 both stay blocking and undeleted; that a `launching` record from a previous boot is cleared; that a `launching` record in the current boot with a live managed process keeps blocking; and that the existing stale-PID, PID-reuse, wrong-executable, and corrupt-record behaviours are unchanged.
 - [ ] **Step 2:** Bump the schema constant to 3, add `launch_id`/`play_session_id`, make the PID triple optional, and tighten `validate()` per phase.
-- [ ] **Step 3:** Add the bounded `/proc` scan (`exe` inside `runtime/versions/`, or `argv[0]` equal to the expected AppRun) and wire it into `LinuxManagedProcessInspector` for the `launching` phase, failing closed on any scan error.
+- [ ] **Step 3:** Add the bounded `/proc` scan (`exe` inside `runtime/versions/`, or any command-line element naming the expected AppRun — matching only `argv[0]` misses a `#!` script AppRun, whose interpreter replaces it) and wire it into `LinuxManagedProcessInspector` for the `launching` phase, failing closed on any scan error.
 - [ ] **Step 4:** Add `make_launching_record`, `make_running_record`, and keep `write_process_record` refusing records that do not target the managed runtime.
 
 ### Task 6: Runtime launch boundary

@@ -40,7 +40,7 @@ authoritative identity source for these dumps.
 | Stable system ID | System | Default approved core | Approved alternatives | BIOS policy | Filename candidates / requirements | Identity or research status |
 |---|---|---|---|---|---|---|
 | `nes` | Nintendo Entertainment System | `nestopia` (Nestopia UE) | None selected | Not required | None | **Resolved (M7).** `nestopia_libretro`, GPL-2.0, https://github.com/libretro/nestopia (Nestopia JG upstream). `disksys.rom` is FDS-only and `.fds` is not a V1 extension. |
-| `snes` | Super Nintendo Entertainment System | `bsnes-mercury-balanced` (bsnes-mercury Balanced) | None selected | Not required | None | **Resolved (M7).** `bsnes_mercury_balanced_libretro`, GPL-3.0, https://github.com/libretro/bsnes-mercury, Balanced profile. Coprocessor firmware is title-specific; see the note below. |
+| `snes` | Super Nintendo Entertainment System | `bsnes-mercury-balanced` (bsnes-mercury Balanced) | None selected | Not required | None | **Resolved (M7).** `bsnes_mercury_balanced_libretro`, GPL-3.0, https://github.com/libretro/bsnes-mercury, Balanced profile. Explicitly selected as the qualified Balanced-profile artifact for M7; upstream treats `bsnes` and `bsnes-mercury` as separate core families and no equivalence is claimed. Coprocessor firmware is title-specific; see the note below. |
 | `nintendo_64` | Nintendo 64 | Unresolved | None selected | Not required | None | Core research: license/source/platform/content review |
 | `game_boy` | Game Boy | Unresolved | None selected | Not required | None | Core research: license/source/platform/content review |
 | `game_boy_color` | Game Boy Color | Unresolved | None selected | Not required | None | Core research: license/source/platform/content review |

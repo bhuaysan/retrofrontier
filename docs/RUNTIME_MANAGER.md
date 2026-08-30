@@ -130,9 +130,12 @@ Liveness fails closed in both phases. A record from a previous boot cannot descr
 and is cleared. A `running` record is decided by boot ID, start-time ticks, and canonical
 `/proc/<pid>/exe` equality, so a dead or PID-reused process is stale while an identity mismatch stays
 uncertain and blocking. A `launching` record has no PID by construction, so it is decided by a
-bounded `/proc` scan that matches an executable resolving inside `runtime/versions/` or an `argv[0]`
-equal to the authenticated AppRun; the scan deliberately over-detects, because a false positive only
-keeps mutation blocked while a false negative would let an update run underneath a live emulator.
+bounded `/proc` scan that matches an executable resolving inside `runtime/versions/` or *any*
+command-line element naming the authenticated AppRun. Matching the whole command line rather than
+`argv[0]` is what makes a `#!` script AppRun detectable: Linux runs the interpreter instead, so the
+executable is outside the managed tree and the AppRun appears as an interpreter argument. The scan
+deliberately over-detects, because a false positive only keeps mutation blocked while a false
+negative would let an update run underneath a live emulator.
 PID alone is never identity.
 
 An old, newer, or otherwise incompatible schema is not deleted: it is treated as uncertain,

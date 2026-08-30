@@ -110,11 +110,12 @@ were verified against the libretro core documentation rather than assumed.
 
 Decisions worth flagging for review:
 
-- **"bsnes Balanced" resolved to bsnes-mercury Balanced.** No upstream libretro core is literally
-  named `bsnes_balanced`; the maintained Balanced-profile build libretro publishes is
-  `bsnes_mercury_balanced_libretro`, documented as built from the balanced profile. This is a naming
-  clarification of the approved decision, not a substitution of another emulator family, and it is
-  recorded in the design and the core matrix.
+- **bsnes-mercury Balanced was explicitly selected as the M7 SNES core.** Upstream treats `bsnes`
+  and `bsnes-mercury` as separate core families, so this is a selection, not a naming clarification:
+  RetroFrontier chose `bsnes_mercury_balanced_libretro` (from `libretro/bsnes-mercury`) because it
+  is the currently qualified Balanced-profile artifact for this M7 decision. No equivalence with the
+  separate `bsnes` core family is claimed. Whether the other family better serves V1 is open and is
+  not part of the M7 scope.
 - **Managed component identity is now translated, not assumed.** `SystemsApplicationService`
   previously compared raw verified runtime component identifiers against `CorePolicy::default_core_id`,
   which silently assumed the two identifiers were equal. Verified components are now mapped through
@@ -148,9 +149,10 @@ Decisions worth flagging for review:
 - **Liveness fails closed in both phases.** A previous-boot record is proven dead. A `running` record
   keeps the existing boot-id, start-time, and canonical `/proc/<pid>/exe` checks unchanged — an
   identity mismatch stays uncertain and blocking, and PID alone is never identity. A `launching`
-  record is decided by a bounded `/proc` scan matching an executable inside `runtime/versions/` or an
-  `argv[0]` equal to the authenticated AppRun, which covers a script AppRun and over-detects rather
-  than under-detects.
+  record is decided by a bounded `/proc` scan matching an executable inside `runtime/versions/` or
+  any command-line element naming the authenticated AppRun, which covers a script AppRun and
+  over-detects rather than under-detects. (This originally matched `argv[0]` only; see the
+  corrective pass below for why that was unsafe.)
 - **Lock scope.** The OS runtime mutation lock is held from before verification until the `running`
   record is committed, so an activation cannot interleave with verification-to-spawn.
 - **Concurrency.** An in-process mutex, in-process active state, the durable record, and the mutation
@@ -233,6 +235,160 @@ pre-existing untracked `M*_REVIEW.md` files and `docs/M5_IMPLEMENTATION_REPORT.m
 and unmodified. (`docs/M5_IMPLEMENTATION_REPORT.md` was briefly swept into the documentation commit
 by a broad `git add`; the commit was amended to remove it from the index and it is untracked again.)
 No ROM, BIOS file, runtime payload, generated installation, credential, or build artifact was added.
+
+## Corrective pass (post-review)
+
+A focused review of the M7 branch raised two HIGH process-safety findings, one bounded contract
+correction, and one documentation clarification. All four are fixed on this branch; the durable
+serialized record shape did not change, so the process-record schema stays at version 3, and
+unsupported older/newer schemas stay blocking rather than being deleted.
+
+| Commit | Subject |
+| --- | --- |
+| `8177dae` | fix(launch): detect a script AppRun during PID-less launch recovery |
+| `71576aa` | fix(launch): never clear the process record while child death is unproven |
+| `301d974` | fix(launch): validate a persisted core override against the whole contract |
+| (this one) | docs: record the M7 corrective pass |
+
+Preserved unchanged: PID + start-time + boot-ID identity for `running` records, authenticated
+installation/AppRun containment, the RuntimeManager mutation-lock behaviour, ADR-011's pre-spawn
+durable record ordering, and SQLite play sessions as history rather than process authority.
+
+### Verification after the corrective pass
+
+| Command | Result |
+| --- | --- |
+| `pnpm typecheck` | clean |
+| `pnpm lint` | clean |
+| `pnpm format:check` | clean |
+| `pnpm test` | 353 passed across 23 files |
+| `pnpm build` | built |
+| `cargo fmt -- --check` | clean |
+| `cargo clippy --all-targets --all-features -- -D warnings` | clean |
+| `cargo test` | **402 passed, 0 failed, 1 ignored** (was 393; +9) |
+| `cargo test --lib adapters::runtime_process` | 13 passed (was 9) |
+| `cargo test --lib application::launch` | 23 passed (was 18) |
+| `cargo test --lib adapters::game_process` | 5 passed |
+| `cargo test --lib repositories::launch` | 6 passed |
+| `cargo test --lib adapters::database` | 8 passed (migrations; no persistence change was needed) |
+| `git diff --check` | clean |
+
+### HIGH-1 — PID-less `Launching` recovery was unsafe for a script AppRun
+
+*Root cause.* `LinuxManagedProcessInspector::managed_process_exists` recognized a live managed child
+only through `/proc/<pid>/exe` resolving inside `runtime/versions/`, or through `argv[0]` equalling
+the authenticated AppRun. Neither holds for an AppRun implemented as a `#!` script. Linux executes
+the interpreter instead, with a command line of the shape
+`interpreter [optional-arg] script-path original-argv[1..]`; the script invocation's `argv[0]` is
+not preserved. A shebang AppRun that survived a RetroFrontier crash therefore had an executable
+outside the managed tree *and* an `argv[0]` that was the interpreter, the scan returned "absent",
+`game-process.json` was cleared, and runtime mutation could run underneath a live emulator — a
+fail-closed violation of M7 and ADR-011.
+
+*Fix.* The scan now matches the AppRun against *every* command-line element, not `argv[0]`, so the
+script pathname is found where the kernel actually puts it — as an interpreter argument. Nothing is
+special-cased to `/bin/sh`. Containment is preserved and tightened: the AppRun is a match key only
+while it belongs to the managed versions tree, either as it resolves now or — when its installation
+was moved or removed underneath a still-running process — as the absolute path
+`write_process_record` had already validated against that tree. A record naming a host path can
+therefore never make an arbitrary process look managed. Command lines are read with a size cap, and
+per-argument canonicalization is limited to arguments that could name the same file. Running-phase
+identity (PID + start ticks + canonical `/proc/<pid>/exe`) is untouched.
+
+### HIGH-2 — the durable record was cleared while child death was uncertain
+
+*Root cause.* Two paths deleted `game-process.json` without proof of death.
+
+- The fresh-child monitor treated an error from `child.wait()` as `Interrupted` and then cleared the
+  record. A failed wait proves nothing about the child, so a live emulator could be forgotten and
+  runtime mutation unblocked underneath it. `SpawnedGame::wait` also consumed the handle, so the
+  child could not even be re-checked.
+- After spawn, when process identity could not be established or durably written, the code called
+  `child.terminate()` and cleared the pre-spawn `Launching` record regardless of whether termination
+  had succeeded — and closed the play session as `failed_to_start` while the child might still be
+  running.
+
+*Fix.* `clear_process_record` is now reached from `LaunchApplicationService` only through
+`clear_record_after_proven_death`, whose contract states the invariant: the caller already holds
+proof that no managed child survives — either no process was ever created, or its exit was
+positively observed and reaped. Every remaining call site satisfies it (spawn failed before a child
+existed; the settle window reaped an exit; the monitor reaped an exit; a positively reaped
+`terminate`). `SpawnedGame::wait` borrows instead of consuming, and `terminate` documents that only
+`Ok` is a positive observation.
+
+Where death is unproven the record stays, launch state becomes `blocked`, the session stays open,
+and the new `watch_until_absent` polls until either the child is positively reaped or
+`ManagedProcessInspector` independently proves absence and clears the record itself. It then closes
+the session — `interrupted` for a monitored game, `failed_to_start` for a launch that never
+completed — and makes launching available again. It replaced `watch_adopted_process` and now also
+covers the blocked branch of restart reconciliation, so a surviving record recovers on its own
+instead of blocking for the rest of the application run. Runtime mutation and any further launch
+stay blocked for the entire uncertainty interval.
+
+### MEDIUM-1 — persisted core overrides did not enforce the approved contract
+
+*Root cause.* `set_core_override` checked only `SystemCatalog::approves_core_for_system`. The
+approved contract also requires the core to map to an authenticated managed runtime component, to be
+currently verified as installed, and to be approved for that system by the authenticated release.
+The launch path revalidated all of it, so this was never a security bypass, but invalid or stale
+override state could be persisted contrary to the contract.
+
+*Fix.* Persistence runs the same `RetroArchService::resolve_core` boundary the launch uses, rather
+than duplicating the core-selection algorithm, so the two cannot drift apart and no arbitrary core
+path is introduced. Launch-time revalidation is unchanged and still authoritative.
+
+### Tests added
+
+`adapters::runtime_process`
+
+- a shebang AppRun whose interpreter is outside the managed versions tree: a schema-3 PID-less
+  `Launching` record is written before spawn, the script is spawned and confirmed to be running
+  under a host interpreter (asserting both that `/proc/<pid>/exe` is outside the tree and that
+  `argv[0]` is not the AppRun), `ensure_no_active_game()` reports `GameActive`, the durable record
+  survives, and only after the child is terminated and reaped is the record cleared;
+- the same, with the installation renamed away underneath the live child;
+- an ordinary symlinked AppRun resolving to an ELF payload inside the installation;
+- an AppRun path outside the managed tree is never a match key.
+
+The pre-existing copied-`/bin/sh` test is retained: it covers the ordinary in-tree ELF case, which
+its own `/proc/<pid>/exe` satisfies.
+
+`application::launch`
+
+- a monitor that can observe neither `wait()` nor `try_wait()`: the record survives, mutation stays
+  blocked, a second launch is refused, the session stays open, and only proven absence clears the
+  record, closes the session as `interrupted`, and makes launching available again;
+- a child that cannot be terminated while the Running-record transition fails: the pre-spawn
+  `Launching` record survives unchanged and PID-less, mutation stays blocked, a second launch is
+  refused, the session stays open, and proven absence then reconciles record and session and
+  restores launching;
+- the core-override persistence contract — approved and verified-installed persists; approved but
+  uninstalled, a component that does not approve the system, an unresolvable component, an
+  unapproved core, an unknown core, and an unresolved system all refuse;
+- launch-time revalidation still refuses a stored override whose core disappeared.
+
+Both uncertainty tests use test-only fault injection on `SpawnedGame`, so nothing depends on forcing
+the OS `waitpid`/`kill` calls to fail by chance.
+
+### Pre-existing test flake, diagnosed and deliberately left
+
+Running the launch module on its own (`cargo test --lib application::launch`) intermittently fails
+one of the *pre-existing* launch tests with `runtimeNotReady`: 5 of 20 runs, always
+`a_foreign_or_unlaunchable_content_unit_is_never_started` or
+`a_missing_or_unavailable_game_is_refused_before_anything_is_started`, never one of the tests added
+here. It reproduces identically on the pre-corrective HEAD `4cb60dc`, so it is not introduced by
+this pass. The full `cargo test` run did not reproduce it in 8 consecutive runs (402 passed each
+time), because the scheduling is different when the whole suite shares the thread pool.
+
+Cause: `flock` is inherited across `fork()`. While one test holds its runtime-mutation lock, a
+*concurrent* test's process spawn briefly holds a duplicate of that lock between `fork` and `exec`,
+so the first test's next `try_lock` returns `WouldBlock` and the launch reports `runtimeNotReady`.
+
+It is left as is. It is an artifact of many per-tempdir locks living in one test process — ADR-011
+requires holding the mutation lock across the spawn, and production has a single lock and a single
+launch sequence, so the window is not reachable there. It also fails closed. Removing it would mean
+either serializing the tests behind a new dependency or adding a retry to a safety primitive's
+`try_lock`, neither of which belongs in this corrective pass.
 
 ## Deferred work
 

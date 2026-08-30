@@ -40,15 +40,17 @@ Upstream facts were verified against the libretro core documentation sources dur
 | `playstation` | `beetle-psx` | `mednafen_psx_libretro` | GPLv2 (as documented by libretro) | `github.com/libretro/beetle-psx-libretro` |
 | `nintendo_gamecube` | `dolphin` | `dolphin_libretro` | GPLv2 (as documented by libretro) | `github.com/libretro/dolphin` |
 
-### "bsnes Balanced" naming resolution
+### SNES core selection
 
-The approved intent is the bsnes *Balanced* profile. There is no current upstream libretro core
-literally named `bsnes_balanced`; the maintained Balanced-profile build published by libretro is
-**bsnes-mercury Balanced** (`bsnes_mercury_balanced_libretro`), documented by libretro as "built
-from the 'balanced' profile", based on bsnes v094 with accuracy backports. RetroFrontier therefore
-records `bsnes-mercury-balanced` as the exact approved managed component identity and documents
-that it is the concrete realisation of the approved "bsnes Balanced" decision. This is a naming
-clarification, not a substitution of a different emulator family.
+RetroFrontier explicitly selected **bsnes-mercury Balanced** (`bsnes_mercury_balanced_libretro`,
+from `github.com/libretro/bsnes-mercury`, Balanced profile) as the M7 SNES core, because it is the
+currently qualified Balanced-profile artifact for this M7 decision. `bsnes-mercury-balanced` is
+recorded as the exact approved managed component identity.
+
+Upstream treats `bsnes` and `bsnes-mercury` as separate core families. This is therefore a
+selection, not the literal upstream name of "bsnes Balanced", and no equivalence between the two
+families is claimed. Whether the separate `bsnes` family better serves V1 is open and outside the
+M7 scope.
 
 `bsnes-mercury` is GPLv3. That is compatible with RetroFrontier's own `GPL-3.0-or-later`
 intent and with ADR-012's requirement that every component carry recorded licence metadata. It
@@ -411,7 +413,8 @@ requirement as well:
 2. write the durable `launching` record (no PID) and fsync it;
 3. spawn;
 4. build strong process identity and atomically replace the record with `running`;
-5. if step 4 cannot be completed, terminate the child and fail closed.
+5. if step 4 cannot be completed, terminate the child and fail closed — and if that termination
+   cannot itself be confirmed, keep the `launching` record, leave the session open, and block.
 
 This is documented as a deliberate deviation from the conceptual list in the M7 brief.
 
@@ -421,9 +424,20 @@ A `launching` record carries no PID, so PID liveness cannot decide it. Reconcili
 
 - `boot_id` differs from the current Linux boot id → the process cannot exist → clear the record;
 - same boot id → scan `/proc` for any live process of this user whose canonical `/proc/<pid>/exe`
-  resolves inside `runtime/versions/`, **or** whose `argv[0]` equals `expected_apprun_path` (an
-  `AppRun` may be a script, in which case `exe` is the interpreter). Any match → still active,
-  keep blocking. No match → prove dead → clear the record.
+  resolves inside `runtime/versions/`, **or** *any* of whose command-line elements names
+  `expected_apprun_path`. Any match → still active, keep blocking. No match → prove dead → clear
+  the record.
+
+  The command-line half matches the whole command line rather than `argv[0]`, because an `AppRun`
+  may be a `#!` script. Linux then executes the interpreter with a command line of the shape
+  `interpreter [optional-arg] script-path original-argv[1..]`: the script invocation's `argv[0]` is
+  not preserved, `exe` is a host interpreter outside the managed tree, and the `AppRun` appears as
+  an interpreter *argument*. Matching only `argv[0]` produced a false negative for exactly the case
+  the scan exists to catch.
+
+  `expected_apprun_path` is a match key only while it belongs to the managed versions tree — as it
+  resolves now, or, when its installation was moved or removed underneath a live process, as the
+  absolute path `write_process_record` already validated against that tree.
 - Any error while scanning → uncertain → keep blocking, do not delete.
 
 The scan is bounded (one `readlink` and one small read per `/proc/<pid>`), over-detects rather than
@@ -615,11 +629,30 @@ justified above):
     return `processExitedDuringLaunch`.
 18. Capture PID, `/proc/<pid>/stat` start-time ticks, boot id, and the observed
     `/proc/<pid>/exe`; atomically replace the record with `running`. Any failure → terminate the
-    child, wait for it, clear the record, close the session as `failedToStart`, and return
-    `processIdentityFailed`.
+    child. A *positively reaped* termination → clear the record, close the session as
+    `failedToStart`, return `processIdentityFailed` (or `processExitedDuringLaunch` if the child had
+    already exited on its own). A termination that fails, or whose result proves nothing → see
+    *Uncertain process death* below.
 19. Release the runtime mutation lock; publish running state; emit `game-launch-state-changed`.
-20. Monitor asynchronously. On exit: record the exit status, classify the outcome, close the Play
-    Session, clear the process record, publish the stable non-running state, and emit the event.
+20. Monitor asynchronously. On a *positively reaped* exit: record the exit status, classify the
+    outcome, close the Play Session, clear the process record, publish the stable non-running state,
+    and emit the event. A `wait()` that fails proves nothing → see *Uncertain process death*.
+
+### Uncertain process death
+
+The durable record may be deleted only with proof that no managed child survives. Exactly two things
+count: no process was ever created, or the child's exit was positively observed and reaped. A failed
+`wait()` and a failed `terminate()` are not proof of anything, so neither clears the record.
+
+Where death is unproven, RetroFrontier keeps the process record exactly as written (which keeps
+runtime mutation and every further launch blocked), sets the `blocked` launch state, and leaves the
+Play Session open rather than claiming a closed `failedToStart` or `completed` session underneath a
+child that may still be alive. It then polls the existing liveness boundary until either the child
+is positively reaped or `ManagedProcessInspector` independently proves absence — the inspector
+clears the record itself in that case — and only then closes the session (`interrupted` for a
+monitored game, `failedToStart` for a launch that never completed) and makes launching available
+again. The same bounded polling adopts a process inherited from a previous application run, and
+covers a surviving record that names no honest running session.
 21. Release the launch mutex.
 
 RetroArch exiting never terminates RetroFrontier; the child is waited on in a blocking task on the
