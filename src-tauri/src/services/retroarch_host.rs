@@ -30,6 +30,7 @@ impl Default for LinuxHostPrerequisiteInspector {
 }
 
 impl LinuxHostPrerequisiteInspector {
+    #[cfg(test)]
     pub fn new(graphics_device_root: PathBuf, input_device_root: PathBuf) -> Self {
         Self {
             graphics_device_root,

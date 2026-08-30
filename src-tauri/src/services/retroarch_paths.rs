@@ -35,6 +35,7 @@ impl LaunchPaths {
         }
     }
 
+    #[cfg(test)]
     pub fn app_data_root(&self) -> &Path {
         &self.app_data_root
     }

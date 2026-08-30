@@ -76,6 +76,7 @@ impl RetroArchService {
         }
     }
 
+    #[cfg(test)]
     pub fn paths(&self) -> &LaunchPaths {
         &self.paths
     }

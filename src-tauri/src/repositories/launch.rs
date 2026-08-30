@@ -161,6 +161,9 @@ impl LaunchRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Inspection affordance for tests; production reconciliation uses
+    /// `interrupt_open_sessions` instead.
+    #[cfg(test)]
     pub async fn open_sessions(&self) -> Result<Vec<PlaySession>, AppError> {
         let rows = sqlx::query(
             "SELECT id, game_id, content_unit_id, core_id, runtime_installation_id, \

@@ -44,8 +44,6 @@ impl BiosService {
         })
     }
 
-    // The launch application service consumes this in a later M7 slice.
-    #[allow(dead_code)]
     /// The validated BIOS files for one system, as filename plus absolute user path.
     ///
     /// Only dumps whose authoritative identity matched are returned, so the launch layer can only

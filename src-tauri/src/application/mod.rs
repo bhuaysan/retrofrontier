@@ -1,4 +1,5 @@
 mod app_info;
+pub mod launch;
 pub mod library;
 pub mod metadata;
 mod runtime;
@@ -10,6 +11,7 @@ use crate::repositories::settings::SettingsRepository;
 use crate::adapters::runtime_lock::ApplicationInstanceLock;
 use crate::services::media_delivery::CachedCoverDelivery;
 pub use app_info::AppInfoService;
+pub use launch::{LaunchApplicationService, LaunchConfig, TauriLaunchEventSink};
 pub use library::{LibraryApplicationService, TauriScanEventSink};
 pub use metadata::{
     MetadataApplicationService, MetadataConfig, MetadataWorker, ProviderCredentialState,
@@ -23,6 +25,7 @@ pub use systems::{SystemsApplicationService, SystemsResponse};
 #[derive(Clone)]
 pub struct AppState {
     app_info: AppInfoService,
+    launch: LaunchApplicationService,
     runtime: RuntimeApplicationService,
     systems: SystemsApplicationService,
     library: LibraryApplicationService,
@@ -40,12 +43,14 @@ impl AppState {
         systems: SystemsApplicationService,
         instance_lock: ApplicationInstanceLock,
         library: LibraryApplicationService,
+        launch: LaunchApplicationService,
         metadata: Arc<MetadataApplicationService>,
         media_delivery: Arc<CachedCoverDelivery>,
         metadata_worker: Arc<MetadataWorker>,
     ) -> Self {
         Self {
             app_info: AppInfoService::new(settings),
+            launch,
             runtime,
             systems,
             library,
@@ -70,6 +75,10 @@ impl AppState {
 
     pub fn library(&self) -> &LibraryApplicationService {
         &self.library
+    }
+
+    pub fn launch(&self) -> &LaunchApplicationService {
+        &self.launch
     }
 
     pub fn metadata(&self) -> &MetadataApplicationService {

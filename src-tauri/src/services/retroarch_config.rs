@@ -125,10 +125,12 @@ impl RetroArchConfig {
         Self { entries }
     }
 
+    #[cfg(test)]
     pub fn entries(&self) -> &[(String, String)] {
         &self.entries
     }
 
+    #[cfg(test)]
     pub fn value(&self, key: &str) -> Option<&str> {
         self.entries
             .iter()

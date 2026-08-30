@@ -17,6 +17,7 @@ use adapters::credentials::{
     KeyringCredentialVault,
 };
 use adapters::database::Database;
+use adapters::game_process::LinuxGameProcessLauncher;
 use adapters::http::ReqwestHttpClient;
 use adapters::metadata_paths::MetadataPaths;
 use adapters::runtime_lock::ApplicationInstanceLock;
@@ -25,9 +26,10 @@ use adapters::screenscraper::ScreenScraperProvider;
 use application::metadata::CREDENTIAL_VAULT_SERVICE;
 use application::AppState;
 use application::{
-    LibraryApplicationService, MetadataApplicationService, MetadataConfig, MetadataWorker,
-    ProviderCredentialState, RuntimeApplicationService, RuntimeManager, SystemsApplicationService,
-    TauriMetadataStateEventSink, TauriScanEventSink,
+    LaunchApplicationService, LaunchConfig, LibraryApplicationService, MetadataApplicationService,
+    MetadataConfig, MetadataWorker, ProviderCredentialState, RuntimeApplicationService,
+    RuntimeManager, SystemsApplicationService, TauriLaunchEventSink, TauriMetadataStateEventSink,
+    TauriScanEventSink,
 };
 use domain::system::SystemCatalog;
 use repositories::settings::SettingsRepository;
@@ -38,6 +40,9 @@ use services::media_delivery::{
 };
 use services::metadata_provider::MetadataProvider;
 use services::metadata_queue::{RandomJitter, SystemClock};
+use services::retroarch::RetroArchService;
+use services::retroarch_host::LinuxHostPrerequisiteInspector;
+use services::retroarch_paths::LaunchPaths;
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -63,6 +68,8 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
     let bios =
         BiosService::from_catalog(documents_dir.join("RetroFrontier").join("BIOS"), &catalog)
             .map_err(error::AppError::Bios)?;
+    let catalog_for_launch = catalog.clone();
+    let bios_for_launch = bios.clone();
     let library = tauri::async_runtime::block_on(LibraryApplicationService::initialize(
         database.pool().clone(),
         catalog.clone(),
@@ -78,6 +85,32 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
 
     let runtime_service = RuntimeApplicationService::new(runtime.clone());
 
+    // The launch subsystem is composed after the runtime has been reconciled, so restart
+    // reconciliation sees the durable process record RuntimeManager has already judged.
+    let launch_paths = LaunchPaths::new(&app_data_dir);
+    launch_paths.prepare()?;
+    let launch = LaunchApplicationService::new(
+        repositories::library::LibraryRepository::new(database.pool().clone()),
+        repositories::launch::LaunchRepository::new(database.pool().clone()),
+        catalog_for_launch,
+        bios_for_launch,
+        Arc::new(runtime.clone()),
+        Arc::new(RetroArchService::new(
+            launch_paths,
+            Arc::new(LinuxGameProcessLauncher),
+            Arc::new(LinuxHostPrerequisiteInspector::default()),
+        )),
+        Arc::new(TauriLaunchEventSink::new(app.clone())),
+        LaunchConfig::default(),
+    );
+    let launch_state = tauri::async_runtime::block_on(launch.reconcile_on_startup())?;
+    if launch_state.running.is_some() || launch_state.blocked {
+        tracing::info!(
+            blocked = launch_state.blocked,
+            "a managed game process survived the previous RetroFrontier run"
+        );
+    }
+
     let metadata = initialize_metadata(app, &app_data_dir, database.pool().clone())?;
     let media_delivery = Arc::new(CachedCoverDelivery::new(
         database.pool().clone(),
@@ -92,6 +125,7 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
         SystemsApplicationService::new(catalog, bios, runtime_service),
         instance_lock,
         library,
+        launch,
         metadata,
         media_delivery,
         metadata_worker,
@@ -225,6 +259,8 @@ pub fn run() {
             commands::library::get_library_summary,
             commands::library::get_library_game_detail,
             commands::library::set_game_favorite,
+            commands::launch::launch_game,
+            commands::launch::get_launch_state,
             commands::metadata::get_game_metadata,
             commands::metadata::request_game_metadata,
             commands::metadata::refresh_game_metadata,
