@@ -1373,6 +1373,34 @@ mod tests {
         assert!(matches!(started, LaunchResponse::Started { .. }));
     }
 
+    /// Two unrelated launch harnesses share one test process, so whenever any of them spawns a
+    /// child the fork copies the whole descriptor table — including this harness's mutation-lock
+    /// descriptor — into that child. `flock` belongs to the open file description, so a stale
+    /// duplicate would keep this harness's lock held after its owner released it and the next
+    /// launch would report `RuntimeNotReady` instead of its real domain outcome.
+    ///
+    /// The duplicate is created directly here so the condition is deterministic rather than a
+    /// matter of fork/exec timing in a parallel test.
+    #[tokio::test]
+    async fn a_descriptor_inherited_by_a_parallel_test_child_cannot_strand_the_mutation_lock() {
+        let harness = Harness::build(SystemId::Nes, Vec::new()).await;
+        let inherited = {
+            let owner = harness.runtime.lock_for_launch().unwrap();
+            owner.duplicate_descriptor()
+        };
+
+        // Both launches have to take and release the very same lock the drop above released.
+        assert_eq!(
+            failure_code(&harness.service.launch_game(GameId(99), None).await),
+            LaunchErrorCode::GameNotFound
+        );
+        assert_eq!(
+            failure_code(&harness.service.launch_game(GameId(3), None).await),
+            LaunchErrorCode::GameUnavailable
+        );
+        drop(inherited);
+    }
+
     #[tokio::test]
     async fn a_foreign_or_unlaunchable_content_unit_is_never_started() {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;

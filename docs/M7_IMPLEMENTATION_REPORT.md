@@ -384,11 +384,139 @@ Cause: `flock` is inherited across `fork()`. While one test holds its runtime-mu
 *concurrent* test's process spawn briefly holds a duplicate of that lock between `fork` and `exec`,
 so the first test's next `try_lock` returns `WouldBlock` and the launch reports `runtimeNotReady`.
 
-It is left as is. It is an artifact of many per-tempdir locks living in one test process — ADR-011
-requires holding the mutation lock across the spawn, and production has a single lock and a single
-launch sequence, so the window is not reachable there. It also fails closed. Removing it would mean
-either serializing the tests behind a new dependency or adding a retry to a safety primitive's
-`try_lock`, neither of which belongs in this corrective pass.
+It was left as is at the time, on the grounds that removing it would mean either serializing the
+tests behind a new dependency or adding a retry to a safety primitive's `try_lock`. Neither turned
+out to be necessary — see **Final stabilization** below, which resolves it and corrects the second
+half of the diagnosis above.
+
+## Final stabilization
+
+### Symptom
+
+`cargo test` fails intermittently — 2 of 20 full parallel runs, and 5 of 20 when the launch module
+is run alone — always in a launch test that calls `launch_game` twice, and always the same way: the
+*second* call returns `runtimeNotReady` instead of the domain outcome the test asserts.
+
+```
+test application::launch::tests::a_missing_or_unavailable_game_is_refused_before_anything_is_started ... FAILED
+assertion `left == right` failed
+  left: RuntimeNotReady
+ right: GameUnavailable
+```
+
+### Confirmed root cause
+
+`fs4` implements the lock as `flock(2)`, which is owned by the **open file description**, not by a
+descriptor and not by a process. Closing one descriptor releases the lock only if no copy of that
+open file description survives.
+
+`RuntimeMutationLock` releases by dropping its `File`, i.e. by closing its descriptor. Every launch
+test harness owns a real lock over its own temporary runtime root, and all of them live in one test
+binary. When any parallel test spawns a child, the `fork` copies the whole process descriptor table
+into that child — including *other* harnesses' lock descriptors — and those copies survive until the
+child reaches `execve`. So:
+
+1. harness A takes its mutation lock in `launch_locked`;
+2. harness B, on another thread, spawns a synthetic AppRun child, which copies A's lock descriptor;
+3. A finishes and drops its lock — the kernel does **not** release it, because B's not-yet-`exec`ed
+   child holds a copy of the same open file description;
+4. A's next `launch_game` calls `RuntimeMutationLock::acquire` on its own path, gets `WouldBlock`,
+   and `launch_locked` maps that to `LaunchErrorCode::RuntimeNotReady`.
+
+The earlier diagnosis had step 3 backwards: the copy does not contend with a lock A still holds, it
+keeps A's lock alive *after* A has released it. That is why only the second launch in a test fails.
+
+Proven directly, independently of Rust:
+
+```
+exec 9>x.lock; flock -n 9          # owner acquires
+( sleep 3 ) &                      # a forked child inherits fd 9 and never execs it away
+exec 9>&-                          # owner closes its descriptor
+flock -n x.lock -c true            # -> fails: STILL HELD by the inherited copy
+flock -u 9 (before closing)        # -> then it is FREE immediately
+```
+
+### Why this is a test-only defect
+
+Production has one application instance, one runtime root, and one mutation-lock path. There is no
+second, unrelated lock descriptor in the process for a spawn to strand. Production forks only from
+`LinuxGameProcessLauncher::spawn`, under the same lock the launch service already owns, so a copy
+can only extend the lifetime of a lock the application itself holds — and a runtime mutation that
+loses that race is told the runtime is busy, which is true and fails closed. The defect is entirely
+an artifact of many unrelated temporary runtime roots sharing one forking test process.
+
+### Fix
+
+One `#[cfg(test)]` `Drop` on `RuntimeMutationLock` that releases the open file description
+explicitly instead of relying on being the last descriptor:
+
+```rust
+#[cfg(test)]
+impl Drop for RuntimeMutationLock {
+    fn drop(&mut self) {
+        let _ = fs4::FileExt::unlock(&self.file);
+    }
+}
+```
+
+`flock(LOCK_UN)` acts on the open file description, so it releases the lock however many copies of
+the descriptor exist. Plus a `#[cfg(test)] duplicate_descriptor()` accessor used only to set the
+condition up in the regression tests.
+
+### Production locking semantics did not change
+
+Both additions are `#[cfg(test)]`, so neither exists in a non-test build; the production release
+path is still "drop the `File`". Nothing else changed: `acquire` is still a single non-blocking
+`try_lock`, `WouldBlock` is still a hard failure, there are no retries, no sleeps, no blocking lock,
+no global mutex, and the ADR-011 ordering — mutation lock taken before verification and held across
+the spawn — is untouched. `runtime_lock.rs` production code, `LaunchApplicationService`,
+`RuntimeManager`, `RetroArchService` and the process-record schema are byte-identical.
+
+Release-by-close itself cannot be asserted from inside this binary, and an attempt to do so was
+removed: a test that locks a bare descriptor and closes it has no way to own "the last descriptor",
+because any parallel test may copy it. That attempted test failed on run 13 of the stress gate — a
+direct, independent confirmation of the root cause.
+
+### Deterministic regressions added
+
+Neither depends on timing; both create the inherited copy with `try_clone`, which duplicates the
+open file description exactly as `fork` does.
+
+- `adapters::runtime_lock::tests::releasing_the_lock_does_not_depend_on_being_the_last_descriptor`
+  — acquire, duplicate, drop the owner, re-acquire.
+- `application::launch::tests::a_descriptor_inherited_by_a_parallel_test_child_cannot_strand_the_mutation_lock`
+  — the same condition through the real launch path, asserting the exact symptom: two consecutive
+  `launch_game` calls must return `GameNotFound` and `GameUnavailable`, not `runtimeNotReady`.
+
+Before the fix both fail, the launch one with `left: RuntimeNotReady, right: GameNotFound`. After
+the fix both pass.
+
+### Verification
+
+Reproduction before the fix, on the unmodified starting tree `f65515b`:
+
+| Command | Result |
+| --- | --- |
+| `cargo test --manifest-path Cargo.toml --lib` × 20 | 2 failures — runs 7 and 10 |
+
+Both failures were the second `launch_game` of a two-launch test returning `RuntimeNotReady`:
+`a_missing_or_unavailable_game_is_refused_before_anything_is_started` (expected `GameUnavailable`)
+and `a_foreign_or_unlaunchable_content_unit_is_never_started` (expected `GameUnavailable`).
+
+After the fix:
+
+| Command | Result |
+| --- | --- |
+| `cargo test --manifest-path Cargo.toml` × 50, ordinary parallel | **50 / 50 consecutive clean**, 0 failures |
+| `cargo test --manifest-path Cargo.toml --lib application::launch` × 30 | 30 / 30 clean |
+| `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` | clean |
+| `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` | clean |
+| `pnpm typecheck` / `lint` / `format:check` / `build` | clean |
+| `pnpm test` | 353 passed in 23 files |
+
+The Rust suite is 405 tests (404 passed, 1 ignored) per run: 403 before this pass plus the two
+deterministic regressions. No existing test was changed or removed — the diff is `+84 / -0` across
+`runtime_lock.rs` and `launch.rs`, and every added item is `#[cfg(test)]`.
 
 ## Deferred work
 

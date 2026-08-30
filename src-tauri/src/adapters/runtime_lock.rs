@@ -33,6 +33,45 @@ impl RuntimeMutationLock {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Test-only: a second descriptor onto the same open file description.
+    ///
+    /// This is what a `fork` in a parallel test thread hands its child, and it is the only way to
+    /// set that condition up deterministically.
+    #[cfg(test)]
+    pub fn duplicate_descriptor(&self) -> File {
+        self.file
+            .try_clone()
+            .expect("the lock descriptor should be duplicable")
+    }
+}
+
+/// Test-only deterministic release.
+///
+/// Production releases this lock by closing its descriptor. `flock` belongs to the open file
+/// description rather than to one descriptor, so a `fork` that copies the descriptor keeps the
+/// lock alive until that copy is closed or `execve`d away. Production has a single runtime root
+/// and forks only from under that same lock, so a copy can only ever extend the lifetime of the
+/// lock the application already owns, and a mutation that loses the race is told the runtime is
+/// busy — which is true.
+///
+/// The test binary is the opposite: dozens of unrelated harnesses, each with its own temporary
+/// runtime root and its own lock, live in one process, and every child any of them spawns copies
+/// the whole descriptor table. One harness's spawn therefore strands *another* harness's lock past
+/// the drop that should have released it, and that harness's next launch reports `RuntimeNotReady`
+/// instead of its real outcome.
+///
+/// Unlocking the open file description explicitly releases it whatever copies exist. This changes
+/// nothing about which lock is taken, when, or how contention is reported — only that release does
+/// not wait for the last copy of a descriptor to disappear — and it is compiled only into tests.
+///
+/// Production's release-by-close cannot be asserted from inside this binary for the same reason:
+/// no test here owns "the last descriptor", because any parallel test may copy it at any moment.
+#[cfg(test)]
+impl Drop for RuntimeMutationLock {
+    fn drop(&mut self) {
+        let _ = fs4::FileExt::unlock(&self.file);
+    }
 }
 
 #[derive(Debug)]
@@ -118,6 +157,23 @@ mod tests {
         assert!(RuntimeMutationLock::acquire(&path).is_err());
         drop(first);
         assert!(RuntimeMutationLock::acquire(&path).is_ok());
+    }
+
+    /// A parallel test that spawns a child copies the whole process descriptor table into that
+    /// child, so the child transiently owns a duplicate of *this* lock's open file description.
+    /// `flock` belongs to the open file description, not to a single descriptor, so closing the
+    /// owner's descriptor cannot release the lock while such a duplicate exists. `try_clone`
+    /// reproduces that duplicate deterministically, without depending on fork/exec timing.
+    #[test]
+    fn releasing_the_lock_does_not_depend_on_being_the_last_descriptor() {
+        let directory = tempdir().expect("temporary directory should be created");
+        let path = directory.path().join("runtime.lock");
+        let owner = RuntimeMutationLock::acquire(&path).expect("first lock should work");
+        let inherited = owner.duplicate_descriptor();
+        drop(owner);
+        RuntimeMutationLock::acquire(&path)
+            .expect("the lock should be free once its owner has released it");
+        drop(inherited);
     }
 
     #[cfg(unix)]
