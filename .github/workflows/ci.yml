@@ -81,7 +81,10 @@ jobs:
 
       - name: Run tests
         working-directory: src-tauri
-        run: cargo test
+        # --all-features so the maintainer `release-tools` module is compiled and its tests run:
+        # the bounded release downloader and the TUF roundtrip/tamper-rejection regressions live
+        # behind that feature and would otherwise never execute in CI.
+        run: cargo test --all-features
 
       - name: Build desktop executable
         working-directory: src-tauri
