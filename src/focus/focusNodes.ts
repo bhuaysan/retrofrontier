@@ -1,0 +1,35 @@
+/**
+ * Stable semantic focus identities.
+ *
+ * Focus restoration keys off these identities, never off a DOM selector or an element reference,
+ * so a re-rendered, re-queried, or re-paged surface can hand focus back to the same logical target.
+ */
+export type FocusNodeId = string;
+
+/** Scopes partition the navigable surface. `root` is the ordinary application scope. */
+export type FocusScopeId = string;
+
+export const ROOT_FOCUS_SCOPE: FocusScopeId = 'root';
+
+export const focusNodes = {
+  /** A Library game's own Game Detail target — the native card link. */
+  libraryGame: (gameId: number): FocusNodeId => `library:game:${gameId}`,
+  libraryHeading: 'library:heading' as FocusNodeId,
+  /** `null` is the "all systems" row. */
+  sidebarSystem: (systemId: string | null): FocusNodeId => `sidebar:system:${systemId ?? 'all'}`,
+  sidebarRoute: (route: string): FocusNodeId => `sidebar:route:${route}`,
+  shell: (action: string): FocusNodeId => `shell:${action}`,
+  detail: (action: string): FocusNodeId => `detail:${action}`,
+  detailCandidate: (providerGameId: string): FocusNodeId => `detail:candidate:${providerGameId}`,
+  /** A launch content choice, identified by its `ContentUnitId`. */
+  launchContent: (contentUnitId: number): FocusNodeId => `launch:content:${contentUnitId}`,
+  settings: (action: string): FocusNodeId => `settings:${action}`,
+  settingsRoot: (rootId: number, action: string): FocusNodeId =>
+    `settings:root:${rootId}:${action}`,
+} as const;
+
+export const focusScopes = {
+  launchContentSelection: 'scope:launch-content' as FocusScopeId,
+  rootRemoval: (rootId: number): FocusScopeId => `scope:settings-root-removal:${rootId}`,
+  metadataAccountClear: 'scope:settings-metadata-clear' as FocusScopeId,
+} as const;
