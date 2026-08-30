@@ -110,8 +110,8 @@ fn missing_status(requirement: &BiosRequirement) -> BiosRequirementStatus {
         } else {
             BiosRequirementStatusState::OptionalMissing
         },
-        expected_filenames: requirement.expected_filenames.clone(),
-        expected_size_bytes: requirement.expected_size_bytes,
+        expected_filenames: requirement.expected_filenames(),
+        expected_size_bytes: requirement.expected_size_bytes(),
         description: requirement.description.clone(),
         matched_filename: None,
         file_size_bytes: None,
@@ -125,8 +125,8 @@ fn inspect_requirement(
 ) -> Result<BiosRequirementStatus, BiosError> {
     let mut invalid_candidate: Option<(String, Option<u64>, Option<String>)> = None;
 
-    for filename in &requirement.expected_filenames {
-        let path = root.join(filename);
+    for accepted in &requirement.accepted_files {
+        let path = root.join(&accepted.filename);
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -136,24 +136,34 @@ fn inspect_requirement(
         };
 
         if metadata.file_type().is_symlink() || !metadata.is_file() {
-            invalid_candidate = Some((filename.clone(), None, None));
+            invalid_candidate = Some((accepted.filename.clone(), None, None));
             continue;
         }
 
-        let (size, digest) = hash_file(&path)?;
-        let status = base_status(requirement, size, &digest);
+        let (size, sha256, md5) = hash_file(&path)?;
+        // A known size is an identity signal on its own, so it is checked before the digest
+        // question; a wrong size is invalid even where no authoritative digest exists yet.
+        let status = if accepted.size_bytes.is_some_and(|expected| expected != size) {
+            BiosRequirementStatusState::PresentInvalid
+        } else if !accepted.has_authoritative_identity() {
+            BiosRequirementStatusState::NotCoveredByCatalog
+        } else if accepted.matches_digest(&sha256, &md5) {
+            BiosRequirementStatusState::PresentValid
+        } else {
+            BiosRequirementStatusState::PresentInvalid
+        };
         if status == BiosRequirementStatusState::NotCoveredByCatalog
             || status == BiosRequirementStatusState::PresentValid
         {
             return Ok(status_response(
                 requirement,
                 status,
-                filename,
+                &accepted.filename,
                 Some(size),
-                Some(digest),
+                Some(sha256),
             ));
         }
-        invalid_candidate = Some((filename.clone(), Some(size), Some(digest)));
+        invalid_candidate = Some((accepted.filename.clone(), Some(size), Some(sha256)));
     }
 
     if let Some((filename, size, digest)) = invalid_candidate {
@@ -168,31 +178,6 @@ fn inspect_requirement(
     Ok(missing_status(requirement))
 }
 
-fn base_status(
-    requirement: &BiosRequirement,
-    size: u64,
-    digest: &str,
-) -> BiosRequirementStatusState {
-    if requirement
-        .expected_size_bytes
-        .is_some_and(|expected| expected != size)
-    {
-        return BiosRequirementStatusState::PresentInvalid;
-    }
-    if !requirement.has_authoritative_identity() {
-        return BiosRequirementStatusState::NotCoveredByCatalog;
-    }
-    if requirement
-        .expected_hashes
-        .iter()
-        .any(|expected| expected.value.eq_ignore_ascii_case(digest))
-    {
-        BiosRequirementStatusState::PresentValid
-    } else {
-        BiosRequirementStatusState::PresentInvalid
-    }
-}
-
 fn status_response(
     requirement: &BiosRequirement,
     state: BiosRequirementStatusState,
@@ -205,8 +190,8 @@ fn status_response(
         system_id: requirement.system_id,
         required: requirement.kind.is_required(),
         state,
-        expected_filenames: requirement.expected_filenames.clone(),
-        expected_size_bytes: requirement.expected_size_bytes,
+        expected_filenames: requirement.expected_filenames(),
+        expected_size_bytes: requirement.expected_size_bytes(),
         description: requirement.description.clone(),
         matched_filename: Some(filename.to_owned()),
         file_size_bytes: size,
@@ -214,7 +199,11 @@ fn status_response(
     }
 }
 
-fn hash_file(path: &Path) -> Result<(u64, String), BiosError> {
+/// Hash a candidate once with every algorithm an authoritative identity may use.
+///
+/// The observed SHA-256 remains the reported value; MD5 exists because several approved cores
+/// publish their accepted dumps as MD5 only.
+fn hash_file(path: &Path) -> Result<(u64, String, String), BiosError> {
     let before = fs::symlink_metadata(path).map_err(|source| BiosError::ReadFile {
         path: path.to_path_buf(),
         source,
@@ -234,6 +223,7 @@ fn hash_file(path: &Path) -> Result<(u64, String), BiosError> {
         source,
     })?;
     let mut hasher = Sha256::new();
+    let mut md5_hasher = md5::Md5::new();
     let mut buffer = [0_u8; HASH_BUFFER_BYTES];
     let mut size = 0_u64;
     loop {
@@ -250,8 +240,10 @@ fn hash_file(path: &Path) -> Result<(u64, String), BiosError> {
             .checked_add(read as u64)
             .ok_or_else(|| BiosError::HashOverflow(path.to_path_buf()))?;
         hasher.update(&buffer[..read]);
+        md5_hasher.update(&buffer[..read]);
     }
     let digest = hasher.finalize();
+    let md5_digest = md5_hasher.finalize();
     let after = fs::symlink_metadata(path).map_err(|source| BiosError::ReadFile {
         path: path.to_path_buf(),
         source,
@@ -260,7 +252,7 @@ fn hash_file(path: &Path) -> Result<(u64, String), BiosError> {
         return Err(BiosError::ChangedDuringRead(path.to_path_buf()));
     }
 
-    Ok((size, bytes_to_hex(&digest)))
+    Ok((size, bytes_to_hex(&digest), bytes_to_hex(&md5_digest)))
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -301,8 +293,8 @@ pub enum BiosError {
 mod tests {
     use super::{BiosError, BiosService};
     use crate::domain::bios::{
-        BiosDigest, BiosRequirement, BiosRequirementKind, BiosRequirementStatusState,
-        BiosRootStatus,
+        BiosDigest, BiosFileIdentity, BiosHashAlgorithm, BiosRequirement, BiosRequirementKind,
+        BiosRequirementStatusState, BiosRootStatus,
     };
     use crate::domain::system::{SystemCatalog, SystemId};
     use sha2::{Digest, Sha256};
@@ -384,6 +376,126 @@ mod tests {
             for entry in fs::read_dir(path).unwrap() {
                 snapshot_tree_entry(root, &entry.unwrap().path(), snapshot);
             }
+        }
+    }
+
+    fn md5_digest(bytes: &[u8]) -> String {
+        let digest = md5::Md5::digest(bytes);
+        let mut output = String::with_capacity(32);
+        for byte in digest {
+            output.push_str(&format!("{byte:02x}"));
+        }
+        output
+    }
+
+    #[test]
+    fn per_file_identities_only_accept_a_dump_under_its_own_documented_filename() {
+        let directory = tempdir().unwrap();
+        let japanese = b"synthetic-jp-bios".as_slice();
+        let american = b"synthetic-us-bios".as_slice();
+        let requirement = BiosRequirement::with_files(
+            "synthetic-bios",
+            SystemId::PlayStation,
+            vec![
+                BiosFileIdentity::new(
+                    "scph5500.bin",
+                    None,
+                    vec![BiosDigest::md5(md5_digest(japanese)).unwrap()],
+                )
+                .unwrap(),
+                BiosFileIdentity::new(
+                    "scph5501.bin",
+                    None,
+                    vec![BiosDigest::md5(md5_digest(american)).unwrap()],
+                )
+                .unwrap(),
+            ],
+            BiosRequirementKind::Required,
+            "Synthetic PlayStation BIOS requirement",
+        )
+        .unwrap();
+        let service = service(directory.path().to_path_buf(), requirement);
+
+        // The US dump stored under the Japanese filename is not what the core would load.
+        fs::write(directory.path().join("scph5500.bin"), american).unwrap();
+        let report = service.discover(None).unwrap();
+        assert_eq!(
+            report.requirements[0].state,
+            BiosRequirementStatusState::PresentInvalid
+        );
+        assert_eq!(
+            report.requirements[0].matched_filename.as_deref(),
+            Some("scph5500.bin")
+        );
+        assert_eq!(
+            report.requirements[0].sha256.as_deref(),
+            Some(digest(american).as_str())
+        );
+
+        fs::remove_file(directory.path().join("scph5500.bin")).unwrap();
+        fs::write(directory.path().join("scph5501.bin"), american).unwrap();
+        let report = service.discover(None).unwrap();
+        assert_eq!(
+            report.requirements[0].state,
+            BiosRequirementStatusState::PresentValid
+        );
+        assert_eq!(
+            report.requirements[0].expected_filenames,
+            vec!["scph5500.bin".to_owned(), "scph5501.bin".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_file_without_an_authoritative_identity_stays_uncovered() {
+        let directory = tempdir().unwrap();
+        let known = b"synthetic-known".as_slice();
+        let requirement = BiosRequirement::with_files(
+            "synthetic-bios",
+            SystemId::SegaSaturn,
+            vec![
+                BiosFileIdentity::new(
+                    "known.bin",
+                    None,
+                    vec![BiosDigest::md5(md5_digest(known)).unwrap()],
+                )
+                .unwrap(),
+                BiosFileIdentity::new("unknown.bin", None, Vec::new()).unwrap(),
+            ],
+            BiosRequirementKind::Required,
+            "Synthetic mixed-identity requirement",
+        )
+        .unwrap();
+        let service = service(directory.path().to_path_buf(), requirement);
+
+        fs::write(directory.path().join("unknown.bin"), b"anything").unwrap();
+        let report = service.discover(None).unwrap();
+
+        assert_eq!(
+            report.requirements[0].state,
+            BiosRequirementStatusState::NotCoveredByCatalog
+        );
+    }
+
+    #[test]
+    fn the_v1_playstation_requirement_uses_the_documented_core_identities() {
+        let catalog = SystemCatalog::v1();
+        let system = catalog.system(SystemId::PlayStation).unwrap();
+        let requirement = &system.bios_requirements[0];
+
+        assert_eq!(
+            requirement.expected_filenames(),
+            vec![
+                "scph5500.bin".to_owned(),
+                "scph5501.bin".to_owned(),
+                "scph5502.bin".to_owned()
+            ]
+        );
+        assert!(requirement.has_authoritative_identity());
+        for file in &requirement.accepted_files {
+            assert_eq!(file.digests.len(), 1);
+            assert_eq!(file.digests[0].algorithm, BiosHashAlgorithm::Md5);
+            assert_eq!(file.digests[0].value.len(), 32);
+            assert!(file.size_bytes.is_none());
         }
     }
 

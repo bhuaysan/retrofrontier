@@ -335,7 +335,11 @@ mod tests {
             .iter()
             .find(|system| system.id == SystemId::Nintendo64)
             .unwrap();
-        assert!(nintendo_64.core.availability.default_core_available.is_none());
+        assert!(nintendo_64
+            .core
+            .availability
+            .default_core_available
+            .is_none());
         assert!(!nintendo_64.readiness.ready);
     }
 

@@ -86,6 +86,18 @@ impl Serialize for BiosRequirementId {
 #[serde(rename_all = "snake_case")]
 pub enum BiosHashAlgorithm {
     Sha256,
+    /// Several approved cores publish their accepted BIOS dumps as MD5 only. Recording the
+    /// published algorithm is safer than inventing an unverifiable SHA-256 value.
+    Md5,
+}
+
+impl BiosHashAlgorithm {
+    const fn hex_length(self) -> usize {
+        match self {
+            Self::Sha256 => 64,
+            Self::Md5 => 32,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -97,27 +109,31 @@ pub struct BiosDigest {
 
 impl BiosDigest {
     pub fn sha256(value: impl Into<String>) -> Result<Self, BiosModelError> {
-        let value = value.into().to_ascii_lowercase();
+        Self::new(BiosHashAlgorithm::Sha256, value)
+    }
+
+    pub fn md5(value: impl Into<String>) -> Result<Self, BiosModelError> {
+        Self::new(BiosHashAlgorithm::Md5, value)
+    }
+
+    fn new(algorithm: BiosHashAlgorithm, value: impl Into<String>) -> Result<Self, BiosModelError> {
         let digest = Self {
-            algorithm: BiosHashAlgorithm::Sha256,
-            value,
+            algorithm,
+            value: value.into().to_ascii_lowercase(),
         };
         digest.validate()?;
         Ok(digest)
     }
 
     pub fn validate(&self) -> Result<(), BiosModelError> {
-        match self.algorithm {
-            BiosHashAlgorithm::Sha256
-                if self.value.len() == 64
-                    && self.value.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
-            {
-                Ok(())
-            }
-            BiosHashAlgorithm::Sha256 => Err(BiosModelError::InvalidDigest(
-                "SHA-256 digest must contain 64 hexadecimal characters".to_owned(),
-            )),
+        let expected = self.algorithm.hex_length();
+        if self.value.len() == expected && self.value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Ok(());
         }
+        Err(BiosModelError::InvalidDigest(format!(
+            "{:?} digest must contain {expected} hexadecimal characters",
+            self.algorithm
+        )))
     }
 }
 
@@ -137,19 +153,88 @@ pub enum BiosModelError {
     InvalidDigest(String),
 }
 
+/// One BIOS dump an approved core accepts, identified by its own filename.
+///
+/// Identity is per file on purpose: a genuine dump stored under a different filename is not the
+/// file the core loads, so accepting it would report a valid BIOS that still fails at launch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BiosFileIdentity {
+    pub filename: String,
+    pub size_bytes: Option<u64>,
+    pub digests: Vec<BiosDigest>,
+}
+
+impl BiosFileIdentity {
+    pub fn new(
+        filename: impl Into<String>,
+        size_bytes: Option<u64>,
+        digests: Vec<BiosDigest>,
+    ) -> Result<Self, BiosModelError> {
+        let identity = Self {
+            filename: filename.into(),
+            size_bytes,
+            digests,
+        };
+        identity.validate()?;
+        Ok(identity)
+    }
+
+    pub fn validate(&self) -> Result<(), BiosModelError> {
+        let filename = &self.filename;
+        if filename.is_empty()
+            || filename == "."
+            || filename == ".."
+            || filename.contains('/')
+            || filename.contains('\\')
+            || filename.contains(':')
+            || filename.chars().any(char::is_control)
+        {
+            return Err(BiosModelError::InvalidFilename(filename.clone()));
+        }
+        for digest in &self.digests {
+            digest.validate()?;
+        }
+        if self.size_bytes == Some(0) {
+            return Err(BiosModelError::InvalidExpectedSize);
+        }
+        Ok(())
+    }
+
+    /// A filename alone is not an identity. Until an authoritative digest exists, a present file
+    /// is explicitly uncovered by the catalog rather than valid.
+    pub fn has_authoritative_identity(&self) -> bool {
+        !self.digests.is_empty()
+    }
+
+    /// Compare the observed digests against every accepted identity for this filename.
+    ///
+    /// Size is validated separately, because a known size disproves identity even where an
+    /// authoritative digest is still unresolved.
+    pub fn matches_digest(&self, sha256: &str, md5: &str) -> bool {
+        self.digests.iter().any(|digest| {
+            let observed = match digest.algorithm {
+                BiosHashAlgorithm::Sha256 => sha256,
+                BiosHashAlgorithm::Md5 => md5,
+            };
+            digest.value.eq_ignore_ascii_case(observed)
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BiosRequirement {
     pub id: BiosRequirementId,
     pub system_id: SystemId,
-    pub expected_filenames: Vec<String>,
-    pub expected_hashes: Vec<BiosDigest>,
-    pub expected_size_bytes: Option<u64>,
+    pub accepted_files: Vec<BiosFileIdentity>,
     pub kind: BiosRequirementKind,
     pub description: String,
 }
 
 impl BiosRequirement {
+    /// Convenience constructor for requirements whose accepted dumps share one identity set, and
+    /// for requirements whose authoritative identity is still unresolved.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: impl Into<String>,
@@ -160,12 +245,28 @@ impl BiosRequirement {
         kind: BiosRequirementKind,
         description: impl Into<String>,
     ) -> Result<Self, BiosModelError> {
+        let accepted_files = expected_filenames
+            .into_iter()
+            .map(|filename| BiosFileIdentity {
+                filename,
+                size_bytes: expected_size_bytes,
+                digests: expected_hashes.clone(),
+            })
+            .collect();
+        Self::with_files(id, system_id, accepted_files, kind, description)
+    }
+
+    pub fn with_files(
+        id: impl Into<String>,
+        system_id: SystemId,
+        accepted_files: Vec<BiosFileIdentity>,
+        kind: BiosRequirementKind,
+        description: impl Into<String>,
+    ) -> Result<Self, BiosModelError> {
         let requirement = Self {
             id: BiosRequirementId::new(id)?,
             system_id,
-            expected_filenames,
-            expected_hashes,
-            expected_size_bytes,
+            accepted_files,
             kind,
             description: description.into(),
         };
@@ -174,28 +275,15 @@ impl BiosRequirement {
     }
 
     pub fn validate(&self) -> Result<(), BiosModelError> {
-        if self.expected_filenames.is_empty() {
+        if self.accepted_files.is_empty() {
             return Err(BiosModelError::NoExpectedFilenames);
         }
         let mut filenames = std::collections::BTreeSet::new();
-        for filename in &self.expected_filenames {
-            if filename.is_empty()
-                || filename == "."
-                || filename == ".."
-                || filename.contains('/')
-                || filename.contains('\\')
-                || filename.contains(':')
-                || filename.chars().any(char::is_control)
-                || !filenames.insert(filename)
-            {
-                return Err(BiosModelError::InvalidFilename(filename.clone()));
+        for file in &self.accepted_files {
+            file.validate()?;
+            if !filenames.insert(&file.filename) {
+                return Err(BiosModelError::InvalidFilename(file.filename.clone()));
             }
-        }
-        for digest in &self.expected_hashes {
-            digest.validate()?;
-        }
-        if self.expected_size_bytes == Some(0) {
-            return Err(BiosModelError::InvalidExpectedSize);
         }
         if self.description.trim().is_empty() {
             return Err(BiosModelError::EmptyDescription);
@@ -203,10 +291,26 @@ impl BiosRequirement {
         Ok(())
     }
 
-    /// A filename alone is not enough to recognize a BIOS dump. Until an authoritative digest is
-    /// recorded, a present file remains explicitly uncovered by the catalog.
+    pub fn expected_filenames(&self) -> Vec<String> {
+        self.accepted_files
+            .iter()
+            .map(|file| file.filename.clone())
+            .collect()
+    }
+
+    /// Reported only when every accepted dump agrees on a size, so the status stays truthful for
+    /// requirements whose accepted files differ.
+    pub fn expected_size_bytes(&self) -> Option<u64> {
+        let mut sizes = self.accepted_files.iter().map(|file| file.size_bytes);
+        let first = sizes.next().flatten()?;
+        sizes.all(|size| size == Some(first)).then_some(first)
+    }
+
+    /// True only when every accepted dump carries an authoritative digest.
     pub fn has_authoritative_identity(&self) -> bool {
-        !self.expected_hashes.is_empty()
+        self.accepted_files
+            .iter()
+            .all(BiosFileIdentity::has_authoritative_identity)
     }
 }
 

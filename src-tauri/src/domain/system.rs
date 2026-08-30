@@ -1,4 +1,6 @@
-use crate::domain::bios::{BiosModelError, BiosPolicy, BiosRequirement};
+use crate::domain::bios::{
+    BiosDigest, BiosFileIdentity, BiosModelError, BiosPolicy, BiosRequirement,
+};
 use crate::domain::core::{CoreDefinition, CoreId, CorePolicy, CorePolicyDecision, CoreTarget};
 use crate::domain::runtime::{RuntimeArchitecture, RuntimePlatform, SafeIdentifier};
 use serde::{Deserialize, Serialize};
@@ -249,15 +251,7 @@ impl SystemCatalog {
                 &[".cue", ".chd", ".pbp", ".bin", ".iso", ".m3u"],
                 resolved("beetle-psx"),
                 BiosPolicy::Required,
-                requirements(
-                    SystemId::PlayStation,
-                    vec![(
-                        "playstation-bios",
-                        vec!["scph1001.bin", "scph5500.bin", "scph5501.bin", "scph5502.bin"],
-                        crate::domain::bios::BiosRequirementKind::Required,
-                        "A PlayStation BIOS dump recognized by the approved core.",
-                    )],
-                ),
+                vec![playstation_bios_requirement()],
             ),
             system(
                 SystemId::SegaSaturn,
@@ -623,6 +617,38 @@ fn v1_cores() -> Vec<CoreDefinition> {
             "https://github.com/libretro/dolphin",
         ),
     ]
+}
+
+/// The PlayStation BIOS dumps the approved Beetle PSX core loads, identified per filename.
+///
+/// The identities are the MD5 values published by the core's own libretro documentation; see
+/// `docs/CORE_MATRIX.md`. `scph1001.bin` is deliberately absent because the approved core does not
+/// look that filename up, and no expected size is asserted because the digest already pins
+/// identity exactly. The core can fall back to a bundled OpenBIOS; RetroFrontier deliberately does
+/// not rely on that and keeps this requirement `Required`.
+fn playstation_bios_requirement() -> BiosRequirement {
+    let identity = |filename: &str, md5: &str| {
+        BiosFileIdentity::new(
+            filename,
+            None,
+            vec![BiosDigest::md5(md5).expect("static BIOS digest must be valid")],
+        )
+        .expect("static BIOS file identity must be valid")
+    };
+
+    BiosRequirement::with_files(
+        "playstation-bios",
+        SystemId::PlayStation,
+        vec![
+            identity("scph5500.bin", "8dd7d5296a650fac7319bce665a6a53c"),
+            identity("scph5501.bin", "490f666e1afb15b7362b406ed1cea246"),
+            identity("scph5502.bin", "32736f17079d0b2b7024407c39bd3050"),
+        ],
+        crate::domain::bios::BiosRequirementKind::Required,
+        "A PlayStation BIOS dump recognized by the approved core \
+         (scph5500.bin, scph5501.bin, or scph5502.bin).",
+    )
+    .expect("static PlayStation BIOS requirement must be valid")
 }
 
 fn normalize_lookup_name(value: &str) -> String {
