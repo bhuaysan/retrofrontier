@@ -5,6 +5,8 @@ import type {
   ContentRoot,
   MetadataProviderStatus,
   ProviderAccountStatus,
+  RuntimeInstallResponse,
+  RuntimeInstallState,
 } from '../../platform/ipc';
 import { SettingsPage } from './SettingsPage';
 
@@ -13,6 +15,9 @@ const mocks = vi.hoisted(() => ({
   getMetadataProviderAccount: vi.fn(),
   setMetadataProviderCredentials: vi.fn(),
   clearMetadataProviderCredentials: vi.fn(),
+  getRuntimeInstallState: vi.fn(),
+  installRuntime: vi.fn(),
+  repairRuntime: vi.fn(),
 }));
 
 vi.mock('../../platform/ipc', async (importOriginal) => {
@@ -23,8 +28,45 @@ vi.mock('../../platform/ipc', async (importOriginal) => {
     getMetadataProviderAccount: mocks.getMetadataProviderAccount,
     setMetadataProviderCredentials: mocks.setMetadataProviderCredentials,
     clearMetadataProviderCredentials: mocks.clearMetadataProviderCredentials,
+    getRuntimeInstallState: mocks.getRuntimeInstallState,
+    installRuntime: mocks.installRuntime,
+    repairRuntime: mocks.repairRuntime,
   };
 });
+
+const notInstalledRuntime: RuntimeInstallState = {
+  status: {
+    state: 'notInstalled',
+    installationId: null,
+    releaseId: null,
+    canRollback: false,
+    repairRequired: false,
+  },
+  sourceConfigured: true,
+  sourceOrigin: 'qualification',
+  releaseTarget: 'rf-runtime-linux-x86_64-001.manifest.json',
+  installing: false,
+};
+
+const readyRuntime: RuntimeInstallState = {
+  status: {
+    state: 'ready',
+    installationId: '01JRUNTIMEINSTALLATION0001',
+    releaseId: 'rf-runtime-1.22.2-linux-x86_64-001',
+    canRollback: false,
+    repairRequired: false,
+  },
+  sourceConfigured: true,
+  sourceOrigin: 'qualification',
+  releaseTarget: 'rf-runtime-linux-x86_64-001.manifest.json',
+  installing: false,
+};
+
+const installed: RuntimeInstallResponse = {
+  installed: true,
+  status: readyRuntime.status,
+  error: null,
+};
 
 const managedRoot: ContentRoot = {
   id: 1,
@@ -111,6 +153,9 @@ function renderMetadataPage() {
 
 describe('SettingsPage metadata/provider section', () => {
   beforeEach(() => {
+    mocks.getRuntimeInstallState.mockReset().mockResolvedValue(notInstalledRuntime);
+    mocks.installRuntime.mockReset().mockResolvedValue(installed);
+    mocks.repairRuntime.mockReset().mockResolvedValue(installed);
     mocks.getMetadataProviderStatus.mockReset().mockResolvedValue(providerStatus);
     mocks.getMetadataProviderAccount.mockReset().mockResolvedValue(notConfiguredAccount);
     mocks.setMetadataProviderCredentials.mockReset().mockResolvedValue(undefined);
@@ -348,5 +393,91 @@ describe('SettingsPage metadata/provider section', () => {
     expect(
       screen.queryByRole('alertdialog', { name: /forget this personal account/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('SettingsPage managed runtime section', () => {
+  beforeEach(() => {
+    mocks.getRuntimeInstallState.mockReset().mockResolvedValue(notInstalledRuntime);
+    mocks.installRuntime.mockReset().mockResolvedValue(installed);
+    mocks.repairRuntime.mockReset().mockResolvedValue(installed);
+    mocks.getMetadataProviderStatus.mockReset().mockResolvedValue(providerStatus);
+    mocks.getMetadataProviderAccount.mockReset().mockResolvedValue(notConfiguredAccount);
+  });
+
+  it('shows the route from not installed to ready and runs a real install', async () => {
+    renderPage();
+    const panel = await screen.findByRole('region', { name: 'RETROARCH RUNTIME' });
+    await waitFor(() => expect(within(panel).getByText('NOT INSTALLED')).toBeInTheDocument());
+
+    mocks.getRuntimeInstallState.mockResolvedValue(readyRuntime);
+    fireEvent.click(within(panel).getByRole('button', { name: 'INSTALL RUNTIME' }));
+
+    await waitFor(() => expect(mocks.installRuntime).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(within(panel).getByText('READY')).toBeInTheDocument());
+    expect(within(panel).getByText('rf-runtime-1.22.2-linux-x86_64-001')).toBeInTheDocument();
+    // A qualification repository is never labelled as a public release channel.
+    expect(within(panel).getByText('LOCAL QUALIFICATION REPOSITORY')).toBeInTheDocument();
+  });
+
+  it('never offers installation when no approved release source is configured', async () => {
+    mocks.getRuntimeInstallState.mockResolvedValue({
+      ...notInstalledRuntime,
+      sourceConfigured: false,
+      sourceOrigin: null,
+      releaseTarget: null,
+    });
+    renderPage();
+
+    const panel = await screen.findByRole('region', { name: 'RETROARCH RUNTIME' });
+    await waitFor(() =>
+      expect(within(panel).getByRole('button', { name: 'INSTALL RUNTIME' })).toBeDisabled(),
+    );
+    expect(mocks.installRuntime).not.toHaveBeenCalled();
+  });
+
+  it('reports a refused install truthfully and offers no retry for a running game', async () => {
+    mocks.installRuntime.mockResolvedValue({
+      installed: false,
+      status: notInstalledRuntime.status,
+      error: {
+        code: 'gameRunning',
+        message: 'A game is running. Close it before installing or repairing the runtime.',
+      },
+    });
+    renderPage();
+
+    const panel = await screen.findByRole('region', { name: 'RETROARCH RUNTIME' });
+    await waitFor(() =>
+      expect(within(panel).getByRole('button', { name: 'INSTALL RUNTIME' })).toBeEnabled(),
+    );
+    fireEvent.click(within(panel).getByRole('button', { name: 'INSTALL RUNTIME' }));
+
+    await waitFor(() => expect(within(panel).getByText('GAME RUNNING')).toBeInTheDocument());
+    // The runtime is still not installed, and no misleading success is claimed.
+    expect(within(panel).getByText('NOT INSTALLED')).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'TRY AGAIN' })).toBeNull();
+  });
+
+  it('offers a retry for a failed download', async () => {
+    mocks.installRuntime.mockResolvedValue({
+      installed: false,
+      status: notInstalledRuntime.status,
+      error: {
+        code: 'downloadFailed',
+        message: 'The managed RetroArch release could not be downloaded.',
+      },
+    });
+    renderPage();
+
+    const panel = await screen.findByRole('region', { name: 'RETROARCH RUNTIME' });
+    await waitFor(() =>
+      expect(within(panel).getByRole('button', { name: 'INSTALL RUNTIME' })).toBeEnabled(),
+    );
+    fireEvent.click(within(panel).getByRole('button', { name: 'INSTALL RUNTIME' }));
+
+    await waitFor(() =>
+      expect(within(panel).getByRole('button', { name: 'TRY AGAIN' })).toBeInTheDocument(),
+    );
   });
 });

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
 import { ExternalLinkIcon, FolderIcon, PixelArrow } from '../../components/ui/PixelIcon';
+import { useManagedRuntime } from '../../hooks/useManagedRuntime';
 import { useMetadataProvider, type MetadataProviderModel } from '../../hooks/useMetadataProvider';
 import {
   normalizeIpcError,
@@ -13,6 +14,7 @@ import {
 } from '../../platform/ipc';
 import type { SystemLabel } from '../../hooks/useSystemCatalog';
 import { RootActionError } from './RootActionError';
+import { RuntimePanel } from './RuntimePanel';
 import {
   accountStatusCopy,
   providerDeferralCopy,
@@ -465,6 +467,7 @@ export function SettingsPage({
   onBackToLibrary,
 }: SettingsPageProps) {
   const metadataProvider = useMetadataProvider();
+  const managedRuntime = useManagedRuntime();
   const [pendingOperation, setPendingOperation] = useState<RootOperation | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<number | null>(null);
   const [removalFocusTarget, setRemovalFocusTarget] = useState<
@@ -666,6 +669,7 @@ export function SettingsPage({
             </PixelButton>
           </div>
         </section>
+        <RuntimePanel runtime={managedRuntime} />
         <MetadataProviderPanel provider={metadataProvider} />
       </div>
     </main>

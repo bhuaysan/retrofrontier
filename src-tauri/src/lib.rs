@@ -9,6 +9,8 @@ mod commands;
 mod domain;
 mod error;
 mod logging;
+#[cfg(feature = "release-tools")]
+pub mod release;
 mod repositories;
 mod services;
 
@@ -22,6 +24,7 @@ use adapters::http::ReqwestHttpClient;
 use adapters::metadata_paths::MetadataPaths;
 use adapters::runtime_lock::ApplicationInstanceLock;
 use adapters::runtime_paths::RuntimePaths;
+use adapters::runtime_release_source::configure_release_source;
 use adapters::screenscraper::ScreenScraperProvider;
 use application::metadata::CREDENTIAL_VAULT_SERVICE;
 use application::AppState;
@@ -55,8 +58,29 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
     let database = tauri::async_runtime::block_on(Database::open(database_path))?;
     let settings = SettingsRepository::new(database.pool().clone());
     tauri::async_runtime::block_on(settings.set("foundation.ready", "true"))?;
-    let runtime = RuntimeManager::for_app(RuntimePaths::new(&app_data_dir))
+    let runtime_paths = RuntimePaths::new(&app_data_dir);
+    // Without a configured trusted release source M2's installer can never resolve a release, so
+    // the runtime stays `NotInstalled` forever. Configuration failure is fatal on purpose: a
+    // maintainer who mis-set the qualification environment must be told, not silently downgraded
+    // to a build that reports the runtime as uninstallable.
+    let release_source = configure_release_source(runtime_paths.trust_datastore())
         .map_err(error::AppError::Runtime)?;
+    match release_source.as_ref() {
+        Some(source) => tracing::info!(
+            origin = ?source.origin,
+            release_target = source.manifest_target_name.as_str(),
+            "approved managed runtime release source configured"
+        ),
+        None => tracing::info!(
+            "no approved managed runtime release source is configured; the managed runtime \
+             cannot be installed by this build"
+        ),
+    }
+    let runtime = RuntimeManager::for_app(
+        runtime_paths,
+        release_source.as_ref().map(|source| source.source.clone()),
+    )
+    .map_err(error::AppError::Runtime)?;
     let catalog = SystemCatalog::v1();
     catalog
         .validate()
@@ -83,7 +107,8 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
         .map_err(error::AppError::Runtime)?;
     tracing::info!(state = ?runtime_status.state, "managed runtime reconciled");
 
-    let runtime_service = RuntimeApplicationService::new(runtime.clone());
+    let runtime_service =
+        RuntimeApplicationService::new(runtime.clone()).with_release_source(release_source);
 
     // The launch subsystem is composed after the runtime has been reconciled, so restart
     // reconciliation sees the durable process record RuntimeManager has already judged.
@@ -243,6 +268,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app_info::get_app_info,
             commands::runtime::get_runtime_status,
+            commands::runtime::get_runtime_install_state,
+            commands::runtime::install_runtime,
+            commands::runtime::repair_runtime,
             commands::systems::get_systems,
             commands::systems::get_bios_status,
             commands::library::get_content_roots,

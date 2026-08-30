@@ -26,6 +26,41 @@ export interface RuntimeStatus {
   repairRequired: boolean;
 }
 
+/// Where the configured trusted managed-release source came from. A qualification repository is
+/// never presented as if it were a public production release channel.
+export type RuntimeSourceOrigin = 'production' | 'qualification';
+
+export type RuntimeInstallErrorCode =
+  | 'sourceNotConfigured'
+  | 'installationInProgress'
+  | 'gameRunning'
+  | 'releaseNotTrusted'
+  | 'downloadFailed'
+  | 'verificationFailed'
+  | 'extractionFailed'
+  | 'storageLimit'
+  | 'unsupportedPlatform'
+  | 'installationFailed';
+
+export interface RuntimeInstallFailure {
+  code: RuntimeInstallErrorCode;
+  message: string;
+}
+
+export interface RuntimeInstallResponse {
+  installed: boolean;
+  status: RuntimeStatus;
+  error: RuntimeInstallFailure | null;
+}
+
+export interface RuntimeInstallState {
+  status: RuntimeStatus;
+  sourceConfigured: boolean;
+  sourceOrigin: RuntimeSourceOrigin | null;
+  releaseTarget: string | null;
+  installing: boolean;
+}
+
 export type SystemId =
   | 'nes'
   | 'snes'
@@ -739,6 +774,31 @@ export async function getAppInfo(): Promise<AppInfo> {
 export async function getRuntimeStatus(): Promise<RuntimeStatus> {
   try {
     return await invoke<RuntimeStatus>('get_runtime_status');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function getRuntimeInstallState(): Promise<RuntimeInstallState> {
+  try {
+    return await invoke<RuntimeInstallState>('get_runtime_install_state');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+/** Anticipated installation problems arrive inside the response, not as a thrown IPC error. */
+export async function installRuntime(): Promise<RuntimeInstallResponse> {
+  try {
+    return await invoke<RuntimeInstallResponse>('install_runtime');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function repairRuntime(): Promise<RuntimeInstallResponse> {
+  try {
+    return await invoke<RuntimeInstallResponse>('repair_runtime');
   } catch (error: unknown) {
     throw normalizeIpcError(error);
   }
