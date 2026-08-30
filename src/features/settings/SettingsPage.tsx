@@ -536,135 +536,138 @@ export function SettingsPage({
   const runOpen = () => void runOperation({ kind: 'open' }, onOpenManagedFolder);
   const runScan = () => void runOperation({ kind: 'scan' }, scan.startScan);
   return (
-    <main aria-labelledby="settings-heading" className="app-main settings-main" id="main-content">
-      <PixelButton
-        type="button"
-        variant="secondary"
-        className="back-button"
-        onClick={onBackToLibrary}
-      >
-        <PixelArrow direction="left" />
-        BACK TO LIBRARY
-      </PixelButton>
-      <div className="section-heading">
-        <h1 id="settings-heading">
-          <PixelArrow className="heading-arrow" />
-          SETTINGS
-        </h1>
-        <span aria-hidden="true" />
-      </div>
-      {rootsError && (
-        <InlineError
-          title="CONTENT ROOTS UNAVAILABLE"
-          message="RetroFrontier could not read the configured folders. Try again without changing any files."
-          actionLabel="RETRY ROOTS"
-          onAction={() => void refreshRoots()}
-        />
-      )}
-
-      {actionError && (
-        <RootActionError
-          error={actionError}
-          onAction={retryOperation}
-          actionLabel={lastOperation?.kind === 'open' ? 'RETRY OPEN' : undefined}
-        />
-      )}
-      {scan.scanStartError && (
-        <InlineError
-          title="SCAN COULD NOT START"
-          message="RetroFrontier could not start the local scan. Check the configured folders and try again."
-          actionLabel="TRY SCAN AGAIN"
-          onAction={runScan}
-        />
-      )}
-
-      <section className="settings-panel settings-group" aria-labelledby="roots-heading">
-        <div className="panel-heading">
-          <h2 id="roots-heading" ref={rootsHeading} tabIndex={-1}>
-            LIBRARY
-          </h2>
+    <main aria-labelledby="settings-heading" className="app-main" id="main-content">
+      <div className="settings-content">
+        <PixelButton
+          type="button"
+          variant="secondary"
+          className="back-button"
+          onClick={onBackToLibrary}
+        >
+          <PixelArrow direction="left" />
+          BACK TO LIBRARY
+        </PixelButton>
+        <div className="section-heading">
+          <h1 id="settings-heading">
+            <PixelArrow className="heading-arrow" />
+            SETTINGS
+          </h1>
           <span aria-hidden="true" />
-          <span className="panel-meta">
-            {rootsLoading ? 'CHECKING' : `${roots.length} FOLDERS`}
-          </span>
         </div>
-        <div className="root-list">
-          {rootsLoading && roots.length === 0 && (
-            <p className="loading-inline" role="status">
-              READING CONTENT ROOTS…
-            </p>
-          )}
-          {!rootsLoading && roots.length === 0 && (
-            <p className="empty-inline" role="status">
-              No content roots are available yet.
-            </p>
-          )}
-          {roots.map((root) => (
-            <RootCard
-              key={root.id}
-              root={root}
-              systems={systems}
-              busy={pendingOperation !== null}
-              removalPending={pendingRemoval === root.id}
-              onOpen={root.kind === 'managed' ? runOpen : undefined}
-              removeTriggerRef={(node) => {
-                if (node) {
-                  removeTriggers.current.set(root.id, node);
-                } else {
-                  removeTriggers.current.delete(root.id);
+        {rootsError && (
+          <InlineError
+            title="CONTENT ROOTS UNAVAILABLE"
+            message="RetroFrontier could not read the configured folders. Try again without changing any files."
+            actionLabel="RETRY ROOTS"
+            onAction={() => void refreshRoots()}
+          />
+        )}
+
+        {actionError && (
+          <RootActionError
+            error={actionError}
+            onAction={retryOperation}
+            actionLabel={lastOperation?.kind === 'open' ? 'RETRY OPEN' : undefined}
+          />
+        )}
+        {scan.scanStartError && (
+          <InlineError
+            title="SCAN COULD NOT START"
+            message="RetroFrontier could not start the local scan. Check the configured folders and try again."
+            actionLabel="TRY SCAN AGAIN"
+            onAction={runScan}
+          />
+        )}
+
+        <section className="settings-panel settings-group" aria-labelledby="roots-heading">
+          <div className="panel-heading">
+            <h2 id="roots-heading" ref={rootsHeading} tabIndex={-1}>
+              LIBRARY
+            </h2>
+            <span aria-hidden="true" />
+            <span className="panel-meta">
+              {rootsLoading ? 'CHECKING' : `${roots.length} FOLDERS`}
+            </span>
+          </div>
+          <div className="root-list">
+            {rootsLoading && roots.length === 0 && (
+              <p className="loading-inline" role="status">
+                READING CONTENT ROOTS…
+              </p>
+            )}
+            {!rootsLoading && roots.length === 0 && (
+              <p className="empty-inline" role="status">
+                No content roots are available yet.
+              </p>
+            )}
+            {roots.map((root) => (
+              <RootCard
+                key={root.id}
+                root={root}
+                systems={systems}
+                busy={pendingOperation !== null}
+                removalPending={pendingRemoval === root.id}
+                onOpen={root.kind === 'managed' ? runOpen : undefined}
+                removeTriggerRef={(node) => {
+                  if (node) {
+                    removeTriggers.current.set(root.id, node);
+                  } else {
+                    removeTriggers.current.delete(root.id);
+                  }
+                }}
+                confirmationButtonRef={
+                  pendingRemoval === root.id
+                    ? (node) => {
+                        confirmationButton.current = node;
+                      }
+                    : undefined
                 }
-              }}
-              confirmationButtonRef={
-                pendingRemoval === root.id
-                  ? (node) => {
-                      confirmationButton.current = node;
-                    }
-                  : undefined
-              }
-              onToggle={() =>
-                void runOperation({ kind: 'toggle', rootId: root.id, enabled: !root.enabled }, () =>
-                  updateRootEnabled(root.id, !root.enabled),
-                )
-              }
-              onStartRemoval={() => {
-                setRemovalFocusTarget(null);
-                setPendingRemoval(root.id);
-              }}
-              onCancelRemoval={() => {
-                setRemovalFocusTarget({ kind: 'trigger', rootId: root.id });
-                setPendingRemoval(null);
-              }}
-              onConfirmRemoval={() => {
-                setRemovalFocusTarget({ kind: 'heading' });
-                setPendingRemoval(null);
-                void runOperation({ kind: 'remove', rootId: root.id }, () =>
-                  removeExternalRoot(root.id),
-                );
-              }}
-            />
-          ))}
-        </div>
-        <div className="settings-panel-actions">
-          <PixelButton
-            ref={addButton}
-            type="button"
-            disabled={pendingOperation !== null}
-            onClick={runAdd}
-          >
-            <FolderIcon />
-            ADD EXTERNAL FOLDER
-          </PixelButton>
-          <PixelButton
-            type="button"
-            variant="secondary"
-            disabled={pendingOperation !== null || scan.status?.running === true}
-            onClick={runScan}
-          >
-            {scan.scanStartPending ? 'SCAN REQUESTED…' : 'RESCAN LIBRARY'}
-          </PixelButton>
-        </div>
-      </section>
-      <MetadataProviderPanel provider={metadataProvider} />
+                onToggle={() =>
+                  void runOperation(
+                    { kind: 'toggle', rootId: root.id, enabled: !root.enabled },
+                    () => updateRootEnabled(root.id, !root.enabled),
+                  )
+                }
+                onStartRemoval={() => {
+                  setRemovalFocusTarget(null);
+                  setPendingRemoval(root.id);
+                }}
+                onCancelRemoval={() => {
+                  setRemovalFocusTarget({ kind: 'trigger', rootId: root.id });
+                  setPendingRemoval(null);
+                }}
+                onConfirmRemoval={() => {
+                  setRemovalFocusTarget({ kind: 'heading' });
+                  setPendingRemoval(null);
+                  void runOperation({ kind: 'remove', rootId: root.id }, () =>
+                    removeExternalRoot(root.id),
+                  );
+                }}
+              />
+            ))}
+          </div>
+          <div className="settings-panel-actions">
+            <PixelButton
+              ref={addButton}
+              type="button"
+              disabled={pendingOperation !== null}
+              onClick={runAdd}
+            >
+              <FolderIcon />
+              ADD EXTERNAL FOLDER
+            </PixelButton>
+            <PixelButton
+              type="button"
+              variant="secondary"
+              disabled={pendingOperation !== null || scan.status?.running === true}
+              onClick={runScan}
+            >
+              {scan.scanStartPending ? 'SCAN REQUESTED…' : 'RESCAN LIBRARY'}
+            </PixelButton>
+          </div>
+        </section>
+        <MetadataProviderPanel provider={metadataProvider} />
+      </div>
     </main>
   );
 }

@@ -47,6 +47,45 @@ describe('design semantic tokens', () => {
     }
   });
 
+  it('lifts every black-on-accent active control to AA in the light theme', () => {
+    // `color-mix(in srgb, <accent> 78%, white)` is the established `.pixel-row--active`
+    // correction; the same treatment now covers the other black-on-accent-3 controls.
+    const mixTowardWhite = (hex: string, share: number) => {
+      const channels = hex.match(/[a-f\d]{2}/gi)?.map((value) => Number.parseInt(value, 16));
+      if (!channels) throw new Error(`Expected a six-digit colour: ${hex}`);
+      return `#${channels
+        .map((channel) =>
+          Math.round(channel * share + 255 * (1 - share))
+            .toString(16)
+            .padStart(2, '0'),
+        )
+        .join('')}`;
+    };
+
+    const lightAccent = tokenValue('light', '--accent-3');
+    expect(lightAccent).toBe('#7c5cc4');
+    // The raw accent is the reason the correction exists.
+    expect(contrastRatio('#000000', lightAccent!)).toBeLessThan(4.5);
+    expect(contrastRatio('#000000', mixTowardWhite(lightAccent!, 0.78))).toBeGreaterThanOrEqual(
+      4.5,
+    );
+
+    for (const selector of [
+      '.pixel-row--active',
+      '.theme-option--active',
+      '.mobile-nav-link--active',
+    ]) {
+      const start = applicationStyles.indexOf(`[data-theme='light'] ${selector} {`);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(applicationStyles.slice(start, applicationStyles.indexOf('}', start))).toContain(
+        'color-mix(in srgb, var(--accent-3) 78%, white)',
+      );
+    }
+
+    // Dark theme already clears AA with black ink and stays untouched.
+    expect(contrastRatio('#000000', tokenValue('dark', '--accent-3')!)).toBeGreaterThanOrEqual(4.5);
+  });
+
   it('uses the semantic negative text token for critical error text', () => {
     for (const selector of [
       '.inline-error-icon',
