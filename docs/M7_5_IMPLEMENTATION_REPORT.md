@@ -190,3 +190,79 @@ undo:
   **hardlink** to the operator's own copy in `~/Downloads` (the original is untouched; `rm` the link
   to remove it);
 - library rows and three closed play sessions from the qualification launches.
+
+## Corrective pass (post-review)
+
+A remote review of the M7.5 implementation raised one MEDIUM and one LOW finding. Both are closed
+here; nothing else in M7.5 was redesigned, and no trust boundary, policy, or client runtime path
+changed.
+
+### MEDIUM-1 — maintainer release downloads were not bounded while reading
+
+`release::construct::download` validated the response status, refused a `Content-Length` that
+disagreed with the pinned input length, and then called `response.bytes().await`. Because
+`Response::bytes` buffers the entire body before returning it, every length check ran *after* the
+whole response was already in memory. A server that sent no `Content-Length`, used chunked
+transfer, or simply streamed on could therefore not defeat SHA-256 verification, but it could make
+the maintainer construction tool consume unbounded memory — or, as the regression shows, never
+return at all.
+
+The fix replaces the buffering read with `read_body_bounded(response, expected_size)`. The bound is
+taken from the committed release definition, capped by the global `MAX_INPUT_BYTES` construction
+limit: an `expected_size` above that cap is refused before the body is touched. `Content-Length` is
+still validated when present, but it is now a courtesy check rather than the bound. The body is
+read with `Response::chunk`, a checked running total is kept, and the read is abandoned the moment
+the total would pass the pinned length — the offending chunk is never appended, so `expected_size`
+bytes are never quietly accepted with the remainder discarded. At EOF the length must equal
+`expected_size` exactly, so a short body fails too. `acquire_input` then verifies the exact length
+and SHA-256 as before, and only writes the input cache entry after both pass; a refused download
+leaves no cache entry. No retries and no truncation were added.
+
+### Deterministic regression
+
+Five tests in `src-tauri/src/release/construct.rs` drive the bounded reader against a
+single-request loopback HTTP server built on `std::net::TcpListener`. No public internet is
+involved. The production downloader remains HTTPS-only; the tests exercise the reader directly over
+a controlled transport, which is what makes a header-free chunked response reproducible.
+
+- **overlong without `Content-Length`** — chunked transfer sends `expected_size` bytes, then one
+  more, then holds the connection open without terminating. The bounded reader refuses within
+  milliseconds and returns no body. Against the pre-fix `response.bytes()` implementation this test
+  fails deterministically with `Elapsed(())` after the 5 s timeout, because the old reader waits
+  for an end of body that never comes.
+- **exact body** — a chunked response of exactly `expected_size` bytes succeeds and returns them.
+- **short body** — a body one byte short is refused.
+- **dishonest `Content-Length`** — refused before the body is read.
+- **pin above `MAX_INPUT_BYTES`** — refused before the body is read.
+
+### LOW-1 — a READY runtime with no configured release source
+
+`runtimeSummary` tested `sourceConfigured` before looking at the runtime state, so a valid,
+verified, playable managed runtime was described as though nothing were installed whenever the
+build had no release source. That state is realistic after M7.5: the qualification runtime stays
+installed while RetroFrontier is later started without the qualification environment.
+
+The summary now interprets the backend's verified `RuntimeStatus` first and lets the source decide
+only which actions are offered — usability and mutability are separate questions, and file presence
+is still never treated as evidence of validity.
+
+- `Ready` / `RollbackAvailable` **with** a source — READY, "installed and verified", reinstall
+  offered.
+- `Ready` / `RollbackAvailable` **without** a source — still READY and still "installed and
+  verified"; no action is enabled, and the panel explains that no approved release source is
+  configured, so the runtime cannot currently be reinstalled or repaired.
+- `NotInstalled` **without** a source — unchanged: install disabled, with the existing explanation.
+- `Broken` **without** a source — reported truthfully as REPAIR REQUIRED with the verification
+  failure stated; repair disabled, explaining the missing approved release source.
+
+The change is purely presentational. Backend `RuntimeStatus` semantics are untouched.
+
+### Corrective-pass verification
+
+`pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test`, `pnpm build`,
+`cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`,
+`cargo test` (default and `--all-features`), and `cargo build --release` all pass. The release
+definition still pins exact input length and SHA-256, the HTTPS-only rule is unchanged, TUF
+construction and publication are unchanged, qualification source trust is unchanged, the production
+source remains `None`, no source, URL, or path is accepted from React, and no system RetroArch
+fallback exists.

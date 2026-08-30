@@ -52,19 +52,24 @@ export function runtimeSourceLabel(origin: RuntimeSourceOrigin): string {
   }
 }
 
+/**
+ * Whether the runtime can be changed, which is not the same question as whether it works.
+ *
+ * An installed runtime stays valid and playable after the build that installed it loses its
+ * release source, so a missing source must never be reported as though nothing were installed.
+ * It only removes the ability to install, reinstall, or repair.
+ */
+const NO_SOURCE_INSTALL_REASON = 'No approved managed release source is configured.';
+const NO_SOURCE_MUTATION_REASON =
+  'No approved release source is configured, so this runtime cannot currently be reinstalled or repaired.';
+const NO_SOURCE_REPAIR_REASON =
+  'No approved release source is configured, so this runtime cannot currently be repaired.';
+
 export function runtimeSummary(state: RuntimeInstallState): RuntimeSummary {
   const badge = runtimeStateLabel(state.status.state);
-
-  if (!state.sourceConfigured) {
-    return {
-      badge,
-      detail:
-        'This build has no approved managed RetroArch release source, so the runtime cannot be installed yet.',
-      action: 'none',
-      actionLabel: 'INSTALL RUNTIME',
-      disabledReason: 'No approved managed release source is configured.',
-    };
-  }
+  // The verified state RuntimeManager reported is what the panel describes; the source only
+  // decides which actions are offered. Files on disk never stand in for that verification.
+  const canMutate = state.sourceConfigured;
 
   if (state.installing) {
     return {
@@ -81,29 +86,31 @@ export function runtimeSummary(state: RuntimeInstallState): RuntimeSummary {
     case 'notInstalled':
       return {
         badge,
-        detail:
-          'No managed RetroArch runtime is installed. RetroFrontier will download and verify the approved release before any game can start.',
-        action: 'install',
+        detail: canMutate
+          ? 'No managed RetroArch runtime is installed. RetroFrontier will download and verify the approved release before any game can start.'
+          : 'This build has no approved managed RetroArch release source, so the runtime cannot be installed yet.',
+        action: canMutate ? 'install' : 'none',
         actionLabel: 'INSTALL RUNTIME',
-        disabledReason: null,
+        disabledReason: canMutate ? null : NO_SOURCE_INSTALL_REASON,
       };
     case 'broken':
       return {
         badge,
-        detail:
-          'The managed RetroArch runtime failed verification. RetroFrontier will rebuild the approved release into a fresh installation.',
-        action: 'repair',
+        detail: canMutate
+          ? 'The managed RetroArch runtime failed verification. RetroFrontier will rebuild the approved release into a fresh installation.'
+          : 'The managed RetroArch runtime failed verification and cannot be used until it is reinstalled.',
+        action: canMutate ? 'repair' : 'none',
         actionLabel: 'REPAIR RUNTIME',
-        disabledReason: null,
+        disabledReason: canMutate ? null : NO_SOURCE_REPAIR_REASON,
       };
     case 'ready':
     case 'rollbackAvailable':
       return {
         badge,
         detail: 'The managed RetroArch runtime is installed and verified.',
-        action: 'repair',
+        action: canMutate ? 'repair' : 'none',
         actionLabel: 'REINSTALL RUNTIME',
-        disabledReason: null,
+        disabledReason: canMutate ? null : NO_SOURCE_MUTATION_REASON,
       };
     case 'installing':
     case 'updating':
