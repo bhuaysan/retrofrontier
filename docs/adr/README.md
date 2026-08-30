@@ -22,3 +22,4 @@ Status values:
 - [ADR-011: Runtime activation pointer and filesystem recovery](ADR-011-runtime-activation-reference.md)
 - [ADR-012: Managed runtime trust and anti-rollback model](ADR-012-runtime-trust-model.md)
 - [ADR-013: SQLite write concurrency for background metadata writes](ADR-013-sqlite-write-concurrency.md)
+- [ADR-014: Browser Gamepad API behind a replaceable input-acquisition boundary](ADR-014-input-acquisition-boundary.md)

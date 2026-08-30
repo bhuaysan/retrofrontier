@@ -492,6 +492,26 @@ Map hardware input to semantic actions:
 - Search
 - Menu
 
+M8 implements the navigation subset of this as `InputAction`
+(`moveUp`/`moveDown`/`moveLeft`/`moveRight`/`confirm`/`back`/`context`). Physical input is acquired
+by two adapters — a keyboard adapter and a browser Gamepad API adapter — behind one replaceable
+acquisition boundary; ADR-014 records why the browser API was chosen and what would justify a native
+adapter. Focus and navigation code consumes semantic actions only, and physical key names and
+gamepad button indices exist in exactly one module each.
+
+Above the boundary sit a focus registry keyed by stable semantic identities (`GameId`, system id,
+route, Game Detail action, `ContentUnitId`, Settings root action), geometry-derived spatial
+navigation that reads the rendered layout rather than assuming a column count, temporary focus
+scopes for transient surfaces, and footer hints derived from the focused node's declared actions.
+Focus restoration uses semantic identity and a settle signal from the owning surface; it never uses
+a DOM query with a timeout, and it never polls.
+
+Controller actions are delivered only while the RetroFrontier window owns focus and the backend
+reports no running or uncertain managed game. While RetroArch is authoritative RetroFrontier
+consumes nothing and does not fight the window manager; when the backend reports the game ended it
+asks for the foreground once through the Tauri window API and restores DOM focus only after the
+window is really focused. See [`docs/CONTROLLER_AND_FOCUS.md`](docs/CONTROLLER_AND_FOCUS.md).
+
 ## Database
 
 SQLite migrations are authoritative. Repositories hide SQL from the rest of the application.

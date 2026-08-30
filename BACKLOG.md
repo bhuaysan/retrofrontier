@@ -400,15 +400,26 @@ See [`docs/M7_5_RUNTIME_QUALIFICATION.md`](docs/M7_5_RUNTIME_QUALIFICATION.md) a
 
 **Model:** Luna Max.
 
-- [ ] semantic input actions
-- [ ] keyboard mapping
-- [ ] controller mapping
-- [ ] focus graph
-- [ ] row/action/media focus behavior
-- [ ] confirm/back/context
-- [ ] controller footer
-- [ ] primary settings navigation
-- [ ] regression tests
+See [`docs/CONTROLLER_AND_FOCUS.md`](docs/CONTROLLER_AND_FOCUS.md),
+[ADR-014](docs/adr/ADR-014-input-acquisition-boundary.md), and
+[`docs/M8_IMPLEMENTATION_REPORT.md`](docs/M8_IMPLEMENTATION_REPORT.md).
+
+- [x] semantic input actions
+- [x] keyboard mapping
+- [x] controller mapping, deadzone, hysteresis, dominant axis, and bounded repeat
+- [x] focus registry keyed by stable semantic identities
+- [x] geometry-derived spatial navigation for the responsive grid
+- [x] row/action/media focus behavior under the accepted A6 V5 language
+- [x] confirm/back/context
+- [x] temporary focus scopes
+- [x] Library → Detail → Library focus restoration without DOM queries or timeouts
+- [x] window-focus gating and RetroArch focus ownership
+- [x] controller footer derived from the focus model
+- [x] primary settings navigation
+- [x] regression tests
+- [ ] manual Linux controller/RetroArch qualification
+- [ ] Windows and macOS controller qualification
+- [ ] controller remapping UI and persistence (B10)
 
 ## M9 — Saves and Save States
 
