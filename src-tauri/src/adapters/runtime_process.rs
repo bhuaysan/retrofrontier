@@ -80,15 +80,32 @@ fn managed_process_is_live(
 /// Look for a live process that could be the managed RetroArch child.
 ///
 /// A process qualifies when its resolved executable is inside the managed versions root, or when
-/// its `argv[0]` is the authenticated AppRun path. The second case exists because an AppRun may be
-/// a script, in which case `/proc/<pid>/exe` is the interpreter rather than the AppRun itself.
+/// *any* element of its command line names the authenticated AppRun.
+///
+/// Scanning the whole command line, rather than `argv[0]`, is what makes a script AppRun
+/// detectable. When Linux executes a `#!` file it runs the interpreter instead, with a command
+/// line of the shape `interpreter [optional-arg] script-path original-argv[1..]`. The original
+/// `argv[0]` is not preserved: `/proc/<pid>/exe` resolves to a host interpreter outside the
+/// managed tree and the AppRun appears as an interpreter *argument*. Matching only `argv[0]`
+/// therefore failed to see a live managed child, cleared `game-process.json`, and allowed runtime
+/// mutation underneath a running emulator.
+///
+/// The scan deliberately over-detects: an unrelated process that merely mentions the AppRun path
+/// matches too. A false positive only keeps runtime mutation blocked, whereas a false negative
+/// would let an update run underneath a live emulator.
+///
+/// The AppRun is used as a match key only while it still resolves inside the managed versions
+/// root, so a record naming a host path can never make an arbitrary process look managed.
 fn managed_process_exists(
     paths: &RuntimePaths,
     record: &ManagedProcessRecord,
 ) -> Result<bool, std::io::Error> {
     let versions_root = fs::canonicalize(paths.versions_root())?;
     let expected_apprun = Path::new(&record.expected_apprun_path);
-    let canonical_apprun = fs::canonicalize(expected_apprun).ok();
+    let contained_apprun = fs::canonicalize(expected_apprun)
+        .ok()
+        .filter(|apprun| apprun.starts_with(&versions_root));
+    let apprun_file_name = expected_apprun.file_name().map(ToOwned::to_owned);
     let self_pid = std::process::id();
 
     for entry in fs::read_dir("/proc")? {
@@ -111,28 +128,45 @@ fn managed_process_exists(
                 }
             }
         }
-        let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) else {
+        let Some(canonical_apprun) = contained_apprun.as_ref() else {
             continue;
         };
-        let Some(argv0) = cmdline.split(|byte| *byte == 0).next() else {
+        let Ok(cmdline) = read_capped(&format!("/proc/{pid}/cmdline"), CMDLINE_SCAN_LIMIT) else {
             continue;
         };
-        let Ok(argv0) = std::str::from_utf8(argv0) else {
-            continue;
-        };
-        if argv0.is_empty() {
-            continue;
-        }
-        let argv0 = Path::new(argv0);
-        if argv0 == expected_apprun
-            || canonical_apprun
-                .as_ref()
-                .is_some_and(|apprun| fs::canonicalize(argv0).is_ok_and(|path| &path == apprun))
-        {
-            return Ok(true);
+        for argument in cmdline.split(|byte| *byte == 0) {
+            let Ok(argument) = std::str::from_utf8(argument) else {
+                continue;
+            };
+            if argument.is_empty() {
+                continue;
+            }
+            let argument = Path::new(argument);
+            if argument == expected_apprun {
+                return Ok(true);
+            }
+            // Canonicalizing every argument of every process would cost a syscall per argument,
+            // so only arguments that could name the same file are resolved. A differently spelled
+            // path still keeps the AppRun's file name.
+            if argument.file_name() != apprun_file_name.as_deref() {
+                continue;
+            }
+            if fs::canonicalize(argument).is_ok_and(|path| &path == canonical_apprun) {
+                return Ok(true);
+            }
         }
     }
     Ok(false)
+}
+
+/// How much of one `/proc/<pid>/cmdline` the scan reads. A command line longer than this cannot
+/// belong to a managed launch, whose arguments RetroFrontier composes itself.
+const CMDLINE_SCAN_LIMIT: u64 = 64 * 1024;
+
+fn read_capped(path: &str, limit: u64) -> Result<Vec<u8>, std::io::Error> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?.take(limit).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// Test and embedding hook for callers that have a managed-process supervisor of their own.
@@ -202,8 +236,6 @@ pub fn write_process_record(
     paths: &RuntimePaths,
     record: &ManagedProcessRecord,
 ) -> Result<(), RuntimeError> {
-    // TODO(Sol Max review): re-audit Linux /proc identity semantics and record lifecycle before
-    // game launching relies on this boundary.
     record.validate()?;
     if !record_targets_runtime(paths, record) {
         return Err(RuntimeError::GameActive);
@@ -431,7 +463,7 @@ mod tests {
     };
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::process::{Child, Command};
+    use std::process::{Child, Command, Stdio};
     use tempfile::{tempdir, TempDir};
 
     fn current_boot_id() -> String {
@@ -455,6 +487,32 @@ mod tests {
     /// A real executable inside the managed versions tree, so `/proc/<pid>/exe` resolves there.
     fn managed_shell(apprun: &Path) {
         fs::copy("/bin/sh", apprun).unwrap();
+    }
+
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// An AppRun that is a `#!` script. Linux runs the *interpreter*, which lives outside the
+    /// managed versions tree, so neither `/proc/<pid>/exe` nor `argv[0]` names the AppRun.
+    fn shebang_apprun(apprun: &Path) {
+        fs::write(apprun, "#!/bin/sh\nread line\n").unwrap();
+        make_executable(apprun);
+    }
+
+    /// A child that blocks on stdin, so it has no grandchildren to outlive it.
+    fn spawn_blocking_child(apprun: &Path) -> Child {
+        for _ in 0..50 {
+            match Command::new(apprun).stdin(Stdio::piped()).spawn() {
+                Ok(child) => return child,
+                Err(error) if error.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => panic!("managed child should spawn: {error}"),
+            }
+        }
+        panic!("managed child should spawn before the retry budget is exhausted");
     }
 
     /// A live child whose executable is the managed AppRun. The trailing `:` keeps the shell from
@@ -791,5 +849,96 @@ mod tests {
             .ensure_no_active_game(&paths)
             .unwrap();
         assert!(!paths.game_process_record().exists());
+    }
+
+    #[test]
+    fn a_launching_record_blocks_while_a_shebang_apprun_runs_under_a_host_interpreter() {
+        let (_directory, paths, installation_id, apprun) = fixture();
+        shebang_apprun(&apprun);
+        let record =
+            make_launching_record("launch-1".try_into().unwrap(), 8, installation_id, &apprun)
+                .unwrap();
+        super::write_process_record(&paths, &record).unwrap();
+        let mut child = spawn_blocking_child(&apprun);
+
+        // The interpreter is the host shell, so the executable is outside the managed tree and
+        // the AppRun appears only as an *argument* of the interpreter.
+        let executable =
+            fs::canonicalize(fs::read_link(format!("/proc/{}/exe", child.id())).unwrap()).unwrap();
+        assert!(!executable.starts_with(fs::canonicalize(paths.versions_root()).unwrap()));
+        let cmdline = fs::read(format!("/proc/{}/cmdline", child.id())).unwrap();
+        let arguments: Vec<&[u8]> = cmdline.split(|byte| *byte == 0).collect();
+        assert_ne!(arguments[0], apprun.to_str().unwrap().as_bytes());
+
+        assert!(matches!(
+            LinuxManagedProcessInspector.ensure_no_active_game(&paths),
+            Err(RuntimeError::GameActive)
+        ));
+        assert!(paths.game_process_record().exists());
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
+    }
+
+    #[test]
+    fn a_launching_record_blocks_while_a_symlinked_apprun_runs_from_the_managed_tree() {
+        let (_directory, paths, installation_id, apprun) = fixture();
+        // An ELF payload inside the installation, reached through an `AppRun` symlink.
+        let payload = apprun.with_file_name("retroarch.bin");
+        fs::copy("/bin/sh", &payload).unwrap();
+        make_executable(&payload);
+        std::os::unix::fs::symlink(&payload, &apprun).unwrap();
+        let record =
+            make_launching_record("launch-1".try_into().unwrap(), 9, installation_id, &apprun)
+                .unwrap();
+        super::write_process_record(&paths, &record).unwrap();
+        let mut child = spawn_blocking_child(&apprun);
+
+        assert!(matches!(
+            LinuxManagedProcessInspector.ensure_no_active_game(&paths),
+            Err(RuntimeError::GameActive)
+        ));
+        assert!(paths.game_process_record().exists());
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
+    }
+
+    #[test]
+    fn an_apprun_path_outside_the_managed_tree_is_never_a_match_key() {
+        let (_directory, paths, installation_id, apprun) = fixture();
+        managed_shell(&apprun);
+        let record = ManagedProcessRecord {
+            expected_apprun_path: "/bin/sh".to_owned(),
+            ..make_launching_record("launch-1".try_into().unwrap(), 10, installation_id, &apprun)
+                .unwrap()
+        };
+        // The record is written directly: `write_process_record` would refuse it, and that
+        // containment must also hold when a tampered record is read back.
+        fs::write(
+            paths.game_process_record(),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        let mut child = spawn_blocking_child(Path::new("/bin/sh"));
+
+        // A host process merely mentioning `/bin/sh` must not keep the record alive forever.
+        LinuxManagedProcessInspector
+            .ensure_no_active_game(&paths)
+            .unwrap();
+        assert!(!paths.game_process_record().exists());
+
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 }
