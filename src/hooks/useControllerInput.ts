@@ -48,10 +48,17 @@ export function useControllerInput({ enabled, onAction }: UseControllerInputOpti
   });
 
   useEffect(() => {
-    if (enabledRef.current !== enabled) {
-      enabledRef.current = enabled;
-      stateRef.current = releaseGamepadOwnership(stateRef.current);
-    }
+    if (enabledRef.current === enabled) return;
+    enabledRef.current = enabled;
+    // Adopt whatever is physically held at the exact moment ownership changes, rather than
+    // deferring adoption to the next polled frame: otherwise the first genuine press after focus
+    // returns would be swallowed as if it had been held across the change.
+    const active = selectActiveGamepad(readGamepads(), stateRef.current.activeIndex);
+    stateRef.current = stepGamepad(
+      releaseGamepadOwnership(stateRef.current),
+      active,
+      performance.now(),
+    ).state;
   }, [enabled]);
 
   useEffect(() => {

@@ -3,6 +3,9 @@ import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject }
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
 import { PixelArrow, PixelStar } from '../../components/ui/PixelIcon';
+import { FocusScope } from '../../focus/FocusProvider';
+import { useFocusNode, useFocusScope } from '../../focus/focusContext';
+import { focusNodes, focusScopes } from '../../focus/focusNodes';
 import { getMetadataAction, hasSelectableCandidates, metadataStateCopy } from './metadataActions';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
 import type { GameLaunchModel } from '../../hooks/useGameLaunch';
@@ -251,6 +254,10 @@ function metadataOperationPendingLabel(kind: GameDetailModel['metadataActionKind
 }
 
 function BackToLibrary({ onBackToLibrary }: { onBackToLibrary: () => void }) {
+  const focusRef = useFocusNode({
+    id: focusNodes.detail('back'),
+    confirm: { label: 'LIBRARY' },
+  });
   return (
     <a
       className="game-detail-back"
@@ -259,6 +266,7 @@ function BackToLibrary({ onBackToLibrary }: { onBackToLibrary: () => void }) {
         event.preventDefault();
         onBackToLibrary();
       }}
+      ref={focusRef}
     >
       <PixelArrow direction="left" />
       <span>BACK TO LIBRARY</span>
@@ -445,23 +453,55 @@ function MetadataCandidates({
                   <span>{date}</span>
                 </div>
               </div>
-              <PixelButton
-                aria-busy={selectingCandidate || undefined}
-                aria-pressed={selected}
-                aria-label={`${selectingCandidate ? 'Selecting' : 'Select'} ${candidate.title} candidate ${index + 1}`}
-                className="metadata-candidate-action"
-                disabled={detail.metadataActionPending}
-                onClick={() => void detail.selectMetadataCandidate(candidate.providerGameId)}
-                type="button"
-                variant={selected ? 'primary' : 'secondary'}
-              >
-                {selectingCandidate ? 'SELECTING…' : selected ? 'SELECTED' : 'SELECT'}
-              </PixelButton>
+              <MetadataCandidateAction
+                busy={selectingCandidate}
+                detail={detail}
+                index={index}
+                providerGameId={candidate.providerGameId}
+                selected={selected}
+                title={candidate.title}
+              />
             </li>
           );
         })}
       </ul>
     </div>
+  );
+}
+
+function MetadataCandidateAction({
+  busy,
+  detail,
+  index,
+  providerGameId,
+  selected,
+  title,
+}: {
+  busy: boolean;
+  detail: GameDetailModel;
+  index: number;
+  providerGameId: string;
+  selected: boolean;
+  title: string;
+}) {
+  const focusRef = useFocusNode({
+    id: focusNodes.detailCandidate(providerGameId),
+    confirm: detail.metadataActionPending ? null : { label: 'SELECT MATCH' },
+  });
+  return (
+    <PixelButton
+      aria-busy={busy || undefined}
+      aria-pressed={selected}
+      aria-label={`${busy ? 'Selecting' : 'Select'} ${title} candidate ${index + 1}`}
+      className="metadata-candidate-action"
+      disabled={detail.metadataActionPending}
+      onClick={() => void detail.selectMetadataCandidate(providerGameId)}
+      ref={focusRef}
+      type="button"
+      variant={selected ? 'primary' : 'secondary'}
+    >
+      {busy ? 'SELECTING…' : selected ? 'SELECTED' : 'SELECT'}
+    </PixelButton>
   );
 }
 
@@ -483,6 +523,15 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
   const userConfirmed =
     metadataState?.userSelection !== null && metadataState?.userSelection !== undefined;
   const sourceCredit = metadataState?.metadata?.provenance.sourceCredit ?? null;
+
+  const metadataActionRef = useFocusNode({
+    id: focusNodes.detail('metadata-action'),
+    confirm: detail.metadataActionPending ? null : { label: action?.label ?? 'METADATA' },
+  });
+  const forgetSelectionRef = useFocusNode({
+    id: focusNodes.detail('metadata-forget'),
+    confirm: detail.metadataActionPending ? null : { label: 'FORGET CHOICE' },
+  });
 
   const runMetadataAction = () => {
     if (!action) return;
@@ -551,6 +600,7 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
             aria-busy={detail.metadataActionPending}
             disabled={detail.metadataActionPending || detail.metadataLoading}
             onClick={runMetadataAction}
+            ref={metadataActionRef}
             type="button"
             variant="secondary"
           >
@@ -582,6 +632,7 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
           <PixelButton
             disabled={detail.metadataActionPending}
             onClick={() => void detail.clearMetadataSelection()}
+            ref={forgetSelectionRef}
             type="button"
             variant="secondary"
           >
@@ -599,6 +650,47 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
 
 function contentOptionLabel(option: LaunchContentOption) {
   return `${option.localTitle} · ${contentKindLabel(option.kind)} · ${formatFileCount(option.fileCount)}`;
+}
+
+function LaunchContentOptionAction({
+  gameId,
+  launch,
+  option,
+}: {
+  gameId: number;
+  launch: GameLaunchModel;
+  option: LaunchContentOption;
+}) {
+  const focusRef = useFocusNode({
+    id: focusNodes.launchContent(option.contentUnitId),
+    confirm: { label: 'PLAY VERSION' },
+  });
+  return (
+    <button
+      onClick={() => void launch.launch(gameId, option.contentUnitId)}
+      ref={focusRef}
+      type="button"
+    >
+      {contentOptionLabel(option)}
+    </button>
+  );
+}
+
+function CancelContentSelection({ launch }: { launch: GameLaunchModel }) {
+  const focusRef = useFocusNode({
+    id: focusNodes.detail('cancel-content-selection'),
+    confirm: { label: 'CANCEL' },
+  });
+  return (
+    <button
+      className="text-link"
+      onClick={() => launch.cancelContentSelection()}
+      ref={focusRef}
+      type="button"
+    >
+      CANCEL
+    </button>
+  );
 }
 
 /**
@@ -628,10 +720,24 @@ function LaunchAction({
       : runningAnotherGame
         ? 'ANOTHER GAME IS RUNNING'
         : 'PLAY';
+  // Play is also the target a return from RetroArch restores, so it keeps its identity even while
+  // it is disabled; the footer stops offering `confirm` for it in that state.
+  const playRef = useFocusNode({
+    id: focusNodes.detail('play'),
+    confirm: disabled ? null : { label: 'PLAY' },
+  });
+  const contentScopeRef = useFocusScope({
+    id: focusScopes.launchContentSelection,
+    dismissLabel: 'CANCEL',
+    onDismiss: () => launch.cancelContentSelection(),
+    restoreTo: focusNodes.detail('play'),
+    restoreFallback: focusNodes.detail('back'),
+  });
 
   return (
     <>
       <button
+        ref={playRef}
         aria-busy={pending || undefined}
         aria-label={runningThisGame ? `${title} is running` : `Play ${title}`}
         className="game-detail-play"
@@ -667,28 +773,24 @@ function LaunchAction({
       </div>
 
       {launch.contentOptions && launch.contentOptions.length > 0 ? (
-        <div className="game-detail-launch-selection">
-          <h3>CHOOSE A VERSION</h3>
-          <ul>
-            {launch.contentOptions.map((option) => (
-              <li key={option.contentUnitId}>
-                <button
-                  onClick={() => void launch.launch(gameId, option.contentUnitId)}
-                  type="button"
-                >
-                  {contentOptionLabel(option)}
-                </button>
-              </li>
-            ))}
-          </ul>
-          <button
-            className="text-link"
-            onClick={() => launch.cancelContentSelection()}
-            type="button"
+        <FocusScope id={focusScopes.launchContentSelection}>
+          <div
+            aria-label="Choose a version"
+            className="game-detail-launch-selection"
+            ref={contentScopeRef}
+            role="group"
           >
-            CANCEL
-          </button>
-        </div>
+            <h3>CHOOSE A VERSION</h3>
+            <ul>
+              {launch.contentOptions.map((option) => (
+                <li key={option.contentUnitId}>
+                  <LaunchContentOptionAction gameId={gameId} launch={launch} option={option} />
+                </li>
+              ))}
+            </ul>
+            <CancelContentSelection launch={launch} />
+          </div>
+        </FocusScope>
       ) : null}
 
       {launch.failure ? (
@@ -702,6 +804,35 @@ function LaunchAction({
         />
       ) : null}
     </>
+  );
+}
+
+function FavoriteAction({
+  detail,
+  favorite,
+  title,
+}: {
+  detail: GameDetailModel;
+  favorite: boolean;
+  title: string;
+}) {
+  const focusRef = useFocusNode({
+    id: focusNodes.detail('favorite'),
+    confirm: { label: favorite ? 'UNFAVORITE' : 'FAVORITE' },
+  });
+  return (
+    <button
+      aria-busy={detail.favoritePending || undefined}
+      aria-label={favorite ? `Remove ${title} from favorites` : `Add ${title} to favorites`}
+      aria-pressed={favorite}
+      className="game-detail-favorite"
+      onClick={() => void detail.toggleFavorite()}
+      ref={focusRef}
+      type="button"
+    >
+      <PixelStar filled={favorite} />
+      {favorite ? 'FAVORITED' : 'ADD TO FAVORITES'}
+    </button>
   );
 }
 
@@ -824,21 +955,11 @@ export function GameDetailPage({
                   {gameId !== null ? (
                     <LaunchAction gameId={gameId} launch={launch} title={title} />
                   ) : null}
-                  <button
-                    aria-busy={detail.favoritePending || undefined}
-                    aria-label={
-                      localDetail.favorite
-                        ? `Remove ${title} from favorites`
-                        : `Add ${title} to favorites`
-                    }
-                    aria-pressed={localDetail.favorite}
-                    className="game-detail-favorite"
-                    onClick={() => void detail.toggleFavorite()}
-                    type="button"
-                  >
-                    <PixelStar filled={localDetail.favorite} />
-                    {localDetail.favorite ? 'FAVORITED' : 'ADD TO FAVORITES'}
-                  </button>
+                  <FavoriteAction
+                    detail={detail}
+                    favorite={localDetail.favorite}
+                    title={title}
+                  ></FavoriteAction>
                   {detail.favoriteError ? (
                     <p className="game-detail-action-error" role="alert">
                       FAVORITE NOT UPDATED · TRY AGAIN

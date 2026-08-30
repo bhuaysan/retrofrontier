@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { InlineError } from '../../components/ui/InlineError';
+import { useFocusApi, useFocusNode } from '../../focus/focusContext';
+import { focusNodes } from '../../focus/focusNodes';
 import { PixelButton } from '../../components/ui/PixelButton';
 import {
   ExternalLinkIcon,
@@ -116,9 +118,12 @@ function formatDuration(durationMs: number) {
 }
 
 function SectionHeading({ id, title, meta }: { id: string; title: string; meta: string }) {
+  // The heading is a programmatic focus target, not a navigation candidate: it is where focus lands
+  // when the game a return was requested for no longer exists.
+  const headingRef = useFocusNode({ id: focusNodes.libraryHeading });
   return (
     <div className="section-heading">
-      <h1 id={id} tabIndex={-1}>
+      <h1 id={id} ref={headingRef} tabIndex={-1}>
         <PixelArrow className="heading-arrow" />
         {title}
       </h1>
@@ -556,6 +561,7 @@ export function LibraryPage({
 }: LibraryPageProps) {
   // B1 multi-select is transient presentation state owned by the Library composition, so the
   // selection bar, the count, and every card's selected state all read one authority.
+  const focus = useFocusApi();
   const selection = useLibrarySelection(library.page);
   const managedRoot = roots.find((root) => root.kind === 'managed');
   const isRunning = scan.status?.running === true;
@@ -576,21 +582,34 @@ export function LibraryPage({
     (scan.issueLoading && lastResult && !issuePage),
   );
 
+  // Library return focus. The request names the originating game by its stable `GameId`; it is not
+  // a DOM query and it is never resolved against a stale page. It stays pending until this screen
+  // reports that its bounded query settled, at which point the card is focused if it is really
+  // present and the Library heading is used otherwise.
+  const settleVersion = useRef<number | null>(null);
   useEffect(() => {
-    if (restoreFocusGameId === null || library.pageLoading || library.refreshing) return;
-    // Let the route-entry query announce its loading state before deciding whether the
-    // originating card still exists. Otherwise an immediately available stale page can
-    // consume the focus request before the authoritative refresh removes that card.
-    const timer = window.setTimeout(() => {
-      if (library.pageLoading || library.refreshing) return;
-      const detailLink = Array.from(
-        document.querySelectorAll<HTMLAnchorElement>('[data-game-detail-link]'),
-      ).find((link) => link.dataset.gameDetailLink === String(restoreFocusGameId));
-      (detailLink ?? document.getElementById('library-heading'))?.focus();
-      onFocusRestored();
+    if (restoreFocusGameId === null) return;
+    focus.requestFocus(focusNodes.libraryGame(restoreFocusGameId), {
+      awaitSettle: true,
+      fallback: focusNodes.libraryHeading,
     });
-    return () => window.clearTimeout(timer);
-  }, [library.page, library.pageLoading, library.refreshing, onFocusRestored, restoreFocusGameId]);
+    settleVersion.current = library.resultVersion;
+    onFocusRestored();
+  }, [focus, library.resultVersion, onFocusRestored, restoreFocusGameId]);
+
+  useEffect(() => {
+    if (settleVersion.current === null) return;
+    if (library.resultVersion === settleVersion.current) return;
+    if (library.pageLoading || library.refreshing || library.initialLoading) return;
+    settleVersion.current = null;
+    focus.settleFocusRequest();
+  }, [
+    focus,
+    library.initialLoading,
+    library.pageLoading,
+    library.refreshing,
+    library.resultVersion,
+  ]);
 
   return (
     <main aria-labelledby="library-heading" className="app-main" id="main-content">

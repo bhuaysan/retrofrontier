@@ -27,6 +27,12 @@ export interface FocusRequestOptions {
   fallback?: FocusNodeId | null;
   /** Resolve as soon as the target registers, rather than waiting for the surface to settle. */
   resolveOnRegister?: boolean;
+  /**
+   * Hold the request until the owning surface reports that its data settled, even when the target
+   * is already present. A surface whose content is being refetched needs this: the target may still
+   * be rendered from the previous result and would otherwise take a focus it is about to lose.
+   */
+  awaitSettle?: boolean;
 }
 
 export interface ScopeOptions {
@@ -79,12 +85,27 @@ export const FocusApiContext = createContext<FocusApi | null>(null);
 export const FocusScopeContext = createContext<FocusScopeId>(ROOT_FOCUS_SCOPE);
 export const FocusStateContext = createContext<FocusNodeId | null>(null);
 
+/**
+ * An inert focus API.
+ *
+ * Design-system primitives and feature screens declare their focus identities unconditionally, and
+ * several of them are also rendered on their own in component tests. Outside a `FocusProvider` those
+ * declarations simply do nothing rather than throwing, so a component stays usable in isolation.
+ */
+const INERT_FOCUS_API: FocusApi = {
+  registerNode: () => () => undefined,
+  registerBack: () => () => undefined,
+  pushScope: () => () => undefined,
+  focusNode: () => false,
+  requestFocus: () => undefined,
+  settleFocusRequest: () => undefined,
+  cancelFocusRequest: () => undefined,
+  dispatch: () => undefined,
+  getSupportedActions: () => ({ confirm: null, back: null, context: null }),
+};
+
 export function useFocusApi(): FocusApi {
-  const api = useContext(FocusApiContext);
-  if (api === null) {
-    throw new Error('Focus navigation is only available inside a FocusProvider.');
-  }
-  return api;
+  return useContext(FocusApiContext) ?? INERT_FOCUS_API;
 }
 
 /** The semantic identity of the currently focused node, or `null` when it has none. */

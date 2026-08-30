@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
 
+import { ControllerFooter } from '../components/ui/ControllerFooter';
 import { InlineError } from '../components/ui/InlineError';
 import { PixelRow } from '../components/ui/PixelRow';
+import type { InputAction } from '../input/actions';
+import { FocusProvider } from '../focus/FocusProvider';
+import { useFocusApi, useFocusBack } from '../focus/focusContext';
+import { focusNodes } from '../focus/focusNodes';
+import { useAppWindowFocus } from '../hooks/useAppWindowFocus';
+import { useControllerInput } from '../hooks/useControllerInput';
+import { useKeyboardInput } from '../hooks/useKeyboardInput';
+import { useLaunchFocusReturn } from '../hooks/useLaunchFocusReturn';
 import { useContentRoots } from '../hooks/useContentRoots';
 import { useLibrarySummary } from '../hooks/useLibrarySummary';
 import { useLibraryQuery } from '../hooks/useLibraryQuery';
@@ -28,14 +37,25 @@ function initialTheme(): Theme {
 
 function RouteRow({
   label,
+  route,
   active,
   onClick,
 }: {
   label: string;
+  route: string;
   active: boolean;
   onClick: () => void;
 }) {
-  return <PixelRow label={label} accent="var(--text-dim)" active={active} onClick={onClick} />;
+  return (
+    <PixelRow
+      accent="var(--text-dim)"
+      active={active}
+      confirmLabel="OPEN"
+      focusId={focusNodes.sidebarRoute(route)}
+      label={label}
+      onClick={onClick}
+    />
+  );
 }
 
 function MobileRouteNav({
@@ -69,12 +89,14 @@ function MobileRouteNav({
 
 function SystemSummaryRow({
   label,
+  systemId,
   count,
   accent,
   active,
   onClick,
 }: {
   label: string;
+  systemId: string | null;
   count: number;
   accent: string;
   active: boolean;
@@ -87,6 +109,8 @@ function SystemSummaryRow({
       accent={accent}
       active={active}
       activeMode="pressed"
+      confirmLabel="FILTER"
+      focusId={focusNodes.sidebarSystem(systemId)}
       onClick={onClick}
     />
   );
@@ -123,6 +147,15 @@ function LibrarySearch({
 }
 
 export function AppShell() {
+  return (
+    <FocusProvider>
+      <AppShellBody />
+    </FocusProvider>
+  );
+}
+
+function AppShellBody() {
+  const focus = useFocusApi();
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [libraryScanCompletionRunId, setLibraryScanCompletionRunId] = useState<number | null>(null);
   const { route, navigate } = useRoute();
@@ -228,6 +261,34 @@ export function AppShell() {
   // Launch state is application-wide: a game keeps running while the user browses elsewhere, so
   // the shell owns the hook rather than the detail screen.
   const gameLaunch = useGameLaunch();
+  const windowFocused = useAppWindowFocus();
+  // RetroFrontier owns UI input only while its own window is focused and no managed game is
+  // authoritative. While RetroArch runs, or while launch state is uncertain, controller input
+  // belongs to the emulator and RetroFrontier neither consumes it nor fights for the window.
+  const ownsInput = windowFocused && gameLaunch.running === null && !gameLaunch.blocked;
+  const onInputAction = useCallback(
+    (action: InputAction) => focus.dispatch(action, 'gamepad'),
+    [focus],
+  );
+  const onKeyboardAction = useCallback(
+    (action: InputAction) => focus.dispatch(action, 'keyboard'),
+    [focus],
+  );
+  const { connected: controllerConnected } = useControllerInput({
+    enabled: ownsInput,
+    onAction: onInputAction,
+  });
+  useKeyboardInput({ enabled: ownsInput, onAction: onKeyboardAction });
+  useLaunchFocusReturn({
+    running: gameLaunch.running,
+    blocked: gameLaunch.blocked,
+    windowFocused,
+    fallbackNodeId: currentGameId === null ? focusNodes.libraryHeading : focusNodes.detail('play'),
+  });
+  // The Library is the root destination, so `back` there has nothing to do and is not offered.
+  useFocusBack(
+    isLibraryRoute || scanRunning ? null : { label: 'LIBRARY', run: () => onBackToLibrary() },
+  );
   const detailSystemStatus = gameDetail.localDetail
     ? (catalogStatuses.find((status) => status.id === gameDetail.localDetail?.systemId) ?? null)
     : null;
@@ -316,6 +377,8 @@ export function AppShell() {
                 accent="var(--accent)"
                 active={isLibraryRoute && library.systemId === null}
                 activeMode="pressed"
+                confirmLabel="FILTER"
+                focusId={focusNodes.sidebarSystem(null)}
                 onClick={() => {
                   library.setSystemId(null);
                   navigateFromShell('library');
@@ -325,6 +388,7 @@ export function AppShell() {
                 <SystemSummaryRow
                   key={system.id}
                   label={system.displayName}
+                  systemId={system.id}
                   count={systemCounts.get(system.id) ?? 0}
                   accent={systemAccent(system.id)}
                   active={isLibraryRoute && library.systemId === system.id}
@@ -347,6 +411,7 @@ export function AppShell() {
             <ul className="pixel-row-list">
               <RouteRow
                 label="Settings"
+                route="settings"
                 active={isSettingsRoute}
                 onClick={() => navigateFromShell('settings')}
               />
@@ -421,13 +486,12 @@ export function AppShell() {
       )}
 
       {showsFooter ? (
-        <footer className="app-footer">
-          <span>LOCAL LIBRARY</span>
-          <span aria-hidden="true">·</span>
-          <span>{footerStatus}</span>
-          <span className="footer-spacer" />
-          <span className="footer-note">ROM files stay on your disk</span>
-        </footer>
+        <ControllerFooter
+          controllerConnected={controllerConnected}
+          gameRunning={gameLaunch.running !== null}
+          interactive={ownsInput}
+          status={footerStatus}
+        />
       ) : null}
     </div>
   );

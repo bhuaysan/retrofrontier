@@ -31,6 +31,12 @@ export interface LibraryQueryModel {
   initialLoading: boolean;
   refreshing: boolean;
   pageLoading: boolean;
+  /**
+   * Increments once per committed query outcome, success or failure. Consumers that must act only
+   * after this screen's bounded query has really settled — focus restoration, for one — compare it
+   * rather than guessing from a loading flag that has not flipped yet.
+   */
+  resultVersion: number;
   error: IpcError | null;
   retry: () => Promise<void>;
   clearSearch: () => void;
@@ -71,6 +77,7 @@ export function useLibraryQuery({
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [pageLoading, setPageLoading] = useState(false);
+  const [resultVersion, setResultVersion] = useState(0);
   const [error, setError] = useState<IpcError | null>(null);
 
   useEffect(() => {
@@ -134,10 +141,12 @@ export function useLibraryQuery({
           pageRef.current = nextPage;
           setPage(nextPage);
           setError(null);
+          setResultVersion((version) => version + 1);
         }
       } catch (reason: unknown) {
         if (mounted.current && requestGeneration.current === generation) {
           setError(normalizeIpcError(reason));
+          setResultVersion((version) => version + 1);
         }
       } finally {
         const ownsLoading =
@@ -298,6 +307,7 @@ export function useLibraryQuery({
     initialLoading,
     refreshing,
     pageLoading,
+    resultVersion,
     error,
     retry,
     clearSearch,

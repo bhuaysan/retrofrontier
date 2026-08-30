@@ -36,10 +36,10 @@ export function useLaunchFocusReturn({
   const pendingReturn = useRef<FocusNodeId | null>(null);
   const requestedForSession = useRef<number | null>(null);
 
-  // The target the launch was started from, remembered while a game is actually running.
+  const focusedRef = useRef(focusedNodeId);
   useEffect(() => {
-    if (running !== null && focusedNodeId !== null) launchOrigin.current = focusedNodeId;
-  }, [focusedNodeId, running]);
+    focusedRef.current = focusedNodeId;
+  }, [focusedNodeId]);
 
   useEffect(() => {
     // While launch state is blocked it is uncertain, so the last known session is held rather than
@@ -47,6 +47,12 @@ export function useLaunchFocusReturn({
     if (blocked) return;
     const previous = previousRunning.current;
     previousRunning.current = running;
+    if (previous === null && running !== null) {
+      // The target the launch was started from, captured once. It deliberately does not follow
+      // focus afterwards: the run belongs to RetroArch, not to RetroFrontier's focus.
+      launchOrigin.current = focusedRef.current;
+      return;
+    }
     if (previous === null || running !== null) return;
     if (requestedForSession.current === previous.sessionId) return;
 

@@ -52,6 +52,9 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   const pending = useRef<PendingFocusRequest | null>(null);
   const pendingTimer = useRef<number | undefined>(undefined);
   const [focusedNodeId, setFocusedNodeId] = useState<FocusNodeId | null>(null);
+  // The focused identity is also kept in a ref so the API object never changes identity when focus
+  // moves. A changing API would re-run every effect and re-attach every scope on each focus change.
+  const focusedNodeIdRef = useRef<FocusNodeId | null>(null);
   const focusedActivatable = useRef(false);
 
   const activeScope = useCallback(
@@ -96,7 +99,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   const requestFocus = useCallback(
     (target: FocusNodeId, options: FocusRequestOptions = {}) => {
       clearPending();
-      if (focusNode(target)) return;
+      if (options.awaitSettle !== true && focusNode(target)) return;
       pending.current = {
         target,
         fallback: options.fallback ?? null,
@@ -219,7 +222,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   );
 
   const getSupportedActions = useCallback((): SupportedActions => {
-    const owner = registry.get(focusedNodeId);
+    const owner = registry.get(focusedNodeIdRef.current);
     const meta = owner?.meta() ?? null;
     const back = activeBackEntry();
     if (owner === null && !focusedActivatable.current && back === null) {
@@ -230,18 +233,21 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       back: back?.label ?? null,
       context: meta?.context?.label ?? null,
     };
-  }, [activeBackEntry, focusedNodeId, registry]);
+  }, [activeBackEntry, registry]);
 
   useEffect(() => {
     const onFocusIn = (event: FocusEvent) => {
       const target = event.target;
       focusedActivatable.current = isActivatableElement(target as Element);
-      setFocusedNodeId(registry.owner(target as Element)?.id ?? null);
+      const id = registry.owner(target as Element)?.id ?? null;
+      focusedNodeIdRef.current = id;
+      setFocusedNodeId(id);
     };
     const onFocusOut = () => {
       window.setTimeout(() => {
         if (document.activeElement === null || document.activeElement === document.body) {
           focusedActivatable.current = false;
+          focusedNodeIdRef.current = null;
           setFocusedNodeId(null);
         }
       }, 0);

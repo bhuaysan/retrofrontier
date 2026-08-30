@@ -1,5 +1,7 @@
 import type { CSSProperties, MouseEvent } from 'react';
 
+import { useFocusNode } from '../../focus/focusContext';
+import { focusNodes } from '../../focus/focusNodes';
 import type { LibraryListItem, LibraryMetadataMatchState } from '../../platform/ipc';
 import { gameRoute, routePath } from '../../app/routes';
 import { PixelCheck } from '../../components/ui/PixelIcon';
@@ -45,6 +47,13 @@ export function GameCard({
   const releaseYear = item.releaseDate?.match(/^\d{4}/)?.[0] ?? null;
   const unavailable = item.availability === 'unavailable';
   const shortSystem = systemShortLabel(item.systemId, systemName);
+  // The card's focus target stays the existing native detail link. `context` reaches the separate
+  // B1 selection control without collapsing the two into one action.
+  const focusRef = useFocusNode({
+    id: focusNodes.libraryGame(item.gameId),
+    confirm: { label: 'OPEN' },
+    context: { label: selected ? 'DESELECT' : 'SELECT', run: () => onToggleSelected(item.gameId) },
+  });
 
   const handleDetailClick = (event: MouseEvent<HTMLAnchorElement>) => {
     if (
@@ -109,6 +118,7 @@ export function GameCard({
             data-game-detail-link={item.gameId}
             href={routePath(gameRoute(item.gameId))}
             onClick={handleDetailClick}
+            ref={focusRef}
           >
             {title}
           </a>

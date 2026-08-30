@@ -85,3 +85,32 @@ describe('application shell layout contract', () => {
     );
   });
 });
+
+describe('A6 V5 focus language under controller input', () => {
+  it('applies the accepted focus states to controller-driven focus without inventing a new one', () => {
+    const focusRules = applicationStyles
+      .split('\n')
+      .filter((line) => line.includes(':focus-visible'))
+      // Comment prose mentions the pseudo-class; only real selector lines are a contract.
+      .filter((line) => /^[.:[a-zA-Z]/.test(line.trim()));
+    expect(focusRules.length).toBeGreaterThan(0);
+
+    // Every accepted focus selector carries a controller companion, because `:focus-visible` cannot
+    // observe a gamepad.
+    for (const rule of focusRules) {
+      const companion = `[data-input-mode='controller'] ${rule.trim().replace(':focus-visible', ':focus')}`;
+      expect(applicationStyles).toContain(companion.replace(/,$/, ''));
+    }
+  });
+
+  it('introduces no focus ring and no new focus colour token', () => {
+    const controllerRules = applicationStyles
+      .split('}')
+      .filter((block) => block.includes("[data-input-mode='controller']"));
+    expect(controllerRules.length).toBeGreaterThan(0);
+    for (const block of controllerRules) {
+      expect(block).not.toMatch(/outline:(?!\s*none)/);
+      expect(block).not.toMatch(/--focus[\w-]*:/);
+    }
+  });
+});

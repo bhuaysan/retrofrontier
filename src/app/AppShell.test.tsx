@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
 
 import type {
   ContentRoot,
+  LaunchState,
   GameMetadataState,
   LibraryGameDetail,
   LibraryPage,
@@ -11,6 +12,8 @@ import type {
   ScanProgress,
   ScanSummary,
 } from '../platform/ipc';
+import { GAMEPAD_BUTTON_INDEX } from '../input/gamepadAdapter';
+import { installRectStub, layoutColumn, layoutGrid } from '../test/geometry';
 import { AppShell } from './AppShell';
 
 const mocks = vi.hoisted(() => {
@@ -64,6 +67,11 @@ const mocks = vi.hoisted(() => {
     completedHandlers: new Set<(summary: ScanSummary) => void>(),
     metadataHandlers: new Set<(event: MetadataStateChanged) => void>(),
     pickExternalContentRoot: vi.fn(),
+    isAppWindowFocused: vi.fn(),
+    onAppWindowFocusChanged: vi.fn(),
+    requestAppWindowFocus: vi.fn(),
+    windowFocusHandlers: new Set<(focused: boolean) => void>(),
+    launchHandlers: new Set<(event: { state: LaunchState }) => void>(),
   };
 });
 
@@ -98,6 +106,12 @@ vi.mock('../platform/ipc', () => ({
 
 vi.mock('../platform/folderPicker', () => ({
   pickExternalContentRoot: mocks.pickExternalContentRoot,
+}));
+
+vi.mock('../platform/appWindow', () => ({
+  isAppWindowFocused: mocks.isAppWindowFocused,
+  onAppWindowFocusChanged: mocks.onAppWindowFocusChanged,
+  requestAppWindowFocus: mocks.requestAppWindowFocus,
 }));
 
 const managedRoot: ContentRoot = {
@@ -301,11 +315,27 @@ function setupDefaults() {
     mocks.getLaunchState,
     mocks.launchGame,
     mocks.onGameLaunchStateChanged,
+    mocks.isAppWindowFocused,
+    mocks.onAppWindowFocusChanged,
+    mocks.requestAppWindowFocus,
   ]) {
     mock.mockReset();
   }
+  mocks.windowFocusHandlers.clear();
+  mocks.launchHandlers.clear();
+  mocks.isAppWindowFocused.mockResolvedValue(true);
+  mocks.requestAppWindowFocus.mockResolvedValue(true);
+  mocks.onAppWindowFocusChanged.mockImplementation(async (handler: (focused: boolean) => void) => {
+    mocks.windowFocusHandlers.add(handler);
+    return () => mocks.windowFocusHandlers.delete(handler);
+  });
   mocks.getLaunchState.mockResolvedValue({ running: null, blocked: false });
-  mocks.onGameLaunchStateChanged.mockResolvedValue(() => undefined);
+  mocks.onGameLaunchStateChanged.mockImplementation(
+    async (handler: (event: { state: LaunchState }) => void) => {
+      mocks.launchHandlers.add(handler);
+      return () => mocks.launchHandlers.delete(handler);
+    },
+  );
   mocks.getLibrarySummary.mockResolvedValue({ totalGames: 0, favoriteGames: 0, systems: [] });
   mocks.queryLibrary.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
   mocks.getLibraryGameDetail.mockResolvedValue(populatedGameDetail);
@@ -2206,5 +2236,296 @@ describe('AppShell M6.7 B1 library card selection', () => {
     expect(await screen.findByRole('heading', { name: 'Page Two Game' })).toBeVisible();
     expect(screen.queryByRole('group', { name: 'Library selection' })).not.toBeInTheDocument();
     expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument();
+  });
+});
+
+describe('AppShell M8 controller navigation and focus', () => {
+  const populatedM8Summary = {
+    totalGames: 2,
+    favoriteGames: 1,
+    systems: [{ systemId: 'nes' as const, gameCount: 2 }],
+  };
+
+  let pads: (FakeGamepad | null)[] = [];
+
+  interface FakeGamepad {
+    index: number;
+    id: string;
+    mapping: string;
+    connected: boolean;
+    buttons: { pressed: boolean }[];
+    axes: number[];
+  }
+
+  function fakePad(pressedIndex: number | null = null): FakeGamepad {
+    return {
+      index: 0,
+      id: 'Qualification Pad (STANDARD GAMEPAD)',
+      mapping: 'standard',
+      connected: true,
+      buttons: Array.from({ length: 17 }, (_value, index) => ({ pressed: index === pressedIndex })),
+      axes: [0, 0, 0, 0],
+    };
+  }
+
+  /** Lets the real animation-frame polling loop observe the current controller state. */
+  async function polled() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 32));
+    });
+  }
+
+  /** Presses one Standard Gamepad button and lets the polling loop observe press and release. */
+  async function pressButton(buttonIndex: number) {
+    pads = [fakePad(buttonIndex)];
+    await polled();
+    pads = [fakePad()];
+    await polled();
+  }
+
+  async function connectController() {
+    pads = [fakePad()];
+    await polled();
+  }
+
+  function layoutLibrary() {
+    layoutGrid(Array.from(document.querySelectorAll('[data-game-detail-link]')), 2);
+    layoutColumn(Array.from(document.querySelectorAll('.pixel-row')));
+  }
+
+  function footerHints() {
+    return screen.getByRole('list', { name: 'Controller actions' });
+  }
+
+  beforeEach(() => {
+    setupDefaults();
+    installRectStub();
+    pads = [];
+    vi.stubGlobal('navigator', { ...window.navigator, getGamepads: () => pads });
+    window.history.replaceState({}, '', '/library');
+    mocks.getLibrarySummary.mockResolvedValue(populatedM8Summary);
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('moves Library focus across the rendered grid with the D-pad', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    await connectController();
+    // With nothing focused, the first directional action enters the first navigable node.
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+    expect(screen.getByRole('button', { name: /All systems/ })).toHaveFocus();
+
+    // Right leaves the sidebar for the game grid, then moves along the rendered row.
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+    expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveFocus();
+
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+    expect(
+      screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
+    ).toHaveFocus();
+
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadLeft);
+    expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveFocus();
+  });
+
+  it('opens a game with confirm and returns to the same card with back', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    await connectController();
+    act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+    await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+
+    await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+    expect(window.location.pathname).toBe('/games/1');
+
+    await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+    await screen.findByRole('heading', { name: 'LIBRARY' });
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveFocus(),
+    );
+  });
+
+  it('selects the focused card with context without opening it', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    await connectController();
+    act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+    await pressButton(GAMEPAD_BUTTON_INDEX.context);
+
+    expect(window.location.pathname).toBe('/library');
+    expect(await screen.findByText('1 SELECTED')).toBeVisible();
+  });
+
+  it('shows only the actions the focused node really supports', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    act(() => {
+      screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus();
+    });
+    expect(within(footerHints()).getByText('OPEN')).toBeInTheDocument();
+    expect(within(footerHints()).getByText('SELECT')).toBeInTheDocument();
+    // The Library is the root destination, so there is nothing to go back to.
+    expect(within(footerHints()).queryByText('LIBRARY')).not.toBeInTheDocument();
+
+    act(() => {
+      screen.getByRole('button', { name: /All systems/ }).focus();
+    });
+    expect(within(footerHints()).queryByText('SELECT')).not.toBeInTheDocument();
+  });
+
+  it('offers a back hint on Game Detail and none on the Library root', async () => {
+    window.history.replaceState({}, '', '/games/1');
+    render(<AppShell />);
+    await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+
+    expect(within(footerHints()).getByText('LIBRARY')).toBeInTheDocument();
+  });
+
+  it('stops consuming controller input while a managed game is running', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    act(() => {
+      mocks.launchHandlers.forEach((handler) =>
+        handler({
+          state: {
+            running: {
+              sessionId: 7,
+              gameId: 1,
+              contentUnitId: 101,
+              coreId: 'nestopia',
+              startedAt: 1,
+            },
+            blocked: false,
+          },
+        }),
+      );
+    });
+
+    await connectController();
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+    expect(document.body).toHaveFocus();
+  });
+
+  it('stops consuming controller input while launch state is blocked', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    act(() => {
+      mocks.launchHandlers.forEach((handler) =>
+        handler({ state: { running: null, blocked: true } }),
+      );
+    });
+
+    await connectController();
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+    expect(document.body).toHaveFocus();
+  });
+
+  it('stops consuming controller input while the application window is unfocused', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(false)));
+
+    await connectController();
+    act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+    expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveFocus();
+
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(true)));
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+    expect(
+      screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
+    ).toHaveFocus();
+  });
+
+  it('returns the window once and restores launch focus when the game ends', async () => {
+    window.history.replaceState({}, '', '/games/1');
+    render(<AppShell />);
+    const play = await screen.findByRole('button', { name: 'Play Kirby’s Adventure' });
+    act(() => play.focus());
+
+    act(() =>
+      mocks.launchHandlers.forEach((handler) =>
+        handler({
+          state: {
+            running: {
+              sessionId: 7,
+              gameId: 1,
+              contentUnitId: 101,
+              coreId: 'nestopia',
+              startedAt: 1,
+            },
+            blocked: false,
+          },
+        }),
+      ),
+    );
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(false)));
+    expect(mocks.requestAppWindowFocus).not.toHaveBeenCalled();
+
+    // Whatever happens to DOM focus while RetroArch owns the screen, the launch origin is what the
+    // return restores.
+    act(() => screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' }).focus());
+
+    act(() =>
+      mocks.launchHandlers.forEach((handler) =>
+        handler({ state: { running: null, blocked: false } }),
+      ),
+    );
+    await waitFor(() => expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: 'Play Kirby’s Adventure' })).not.toHaveFocus();
+
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(true)));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Play Kirby’s Adventure' })).toHaveFocus(),
+    );
+
+    // A later window focus change must not steal focus a second time.
+    act(() => screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' }).focus());
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(false)));
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(true)));
+    expect(
+      screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' }),
+    ).toHaveFocus();
+    expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Tab, pointer focus, and search typing working alongside controller navigation', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    const search = screen.getByRole('searchbox', { name: 'Search' });
+    act(() => search.focus());
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    expect(search).toHaveFocus();
+    fireEvent.change(search, { target: { value: 'kirby' } });
+    expect(search).toHaveValue('kirby');
+
+    act(() => {
+      screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus();
+    });
+    fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+    expect(
+      screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
+    ).toHaveFocus();
   });
 });
