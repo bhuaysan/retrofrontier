@@ -17,7 +17,7 @@ pub use metadata::{
     MetadataApplicationService, MetadataConfig, MetadataWorker, ProviderCredentialState,
     TauriMetadataStateEventSink,
 };
-pub use runtime::RuntimeApplicationService;
+pub use runtime::{RuntimeApplicationService, RuntimeInstallResponse, RuntimeInstallState};
 pub use runtime_manager::RuntimeManager;
 use std::sync::Arc;
 pub use systems::{SystemsApplicationService, SystemsResponse};

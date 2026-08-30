@@ -10,6 +10,7 @@ pub mod runtime_lock;
 pub mod runtime_paths;
 pub mod runtime_pointer;
 pub mod runtime_process;
+pub mod runtime_release_source;
 pub mod runtime_source;
 pub mod runtime_trust;
 pub mod screenscraper;

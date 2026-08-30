@@ -83,6 +83,19 @@ pub struct RuntimeStatus {
     pub repair_required: bool,
 }
 
+/// Where the configured trusted managed-release source came from.
+///
+/// The UI must never present a locally published qualification repository as if it were the public
+/// production release channel, so the origin travels with runtime install state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RuntimeSourceOrigin {
+    /// A trusted root and repository compiled into a released RetroFrontier build.
+    Production,
+    /// A locally published qualification repository, selected by explicit opt-in.
+    Qualification,
+}
+
 /// One trust-consistent read of the managed runtime. Systems/readiness queries must use this
 /// snapshot so status and installed-core availability cannot come from separate verifications.
 #[derive(Debug, Clone)]

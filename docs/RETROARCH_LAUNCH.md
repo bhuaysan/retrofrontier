@@ -263,11 +263,28 @@ message is a fixed RetroFrontier sentence, and the typed context carries only id
 see (`systemId`, `coreId`, `biosRequirementIds`, `runtimeState`, `hostPrerequisite`, `exitCode`,
 `contentOptions`). No path, `errno`, or OS error text ever reaches React.
 
-## Manual qualification still required
+## Qualification status
 
-The automated suite uses a synthetic shell `AppRun`, synthetic cores, and synthetic content; it
-proves the launch architecture, not emulation. A real Linux qualification is required before any
-public claim, and it needs a production Runtime Release, which ADR-012 still gates.
+**M7.5 performed the real Linux qualification.** A real managed RetroArch 1.22.2 release with the
+four reference cores now installs through RuntimeManager, and this launch path starts real
+RetroArch. NES and SNES are fully qualified end to end, GameCube is qualified except for confirmed
+content execution, and PlayStation is blocked on an approved BIOS dump and legal test content. The
+exact matrix, the observed desktop/focus behaviour, and the remaining gates are in
+[`M7_5_RUNTIME_QUALIFICATION.md`](M7_5_RUNTIME_QUALIFICATION.md).
+
+Two documented behaviours were corrected by contact with real software:
+
+- The real AppDir reaches RetroArch through an `AppRun` **symlink**, not a `#!` script, so
+  `/proc/<pid>/exe` resolves to the managed `usr/bin/retroarch`. The schema-3 record stores that
+  observed executable separately from the AppRun path, which is exactly what the running-phase
+  identity check then compares.
+- `logs/retroarch/` is **not** populated. The generated configuration sets `log_dir` and
+  `log_to_file`, but not `log_verbosity`, so RetroArch writes no log file. The claim below that
+  "RetroArch's log goes to `logs/retroarch/`" is currently untrue.
+
+The automated suite still uses a synthetic shell `AppRun`, synthetic cores, and synthetic content;
+it proves the launch architecture, not emulation. The steps below remain the manual checklist for
+any host or distribution that has not been qualified yet.
 
 For each of NES, SNES, PlayStation, and GameCube, using only content and BIOS the tester legally
 owns and never adding either to this repository:

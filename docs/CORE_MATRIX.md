@@ -8,11 +8,16 @@ unresolved decision for every other V1 system. No default or alternative is impl
 unresolved row until the research below has produced an approved managed core, source, license, and
 platform review.
 
-Resolved policy is *not* the same as an available core. RetroFrontier still has no approved
-production Runtime Release source, TUF root, or hosting decision (ADR-012), so no managed runtime
-can currently be installed. The four resolved rows are therefore **policy resolved, managed release
-pending**: readiness reports the approved default core as unavailable until RuntimeManager verifies
-an authenticated installation that contains it.
+Resolved policy is *not* the same as an available core, but as of M7.5 all four resolved rows are
+**built, installable, and verified**: `rf-runtime-1.22.2-linux-x86_64-001` ships every one of them
+as an authenticated component, and readiness reports the approved default core as available once
+RuntimeManager has verified that installation. See
+[`docs/M7_5_RUNTIME_QUALIFICATION.md`](M7_5_RUNTIME_QUALIFICATION.md) for the exact artefacts,
+digests, and licences.
+
+RetroFrontier still has no *public production* Runtime Release source, TUF root, or hosting
+decision (ADR-012); those remain M10 gates. A build without a configured release source reports the
+runtime as uninstallable rather than pretending.
 
 Approved core identities, libretro core names, licences, and upstream sources below were verified
 against the libretro core documentation (`github.com/libretro/docs`, `docs.libretro.com`) while
@@ -50,6 +55,27 @@ authoritative identity source for these dumps.
 | `sega_saturn` | Sega Saturn | Unresolved | None selected | Required | `sega_101.bin`, `mpr-17933.bin` | BIOS identity unresolved; core research remains |
 | `sega_dreamcast` | Sega Dreamcast | Unresolved | None selected | Required | `dc_boot.bin` and `dc_flash.bin` | BIOS identities unresolved; core research remains |
 | `nintendo_gamecube` | Nintendo GameCube | `dolphin` (Dolphin) | None selected | Not required | None | **Resolved (M7).** `dolphin_libretro`, GPL-2.0, https://github.com/libretro/dolphin. Requires the managed Dolphin `Sys` support component; the optional GameCube IPL is deferred. |
+
+## M7.5 managed component identities
+
+Every resolved core is a separately identified TUF target in the Linux x86_64 release. Exact
+upstream sources, artefact digests, sizes, and licences are recorded in
+[`release/linux-x86_64/runtime-release.json`](../release/linux-x86_64/runtime-release.json) and
+tabulated in [`docs/M7_5_RUNTIME_QUALIFICATION.md`](M7_5_RUNTIME_QUALIFICATION.md). All four were
+re-verified against upstream on 2026-08-30; no core was substituted, and every upstream project
+listed above is unchanged.
+
+| Managed component | Installed at | Executable |
+|---|---|---|
+| `nestopia` | `cores/nestopia` | `nestopia_libretro.so` |
+| `bsnes-mercury-balanced` | `cores/bsnes-mercury-balanced` | `bsnes_mercury_balanced_libretro.so` |
+| `beetle-psx` | `cores/beetle-psx` | `mednafen_psx_libretro.so` |
+| `dolphin` | `cores/dolphin` | `dolphin_libretro.so` |
+| `dolphin-sys` | `runtime/support/dolphin-sys` | support data only |
+
+The managed `dolphin-sys` component comes from libretro's own system-assets buildbot, never from a
+user's Dolphin installation, and is linked into the composed system directory as
+`dolphin-emu/Sys`.
 
 ## Resolved PlayStation BIOS identities
 

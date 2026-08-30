@@ -6,10 +6,15 @@ a replacement for the runtime research spikes or the runtime ADRs.
 ## Scope
 
 M2 implements the Linux x86_64 RuntimeManager foundation. RetroArch is not bundled, and the
-application does not use a `retroarch` executable from `PATH`. The application currently ships
-with no production release URL or signing root configuration; an approved source is injected by
-the application composition root when that infrastructure is available. Tests use synthetic
-local targets.
+application does not use a `retroarch` executable from `PATH`.
+
+**M7.5 update.** The composition root now configures a trusted release source, so installation is
+reachable in practice. `RuntimeManager::for_app` takes an optional `TrustedReleaseSource`; when
+none is configured it keeps the deliberately failing `UnavailableTrustedReleaseSource`, so "no
+approved source" stays a trust refusal rather than an absent capability. There is still no
+*production* release URL or shipped signing root — that is M10 — but a real, TUF-authenticated
+Linux x86_64 release now exists and installs through this exact code path. See
+[`M7_5_RUNTIME_QUALIFICATION.md`](M7_5_RUNTIME_QUALIFICATION.md).
 
 ## Ownership and paths
 
@@ -226,3 +231,40 @@ activation durability, process identity, and cleanup ownership. Production key c
 hosting, real RetroArch/AppImage integration, executable smoke execution, Windows/macOS adapters,
 and runtime UI remain outside M2. Core policy for the four M7 reference systems and the Linux game
 launch boundary have since landed; core policy for the remaining seven V1 systems is still open.
+
+
+## Installation surface (M7.5)
+
+`RuntimeApplicationService` owns the application-facing installation boundary:
+
+| Operation | IPC command | Notes |
+| --- | --- | --- |
+| read state | `get_runtime_install_state` | status plus whether a source is configured, its origin, and the approved release target |
+| install | `install_runtime` | installs the single approved manifest target this build is configured for |
+| repair | `repair_runtime` | full reconstruction into a fresh immutable installation |
+
+Installation is single-flight inside the process, on top of the cross-process
+`RuntimeMutationLock`, so a second request reports `installationInProgress` instead of blocking an
+IPC worker on a kernel lock. Anticipated problems are normalized codes rather than IPC errors, and
+none of their messages carries a path, `errno`, or OS text. The runtime's real status accompanies
+every response, so a failed install can never make the UI believe an already-installed runtime
+disappeared.
+
+React never supplies a manifest target, URL, executable, or core path. The approved release target
+comes from the configured source alone.
+
+## Release construction
+
+Runtime Releases are produced by the maintainer-only `rf-runtime-release` tool behind the
+non-default `release-tools` cargo feature, so signing and publication code never ships in the
+application binary. It derives the authenticated installed inventory from each artefact and then
+proves it by extracting every component through the production extractor and running this
+module's own `verify_tree` and `validate_app_run`. See
+[`M7_5_RUNTIME_QUALIFICATION.md`](M7_5_RUNTIME_QUALIFICATION.md).
+
+### AppImage extraction
+
+`find_squashfs_offset` validates a SquashFS 4.0 superblock at every candidate `hsqs` offset rather
+than accepting the first magic match. The official RetroArch AppImage runtime embeds a literal
+`hsqs`/`sqsh`/`shsq`/`qshs` signature table well before the real filesystem, so the naive scan
+found the wrong offset and every real AppImage failed to extract.

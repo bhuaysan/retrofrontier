@@ -843,6 +843,11 @@ fn create_symlink(
     Ok(())
 }
 
+/// Normalize one SquashFS node path into a safe relative path, or `None` for the filesystem root.
+pub(crate) fn appimage_squashfs_path(path: &Path) -> Result<Option<RelativePath>, RuntimeError> {
+    squashfs_path(path, &ExtractionLimits::default())
+}
+
 fn squashfs_path(
     path: &Path,
     limits: &ExtractionLimits,
@@ -856,19 +861,80 @@ fn squashfs_path(
     archive_path(path.strip_prefix('/').unwrap_or(path), false, limits).map(Some)
 }
 
-fn find_squashfs_offset(path: &Path) -> Result<u64, RuntimeError> {
+/// Locate the SquashFS payload inside an AppImage.
+///
+/// The four-byte `hsqs` magic is not on its own sufficient evidence: the official RetroArch
+/// AppImage runtime embeds a signature table containing `hsqs`, `sqsh`, `shsq`, and `qshs` as
+/// literal bytes, so the first magic match in a real artifact is not the filesystem. Every
+/// candidate offset is therefore checked against the SquashFS 4.0 superblock contract before it
+/// is accepted, and the first structurally valid candidate wins.
+pub(crate) fn find_squashfs_offset(path: &Path) -> Result<u64, RuntimeError> {
     const MAX_HEADER_SCAN: usize = 64 * 1024 * 1024;
+    let file_size = fs::metadata(path)?.len();
     let mut file = File::open(path)?;
     let mut bytes = Vec::new();
     std::io::Read::by_ref(&mut file)
         .take(MAX_HEADER_SCAN as u64)
         .read_to_end(&mut bytes)?;
     let magic = *b"hsqs";
-    bytes
+    let mut search = 0_usize;
+    while let Some(relative) = bytes[search..]
         .windows(magic.len())
         .position(|window| window == magic)
-        .map(|offset| offset as u64)
-        .ok_or_else(|| RuntimeError::Extraction("AppImage has no SquashFS payload".to_owned()))
+    {
+        let offset = search + relative;
+        if is_squashfs_superblock(&bytes[offset..], file_size.saturating_sub(offset as u64)) {
+            return Ok(offset as u64);
+        }
+        search = offset + 1;
+    }
+    Err(RuntimeError::Extraction(
+        "AppImage has no SquashFS payload".to_owned(),
+    ))
+}
+
+/// Validate a candidate SquashFS 4.0 superblock without trusting any value it declares.
+///
+/// Only the fixed-format header fields are inspected, and each is bounded, so a hostile artifact
+/// cannot steer extraction to an arbitrary offset by planting the magic bytes.
+fn is_squashfs_superblock(bytes: &[u8], available: u64) -> bool {
+    const SUPERBLOCK_BYTES: usize = 96;
+    if bytes.len() < SUPERBLOCK_BYTES {
+        return false;
+    }
+    let u16_at = |offset: usize| u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+    let u32_at = |offset: usize| {
+        u32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    };
+    let u64_at = |offset: usize| {
+        let mut value = [0_u8; 8];
+        value.copy_from_slice(&bytes[offset..offset + 8]);
+        u64::from_le_bytes(value)
+    };
+
+    if u16_at(28) != 4 || u16_at(30) != 0 {
+        return false;
+    }
+    let inode_count = u32_at(4);
+    if inode_count == 0 {
+        return false;
+    }
+    let block_size = u32_at(12);
+    let block_log = u16_at(22);
+    if !(12..=20).contains(&block_log) || block_size != 1_u32 << block_log {
+        return false;
+    }
+    // 1 gzip, 2 lzma, 3 lzo, 4 xz, 5 lz4, 6 zstd; backhand rejects anything it cannot decompress.
+    if !(1..=6).contains(&u16_at(20)) {
+        return false;
+    }
+    let bytes_used = u64_at(40);
+    bytes_used > 0 && bytes_used <= available
 }
 
 #[cfg(test)]
@@ -1048,6 +1114,52 @@ mod tests {
                 &limits,
             )
             .is_err());
+    }
+
+    /// Build a header-valid SquashFS 4.0 superblock. Only the fields the offset scan inspects
+    /// need to be real; the payload behind it is never decompressed by this test.
+    fn synthetic_superblock(bytes_used: u64) -> Vec<u8> {
+        let mut block = vec![0_u8; 96];
+        block[0..4].copy_from_slice(b"hsqs");
+        block[4..8].copy_from_slice(&7_u32.to_le_bytes());
+        block[12..16].copy_from_slice(&131_072_u32.to_le_bytes());
+        block[20..22].copy_from_slice(&6_u16.to_le_bytes());
+        block[22..24].copy_from_slice(&17_u16.to_le_bytes());
+        block[28..30].copy_from_slice(&4_u16.to_le_bytes());
+        block[30..32].copy_from_slice(&0_u16.to_le_bytes());
+        block[40..48].copy_from_slice(&bytes_used.to_le_bytes());
+        block
+    }
+
+    /// The official RetroArch AppImage runtime embeds the literal bytes `hsqs`, `sqsh`, `shsq`,
+    /// and `qshs` as a signature table, so the first magic match in a real artifact is not the
+    /// filesystem. Taking it would make every real AppImage fail to extract.
+    #[test]
+    fn squashfs_offset_skips_a_decoy_magic_and_finds_the_real_superblock() {
+        let directory = tempdir().unwrap();
+        let artifact = directory.path().join("decoy.AppImage");
+        let mut bytes = vec![0_u8; 256];
+        bytes.extend_from_slice(b"hsqs\x00sqsh\x00shsq\x00qshs");
+        bytes.resize(1024, 0);
+        let expected = bytes.len() as u64;
+        let payload = vec![0_u8; 4096];
+        bytes.extend_from_slice(&synthetic_superblock(96 + payload.len() as u64));
+        bytes.extend_from_slice(&payload);
+        fs::write(&artifact, &bytes).unwrap();
+
+        assert_eq!(super::find_squashfs_offset(&artifact).unwrap(), expected);
+    }
+
+    #[test]
+    fn squashfs_offset_rejects_an_artifact_with_only_decoy_magic() {
+        let directory = tempdir().unwrap();
+        let artifact = directory.path().join("no-payload.AppImage");
+        let mut bytes = b"hsqs".to_vec();
+        // A superblock that overruns the artifact must never be accepted.
+        bytes.extend_from_slice(&synthetic_superblock(u64::MAX)[4..]);
+        fs::write(&artifact, &bytes).unwrap();
+
+        assert!(super::find_squashfs_offset(&artifact).is_err());
     }
 
     #[test]

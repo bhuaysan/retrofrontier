@@ -120,18 +120,35 @@ impl SpawnedGame {
     /// This runs when process identity could not be established or durably recorded. Leaving the
     /// child alive would make it invisible to RuntimeManager's safety checks.
     ///
-    /// `Ok` is a positive observation that the child has exited and been reaped. `Err` proves
-    /// nothing about the child, so a caller must keep treating it as possibly alive.
-    pub fn terminate(&mut self) -> Result<ProcessExit, std::io::Error> {
+    /// `Ok` is a positive observation that the child has exited and been reaped, and it also says
+    /// *how* it ended. That distinction has to come from this single reaping observation: asking
+    /// separately beforehand whether the child had already exited races the child itself, and a
+    /// caller that lost the race reported an instant exit as a failure to establish identity.
+    ///
+    /// `Err` proves nothing about the child, so a caller must keep treating it as possibly alive.
+    pub fn terminate(&mut self) -> Result<Termination, std::io::Error> {
         #[cfg(test)]
         if let Some(error) = self.faults.injected(|faults| faults.terminate) {
             return Err(error);
         }
         match self.child.try_wait()? {
-            Some(status) => Ok(ProcessExit::from_status(status)),
+            Some(status) => Ok(Termination {
+                exit: ProcessExit::from_status(status),
+                exited_on_its_own: true,
+            }),
             None => {
                 self.child.kill()?;
-                Ok(ProcessExit::from_status(self.child.wait()?))
+                let exit = ProcessExit::from_status(self.child.wait()?);
+                // A child that was alive a moment ago can still exit before the signal reaches
+                // it, so *when* the exit was observed proves nothing. The reaped status does: a
+                // normal exit code can only have come from the child itself, and the only signal
+                // this function ever sends is `SIGKILL`, so that is the one status that means
+                // termination — rather than the game — ended it.
+                let exited_on_its_own = !matches!(exit, ProcessExit::Signal(TERMINATION_SIGNAL));
+                Ok(Termination {
+                    exit,
+                    exited_on_its_own,
+                })
             }
         }
     }
@@ -147,6 +164,18 @@ impl SpawnedGame {
         }
         Ok(ProcessExit::from_status(self.child.wait()?))
     }
+}
+
+/// The signal [`SpawnedGame::terminate`] sends, and therefore the only status that can mean
+/// RetroFrontier ended the child rather than the child ending on its own.
+const TERMINATION_SIGNAL: i32 = 9;
+
+/// How a managed child ended when it was stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Termination {
+    pub exit: ProcessExit,
+    /// The child was already gone when termination ran, so nothing signalled it.
+    pub exited_on_its_own: bool,
 }
 
 pub trait GameProcessLauncher: Send + Sync {
@@ -265,11 +294,13 @@ mod tests {
         let mut child = spawn_with_retry(&request(&program, directory.path(), &[]));
         assert!(child.pid() > 0);
 
-        let exit = child.terminate().unwrap();
+        let termination = child.terminate().unwrap();
 
-        assert!(matches!(exit, ProcessExit::Signal(_)));
-        assert_eq!(exit.code(), None);
-        assert!(!exit.is_clean());
+        assert!(matches!(termination.exit, ProcessExit::Signal(_)));
+        assert_eq!(termination.exit.code(), None);
+        assert!(!termination.exit.is_clean());
+        // It had to be killed, so it did not end on its own.
+        assert!(!termination.exited_on_its_own);
     }
 
     #[test]
@@ -287,8 +318,11 @@ mod tests {
         }
 
         assert_eq!(observed, Some(ProcessExit::Code(7)));
-        // Terminating an already-finished child reports the same result instead of failing.
-        assert_eq!(child.terminate().unwrap(), ProcessExit::Code(7));
+        // Terminating an already-finished child reports the same result instead of failing, and
+        // says the child ended on its own rather than because termination signalled it.
+        let termination = child.terminate().unwrap();
+        assert_eq!(termination.exit, ProcessExit::Code(7));
+        assert!(termination.exited_on_its_own);
     }
 
     #[test]

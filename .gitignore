@@ -60,3 +60,10 @@ $RECYCLE.BIN/
 **/test-roms/
 fixtures/roms/
 fixtures/bios/
+
+# Managed runtime release construction output and qualification signing material
+/release/**/out/
+/target/runtime-release/
+src-tauri/target/runtime-release/
+*.pk8
+qualification-keys/

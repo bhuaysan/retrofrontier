@@ -2,11 +2,17 @@
 
 ## Current Priority
 
-M7 RetroArch Launch is implemented on `feat/m7-retroarch-launch` and awaits review. M6 Library UI
-remains subject to its own final delta review. Runtime trust, production release hosting, and core
-policy for the remaining seven V1 systems remain explicit release gates, and no end-to-end emulation
-claim is made until a production Runtime Release exists and the manual four-system qualification in
-`docs/RETROARCH_LAUNCH.md` has been performed.
+M7 RetroArch Launch is merged. M7.5 Real Managed Runtime is implemented on
+`feat/m7.5-production-runtime`: a real Linux x86_64 Runtime Release (RetroArch 1.22.2 plus the four
+reference cores and the managed Dolphin `Sys` component) is reproducibly constructed from pinned
+upstream inputs, published into a TUF 1.0 repository, and installed through the production
+verification path. NES and SNES are fully qualified end to end on one Linux host; GameCube is
+qualified except for confirmed content execution, and PlayStation is blocked on an approved BIOS
+dump and legal test content. See [`docs/M7_5_RUNTIME_QUALIFICATION.md`](docs/M7_5_RUNTIME_QUALIFICATION.md).
+
+Production key ceremony, public runtime hosting, immutable upstream mirroring, GPL source-offer
+obligations, and core policy for the remaining seven V1 systems remain explicit release gates. No
+public-distribution claim is made.
 
 ## M0 — Planning and Repository Foundation
 
@@ -136,16 +142,18 @@ presentation are explicitly non-blocking deferred capabilities. The pre-M5 ident
 - [x] safe activation
 - [x] rollback
 - [x] minimal active pointer and filesystem-derived startup recovery
-- [ ] TUF-compatible runtime trust metadata and key-rotation/revocation ceremony
+- [x] TUF-compatible runtime trust metadata (M7.5: real Ed25519 2-of-3 repository consumed by the production client)
+- [ ] production key-rotation/revocation ceremony under independent custody (M10)
 - [x] authenticated installed-file inventory and local modification detection
 - [x] single-instance, runtime mutation lock, and game-process liveness coordination
 - [x] block activation while game runs
 - [x] runtime status UI
-- [ ] repair UI
+- [x] repair/reinstall UI (M7.5 Settings runtime panel)
 - [ ] macOS app/core signing and quarantine strategy
 - [ ] Windows Authenticode/Smart App Control and pointer replacement spike
 - [x] Linux extracted-AppImage/AppRun entry-point and distribution/device matrix qualification (Fedora 44 proof; VM/manual matrix remains a release gate)
-- [ ] finalize hosting/source model
+- [x] release construction tooling and a qualification release source (M7.5)
+- [ ] finalize public hosting/source model and immutable upstream mirroring (M10)
 
 ## M3 — Systems, Cores, BIOS
 
@@ -366,7 +374,27 @@ Deferred from M7:
 - [ ] core policy for the remaining seven V1 systems
 - [ ] per-game override management UI and non-core overrides
 - [ ] per-region PlayStation BIOS enforcement and SNES coprocessor firmware detection
-- [ ] real four-system Linux qualification, which needs an approved production Runtime Release
+- [x] real Linux runtime installation and launch qualification (M7.5; NES and SNES pass, GameCube
+      partial, PlayStation blocked on an approved BIOS dump and legal content)
+
+## M7.5 — Real Managed Runtime and Linux Qualification
+
+**Model:** Luna Max.
+
+See [`docs/M7_5_RUNTIME_QUALIFICATION.md`](docs/M7_5_RUNTIME_QUALIFICATION.md) and
+[`docs/M7_5_IMPLEMENTATION_REPORT.md`](docs/M7_5_IMPLEMENTATION_REPORT.md).
+
+- [x] declarative, reproducible Runtime Release definition
+- [x] release construction and TUF publication tooling (`release-tools` feature)
+- [x] derived, proof-verified installed inventory
+- [x] configured trusted release source with an honest production/qualification distinction
+- [x] runtime install/repair application service, IPC, and Settings UX
+- [x] real AppImage extraction (SquashFS superblock validation)
+- [x] real installation through RuntimeManager
+- [x] real launch through the M7 path, including crash/restart reconciliation
+- [ ] confirmed GameCube content execution
+- [ ] PlayStation qualification (needs an approved BIOS dump and legal content)
+- [ ] cross-distribution matrix
 
 ## M8 — Controller and Focus
 
