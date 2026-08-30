@@ -2,6 +2,9 @@
 name = "retrofrontier"
 version = "0.1.0"
 description = "RetroFrontier desktop application"
+# Two binaries exist, so `cargo run` (which `tauri dev` uses) must be told which one is the
+# application. `rf-runtime-release` is maintainer tooling and is selected explicitly.
+default-run = "retrofrontier"
 authors = ["RetroFrontier contributors"]
 edition = "2021"
 rust-version = "1.94"
