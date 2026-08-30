@@ -459,11 +459,21 @@ mod tests {
 
     /// A live child whose executable is the managed AppRun. The trailing `:` keeps the shell from
     /// replacing its own image with `sleep`.
+    ///
+    /// Spawning an executable that was just written can transiently fail with `ETXTBSY` when a
+    /// parallel test thread forked while the writing descriptor was still open, so the spawn is
+    /// retried briefly. This is a test-harness concern only.
     fn spawn_managed_child(apprun: &Path) -> Child {
-        Command::new(apprun)
-            .args(["-c", "sleep 30; :"])
-            .spawn()
-            .unwrap()
+        for _ in 0..50 {
+            match Command::new(apprun).args(["-c", "sleep 30; :"]).spawn() {
+                Ok(child) => return child,
+                Err(error) if error.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => panic!("managed child should spawn: {error}"),
+            }
+        }
+        panic!("managed child should spawn before the retry budget is exhausted");
     }
 
     #[test]
