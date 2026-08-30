@@ -1,5 +1,6 @@
 pub mod credentials;
 pub mod database;
+pub mod game_process;
 pub mod http;
 pub mod metadata_paths;
 pub mod runtime_archive;

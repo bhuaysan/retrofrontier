@@ -16,9 +16,9 @@ use crate::domain::runtime::{
     Sha256Digest, VerifiedRuntimeSnapshot,
 };
 use async_trait::async_trait;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -108,6 +108,27 @@ impl TrustedReleaseSource for UnavailableTrustedReleaseSource {
             "no approved managed runtime source is configured".to_owned(),
         ))
     }
+}
+
+/// One authenticated managed core component, resolved to its absolute installed path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedCoreComponent {
+    pub component_id: SafeIdentifier,
+    pub core_path: PathBuf,
+    /// The systems the authenticated release approves this core for.
+    pub systems: Vec<SafeIdentifier>,
+}
+
+/// The read-only launch view of the verified active managed runtime.
+#[derive(Debug, Clone)]
+pub struct VerifiedLaunchRuntime {
+    pub status: RuntimeStatus,
+    pub installation_id: SafeIdentifier,
+    pub release_id: SafeIdentifier,
+    /// The authenticated AppDir entry point. Production code never substitutes an inner path.
+    pub app_run_path: PathBuf,
+    pub cores: BTreeMap<SafeIdentifier, ManagedCoreComponent>,
+    pub support_assets: BTreeMap<SafeIdentifier, PathBuf>,
 }
 
 #[derive(Clone)]
@@ -510,51 +531,138 @@ impl RuntimeManager {
         self.verified_snapshot().map(|snapshot| snapshot.status)
     }
 
+    /// One trust-consistent verification of the active installation, enriched with the absolute
+    /// managed paths a launch needs.
+    ///
+    /// The launch layer receives paths only from this boundary: an absolute authenticated `AppRun`
+    /// (never an inferred inner payload path), absolute per-component core paths, and absolute
+    /// support-asset paths such as Dolphin's `Sys`. A user-supplied path is never accepted.
+    pub fn verified_launch_runtime(&self) -> Result<VerifiedLaunchRuntime, RuntimeError> {
+        self.paths.prepare()?;
+        let (installation, status) = self.reconcile_active_installation()?;
+        let Some(installation) = installation else {
+            return Err(RuntimeError::InstalledTree(
+                "no verified managed runtime is active".to_owned(),
+            ));
+        };
+        if !matches!(
+            status.state,
+            RuntimeState::Ready | RuntimeState::RollbackAvailable
+        ) {
+            return Err(RuntimeError::InstalledTree(
+                "the managed runtime is not ready to launch".to_owned(),
+            ));
+        }
+
+        let version_path = self.paths.version_path(&installation.installation_id);
+        crate::adapters::runtime_installed::validate_app_run(
+            &version_path,
+            &installation.manifest,
+        )?;
+        let app_run_path = version_path.join(installation.manifest.app_run_path().to_path_buf());
+
+        let mut cores = BTreeMap::new();
+        let mut support_assets = BTreeMap::new();
+        for component in &installation.manifest.release.components {
+            let install_path = version_path.join(component.install_path.to_path_buf());
+            match component.kind {
+                crate::domain::runtime::ComponentKind::Core => {
+                    // A core with no authenticated executable cannot be loaded; skipping it makes
+                    // the launch report `coreNotInstalled` instead of guessing a filename.
+                    let Some(executable) = component.executable_relative_path.as_ref() else {
+                        continue;
+                    };
+                    cores.insert(
+                        component.id.clone(),
+                        ManagedCoreComponent {
+                            component_id: component.id.clone(),
+                            core_path: install_path.join(executable.to_path_buf()),
+                            systems: component.systems.clone(),
+                        },
+                    );
+                }
+                crate::domain::runtime::ComponentKind::SupportAsset => {
+                    support_assets.insert(component.id.clone(), install_path);
+                }
+                crate::domain::runtime::ComponentKind::Runtime => {}
+            }
+        }
+
+        Ok(VerifiedLaunchRuntime {
+            release_id: installation.manifest.release.release_id.clone(),
+            installation_id: installation.installation_id.clone(),
+            status,
+            app_run_path,
+            cores,
+            support_assets,
+        })
+    }
+
+    /// Hand the launch service the same OS-backed lock runtime mutation uses.
+    ///
+    /// ADR-011 serializes game launch and runtime mutation under this lock, so an activation
+    /// cannot interleave with the verification-to-spawn window.
+    pub fn lock_for_launch(&self) -> Result<RuntimeMutationLock, RuntimeError> {
+        self.acquire_mutation_lock()
+    }
+
+    /// Ask the durable process record whether a managed game is still active.
+    pub fn ensure_no_active_game(&self) -> Result<(), RuntimeError> {
+        self.process_inspector.ensure_no_active_game(&self.paths)
+    }
+
     fn reconcile_verified_snapshot(&self) -> Result<VerifiedRuntimeSnapshot, RuntimeError> {
+        let (installation, status) = self.reconcile_active_installation()?;
+        let verified_core_ids = installation
+            .map(|installation| {
+                installation
+                    .manifest
+                    .release
+                    .components
+                    .iter()
+                    .filter(|component| {
+                        component.kind == crate::domain::runtime::ComponentKind::Core
+                    })
+                    .map(|component| component.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(VerifiedRuntimeSnapshot {
+            status,
+            verified_core_ids,
+        })
+    }
+
+    /// The single active-installation verification every read boundary shares.
+    ///
+    /// Returning the installation alongside the derived status keeps status, installed core
+    /// availability, and launch paths from ever coming out of separate verifications.
+    fn reconcile_active_installation(
+        &self,
+    ) -> Result<(Option<VerifiedInstallation>, RuntimeStatus), RuntimeError> {
+        let broken = || Ok((None, RuntimeStatus::broken()));
         let trust_state = match self.trust_store.load() {
             Ok(state) => state,
-            Err(_) => {
-                return Ok(VerifiedRuntimeSnapshot {
-                    status: RuntimeStatus::broken(),
-                    verified_core_ids: BTreeSet::new(),
-                })
-            }
+            Err(_) => return broken(),
         };
         let pointer = match read_active_pointer(&self.paths) {
             Ok(pointer) => pointer,
-            Err(_) => {
-                return Ok(VerifiedRuntimeSnapshot {
-                    status: RuntimeStatus::broken(),
-                    verified_core_ids: BTreeSet::new(),
-                })
-            }
+            Err(_) => return broken(),
         };
         let Some(pointer) = pointer else {
             return if self.has_any_complete_installation()? {
-                Ok(VerifiedRuntimeSnapshot {
-                    status: RuntimeStatus::broken(),
-                    verified_core_ids: BTreeSet::new(),
-                })
+                broken()
             } else {
-                Ok(VerifiedRuntimeSnapshot {
-                    status: RuntimeStatus::not_installed(),
-                    verified_core_ids: BTreeSet::new(),
-                })
+                Ok((None, RuntimeStatus::not_installed()))
             };
         };
-        let current =
-            self.load_verified_installation_with_state(&pointer.installation_id, &trust_state);
-        let Ok(current) = current else {
-            return Ok(VerifiedRuntimeSnapshot {
-                status: RuntimeStatus::broken(),
-                verified_core_ids: BTreeSet::new(),
-            });
+        let Ok(current) =
+            self.load_verified_installation_with_state(&pointer.installation_id, &trust_state)
+        else {
+            return broken();
         };
         if current.manifest_sha256 != pointer.manifest_sha256 {
-            return Ok(VerifiedRuntimeSnapshot {
-                status: RuntimeStatus::broken(),
-                verified_core_ids: BTreeSet::new(),
-            });
+            return broken();
         }
         let can_rollback = !Self::eligible_rollback_candidates(
             &current,
@@ -564,28 +672,18 @@ impl RuntimeManager {
             )?,
         )
         .is_empty();
-        let verified_core_ids = current
-            .manifest
-            .release
-            .components
-            .iter()
-            .filter(|component| component.kind == crate::domain::runtime::ComponentKind::Core)
-            .map(|component| component.id.clone())
-            .collect();
-        Ok(VerifiedRuntimeSnapshot {
-            status: RuntimeStatus {
-                state: if can_rollback {
-                    RuntimeState::RollbackAvailable
-                } else {
-                    RuntimeState::Ready
-                },
-                installation_id: Some(current.installation_id.to_string()),
-                release_id: Some(current.manifest.release.release_id.to_string()),
-                can_rollback,
-                repair_required: false,
+        let status = RuntimeStatus {
+            state: if can_rollback {
+                RuntimeState::RollbackAvailable
+            } else {
+                RuntimeState::Ready
             },
-            verified_core_ids,
-        })
+            installation_id: Some(current.installation_id.to_string()),
+            release_id: Some(current.manifest.release.release_id.to_string()),
+            can_rollback,
+            repair_required: false,
+        };
+        Ok((Some(current), status))
     }
 
     fn load_verified_installation(
@@ -1009,7 +1107,8 @@ mod tests {
     use crate::domain::runtime::{
         ArchiveFormat, ComponentKind, InstalledEntry, InstalledEntryType, RelativePath,
         ReleaseChannel, RuntimeArchitecture, RuntimeCompatibility, RuntimeComponent, RuntimeError,
-        RuntimeManifest, RuntimePlatform, RuntimeRelease, SafeIdentifier, Sha256Digest,
+        RuntimeManifest, RuntimePlatform, RuntimeRelease, RuntimeState, SafeIdentifier,
+        Sha256Digest,
     };
     use std::collections::BTreeMap;
     use std::fs::{self, File, OpenOptions};
@@ -1234,7 +1333,7 @@ mod tests {
                 install_path: RelativePath::new("cores/synthetic-core").unwrap(),
                 expected_root: None,
                 payload_filename: None,
-                executable_relative_path: None,
+                executable_relative_path: Some(RelativePath::new("core.so").unwrap()),
                 display_version: None,
                 source_revision: None,
                 source_pinning: None,
@@ -1263,7 +1362,7 @@ mod tests {
                     entry_type: InstalledEntryType::File,
                     size_bytes: core.len() as u64,
                     sha256: Some(sha256_bytes(core)),
-                    executable: false,
+                    executable: true,
                     link_target: None,
                 },
             ]);
@@ -1311,6 +1410,85 @@ mod tests {
             RetentionPolicy::default(),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_launch_boundary_returns_absolute_managed_paths_from_one_verification() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager_with_core(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+
+        // Nothing is installed yet, so there is no launch target at all.
+        assert!(manager.verified_launch_runtime().is_err());
+
+        manager.install("manifests/release-1.json").await.unwrap();
+        let launch = manager.verified_launch_runtime().unwrap();
+
+        assert!(matches!(
+            launch.status.state,
+            RuntimeState::Ready | RuntimeState::RollbackAvailable
+        ));
+        assert_eq!(launch.release_id.as_str(), "release-1");
+        assert!(launch.app_run_path.is_absolute());
+        assert!(launch
+            .app_run_path
+            .starts_with(manager.paths().versions_root()));
+        assert!(launch
+            .app_run_path
+            .starts_with(manager.paths().version_path(&launch.installation_id)));
+        assert!(launch.app_run_path.ends_with("runtime/app/AppRun"));
+        assert!(launch.app_run_path.is_file());
+
+        let core_id: SafeIdentifier = "synthetic-core".try_into().unwrap();
+        let core = launch.cores.get(&core_id).expect("approved managed core");
+        assert!(core.core_path.is_absolute());
+        assert!(core
+            .core_path
+            .starts_with(manager.paths().version_path(&launch.installation_id)));
+        assert!(core.core_path.ends_with("cores/synthetic-core/core.so"));
+        assert!(core.core_path.is_file());
+        assert_eq!(core.systems, vec![SafeIdentifier::new("nes").unwrap()]);
+        assert!(launch.support_assets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_broken_runtime_has_no_launch_target() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager_with_core(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+        manager.install("manifests/release-1.json").await.unwrap();
+        assert!(manager.verified_launch_runtime().is_ok());
+
+        fs::write(manager.paths().active_pointer(), b"{ not json").unwrap();
+
+        assert!(matches!(
+            manager.verified_launch_runtime(),
+            Err(RuntimeError::InstalledTree(_))
+        ));
+        assert_eq!(manager.status().unwrap().state, RuntimeState::Broken);
+    }
+
+    #[tokio::test]
+    async fn a_launch_lock_holder_blocks_runtime_mutation_and_releases_on_drop() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager_with_core(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+        manager.install("manifests/release-1.json").await.unwrap();
+
+        let lock = manager.lock_for_launch().unwrap();
+        assert!(matches!(manager.cleanup(), Err(RuntimeError::Lock(_))));
+        drop(lock);
+
+        manager.cleanup().unwrap();
     }
 
     #[test]

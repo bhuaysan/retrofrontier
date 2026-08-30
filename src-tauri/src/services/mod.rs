@@ -6,3 +6,8 @@ pub mod metadata_matching;
 pub mod metadata_media;
 pub mod metadata_provider;
 pub mod metadata_queue;
+pub mod retroarch;
+pub mod retroarch_config;
+pub mod retroarch_env;
+pub mod retroarch_host;
+pub mod retroarch_paths;

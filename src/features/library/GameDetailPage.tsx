@@ -5,11 +5,14 @@ import { PixelButton } from '../../components/ui/PixelButton';
 import { PixelArrow, PixelStar } from '../../components/ui/PixelIcon';
 import { getMetadataAction, hasSelectableCandidates, metadataStateCopy } from './metadataActions';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
+import type { GameLaunchModel } from '../../hooks/useGameLaunch';
+import { launchFailureHint, launchFailureTitle } from './launchStatus';
 import type {
   GameMetadataState,
   IpcError,
   LibraryGameDetail,
   NormalizedMetadata,
+  LaunchContentOption,
   ProviderFailureClass,
   SystemStatus,
   UnsupportedContentReason,
@@ -33,6 +36,7 @@ interface GameDetailPageProps {
   systemStatus: SystemStatus | null;
   readinessLoading?: boolean;
   readinessError: IpcError | null;
+  launch: GameLaunchModel;
   onRetryReadiness: () => void;
   onBackToLibrary: () => void;
 }
@@ -593,12 +597,121 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
   );
 }
 
+function contentOptionLabel(option: LaunchContentOption) {
+  return `${option.localTitle} · ${contentKindLabel(option.kind)} · ${formatFileCount(option.fileCount)}`;
+}
+
+/**
+ * The M7 Play action.
+ *
+ * Rust decides whether a launch may proceed, so this control never pre-judges readiness: it stays
+ * available and renders whatever normalized result comes back. It is disabled only while this
+ * screen is waiting, while a managed game is running, and while launch state is uncertain.
+ */
+function LaunchAction({
+  gameId,
+  launch,
+  title,
+}: {
+  gameId: number;
+  launch: GameLaunchModel;
+  title: string;
+}) {
+  const runningThisGame = launch.running?.gameId === gameId;
+  const runningAnotherGame = launch.running !== null && !runningThisGame;
+  const pending = launch.pendingGameId === gameId;
+  const disabled = pending || launch.running !== null || launch.blocked;
+  const label = runningThisGame
+    ? 'RUNNING'
+    : pending
+      ? 'LAUNCHING…'
+      : runningAnotherGame
+        ? 'ANOTHER GAME IS RUNNING'
+        : 'PLAY';
+
+  return (
+    <>
+      <button
+        aria-busy={pending || undefined}
+        aria-label={runningThisGame ? `${title} is running` : `Play ${title}`}
+        className="game-detail-play"
+        data-state={runningThisGame ? 'running' : pending ? 'launching' : 'idle'}
+        disabled={disabled}
+        onClick={() => void launch.launch(gameId)}
+        type="button"
+      >
+        {label}
+      </button>
+
+      {/* One live region for the whole launch interaction, so a screen reader hears the state
+          change once rather than once per element. */}
+      <div aria-live="polite" className="game-detail-launch-status">
+        {runningThisGame ? (
+          <p className="game-detail-inline-status">
+            RETROARCH IS RUNNING · RETROFRONTIER RETURNS WHEN IT EXITS
+          </p>
+        ) : null}
+        {pending ? <p className="game-detail-inline-status">STARTING RETROARCH…</p> : null}
+        {launch.blocked && !runningThisGame ? (
+          <p className="game-detail-action-error">
+            A PREVIOUS GAME PROCESS COULD NOT BE VERIFIED · RESTART RETROFRONTIER
+          </p>
+        ) : null}
+        {launch.diagnostics.length > 0 && runningThisGame ? (
+          <ul className="game-detail-launch-diagnostics">
+            {launch.diagnostics.map((diagnostic) => (
+              <li key={diagnostic.kind}>{diagnostic.message}</li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+
+      {launch.contentOptions && launch.contentOptions.length > 0 ? (
+        <div className="game-detail-launch-selection">
+          <h3>CHOOSE A VERSION</h3>
+          <ul>
+            {launch.contentOptions.map((option) => (
+              <li key={option.contentUnitId}>
+                <button
+                  onClick={() => void launch.launch(gameId, option.contentUnitId)}
+                  type="button"
+                >
+                  {contentOptionLabel(option)}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <button
+            className="text-link"
+            onClick={() => launch.cancelContentSelection()}
+            type="button"
+          >
+            CANCEL
+          </button>
+        </div>
+      ) : null}
+
+      {launch.failure ? (
+        <InlineError
+          title={launchFailureTitle(launch.failure.code)}
+          message={[launch.failure.message, launchFailureHint(launch.failure.code)]
+            .filter((part): part is string => Boolean(part))
+            .join(' ')}
+          actionLabel="DISMISS"
+          onAction={() => launch.dismissFailure()}
+        />
+      ) : null}
+    </>
+  );
+}
+
 export function GameDetailPage({
   gameId,
   detail,
   systemStatus,
   readinessLoading = false,
   readinessError,
+  launch,
   onRetryReadiness,
   onBackToLibrary,
 }: GameDetailPageProps) {
@@ -687,8 +800,8 @@ export function GameDetailPage({
             />
           ) : null}
 
-          {/* B6 hero: 280px cover column, the one dominant title, compact identity, and the real
-              M6 Favorite action under the cover. No launch action exists until M7 owns it. */}
+          {/* B6 hero: 280px cover column, the one dominant title, compact identity, and the
+              cover-column actions: the M7 Play action above the M6 Favorite action. */}
           <section
             className="game-detail-hero"
             data-system-accent={systemAccentKey(systemId ?? 'unknown')}
@@ -708,6 +821,9 @@ export function GameDetailPage({
               </div>
               {localDetail ? (
                 <div className="game-detail-cover-actions">
+                  {gameId !== null ? (
+                    <LaunchAction gameId={gameId} launch={launch} title={title} />
+                  ) : null}
                   <button
                     aria-busy={detail.favoritePending || undefined}
                     aria-label={

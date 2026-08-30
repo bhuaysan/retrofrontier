@@ -1,5 +1,10 @@
-use crate::domain::bios::{BiosModelError, BiosPolicy, BiosRequirement};
-use crate::domain::core::{CoreDefinition, CorePolicy, CorePolicyDecision};
+use crate::domain::bios::{
+    BiosDigest, BiosFileIdentity, BiosModelError, BiosPolicy, BiosRequirement,
+};
+use crate::domain::core::{
+    CoreDefinition, CoreId, CorePolicy, CorePolicyDecision, CoreSupportAsset, CoreTarget,
+};
+use crate::domain::runtime::{RuntimeArchitecture, RuntimePlatform, SafeIdentifier};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -121,6 +126,14 @@ impl SystemCatalog {
             )
         };
 
+        // M7 resolves policy for exactly four reference systems. Every identifier, libretro core
+        // name, licence, and upstream source below was verified against the libretro core
+        // documentation; see docs/superpowers/specs/2026-08-30-m7-retroarch-launch-design.md.
+        let resolved = |core_id: &str| {
+            let core_id = CoreId::new(core_id).expect("static approved core id must be valid");
+            CorePolicy::resolved(core_id.clone(), vec![core_id])
+        };
+
         let requirements = |system_id,
                             definitions: Vec<(
             &str,
@@ -153,7 +166,7 @@ impl SystemCatalog {
                 &["NES"],
                 "NES",
                 &[".nes"],
-                unresolved(),
+                resolved("nestopia"),
                 BiosPolicy::NotRequired,
                 Vec::new(),
             ),
@@ -164,7 +177,7 @@ impl SystemCatalog {
                 &["SNES", "Super Famicom"],
                 "SNES",
                 &[".sfc", ".smc"],
-                unresolved(),
+                resolved("bsnes-mercury-balanced"),
                 BiosPolicy::NotRequired,
                 Vec::new(),
             ),
@@ -238,17 +251,9 @@ impl SystemCatalog {
                 &["PS1", "PlayStation 1", "PSX"],
                 "PlayStation",
                 &[".cue", ".chd", ".pbp", ".bin", ".iso", ".m3u"],
-                unresolved(),
+                resolved("beetle-psx"),
                 BiosPolicy::Required,
-                requirements(
-                    SystemId::PlayStation,
-                    vec![(
-                        "playstation-bios",
-                        vec!["scph1001.bin", "scph5500.bin", "scph5501.bin", "scph5502.bin"],
-                        crate::domain::bios::BiosRequirementKind::Required,
-                        "A PlayStation BIOS dump recognized by the approved core.",
-                    )],
-                ),
+                vec![playstation_bios_requirement()],
             ),
             system(
                 SystemId::SegaSaturn,
@@ -303,13 +308,13 @@ impl SystemCatalog {
                 &["GameCube", "GC"],
                 "Nintendo GameCube",
                 &[".iso", ".gcm", ".rvz"],
-                unresolved(),
+                resolved("dolphin"),
                 BiosPolicy::NotRequired,
                 Vec::new(),
             ),
         ];
 
-        Self::new(systems, Vec::new())
+        Self::new(systems, v1_cores())
     }
 
     pub fn systems(&self) -> &[SystemDefinition] {
@@ -322,6 +327,28 @@ impl SystemCatalog {
 
     pub fn system(&self, id: SystemId) -> Option<&SystemDefinition> {
         self.systems.iter().find(|system| system.id == id)
+    }
+
+    pub fn core(&self, id: &CoreId) -> Option<&CoreDefinition> {
+        self.cores.iter().find(|core| &core.id == id)
+    }
+
+    /// Translate an authenticated managed runtime component identifier into the approved core it
+    /// installs. A component with no catalog definition is never approved and never launchable.
+    pub fn core_for_component(&self, component_id: &SafeIdentifier) -> Option<&CoreDefinition> {
+        self.cores
+            .iter()
+            .find(|core| core.managed_component_id.as_str() == component_id.as_str())
+    }
+
+    /// Static approval only. Installed availability stays a RuntimeManager decision.
+    pub fn approves_core_for_system(&self, system_id: SystemId, core_id: &CoreId) -> bool {
+        self.system(system_id).is_some_and(|system| {
+            system.core_policy.approved_core_ids.contains(core_id)
+                && self
+                    .core(core_id)
+                    .is_some_and(|core| core.systems.contains(&system_id))
+        })
     }
 
     /// Resolve a human-entered display name or alias without making that text the persisted
@@ -524,6 +551,116 @@ impl SystemCatalog {
         }
         Ok(())
     }
+}
+
+/// The approved managed cores for the M7 reference systems.
+///
+/// Licences and upstream sources are recorded from the libretro core documentation. Only the
+/// qualified Linux x86_64 target is declared; other targets are added when their runtime
+/// distribution is qualified.
+fn v1_cores() -> Vec<CoreDefinition> {
+    let linux_x86_64 = || {
+        vec![CoreTarget {
+            platform: RuntimePlatform::Linux,
+            architecture: RuntimeArchitecture::X86_64,
+        }]
+    };
+    let core = |id: &str,
+                libretro_name: &str,
+                display_name: &str,
+                system_id: SystemId,
+                license: &str,
+                source_url: &str| {
+        let id = CoreId::new(id).expect("static core identifier must be valid");
+        CoreDefinition {
+            managed_component_id: id.clone(),
+            id,
+            libretro_name: libretro_name.to_owned(),
+            display_name: display_name.to_owned(),
+            systems: vec![system_id],
+            targets: linux_x86_64(),
+            default_for_systems: vec![system_id],
+            license: license.to_owned(),
+            source_url: source_url.to_owned(),
+            support_assets: Vec::new(),
+        }
+    };
+
+    vec![
+        core(
+            "nestopia",
+            "nestopia_libretro",
+            "Nestopia UE",
+            SystemId::Nes,
+            "GPL-2.0",
+            "https://github.com/libretro/nestopia",
+        ),
+        core(
+            "bsnes-mercury-balanced",
+            "bsnes_mercury_balanced_libretro",
+            "bsnes-mercury Balanced",
+            SystemId::Snes,
+            "GPL-3.0",
+            "https://github.com/libretro/bsnes-mercury",
+        ),
+        core(
+            "beetle-psx",
+            "mednafen_psx_libretro",
+            "Beetle PSX",
+            SystemId::PlayStation,
+            "GPL-2.0",
+            "https://github.com/libretro/beetle-psx-libretro",
+        ),
+        CoreDefinition {
+            // The core documents that it needs its `Sys` directory below RetroArch's system
+            // directory. RetroFrontier links it there from the verified managed component; an
+            // unrelated user Dolphin installation is never searched or trusted.
+            support_assets: vec![CoreSupportAsset {
+                component_id: CoreId::new("dolphin-sys").expect("static component id"),
+                system_directory_path: "dolphin-emu/Sys".to_owned(),
+            }],
+            ..core(
+                "dolphin",
+                "dolphin_libretro",
+                "Dolphin",
+                SystemId::NintendoGameCube,
+                "GPL-2.0",
+                "https://github.com/libretro/dolphin",
+            )
+        },
+    ]
+}
+
+/// The PlayStation BIOS dumps the approved Beetle PSX core loads, identified per filename.
+///
+/// The identities are the MD5 values published by the core's own libretro documentation; see
+/// `docs/CORE_MATRIX.md`. `scph1001.bin` is deliberately absent because the approved core does not
+/// look that filename up, and no expected size is asserted because the digest already pins
+/// identity exactly. The core can fall back to a bundled OpenBIOS; RetroFrontier deliberately does
+/// not rely on that and keeps this requirement `Required`.
+fn playstation_bios_requirement() -> BiosRequirement {
+    let identity = |filename: &str, md5: &str| {
+        BiosFileIdentity::new(
+            filename,
+            None,
+            vec![BiosDigest::md5(md5).expect("static BIOS digest must be valid")],
+        )
+        .expect("static BIOS file identity must be valid")
+    };
+
+    BiosRequirement::with_files(
+        "playstation-bios",
+        SystemId::PlayStation,
+        vec![
+            identity("scph5500.bin", "8dd7d5296a650fac7319bce665a6a53c"),
+            identity("scph5501.bin", "490f666e1afb15b7362b406ed1cea246"),
+            identity("scph5502.bin", "32736f17079d0b2b7024407c39bd3050"),
+        ],
+        crate::domain::bios::BiosRequirementKind::Required,
+        "A PlayStation BIOS dump recognized by the approved core \
+         (scph5500.bin, scph5501.bin, or scph5502.bin).",
+    )
+    .expect("static PlayStation BIOS requirement must be valid")
 }
 
 fn normalize_lookup_name(value: &str) -> String {
@@ -932,6 +1069,9 @@ mod tests {
             }],
             managed_component_id: CoreId::new("synthetic-core-component").unwrap(),
             default_for_systems: vec![SystemId::Nes],
+            license: "GPL-2.0".to_owned(),
+            source_url: "https://example.invalid/synthetic-core".to_owned(),
+            support_assets: Vec::new(),
         };
         let nes = system(
             SystemId::Nes,
@@ -961,10 +1101,59 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_v1_core_policy_is_explicit_for_every_system() {
+    fn m7_reference_systems_resolve_only_to_their_approved_default_core() {
         let catalog = SystemCatalog::v1();
-        assert!(catalog.cores().is_empty());
+        let expected = [
+            (SystemId::Nes, "nestopia", "nestopia_libretro"),
+            (
+                SystemId::Snes,
+                "bsnes-mercury-balanced",
+                "bsnes_mercury_balanced_libretro",
+            ),
+            (SystemId::PlayStation, "beetle-psx", "mednafen_psx_libretro"),
+            (SystemId::NintendoGameCube, "dolphin", "dolphin_libretro"),
+        ];
+
+        for (system_id, core_id, libretro_name) in expected {
+            let system = catalog.system(system_id).unwrap();
+            let core_id = CoreId::new(core_id).unwrap();
+            assert!(matches!(
+                system.core_policy.decision,
+                crate::domain::core::CorePolicyDecision::Resolved
+            ));
+            assert_eq!(system.core_policy.default_core_id.as_ref(), Some(&core_id));
+            assert_eq!(system.core_policy.approved_core_ids, vec![core_id.clone()]);
+
+            let core = catalog.core(&core_id).expect("approved core definition");
+            assert_eq!(core.libretro_name, libretro_name);
+            assert_eq!(core.managed_component_id, core_id);
+            assert!(core.systems.contains(&system_id));
+            assert!(core.default_for_systems.contains(&system_id));
+            assert!(!core.license.trim().is_empty());
+            assert!(core.source_url.starts_with("https://"));
+            assert!(core.supports_target(CoreTarget {
+                platform: RuntimePlatform::Linux,
+                architecture: RuntimeArchitecture::X86_64,
+            }));
+        }
+    }
+
+    #[test]
+    fn the_remaining_v1_systems_stay_explicitly_unresolved() {
+        let catalog = SystemCatalog::v1();
+        let resolved = [
+            SystemId::Nes,
+            SystemId::Snes,
+            SystemId::PlayStation,
+            SystemId::NintendoGameCube,
+        ];
+
+        let mut unresolved = 0;
         for system in catalog.systems() {
+            if resolved.contains(&system.id) {
+                continue;
+            }
+            unresolved += 1;
             assert!(system.core_policy.default_core_id.is_none());
             assert!(system.core_policy.approved_core_ids.is_empty());
             assert!(matches!(
@@ -972,5 +1161,55 @@ mod tests {
                 crate::domain::core::CorePolicyDecision::Unresolved { .. }
             ));
         }
+        assert_eq!(unresolved, 7);
+        assert_eq!(catalog.cores().len(), 4);
+        catalog.validate().unwrap();
+    }
+
+    #[test]
+    fn managed_component_identifiers_resolve_to_one_approved_core() {
+        let catalog = SystemCatalog::v1();
+        let component: crate::domain::runtime::SafeIdentifier = "beetle-psx".try_into().unwrap();
+
+        let core = catalog.core_for_component(&component).unwrap();
+
+        assert_eq!(core.id, CoreId::new("beetle-psx").unwrap());
+        assert!(catalog.approves_core_for_system(SystemId::PlayStation, &core.id));
+        assert!(!catalog.approves_core_for_system(SystemId::Nes, &core.id));
+        let unknown: crate::domain::runtime::SafeIdentifier = "some-other-core".try_into().unwrap();
+        assert!(catalog.core_for_component(&unknown).is_none());
+    }
+
+    #[test]
+    fn an_unresolved_system_approves_no_core_at_all() {
+        let catalog = SystemCatalog::v1();
+        let nestopia = CoreId::new("nestopia").unwrap();
+
+        for system_id in [
+            SystemId::Nintendo64,
+            SystemId::GameBoy,
+            SystemId::GameBoyColor,
+            SystemId::GameBoyAdvance,
+            SystemId::MegaDrive,
+            SystemId::SegaSaturn,
+            SystemId::SegaDreamcast,
+        ] {
+            assert!(!catalog.approves_core_for_system(system_id, &nestopia));
+        }
+    }
+
+    #[test]
+    fn a_core_is_rejected_for_a_platform_it_does_not_declare() {
+        let catalog = SystemCatalog::v1();
+        let core = catalog.core(&CoreId::new("dolphin").unwrap()).unwrap();
+
+        assert!(!core.supports_target(CoreTarget {
+            platform: RuntimePlatform::Windows,
+            architecture: RuntimeArchitecture::X86_64,
+        }));
+        assert!(!core.supports_target(CoreTarget {
+            platform: RuntimePlatform::Linux,
+            architecture: RuntimeArchitecture::Aarch64,
+        }));
     }
 }

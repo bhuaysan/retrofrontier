@@ -100,6 +100,19 @@ pub struct CoreTarget {
     pub architecture: RuntimeArchitecture,
 }
 
+/// Authenticated managed support data an approved core needs beside the core itself.
+///
+/// Dolphin's `Sys` directory is the M7 case: the core refuses to work correctly without it, and it
+/// must come from the verified managed runtime rather than from an unrelated user installation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreSupportAsset {
+    /// The authenticated `RuntimeComponent::id` that installs the support data.
+    pub component_id: CoreId,
+    /// Where the core expects it, relative to RetroArch's system directory.
+    pub system_directory_path: String,
+}
+
 /// A core's static policy identity. It contains no TUF signatures, hashes, or mutable installed
 /// state; those remain owned by RuntimeManager and its trusted release boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -110,8 +123,47 @@ pub struct CoreDefinition {
     pub display_name: String,
     pub systems: Vec<crate::domain::system::SystemId>,
     pub targets: Vec<CoreTarget>,
+    /// The authenticated `RuntimeComponent::id` that installs this core. Static policy never
+    /// assumes it equals `id`; launch and availability both resolve through this value.
     pub managed_component_id: CoreId,
     pub default_for_systems: Vec<crate::domain::system::SystemId>,
+    /// Recorded so an approved core's licence is inspectable without reading a release manifest.
+    pub license: String,
+    /// Upstream project the approved managed component is built from.
+    pub source_url: String,
+    /// Authenticated managed support components this core requires.
+    pub support_assets: Vec<CoreSupportAsset>,
+}
+
+impl CoreDefinition {
+    /// Approved cores are platform-specific. A definition that does not declare the running
+    /// platform/architecture is not approved there, even when a component happens to be installed.
+    pub fn supports_target(&self, target: CoreTarget) -> bool {
+        self.targets.contains(&target)
+    }
+
+    pub fn supports_current_target(&self) -> bool {
+        current_core_target().is_some_and(|target| self.supports_target(target))
+    }
+}
+
+/// The platform/architecture RetroFrontier is currently running on, when it is one V1 supports.
+pub fn current_core_target() -> Option<CoreTarget> {
+    let platform = match std::env::consts::OS {
+        "linux" => RuntimePlatform::Linux,
+        "macos" => RuntimePlatform::Macos,
+        "windows" => RuntimePlatform::Windows,
+        _ => return None,
+    };
+    let architecture = match std::env::consts::ARCH {
+        "x86_64" => RuntimeArchitecture::X86_64,
+        "aarch64" => RuntimeArchitecture::Aarch64,
+        _ => return None,
+    };
+    Some(CoreTarget {
+        platform,
+        architecture,
+    })
 }
 
 /// The policy decision is intentionally explicit while the V1 matrix is unresolved.

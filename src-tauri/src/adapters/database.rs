@@ -148,7 +148,7 @@ mod tests {
             .fetch_one(database.pool())
             .await
             .expect("migration history should be available");
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
         database.pool().close().await;
 
         let reopened = Database::open(&path)
@@ -165,7 +165,7 @@ mod tests {
                 .fetch_one(reopened.pool())
                 .await
                 .expect("migration history should remain stable");
-        assert_eq!(reopened_migration_count, 4);
+        assert_eq!(reopened_migration_count, 5);
 
         sqlx::migrate!("./migrations")
             .undo(reopened.pool(), 20260825000000)
@@ -424,7 +424,7 @@ mod tests {
             .fetch_one(reopened.pool())
             .await
             .expect("migration history should be available");
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
         let preserved: i64 = sqlx::query_scalar("SELECT id FROM games")
             .fetch_one(reopened.pool())
             .await
@@ -435,6 +435,82 @@ mod tests {
             .await
             .expect("provider state should persist across a restart");
         assert_eq!(provider_matches, 1);
+    }
+
+    #[tokio::test]
+    async fn the_m7_launch_migration_applies_forward_and_reverts_without_losing_library_data() {
+        let directory = tempdir().expect("temporary database directory should be created");
+        let path = directory.path().join("retrofrontier.sqlite3");
+        let pre_m5 = open_pre_m5_database(&path).await;
+        populate_m4_library(&pre_m5).await;
+        pre_m5.close().await;
+
+        let database = Database::open(&path).await.expect("M7 migration applies");
+        sqlx::query(
+            "INSERT INTO game_launch_overrides (game_id, core_id, created_at, updated_at) \
+             VALUES (41, 'bsnes-mercury-balanced', 40, 40)",
+        )
+        .execute(database.pool())
+        .await
+        .expect("per-game core override fixture");
+        sqlx::query(
+            "INSERT INTO play_sessions (id, game_id, content_unit_id, core_id, \
+             runtime_installation_id, runtime_release_id, started_at, ended_at, exit_code, \
+             outcome, created_at, updated_at) \
+             VALUES (1, 41, 42, 'bsnes-mercury-balanced', 'install-1', 'release-1', 40, 41, 0, \
+                     'completed', 40, 41)",
+        )
+        .execute(database.pool())
+        .await
+        .expect("play session fixture");
+
+        // A launch override must reference a real game, and history must not cascade away.
+        assert!(sqlx::query(
+            "INSERT INTO game_launch_overrides (game_id, core_id, created_at, updated_at) \
+             VALUES (9999, 'nestopia', 40, 40)",
+        )
+        .execute(database.pool())
+        .await
+        .is_err());
+        assert!(sqlx::query("DELETE FROM games WHERE id = 41")
+            .execute(database.pool())
+            .await
+            .is_err());
+
+        sqlx::migrate!("./migrations")
+            .undo(database.pool(), 20260828000000)
+            .await
+            .expect("the M7 down migration should revert only the launch schema");
+
+        let launch_tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN \
+             ('play_sessions', 'game_launch_overrides')",
+        )
+        .fetch_one(database.pool())
+        .await
+        .expect("schema should remain queryable after the down migration");
+        assert_eq!(launch_tables, 0);
+        let game: i64 = sqlx::query_scalar("SELECT id FROM games")
+            .fetch_one(database.pool())
+            .await
+            .expect("local library data must survive the down migration");
+        assert_eq!(game, 41);
+        let favorites: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'game_user_state'")
+                .fetch_one(database.pool())
+                .await
+                .expect("M6 schema should be untouched");
+        assert_eq!(favorites, 1);
+        database.pool().close().await;
+
+        let reapplied = Database::open(&path)
+            .await
+            .expect("the launch migration should reapply cleanly");
+        let overrides: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM game_launch_overrides")
+            .fetch_one(reapplied.pool())
+            .await
+            .expect("launch tables should exist again");
+        assert_eq!(overrides, 0);
     }
 
     #[tokio::test]

@@ -553,9 +553,110 @@ export interface SetProviderCredentialsRequest {
   password: string;
 }
 
+/** Stable, exhaustive M7 launch failure codes. React selects messaging from the code alone. */
+export type LaunchErrorCode =
+  | 'gameNotFound'
+  | 'gameUnavailable'
+  | 'contentSelectionRequired'
+  | 'contentUnavailable'
+  | 'runtimeNotReady'
+  | 'corePolicyUnresolved'
+  | 'coreNotInstalled'
+  | 'coreNotApproved'
+  | 'biosMissing'
+  | 'biosInvalid'
+  | 'biosNotCoveredByCatalog'
+  | 'hostPrerequisiteMissing'
+  | 'gameAlreadyRunning'
+  | 'configPreparationFailed'
+  | 'spawnFailed'
+  | 'processIdentityFailed'
+  | 'processExitedDuringLaunch'
+  | 'sessionPersistenceFailed'
+  | 'internalLaunchFailure';
+
+/** A Linux host capability the managed runtime cannot provide. Only a display session blocks. */
+export type HostPrerequisite =
+  'displaySession' | 'graphicsDevice' | 'audioService' | 'inputDevices';
+
+export interface LaunchDiagnostic {
+  kind: HostPrerequisite;
+  message: string;
+}
+
+/** One launchable version of a game. Deliberately carries no filesystem path. */
+export interface LaunchContentOption {
+  contentUnitId: number;
+  kind: ContentUnitKind;
+  localTitle: string;
+  fileCount: number;
+  availability: ContentUnitAvailability;
+}
+
+/** Typed detail. Every field is an identifier React may see; never a path or an OS error. */
+export interface LaunchFailureContext {
+  systemId: SystemId | null;
+  coreId: string | null;
+  biosRequirementIds: string[];
+  runtimeState: RuntimeState | null;
+  hostPrerequisite: HostPrerequisite | null;
+  exitCode: number | null;
+  contentOptions: LaunchContentOption[];
+}
+
+export interface LaunchFailure {
+  code: LaunchErrorCode;
+  message: string;
+  context: LaunchFailureContext;
+}
+
+export interface RunningGameSession {
+  sessionId: number;
+  gameId: number;
+  contentUnitId: number;
+  coreId: string;
+  startedAt: number;
+}
+
+/**
+ * The durable running-game projection. `blocked` is true only when a managed process record
+ * exists whose identity is uncertain: a launch is refused, but no running session can be described.
+ */
+export interface LaunchState {
+  running: RunningGameSession | null;
+  blocked: boolean;
+}
+
+export type PlaySessionOutcome =
+  'running' | 'completed' | 'failedToStart' | 'crashed' | 'interrupted';
+
+export interface ExitedGameSession {
+  sessionId: number;
+  gameId: number;
+  outcome: PlaySessionOutcome;
+  exitCode: number | null;
+}
+
+export interface GameLaunchStateChanged {
+  state: LaunchState;
+  exited: ExitedGameSession | null;
+}
+
+export type LaunchResponse =
+  | { status: 'started'; session: RunningGameSession; diagnostics: LaunchDiagnostic[] }
+  | { status: 'contentSelectionRequired'; options: LaunchContentOption[] }
+  | { status: 'failed'; error: LaunchFailure };
+
+/** Semantic launch request. There is deliberately no filesystem-path field. */
+export interface LaunchGameRequest {
+  gameId: number;
+  contentUnitId?: number | null;
+}
+
 export const LIBRARY_SCAN_PROGRESS_EVENT = 'library-scan-progress';
 export const LIBRARY_SCAN_COMPLETED_EVENT = 'library-scan-completed';
 export const METADATA_STATE_CHANGED_EVENT = 'metadata-state-changed';
+export const GAME_LAUNCH_STATE_CHANGED_EVENT = 'game-launch-state-changed';
 
 export interface MetadataStateChanged {
   gameId: number;
@@ -808,6 +909,34 @@ export async function onMetadataStateChanged(
 ): Promise<UnlistenFn> {
   try {
     return await listen<MetadataStateChanged>(METADATA_STATE_CHANGED_EVENT, (event) =>
+      handler(event.payload),
+    );
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function launchGame(request: LaunchGameRequest): Promise<LaunchResponse> {
+  try {
+    return await invoke<LaunchResponse>('launch_game', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function getLaunchState(): Promise<LaunchState> {
+  try {
+    return await invoke<LaunchState>('get_launch_state');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function onGameLaunchStateChanged(
+  handler: (event: GameLaunchStateChanged) => void,
+): Promise<UnlistenFn> {
+  try {
+    return await listen<GameLaunchStateChanged>(GAME_LAUNCH_STATE_CHANGED_EVENT, (event) =>
       handler(event.payload),
     );
   } catch (error: unknown) {

@@ -71,6 +71,11 @@ impl SystemsApplicationService {
             .map_err(AppError::Bios)
     }
 
+    /// Translate verified managed component identifiers into approved catalog cores.
+    ///
+    /// RuntimeManager reports which authenticated components are installed; the catalog decides
+    /// which of them RetroFrontier approves. A component with no approved definition, or one whose
+    /// definition does not declare the running platform target, is never reported as available.
     fn available_core_ids(
         &self,
         snapshot: &VerifiedRuntimeSnapshot,
@@ -81,13 +86,13 @@ impl SystemsApplicationService {
         ) {
             return Ok(BTreeSet::new());
         }
-        snapshot
+        Ok(snapshot
             .verified_core_ids
             .iter()
-            .map(|id| {
-                CoreId::new(id.as_str()).map_err(|error| AppError::Catalog(error.to_string()))
-            })
-            .collect()
+            .filter_map(|component_id| self.catalog.core_for_component(component_id))
+            .filter(|core| core.supports_current_target())
+            .map(|core| core.id.clone())
+            .collect())
     }
 
     fn build_response(
@@ -218,7 +223,7 @@ mod tests {
     #[test]
     fn unresolved_policy_is_exposed_separately_from_runtime_core_availability() {
         let catalog = SystemCatalog::v1();
-        let system = catalog.system(SystemId::Nes).unwrap();
+        let system = catalog.system(SystemId::Nintendo64).unwrap();
         let runtime = RuntimeStatus {
             state: RuntimeState::Ready,
             installation_id: Some("install-1".to_owned()),
@@ -287,6 +292,88 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.snapshot.clone())
         }
+    }
+
+    #[test]
+    fn only_approved_managed_components_become_available_cores() {
+        let catalog = SystemCatalog::v1();
+        let bios = BiosService::from_catalog("/tmp/retrofrontier-m7-test-bios", &catalog).unwrap();
+        let reader = Arc::new(CountingSnapshotReader {
+            calls: AtomicUsize::new(0),
+            snapshot: VerifiedRuntimeSnapshot {
+                status: RuntimeStatus {
+                    state: RuntimeState::Ready,
+                    installation_id: Some("install-1".to_owned()),
+                    release_id: Some("release-1".to_owned()),
+                    can_rollback: false,
+                    repair_required: false,
+                },
+                verified_core_ids: BTreeSet::from([
+                    "nestopia".try_into().unwrap(),
+                    "some-unapproved-core".try_into().unwrap(),
+                ]),
+            },
+        });
+        let service = SystemsApplicationService::with_runtime_reader(catalog, bios, reader);
+
+        let response = service.get_systems().unwrap();
+        let nes = response
+            .systems
+            .iter()
+            .find(|system| system.id == SystemId::Nes)
+            .unwrap();
+
+        assert_eq!(
+            nes.core.availability.available_core_ids,
+            vec![CoreId::new("nestopia").unwrap()]
+        );
+        assert_eq!(nes.core.availability.default_core_available, Some(true));
+        assert!(nes.readiness.ready);
+
+        let nintendo_64 = response
+            .systems
+            .iter()
+            .find(|system| system.id == SystemId::Nintendo64)
+            .unwrap();
+        assert!(nintendo_64
+            .core
+            .availability
+            .default_core_available
+            .is_none());
+        assert!(!nintendo_64.readiness.ready);
+    }
+
+    #[test]
+    fn a_resolved_system_without_its_installed_core_reports_a_missing_core() {
+        let catalog = SystemCatalog::v1();
+        let bios = BiosService::from_catalog("/tmp/retrofrontier-m7-test-bios", &catalog).unwrap();
+        let reader = Arc::new(CountingSnapshotReader {
+            calls: AtomicUsize::new(0),
+            snapshot: VerifiedRuntimeSnapshot {
+                status: RuntimeStatus {
+                    state: RuntimeState::Ready,
+                    installation_id: Some("install-1".to_owned()),
+                    release_id: Some("release-1".to_owned()),
+                    can_rollback: false,
+                    repair_required: false,
+                },
+                verified_core_ids: BTreeSet::new(),
+            },
+        });
+        let service = SystemsApplicationService::with_runtime_reader(catalog, bios, reader);
+
+        let response = service.get_systems().unwrap();
+        let snes = response
+            .systems
+            .iter()
+            .find(|system| system.id == SystemId::Snes)
+            .unwrap();
+
+        assert_eq!(snes.core.availability.default_core_available, Some(false));
+        assert!(snes.readiness.reasons.iter().any(|reason| matches!(
+            reason,
+            crate::domain::readiness::ReadinessReason::MissingCore { .. }
+        )));
     }
 
     #[test]

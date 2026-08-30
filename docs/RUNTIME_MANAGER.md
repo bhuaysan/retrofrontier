@@ -114,9 +114,30 @@ The runtime mutation lock is a kernel advisory `flock` on a stable file and rele
 exit. Application startup also takes a separate application lock, while the runtime lock remains
 mandatory for defense in depth.
 
-The Linux process abstraction uses managed-process record schema version 2. It records PID,
-`/proc` start-time ticks, the Linux boot ID, authenticated AppRun path, and the observed executable
-path for script-based AppRun support. A dead, PID-reused, or pre-reboot process is treated as stale.
+The Linux process abstraction uses managed-process record schema version 3. M7 added the launch
+identifier and the play-session identifier, and made the process identity optional so a conservative
+`launching` record can be written before the child is spawned; ADR-011 requires that pre-spawn
+record because the window between `exec` and durably persisting a PID is where a crash could
+otherwise leave a live managed RetroArch that no safety check knows about.
+
+Validation is phase-specific. A `running` record must carry PID, `/proc` start-time ticks, and the
+observed executable path (which supports a script-based AppRun, where `/proc/<pid>/exe` is the
+interpreter); a `launching` record must carry none of them, so a fabricated identity cannot be
+mistaken for a real one. The authenticated AppRun path and the Linux boot ID are required in both
+phases.
+
+Liveness fails closed in both phases. A record from a previous boot cannot describe a live process
+and is cleared. A `running` record is decided by boot ID, start-time ticks, and canonical
+`/proc/<pid>/exe` equality, so a dead or PID-reused process is stale while an identity mismatch stays
+uncertain and blocking. A `launching` record has no PID by construction, so it is decided by a
+bounded `/proc` scan that matches an executable resolving inside `runtime/versions/` or *any*
+command-line element naming the authenticated AppRun. Matching the whole command line rather than
+`argv[0]` is what makes a `#!` script AppRun detectable: Linux runs the interpreter instead, so the
+executable is outside the managed tree and the AppRun appears as an interpreter argument. The scan
+deliberately over-detects, because a false positive only keeps mutation blocked while a false
+negative would let an update run underneath a live emulator.
+PID alone is never identity.
+
 An old, newer, or otherwise incompatible schema is not deleted: it is treated as uncertain,
 blocks runtime mutation, and makes startup report `Broken`/repair-required until an explicit
 recovery path handles it. A regular record with no recognizable supported schema that is truncated
@@ -176,9 +197,32 @@ consumes one snapshot for both system runtime status and core availability. The 
 algorithm. Trust decisions are still recomputed on each snapshot request; no indefinite trust cache
 was introduced.
 
+## Launch boundary
+
+M7 added two entry points and no new responsibility. `verified_launch_runtime()` performs the same
+single trust-consistent active-installation verification as `verified_snapshot()` — pointer, trust
+state, manifest, completion marker, installed inventory — plus AppRun validation, and returns the
+absolute authenticated AppRun, the absolute path and release-declared systems of every authenticated
+core component, and the absolute paths of support-asset components such as Dolphin's `Sys`. Runtime
+status, installed core availability, and launch paths therefore never come from separate
+verifications. A runtime that is not `Ready`/`RollbackAvailable` has no launch target at all, and a
+core component with no authenticated executable is omitted rather than guessed at.
+
+`lock_for_launch()` hands `LaunchApplicationService` the existing OS-backed runtime mutation lock, so
+ADR-011's serialization of game launch and runtime mutation is enforced by that one lock rather than
+a parallel mechanism. The launch service holds it from before verification until the durable
+`running` record is committed, which closes the verification-to-spawn window against a concurrent
+activation. `ensure_no_active_game()` exposes the same process-record check mutations already use.
+
+RuntimeManager still owns installation, update, repair, rollback, trust, activation, installed-tree
+verification, and managed-runtime mutation safety. Launch context construction, core resolution,
+content resolution, configuration, environment, spawning, and monitoring live in `RetroArchService`
+and `LaunchApplicationService`; see [`docs/RETROARCH_LAUNCH.md`](RETROARCH_LAUNCH.md).
+
 ## Review markers and deferred work
 
 The code contains focused Sol Max review markers for TUF trusted-root lifecycle, extraction,
 activation durability, process identity, and cleanup ownership. Production key ceremony/release
 hosting, real RetroArch/AppImage integration, executable smoke execution, Windows/macOS adapters,
-core policy expansion, game launch, and runtime UI remain outside M2.
+and runtime UI remain outside M2. Core policy for the four M7 reference systems and the Linux game
+launch boundary have since landed; core policy for the remaining seven V1 systems is still open.
