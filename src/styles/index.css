@@ -99,7 +99,8 @@ a:focus-visible {
   grid-column: 1 / -1;
   align-items: center;
   gap: 16px;
-  min-height: 62px;
+  /* 51px LibrarySearch control + 14px vertical padding + 3px divider. */
+  min-height: 82px;
   padding: 14px 24px;
   background: var(--surface);
   border-bottom: 3px solid var(--border);
@@ -2605,6 +2606,10 @@ a:focus-visible {
 }
 
 @media (max-width: 860px) {
+  .app-header {
+    min-height: 0;
+  }
+
   .app-shell {
     grid-template-columns: 1fr;
   }
