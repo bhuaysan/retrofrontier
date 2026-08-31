@@ -653,12 +653,10 @@ function contentOptionLabel(option: LaunchContentOption) {
 }
 
 function LaunchContentOptionAction({
-  gameId,
-  launch,
+  onConfirm,
   option,
 }: {
-  gameId: number;
-  launch: GameLaunchModel;
+  onConfirm: (contentUnitId: number) => void;
   option: LaunchContentOption;
 }) {
   const focusRef = useFocusNode({
@@ -666,28 +664,19 @@ function LaunchContentOptionAction({
     confirm: { label: 'PLAY VERSION' },
   });
   return (
-    <button
-      onClick={() => void launch.launch(gameId, option.contentUnitId)}
-      ref={focusRef}
-      type="button"
-    >
+    <button onClick={() => onConfirm(option.contentUnitId)} ref={focusRef} type="button">
       {contentOptionLabel(option)}
     </button>
   );
 }
 
-function CancelContentSelection({ launch }: { launch: GameLaunchModel }) {
+function CancelContentSelection({ onCancel }: { onCancel: () => void }) {
   const focusRef = useFocusNode({
     id: focusNodes.detail('cancel-content-selection'),
     confirm: { label: 'CANCEL' },
   });
   return (
-    <button
-      className="text-link"
-      onClick={() => launch.cancelContentSelection()}
-      ref={focusRef}
-      type="button"
-    >
+    <button className="text-link" onClick={onCancel} ref={focusRef} type="button">
       CANCEL
     </button>
   );
@@ -772,6 +761,7 @@ function LaunchAction({
   launch: GameLaunchModel;
   title: string;
 }) {
+  const api = useFocusApi();
   const runningThisGame = launch.running?.gameId === gameId;
   const runningAnotherGame = launch.running !== null && !runningThisGame;
   const pending = launch.pendingGameId === gameId;
@@ -795,12 +785,45 @@ function LaunchAction({
     id: focusNodes.detail('play'),
     confirm: disabled ? null : { label: 'PLAY' },
   });
+  /**
+   * Cancelling the version selection.
+   *
+   * Focus is requested *before* the surface closes, while Play is still mounted and enabled, so the
+   * request resolves at once. Cancel is a user action, which means the route is certainly still
+   * current and Play really is the honest target.
+   */
+  const cancelContentSelection = () => {
+    api.requestFocus(focusNodes.detail('play'), {
+      fallback: focusNodes.detail('back'),
+      resolveOnRegister: true,
+    });
+    launch.cancelContentSelection();
+  };
+  /**
+   * Confirming a version.
+   *
+   * Play must **not** be requested here: the launch this click issues disables it immediately, and a
+   * request for a control the browser is about to blur is the stale-focus bug that
+   * `focusability.ts` exists to catch. The Back action is the only Game Detail control that stays
+   * enabled through a pending launch, so it is the truthful interim target — the same place focus
+   * ended up before, now reached deliberately instead of through a disabled-target fallback. When
+   * the launch resolves, the failure surface takes focus or the post-exit return restores Play.
+   */
+  const confirmContentOption = (contentUnitId: number) => {
+    api.requestFocus(focusNodes.detail('back'));
+    void launch.launch(gameId, contentUnitId);
+  };
   const contentScopeRef = useFocusScope({
     id: focusScopes.launchContentSelection,
     dismissLabel: 'CANCEL',
-    onDismiss: () => launch.cancelContentSelection(),
-    restoreTo: focusNodes.detail('play'),
-    restoreFallback: focusNodes.detail('back'),
+    onDismiss: cancelContentSelection,
+    // Restoration is explicit, per user action, rather than generic on close — exactly as the
+    // launch-failure scope does it. The generic cleanup cannot tell "the user cancelled" from "the
+    // route unmounted", and on a route unmount neither `detail:play` nor `detail:back` exists any
+    // more, so it created a pending request with the 1.2 s safety timer. The next Game Detail route
+    // to mount then registered `detail:play`, satisfied that stale request through
+    // `resolveOnRegister`, and stole focus from its own route-entry target.
+    restore: 'none',
   });
 
   return (
@@ -853,11 +876,11 @@ function LaunchAction({
             <ul>
               {launch.contentOptions.map((option) => (
                 <li key={option.contentUnitId}>
-                  <LaunchContentOptionAction gameId={gameId} launch={launch} option={option} />
+                  <LaunchContentOptionAction onConfirm={confirmContentOption} option={option} />
                 </li>
               ))}
             </ul>
-            <CancelContentSelection launch={launch} />
+            <CancelContentSelection onCancel={cancelContentSelection} />
           </div>
         </FocusScope>
       ) : null}

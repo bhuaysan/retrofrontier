@@ -2523,6 +2523,80 @@ describe('AppShell M8 launch interaction ownership', () => {
     expect(surface).toBeInTheDocument();
     expect(within(surface).getByRole('button', { name: /Kirby Disc 1/ })).toBeInTheDocument();
   });
+  /**
+   * Isolates the stale focus-*request* risk, separately from the stale *surface*.
+   *
+   * The route is left through the sidebar, to Settings and then back to the Library. Neither
+   * destination issues a focus request of its own and `navigateFromShell` clears the Library's
+   * return target, so nothing else claims focus: the closing content scope's generic restoration is
+   * the only thing that can create a request. Its target, `detail:play`, does not exist on either
+   * destination, so it becomes a pending request with the 1.2 s safety timer — and the next Game
+   * Detail route to mount registers `detail:play` and satisfies it, stealing focus from that route's
+   * own entry target.
+   */
+  it('leaves no stale detail:play request when a content scope closes with the route', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mocks.launchGame.mockResolvedValue({
+        status: 'contentSelectionRequired',
+        options: gameOneOptions,
+      });
+      const play = await openFirstGame();
+      await act(async () => {
+        fireEvent.click(play);
+      });
+      const surface = await screen.findByRole('group', { name: 'Choose a version' });
+      // Focus sits inside the surface, so unmounting it really does drop focus to the body.
+      act(() =>
+        within(surface)
+          .getByRole('button', { name: /Kirby Disc 1/ })
+          .focus(),
+      );
+
+      // Sidebar navigation: pointer-reachable, and not the semantic CANCEL.
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+      });
+      await screen.findByRole('heading', { name: 'SETTINGS' });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /All systems/ }));
+      });
+      await screen.findByRole('heading', { name: 'LIBRARY' });
+
+      const secondPlay = await openSecondGame();
+      const secondHeading = screen.getByRole('heading', { level: 1, name: 'Second Game Local' });
+      // Game B's route-entry focus wins and keeps winning across the whole safety interval.
+      await waitFor(() => expect(secondHeading).toHaveFocus());
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(secondHeading).toHaveFocus();
+      expect(secondPlay).not.toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores Play when the content selection is cancelled semantically', async () => {
+    mocks.launchGame.mockResolvedValue({
+      status: 'contentSelectionRequired',
+      options: gameOneOptions,
+    });
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    const surface = await screen.findByRole('group', { name: 'Choose a version' });
+    await act(async () => {
+      fireEvent.click(within(surface).getByRole('button', { name: 'CANCEL' }));
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument(),
+    );
+    // Cancel is a user action on a route that is certainly still current, so Play really is the
+    // honest target — this is the behaviour route unmount must NOT share.
+    await waitFor(() => expect(play).toHaveFocus());
+  });
 });
 
 describe('AppShell M8 controller navigation and focus', () => {
