@@ -24,6 +24,8 @@ export const focusNodes = {
   /** A launch content choice, identified by its `ContentUnitId`. */
   launchContent: (contentUnitId: number): FocusNodeId => `launch:content:${contentUnitId}`,
   settings: (action: string): FocusNodeId => `settings:${action}`,
+  /** The managed-runtime primary action. Its label and activatability follow runtime state. */
+  settingsRuntime: (action: string): FocusNodeId => `settings:runtime:${action}`,
   settingsRoot: (rootId: number, action: string): FocusNodeId =>
     `settings:root:${rootId}:${action}`,
 } as const;

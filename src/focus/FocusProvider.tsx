@@ -323,17 +323,55 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   }, [activationAllowed, activeBackEntry, registry]);
 
   useEffect(() => {
+    /**
+     * Re-evaluates the supported actions when the **focused element's own** activation-relevant
+     * attributes change.
+     *
+     * An explicitly registered node reports its own label changes through
+     * `notifyNodeActionsChanged`, but a generic native control has no identity to report with: the
+     * Settings managed-runtime action, for instance, goes from enabled to disabled purely from local
+     * component state, with no rerender anywhere near the footer. The footer would then keep
+     * offering `CONFIRM` for a control that would refuse it — a hint that names an action which
+     * would be refused is a lie, which is the whole reason the derivation reads live state.
+     *
+     * This is deliberately *not* a broad DOM observer. Exactly one element is watched — whichever
+     * one currently has focus — and only the attributes `isActivatableElement` actually reads. It is
+     * re-pointed on every focus change and disconnected on unmount, so it costs one observer for the
+     * whole application and can never fan out over the tree. Explicit semantic registration remains
+     * the preferred answer for important actions, because it also gives an honest label; this is the
+     * floor under everything else.
+     */
+    const activationObserver = new MutationObserver(() => bumpActionRevision());
+    let observedElement: HTMLElement | null = null;
+    const observeActivation = (element: Element | null) => {
+      const next = element instanceof HTMLElement && element !== document.body ? element : null;
+      if (next === observedElement) return;
+      observedElement = next;
+      activationObserver.disconnect();
+      // The focused *element* changed even if its semantic identity did not — two unregistered
+      // controls both have a `null` identity, and they need not support the same actions — so the
+      // derivation is invalidated here rather than only when the identity changes.
+      bumpActionRevision();
+      if (next === null) return;
+      activationObserver.observe(next, {
+        attributes: true,
+        attributeFilter: ['disabled', 'href', 'type', 'hidden', 'aria-hidden', 'inert'],
+      });
+    };
+
     const onFocusIn = (event: FocusEvent) => {
       const target = event.target;
       const id = registry.owner(target as Element)?.id ?? null;
       focusedNodeIdRef.current = id;
       setFocusedNodeId(id);
+      observeActivation(target as Element | null);
     };
     const onFocusOut = () => {
       window.setTimeout(() => {
         if (document.activeElement === null || document.activeElement === document.body) {
           focusedNodeIdRef.current = null;
           setFocusedNodeId(null);
+          observeActivation(null);
         }
       }, 0);
     };
@@ -344,12 +382,13 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('mousedown', onPointerDown, true);
     return () => {
+      activationObserver.disconnect();
       document.removeEventListener('focusin', onFocusIn);
       document.removeEventListener('focusout', onFocusOut);
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('mousedown', onPointerDown, true);
     };
-  }, [registry, setInputMode]);
+  }, [bumpActionRevision, registry, setInputMode]);
 
   useEffect(() => () => clearPending(), [clearPending]);
 

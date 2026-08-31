@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ControllerFooter } from '../../components/ui/ControllerFooter';
 import { FocusProvider } from '../../focus/FocusProvider';
 import { useFocusApi } from '../../focus/focusContext';
 import { installRectStub, layoutColumn } from '../../test/geometry';
@@ -148,9 +149,14 @@ function renderSettings(removeExternalRoot = vi.fn().mockResolvedValue(undefined
         onOpenManagedFolder={vi.fn().mockResolvedValue(undefined)}
         onBackToLibrary={vi.fn()}
       />
+      <ControllerFooter controllerConnected gameRunning={false} interactive status="SCAN READY" />
     </FocusProvider>,
   );
   return { ...result, removeExternalRoot };
+}
+
+function footerHints() {
+  return screen.getByRole('list', { name: 'Controller actions' });
 }
 
 function send(action: 'back' | 'down' | 'confirm' | 'context') {
@@ -175,6 +181,57 @@ function removalConfirmation() {
     name: 'Remove this root from RetroFrontier? Files stay on disk.',
   });
 }
+
+/**
+ * A control whose activation semantics change while it can hold focus must make the footer
+ * reactive. The managed-runtime action is the concrete case: nothing about the surrounding screen
+ * rerenders when an installation starts, so an unregistered button left the footer claiming a
+ * generic `CONFIRM` for a control that had just become disabled.
+ */
+describe('Settings dynamic action footer reactivity', () => {
+  it('follows the managed-runtime action through its disabled transitions', async () => {
+    let settleInstall: (() => void) | undefined;
+    mocks.repairRuntime.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          settleInstall = resolve;
+        }),
+    );
+    renderSettings();
+    const action = await screen.findByRole('button', { name: 'REINSTALL RUNTIME' });
+    act(() => action.focus());
+    // Registered, so the hint names what the control really does rather than a generic CONFIRM.
+    expect(within(footerHints()).getByText('REINSTALL RUNTIME')).toBeInTheDocument();
+
+    // The installation starts: the same element becomes disabled without focus moving anywhere.
+    await act(async () => {
+      fireEvent.click(action);
+    });
+    expect(action).toHaveFocus();
+    expect(within(footerHints()).queryByText('REINSTALL RUNTIME')).not.toBeInTheDocument();
+    expect(within(footerHints()).queryByText('CONFIRM')).not.toBeInTheDocument();
+
+    // It finishes and the action is offered again.
+    await act(async () => {
+      settleInstall?.();
+    });
+    await waitFor(() =>
+      expect(within(footerHints()).getByText('REINSTALL RUNTIME')).toBeInTheDocument(),
+    );
+  });
+
+  it('does not offer confirm for a runtime action this build cannot perform', async () => {
+    mocks.getRuntimeInstallState.mockResolvedValue({
+      ...runtimeState,
+      sourceConfigured: false,
+    });
+    renderSettings();
+    const action = await screen.findByRole('button', { name: 'REINSTALL RUNTIME' });
+    act(() => action.focus());
+    expect(within(footerHints()).queryByText('REINSTALL RUNTIME')).not.toBeInTheDocument();
+    expect(within(footerHints()).queryByText('CONFIRM')).not.toBeInTheDocument();
+  });
+});
 
 describe('SettingsPage focus scopes', () => {
   it('keeps the existing removal-confirmation focus behaviour', async () => {

@@ -4,7 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { installRectStub, layoutColumn, layoutGrid } from '../test/geometry';
 import { FocusProvider } from './FocusProvider';
-import { useFocusApi, useFocusBack, useFocusNode, useFocusScope } from './focusContext';
+import {
+  useFocusActionRevision,
+  useFocusApi,
+  useFocusBack,
+  useFocusedNodeId,
+  useFocusNode,
+  useFocusScope,
+} from './focusContext';
 import { focusNodes } from './focusNodes';
 
 function Card({ gameId, onOpen }: { gameId: number; onOpen?: () => void }) {
@@ -75,6 +82,86 @@ function send(action: 'up' | 'down' | 'left' | 'right' | 'confirm' | 'back' | 'c
 
 beforeEach(() => {
   installRectStub();
+});
+
+/**
+ * Reads the supported actions exactly the way `ControllerFooter` does, and nothing else. It is a
+ * sibling of the control under test and owns no state of its own, so it can only re-read when the
+ * coordinator tells it something changed.
+ */
+function SupportedActions() {
+  useFocusedNodeId();
+  useFocusActionRevision();
+  const api = useFocusApi();
+  return <span data-testid="confirm-hint">{api.getSupportedActions().confirm ?? 'NONE'}</span>;
+}
+
+function confirmHint() {
+  return screen.getByTestId('confirm-hint').textContent;
+}
+
+/** An ordinary native control with no focus identity, whose activatability follows local state. */
+function DynamicNativeControl() {
+  const [busy, setBusy] = useState(false);
+  return (
+    <>
+      <button
+        data-testid="toggle-busy"
+        onClick={() => setBusy((current) => !current)}
+        type="button"
+      >
+        TOGGLE
+      </button>
+      <button data-testid="native-action" disabled={busy} type="button">
+        RUN
+      </button>
+    </>
+  );
+}
+
+describe('FocusProvider generic control activation revision', () => {
+  it('re-evaluates an unregistered control when its activatability changes', async () => {
+    render(
+      <FocusProvider>
+        <SupportedActions />
+        <DynamicNativeControl />
+      </FocusProvider>,
+    );
+    const action = screen.getByTestId('native-action');
+    act(() => action.focus());
+    // An unregistered but natively activatable control produces a generic CONFIRM.
+    expect(confirmHint()).toBe('CONFIRM');
+
+    // The control becomes disabled from its own local state. Nothing else rerenders, and focus does
+    // not move, so only the coordinator can tell the footer the hint is now a lie.
+    act(() => {
+      fireEvent.click(screen.getByTestId('toggle-busy'));
+      action.focus();
+    });
+    await waitFor(() => expect(confirmHint()).toBe('NONE'));
+
+    act(() => {
+      fireEvent.click(screen.getByTestId('toggle-busy'));
+      action.focus();
+    });
+    await waitFor(() => expect(confirmHint()).toBe('CONFIRM'));
+  });
+
+  it('does not re-evaluate for an attribute change on a control that is not focused', async () => {
+    render(
+      <FocusProvider>
+        <SupportedActions />
+        <Card gameId={1} />
+        <DynamicNativeControl />
+      </FocusProvider>,
+    );
+    act(() => screen.getByText('GAME 1').focus());
+    expect(confirmHint()).toBe('OPEN');
+    act(() => {
+      fireEvent.click(screen.getByTestId('toggle-busy'));
+    });
+    await waitFor(() => expect(confirmHint()).toBe('OPEN'));
+  });
 });
 
 describe('FocusProvider navigation', () => {

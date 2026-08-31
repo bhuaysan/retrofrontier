@@ -1,5 +1,7 @@
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
+import { useFocusNode } from '../../focus/focusContext';
+import { focusNodes } from '../../focus/focusNodes';
 import type { ManagedRuntimeModel } from '../../hooks/useManagedRuntime';
 import {
   installErrorTitle,
@@ -25,6 +27,8 @@ export function RuntimePanel({ runtime }: RuntimePanelProps) {
   const busy = pending || Boolean(state?.installing);
   const actionDisabled = busy || summary === null || summary.action === 'none';
 
+  const actionLabel = busy ? 'INSTALLING…' : (summary?.actionLabel ?? 'INSTALL RUNTIME');
+
   const runAction = () => {
     if (summary?.action === 'install') {
       void runtime.install();
@@ -32,6 +36,16 @@ export function RuntimePanel({ runtime }: RuntimePanelProps) {
       void runtime.repair();
     }
   };
+
+  // The runtime action is a dynamic primary control: an installation starts, it becomes disabled,
+  // and it comes back — all from local runtime state, with nothing near the footer rerendering. It
+  // therefore declares a stable focus identity and honest action metadata rather than relying on the
+  // generic activatability fallback, so the footer names what the button really does and stops
+  // offering it the moment it cannot be pressed.
+  const actionRef = useFocusNode({
+    id: focusNodes.settingsRuntime('action'),
+    confirm: actionDisabled ? null : { label: actionLabel },
+  });
 
   return (
     <section className="settings-panel settings-group" aria-labelledby="runtime-heading">
@@ -104,8 +118,8 @@ export function RuntimePanel({ runtime }: RuntimePanelProps) {
       )}
 
       <div className="settings-panel-actions">
-        <PixelButton type="button" disabled={actionDisabled} onClick={runAction}>
-          {busy ? 'INSTALLING…' : (summary?.actionLabel ?? 'INSTALL RUNTIME')}
+        <PixelButton ref={actionRef} type="button" disabled={actionDisabled} onClick={runAction}>
+          {actionLabel}
         </PixelButton>
       </div>
     </section>
