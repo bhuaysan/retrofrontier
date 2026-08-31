@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
-import { useFocusApi, useFocusedNodeId } from '../focus/focusContext';
+import { useFocusApi } from '../focus/focusContext';
 import type { FocusNodeId } from '../focus/focusNodes';
 import { requestAppWindowFocus } from '../platform/appWindow';
 import type { RunningGameSession } from '../platform/ipc';
@@ -11,35 +11,76 @@ interface UseLaunchFocusReturnOptions {
   /** A managed process exists whose identity could not be established. */
   blocked: boolean;
   windowFocused: boolean;
-  /** Used when the target the launch started from no longer exists. */
+  /**
+   * The logical identity of the route or scope currently on screen. A recorded launch origin is only
+   * restored while this is still the same context the launch was started from.
+   */
+  routeKey: string;
+  /** The deterministic target of the **current** route, used when the origin is not restorable. */
   fallbackNodeId: FocusNodeId;
+}
+
+/** What the launch was started from: a semantic identity plus the context it belonged to. */
+interface LaunchOrigin {
+  nodeId: FocusNodeId | null;
+  routeKey: string;
+}
+
+export interface LaunchFocusReturn {
+  /**
+   * Records the semantic launch origin. Call it synchronously where the UI initiates a launch —
+   * that is the moment of the user's intent, and it is the only moment at which the origin is
+   * unambiguous.
+   */
+  captureLaunchOrigin: () => void;
 }
 
 /**
  * Returns RetroFrontier to the foreground once a managed game has really ended.
  *
- * The backend is the only authority on whether the game is still running. When it reports that the
- * session ended, the window is asked to come forward exactly once — no retry loop, and no repeated
- * foreground stealing — and DOM focus is only restored after the application window actually owns
- * focus again, so focus is never handed to an invisible window.
+ * Three things are deliberately kept apart:
+ *
+ * 1. **Launch intent origin.** Captured synchronously by `captureLaunchOrigin()` when the UI issues
+ *    the launch. Sampling whichever node happens to be focused when `running` later arrives is not
+ *    the same moment: focus, and even the route, can change in between, so the recorded "origin"
+ *    could belong to something the user never launched from.
+ * 2. **Backend running state.** The backend remains the only authority on whether the game is still
+ *    running. When it reports the session ended, the window is asked to come forward exactly once —
+ *    no retry loop, and no repeated foreground stealing.
+ * 3. **Post-process return target.** Resolved against the route that is current *when the window
+ *    really comes back*. If the user navigated elsewhere while the game ran they are not dragged
+ *    back: the current route's own deterministic target is used instead, and no obsolete request is
+ *    left pending in another route.
+ *
+ * DOM focus is only restored after the application window actually owns focus, so focus is never
+ * handed to an invisible window.
  */
 export function useLaunchFocusReturn({
   running,
   blocked,
   windowFocused,
+  routeKey,
   fallbackNodeId,
-}: UseLaunchFocusReturnOptions): void {
+}: UseLaunchFocusReturnOptions): LaunchFocusReturn {
   const api = useFocusApi();
-  const focusedNodeId = useFocusedNodeId();
-  const launchOrigin = useRef<FocusNodeId | null>(null);
+  const launchOrigin = useRef<LaunchOrigin | null>(null);
   const previousRunning = useRef<RunningGameSession | null>(running);
-  const pendingReturn = useRef<FocusNodeId | null>(null);
+  const returnPending = useRef(false);
   const requestedForSession = useRef<number | null>(null);
 
-  const focusedRef = useRef(focusedNodeId);
+  // The current route and its deterministic target are mirrored into refs so both the synchronous
+  // capture callback and the return effect read the values that are current *at the moment they
+  // run*, without making either of them re-run on every route change.
+  const routeKeyRef = useRef(routeKey);
+  const fallbackRef = useRef(fallbackNodeId);
   useEffect(() => {
-    focusedRef.current = focusedNodeId;
-  }, [focusedNodeId]);
+    routeKeyRef.current = routeKey;
+    fallbackRef.current = fallbackNodeId;
+  }, [fallbackNodeId, routeKey]);
+
+  const captureLaunchOrigin = useCallback(() => {
+    launchOrigin.current = { nodeId: api.getFocusedNodeId(), routeKey: routeKeyRef.current };
+  }, [api]);
 
   useEffect(() => {
     // While launch state is blocked it is uncertain, so the last known session is held rather than
@@ -47,25 +88,29 @@ export function useLaunchFocusReturn({
     if (blocked) return;
     const previous = previousRunning.current;
     previousRunning.current = running;
-    if (previous === null && running !== null) {
-      // The target the launch was started from, captured once. It deliberately does not follow
-      // focus afterwards: the run belongs to RetroArch, not to RetroFrontier's focus.
-      launchOrigin.current = focusedRef.current;
-      return;
-    }
     if (previous === null || running !== null) return;
     if (requestedForSession.current === previous.sessionId) return;
 
     requestedForSession.current = previous.sessionId;
-    pendingReturn.current = launchOrigin.current ?? fallbackNodeId;
-    launchOrigin.current = null;
+    returnPending.current = true;
     void requestAppWindowFocus();
-  }, [blocked, fallbackNodeId, running]);
+  }, [blocked, running]);
 
   useEffect(() => {
-    if (pendingReturn.current === null || !windowFocused) return;
-    const target = pendingReturn.current;
-    pendingReturn.current = null;
-    api.requestFocus(target, { fallback: fallbackNodeId, resolveOnRegister: true });
-  }, [api, fallbackNodeId, windowFocused]);
+    if (!returnPending.current || !windowFocused) return;
+    returnPending.current = false;
+    const origin = launchOrigin.current;
+    launchOrigin.current = null;
+    const fallback = fallbackRef.current;
+
+    // The origin is only meaningful while its own route is still on screen. Otherwise the user
+    // moved on during the run, and the honest target is where they are now.
+    if (origin !== null && origin.nodeId !== null && origin.routeKey === routeKeyRef.current) {
+      api.requestFocus(origin.nodeId, { fallback, resolveOnRegister: true });
+      return;
+    }
+    api.requestFocus(fallback, { resolveOnRegister: true });
+  }, [api, windowFocused]);
+
+  return { captureLaunchOrigin };
 }

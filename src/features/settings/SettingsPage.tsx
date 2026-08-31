@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { InlineError } from '../../components/ui/InlineError';
-import { useFocusScope } from '../../focus/focusContext';
-import { focusScopes } from '../../focus/focusNodes';
+import { useFocusNode, useFocusScope } from '../../focus/focusContext';
+import { focusNodes, focusScopes } from '../../focus/focusNodes';
 import { PixelButton } from '../../components/ui/PixelButton';
 import { ExternalLinkIcon, FolderIcon, PixelArrow } from '../../components/ui/PixelIcon';
 import { useManagedRuntime } from '../../hooks/useManagedRuntime';
@@ -503,6 +503,7 @@ export function SettingsPage({
   const [lastOperation, setLastOperation] = useState<RootOperation | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const rootsHeading = useRef<HTMLHeadingElement>(null);
+  const settingsHeadingRef = useFocusNode({ id: focusNodes.settings('heading') });
   const confirmationButton = useRef<HTMLButtonElement>(null);
   const removeTriggers = useRef(new Map<number, HTMLButtonElement>());
 
@@ -577,7 +578,10 @@ export function SettingsPage({
           BACK TO LIBRARY
         </PixelButton>
         <div className="section-heading">
-          <h1 id="settings-heading">
+          {/* A programmatic focus target only, exactly like the Library heading: it is the
+              deterministic Settings fallback for a focus return, and directional movement never
+              lands on it. */}
+          <h1 id="settings-heading" ref={settingsHeadingRef} tabIndex={-1}>
             <PixelArrow className="heading-arrow" />
             SETTINGS
           </h1>

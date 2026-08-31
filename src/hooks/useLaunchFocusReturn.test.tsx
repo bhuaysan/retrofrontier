@@ -15,6 +15,7 @@ vi.mock('../platform/appWindow', () => ({
   requestAppWindowFocus: mocks.requestAppWindowFocus,
   isAppWindowFocused: vi.fn(),
   onAppWindowFocusChanged: vi.fn(),
+  isDesktopRuntime: vi.fn(() => true),
 }));
 
 const session: RunningGameSession = {
@@ -25,39 +26,62 @@ const session: RunningGameSession = {
   startedAt: 1,
 };
 
-function Body({
-  running,
-  blocked,
-  windowFocused,
-}: {
+const DETAIL_ROUTE = 'game:1';
+const LIBRARY_ROUTE = 'library';
+
+interface HarnessProps {
   running: RunningGameSession | null;
   blocked: boolean;
   windowFocused: boolean;
-}) {
-  const playRef = useFocusNode({ id: focusNodes.detail('play'), confirm: { label: 'PLAY' } });
-  useLaunchFocusReturn({
+  routeKey?: string;
+}
+
+/**
+ * The Detail route: Play, Favorite, and a programmatic heading fallback. The Library route renders
+ * a card and its own heading fallback, so a route change really changes which nodes exist.
+ */
+function Body({ running, blocked, windowFocused, routeKey = DETAIL_ROUTE }: HarnessProps) {
+  const onDetail = routeKey === DETAIL_ROUTE;
+  const playRef = useFocusNode({ id: focusNodes.detail('play') });
+  const favoriteRef = useFocusNode({ id: focusNodes.detail('favorite') });
+  const headingRef = useFocusNode({ id: focusNodes.libraryHeading });
+  const cardRef = useFocusNode({ id: focusNodes.libraryGame(1) });
+  const { captureLaunchOrigin } = useLaunchFocusReturn({
     running,
     blocked,
     windowFocused,
-    fallbackNodeId: focusNodes.detail('play'),
+    routeKey,
+    fallbackNodeId: onDetail ? focusNodes.detail('play') : focusNodes.libraryHeading,
   });
   return (
     <>
-      <button ref={playRef} type="button">
-        PLAY
+      <button data-testid="capture" onClick={captureLaunchOrigin} type="button">
+        CAPTURE
       </button>
-      <button ref={useFocusNode({ id: focusNodes.detail('favorite') })} type="button">
-        FAVORITE
-      </button>
+      {onDetail ? (
+        <>
+          <button ref={playRef} type="button">
+            PLAY
+          </button>
+          <button ref={favoriteRef} type="button">
+            FAVORITE
+          </button>
+        </>
+      ) : (
+        <>
+          <h1 ref={headingRef} tabIndex={-1}>
+            LIBRARY
+          </h1>
+          <button ref={cardRef} type="button">
+            GAME 1
+          </button>
+        </>
+      )}
     </>
   );
 }
 
-function Harness(props: {
-  running: RunningGameSession | null;
-  blocked: boolean;
-  windowFocused: boolean;
-}) {
+function Harness(props: HarnessProps) {
   return (
     <FocusProvider>
       <Body {...props} />
@@ -65,15 +89,38 @@ function Harness(props: {
   );
 }
 
+function capture() {
+  act(() => {
+    screen.getByTestId('capture').click();
+  });
+}
+
 beforeEach(() => {
   mocks.requestAppWindowFocus.mockReset();
   mocks.requestAppWindowFocus.mockResolvedValue(true);
 });
 
-describe('useLaunchFocusReturn', () => {
-  it('asks for the application window exactly once when the managed game ends', async () => {
+describe('useLaunchFocusReturn launch origin', () => {
+  it('records the origin when the UI initiates the launch, not when running arrives', async () => {
     const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
     act(() => screen.getByText('PLAY').focus());
+    capture();
+
+    // Focus moves before the backend reports `running`: the recorded origin must not follow it.
+    act(() => screen.getByText('FAVORITE').focus());
+    rerender(<Harness blocked={false} running={session} windowFocused={false} />);
+    act(() => (document.activeElement as HTMLElement).blur());
+
+    rerender(<Harness blocked={false} running={null} windowFocused={false} />);
+    await waitFor(() => expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1));
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await waitFor(() => expect(screen.getByText('PLAY')).toHaveFocus());
+  });
+
+  it('asks for the application window exactly once per ended session', async () => {
+    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
+    act(() => screen.getByText('PLAY').focus());
+    capture();
 
     rerender(<Harness blocked={false} running={session} windowFocused={false} />);
     expect(mocks.requestAppWindowFocus).not.toHaveBeenCalled();
@@ -81,7 +128,6 @@ describe('useLaunchFocusReturn', () => {
     rerender(<Harness blocked={false} running={null} windowFocused={false} />);
     await waitFor(() => expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1));
 
-    // Re-rendering while the request is outstanding must not ask again.
     rerender(<Harness blocked={false} running={null} windowFocused={false} />);
     rerender(<Harness blocked={false} running={null} windowFocused={false} />);
     expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1);
@@ -90,6 +136,7 @@ describe('useLaunchFocusReturn', () => {
   it('restores DOM focus only after the application window is focused again', async () => {
     const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
     act(() => screen.getByText('PLAY').focus());
+    capture();
 
     rerender(<Harness blocked={false} running={session} windowFocused={false} />);
     act(() => (document.activeElement as HTMLElement).blur());
@@ -101,19 +148,22 @@ describe('useLaunchFocusReturn', () => {
     await waitFor(() => expect(screen.getByText('PLAY')).toHaveFocus());
   });
 
-  it('restores the target the launch was started from', async () => {
-    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
-    act(() => screen.getByText('FAVORITE').focus());
+  it('never requests the window while launch state is still uncertain', async () => {
+    const { rerender } = render(
+      <Harness blocked={false} running={session} windowFocused={false} />,
+    );
+    rerender(<Harness blocked running={null} windowFocused={false} />);
+    await act(async () => undefined);
+    expect(mocks.requestAppWindowFocus).not.toHaveBeenCalled();
 
-    rerender(<Harness blocked={false} running={session} windowFocused={false} />);
-    act(() => (document.activeElement as HTMLElement).blur());
-    rerender(<Harness blocked={false} running={null} windowFocused />);
-    await waitFor(() => expect(screen.getByText('FAVORITE')).toHaveFocus());
+    rerender(<Harness blocked={false} running={null} windowFocused={false} />);
+    await waitFor(() => expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1));
   });
 
   it('does not restore focus repeatedly once it completed', async () => {
     const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
     act(() => screen.getByText('PLAY').focus());
+    capture();
     rerender(<Harness blocked={false} running={session} windowFocused={false} />);
     rerender(<Harness blocked={false} running={null} windowFocused />);
     await waitFor(() => expect(screen.getByText('PLAY')).toHaveFocus());
@@ -124,16 +174,56 @@ describe('useLaunchFocusReturn', () => {
     expect(screen.getByText('FAVORITE')).toHaveFocus();
     expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1);
   });
+});
 
-  it('never requests the window while launch state is still uncertain', async () => {
+describe('useLaunchFocusReturn route awareness', () => {
+  it('does not drag the user back to the route the launch started from', async () => {
+    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
+    act(() => screen.getByText('PLAY').focus());
+    capture();
+    rerender(<Harness blocked={false} running={session} windowFocused={false} />);
+
+    // The user navigated to the Library while the game was running.
+    rerender(
+      <Harness blocked={false} running={session} routeKey={LIBRARY_ROUTE} windowFocused={false} />,
+    );
+    rerender(
+      <Harness blocked={false} running={null} routeKey={LIBRARY_ROUTE} windowFocused={false} />,
+    );
+    await waitFor(() => expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1));
+
+    rerender(<Harness blocked={false} running={null} routeKey={LIBRARY_ROUTE} windowFocused />);
+    // The current route's deterministic target, not the obsolete Detail action.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'LIBRARY' })).toHaveFocus());
+  });
+
+  it('leaves no obsolete request that steals focus when the old route returns', async () => {
+    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
+    act(() => screen.getByText('PLAY').focus());
+    capture();
+    rerender(<Harness blocked={false} running={session} windowFocused={false} />);
+    rerender(
+      <Harness blocked={false} running={null} routeKey={LIBRARY_ROUTE} windowFocused={false} />,
+    );
+    rerender(<Harness blocked={false} running={null} routeKey={LIBRARY_ROUTE} windowFocused />);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'LIBRARY' })).toHaveFocus());
+
+    act(() => screen.getByText('GAME 1').focus());
+    // Going back to Game Detail later must not resurrect the old Detail restoration.
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await act(async () => undefined);
+    expect(screen.getByText('PLAY')).not.toHaveFocus();
+    expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back within the current route when nothing recorded the launch origin', async () => {
+    // A session that was already running when this frontend mounted has no captured origin.
     const { rerender } = render(
       <Harness blocked={false} running={session} windowFocused={false} />,
     );
-    rerender(<Harness blocked running={null} windowFocused={false} />);
-    await Promise.resolve();
-    expect(mocks.requestAppWindowFocus).not.toHaveBeenCalled();
-
     rerender(<Harness blocked={false} running={null} windowFocused={false} />);
     await waitFor(() => expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1));
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await waitFor(() => expect(screen.getByText('PLAY')).toHaveFocus());
   });
 });
