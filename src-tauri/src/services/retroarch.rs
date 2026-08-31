@@ -804,6 +804,21 @@ mod tests {
         assert!(context.config_path.is_file());
         assert!(context.diagnostics.is_empty());
 
+        // B4: the argument contract is exactly `--config`, `-L`, content, and nothing else. Launch
+        // presentation — fullscreen included — is decided in the generated configuration, so there
+        // is one canonical control path rather than a flag and a setting that could disagree.
+        let flags: Vec<String> = context
+            .arguments
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .filter(|argument| argument.starts_with('-'))
+            .collect();
+        assert_eq!(flags, vec!["--config".to_owned(), "-L".to_owned()]);
+        // And the file those arguments name really carries the reviewed fullscreen request.
+        let written = fs::read_to_string(&context.config_path).unwrap();
+        assert!(written.contains("video_fullscreen = \"true\"\n"));
+        assert!(written.contains("video_windowed_fullscreen = \"true\"\n"));
+
         // The child cannot resolve a host RetroArch through PATH.
         assert_eq!(
             context.environment.get("PATH").map(String::as_str),

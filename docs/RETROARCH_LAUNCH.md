@@ -103,6 +103,27 @@ There is exactly one configuration file. It is deterministic and rewritten atomi
 same-directory temporary file, flush, rename, parent fsync, mode `0600`) before every launch, so no
 per-game configuration files exist and a crash cannot leave an ambiguous half-written file.
 
+### Fullscreen launch presentation
+
+The generated configuration also owns how the session *presents itself*, because a couch/controller
+frontend may not hand the user a small window to resize:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `video_fullscreen` | `true` | Start fullscreen. RetroArch 1.22.2's compiled-in `DEFAULT_FULLSCREEN` is **`false`** for a generic Linux build — `config.def.h` defaults it to true only for Steam, Dingux, WinRT, and Winapi-Family builds — so a configuration that stayed silent inherited the small default window. |
+| `video_windowed_fullscreen` | `true` | Borderless fullscreen at the current desktop resolution instead of an exclusive video-mode change. A Wayland client cannot set a video mode at all, and this path shows no intermediate window. |
+
+`video_fullscreen` is the key RetroArch itself reads for this (`configuration.c`:
+`SETTING_BOOL("video_fullscreen", …)`); both keys are present in the managed 1.22.2 binary.
+`video_fullscreen_x`/`video_fullscreen_y` apply only to the exclusive path and are deliberately not
+written.
+
+**The generated configuration is the single control path.** RetroArch also accepts a `--fullscreen`
+launch flag, whose documented purpose is to override *a config setting* — RetroFrontier owns that
+setting, so adding the flag would be a second authority on the same question with nothing to
+override. The launch argument contract is therefore unchanged, and a test pins it. Nothing resizes,
+raises, or scripts a window: RetroArch is instructed to start fullscreen and does it itself.
+
 ### Composed system directory
 
 `system_directory` is `runtime-user/system/`, which RetroFrontier owns and composes per launch:

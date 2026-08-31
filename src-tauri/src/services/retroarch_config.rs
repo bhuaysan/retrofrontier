@@ -121,6 +121,22 @@ impl RetroArchConfig {
         set("cheevos_enable", boolean(false));
         set("log_to_file", boolean(true));
 
+        // Launch presentation: a game started from RetroFrontier fills the display at once.
+        //
+        // RetroArch 1.22.2's compiled-in `DEFAULT_FULLSCREEN` is `false` for a generic Linux build
+        // (`config.def.h`: only Steam, Dingux, WinRT, and Winapi-Family builds default to true), so
+        // a generated configuration that said nothing about fullscreen inherited that default and
+        // opened the small default window real hardware qualification saw. The generated file is the
+        // canonical control path — `video_fullscreen` is the setting RetroArch itself reads for this
+        // (`configuration.c`: `SETTING_BOOL("video_fullscreen", ...)`) — so no launch flag is added
+        // and there is exactly one place that decides this.
+        set("video_fullscreen", boolean(true));
+        // *How* fullscreen is entered, owned rather than inherited. Borderless fullscreen at the
+        // current desktop resolution needs no video-mode change, which a Wayland client cannot
+        // request at all, and it never shows an intermediate window. `video_fullscreen_x/y` apply
+        // only to the exclusive path and are therefore deliberately not written.
+        set("video_windowed_fullscreen", boolean(true));
+
         entries.sort_by(|left, right| left.0.cmp(&right.0));
         Self { entries }
     }
@@ -338,6 +354,83 @@ mod tests {
             assert_eq!(config.value(key), Some("false"), "{key}");
         }
         assert_eq!(config.value("log_to_file"), Some("true"));
+    }
+
+    /// B1: fullscreen presentation is a RetroFrontier-owned decision, not an inherited default.
+    ///
+    /// RetroArch 1.22.2's compiled-in `DEFAULT_FULLSCREEN` is `false` on a generic Linux build, so a
+    /// generated configuration that stays silent about it gets RetroArch's small default window.
+    #[test]
+    fn the_generated_configuration_requests_fullscreen_explicitly() {
+        let (_paths, config) = synthetic_config();
+
+        assert_eq!(config.value("video_fullscreen"), Some("true"));
+        // Borderless fullscreen at the desktop resolution rather than an exclusive mode switch:
+        // a Wayland client cannot set a video mode, and there is no tiny intermediate window.
+        assert_eq!(config.value("video_windowed_fullscreen"), Some("true"));
+
+        let rendered = config.render();
+        assert!(rendered.contains("video_fullscreen = \"true\"\n"));
+        assert!(rendered.contains("video_windowed_fullscreen = \"true\"\n"));
+    }
+
+    /// B2: repeated generation produces byte-identical fullscreen entries.
+    #[test]
+    fn repeated_generation_renders_identical_fullscreen_entries() {
+        let (_paths, first) = synthetic_config();
+        let (_paths, second) = synthetic_config();
+
+        for key in ["video_fullscreen", "video_windowed_fullscreen"] {
+            assert_eq!(first.value(key), second.value(key), "{key}");
+        }
+        let fullscreen_lines = |config: &RetroArchConfig| -> Vec<String> {
+            config
+                .render()
+                .lines()
+                .filter(|line| {
+                    line.starts_with("video_fullscreen")
+                        || line.starts_with("video_windowed_fullscreen")
+                })
+                .map(str::to_owned)
+                .collect()
+        };
+        assert_eq!(fullscreen_lines(&first), fullscreen_lines(&second));
+        assert_eq!(
+            fullscreen_lines(&first),
+            vec![
+                "video_fullscreen = \"true\"".to_owned(),
+                "video_windowed_fullscreen = \"true\"".to_owned(),
+            ]
+        );
+    }
+
+    /// B3: the fullscreen request depends on nothing outside RetroFrontier's own generated file.
+    #[test]
+    fn the_fullscreen_request_is_independent_of_any_host_or_user_retroarch_state() {
+        let first = RetroArchConfig::build(
+            &LaunchPaths::new("/synthetic/app-data"),
+            Path::new("/synthetic/app-data/runtime/versions/install-1/cores/nestopia"),
+        );
+        // A completely different application-data root and installation: only paths may differ.
+        let second = RetroArchConfig::build(
+            &LaunchPaths::new("/other/root"),
+            Path::new("/other/root/runtime/versions/install-9/cores/beetle-psx"),
+        );
+
+        for key in ["video_fullscreen", "video_windowed_fullscreen"] {
+            assert_eq!(first.value(key), Some("true"), "{key}");
+            assert_eq!(second.value(key), Some("true"), "{key}");
+        }
+        // Nothing about fullscreen is read from, or written into, a host RetroArch location, and
+        // RetroArch may not persist a different answer over it.
+        assert_eq!(first.value("config_save_on_exit"), Some("false"));
+        for (key, value) in first.entries() {
+            if !key.starts_with("video_fullscreen") && !key.starts_with("video_windowed_fullscreen")
+            {
+                continue;
+            }
+            assert!(!value.contains('/'), "{key} must not reference any path");
+        }
     }
 
     #[test]
