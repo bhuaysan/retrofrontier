@@ -29,33 +29,50 @@ const session: RunningGameSession = {
 const DETAIL_ROUTE = 'game:1';
 const LIBRARY_ROUTE = 'library';
 
+const CONTENT_UNIT_ID = 101;
+
 interface HarnessProps {
   running: RunningGameSession | null;
   blocked: boolean;
   windowFocused: boolean;
   routeKey?: string;
+  /** A launch request this frontend issued has not resolved yet. */
+  pendingGameId?: number | null;
+  /** The launch is waiting for the user to choose a content unit. */
+  contentSelectionOpen?: boolean;
 }
 
 /**
- * The Detail route: Play, Favorite, and a programmatic heading fallback. The Library route renders
- * a card and its own heading fallback, so a route change really changes which nodes exist.
+ * The Detail route: Play, Favorite, the temporary content-selection option, and a programmatic
+ * heading fallback. The Library route renders a card and its own heading fallback, so a route change
+ * really changes which nodes exist.
  */
-function Body({ running, blocked, windowFocused, routeKey = DETAIL_ROUTE }: HarnessProps) {
+function Body({
+  running,
+  blocked,
+  windowFocused,
+  routeKey = DETAIL_ROUTE,
+  pendingGameId = null,
+  contentSelectionOpen = false,
+}: HarnessProps) {
   const onDetail = routeKey === DETAIL_ROUTE;
   const playRef = useFocusNode({ id: focusNodes.detail('play') });
   const favoriteRef = useFocusNode({ id: focusNodes.detail('favorite') });
   const headingRef = useFocusNode({ id: focusNodes.libraryHeading });
   const cardRef = useFocusNode({ id: focusNodes.libraryGame(1) });
-  const { captureLaunchOrigin } = useLaunchFocusReturn({
+  const optionRef = useFocusNode({ id: focusNodes.launchContent(CONTENT_UNIT_ID) });
+  const { beginLaunchInteraction } = useLaunchFocusReturn({
     running,
     blocked,
+    pendingGameId,
+    contentSelectionOpen,
     windowFocused,
     routeKey,
     fallbackNodeId: onDetail ? focusNodes.detail('play') : focusNodes.libraryHeading,
   });
   return (
     <>
-      <button data-testid="capture" onClick={captureLaunchOrigin} type="button">
+      <button data-testid="capture" onClick={beginLaunchInteraction} type="button">
         CAPTURE
       </button>
       {onDetail ? (
@@ -66,6 +83,11 @@ function Body({ running, blocked, windowFocused, routeKey = DETAIL_ROUTE }: Harn
           <button ref={favoriteRef} type="button">
             FAVORITE
           </button>
+          {contentSelectionOpen ? (
+            <button ref={optionRef} type="button">
+              DISC 1
+            </button>
+          ) : null}
         </>
       ) : (
         <>
@@ -215,6 +237,134 @@ describe('useLaunchFocusReturn launch origin', () => {
     rerender(<Harness blocked={false} running={null} windowFocused />);
     expect(screen.getByText('FAVORITE')).toHaveFocus();
     expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('useLaunchFocusReturn launch interaction lifetime', () => {
+  /**
+   * A multi-step content selection is ONE launch interaction. The temporary content-option node the
+   * user confirms from does not exist any more when RetroArch exits, so recording it as the launch
+   * origin makes the return either late (via the safety fallback) or wrong (an obsolete node that
+   * re-registers takes focus).
+   */
+  it('keeps the original PLAY origin across a content-selection continuation', async () => {
+    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
+    act(() => screen.getByText('PLAY').focus());
+
+    // Step 1: PLAY.
+    capture();
+    rerender(<Harness blocked={false} pendingGameId={1} running={null} windowFocused />);
+
+    // The backend answers `contentSelectionRequired`.
+    rerender(<Harness blocked={false} contentSelectionOpen running={null} windowFocused />);
+    await act(async () => undefined);
+    act(() => screen.getByText('DISC 1').focus());
+
+    // Step 2: the user confirms a version. Same interaction, so the origin must not move.
+    capture();
+    rerender(<Harness blocked={false} pendingGameId={1} running={null} windowFocused />);
+    rerender(<Harness blocked={false} running={session} windowFocused={false} />);
+    act(() => (document.activeElement as HTMLElement).blur());
+
+    // RetroArch exits and the window comes back.
+    rerender(<Harness blocked={false} running={null} windowFocused={false} />);
+    await waitFor(() => expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1));
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+
+    // Immediate, not after the bounded safety fallback: the target was never the obsolete node.
+    await waitFor(() => expect(screen.getByText('PLAY')).toHaveFocus());
+    expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves no request that an obsolete content option could satisfy later', async () => {
+    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
+    act(() => screen.getByText('PLAY').focus());
+    capture();
+    rerender(<Harness blocked={false} contentSelectionOpen running={null} windowFocused />);
+    act(() => screen.getByText('DISC 1').focus());
+    capture();
+    rerender(<Harness blocked={false} running={session} windowFocused={false} />);
+    act(() => (document.activeElement as HTMLElement).blur());
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await waitFor(() => expect(screen.getByText('PLAY')).toHaveFocus());
+
+    // The user starts another launch that needs a version again. A stale `resolveOnRegister`
+    // request for the old content option would steal focus the moment the surface remounts.
+    act(() => screen.getByText('FAVORITE').focus());
+    rerender(<Harness blocked={false} contentSelectionOpen running={null} windowFocused />);
+    await act(async () => undefined);
+    expect(screen.getByText('DISC 1')).not.toHaveFocus();
+  });
+
+  it('clears the origin when the content selection is cancelled', async () => {
+    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
+    act(() => screen.getByText('PLAY').focus());
+    capture();
+    rerender(<Harness blocked={false} contentSelectionOpen running={null} windowFocused />);
+    await act(async () => undefined);
+
+    // Cancelled: no process was ever started, so the interaction is over.
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await act(async () => undefined);
+
+    // A later, independent launch captures a fresh origin — FAVORITE, not the stale PLAY.
+    act(() => screen.getByText('FAVORITE').focus());
+    capture();
+    rerender(<Harness blocked={false} running={session} windowFocused={false} />);
+    act(() => (document.activeElement as HTMLElement).blur());
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await waitFor(() => expect(screen.getByText('FAVORITE')).toHaveFocus());
+  });
+
+  it('clears the origin when a launch fails without ever running', async () => {
+    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
+    act(() => screen.getByText('PLAY').focus());
+    capture();
+    rerender(<Harness blocked={false} pendingGameId={1} running={null} windowFocused />);
+    // A normalized failure clears the pending id without starting a process.
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await act(async () => undefined);
+
+    act(() => screen.getByText('FAVORITE').focus());
+    capture();
+    rerender(<Harness blocked={false} running={session} windowFocused={false} />);
+    act(() => (document.activeElement as HTMLElement).blur());
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await waitFor(() => expect(screen.getByText('FAVORITE')).toHaveFocus());
+  });
+
+  it('clears the origin when the second, content-selected launch fails', async () => {
+    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
+    act(() => screen.getByText('PLAY').focus());
+    capture();
+    rerender(<Harness blocked={false} contentSelectionOpen running={null} windowFocused />);
+    act(() => screen.getByText('DISC 1').focus());
+    capture();
+    rerender(<Harness blocked={false} pendingGameId={1} running={null} windowFocused />);
+    // The second launch fails: no surface, no process, nothing left to return to.
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await act(async () => undefined);
+
+    act(() => screen.getByText('FAVORITE').focus());
+    capture();
+    rerender(<Harness blocked={false} running={session} windowFocused={false} />);
+    act(() => (document.activeElement as HTMLElement).blur());
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await waitFor(() => expect(screen.getByText('FAVORITE')).toHaveFocus());
+  });
+
+  it('holds the open interaction while launch state is uncertain', async () => {
+    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
+    act(() => screen.getByText('PLAY').focus());
+    capture();
+    // Blocked: nothing may be concluded, so the origin must neither be consumed nor discarded.
+    rerender(<Harness blocked pendingGameId={null} running={null} windowFocused />);
+    await act(async () => undefined);
+
+    rerender(<Harness blocked={false} running={session} windowFocused={false} />);
+    act(() => (document.activeElement as HTMLElement).blur());
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await waitFor(() => expect(screen.getByText('PLAY')).toHaveFocus());
   });
 });
 

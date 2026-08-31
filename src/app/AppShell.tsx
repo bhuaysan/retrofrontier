@@ -297,25 +297,36 @@ function AppShellBody() {
       : isSettingsRoute
         ? focusNodes.settings('heading')
         : focusNodes.libraryHeading;
-  const { captureLaunchOrigin } = useLaunchFocusReturn({
+  // A multi-step launch is one interaction: PLAY, a `contentSelectionRequired` answer, and the
+  // version the user then confirms all belong to the same launch, so the origin is captured once at
+  // its beginning. The launch facts are handed over so the hook can tell a continuation from a
+  // resolution and never keep an origin that can no longer produce a return.
+  const contentSelectionOpen =
+    gameLaunch.contentOptions !== null && gameLaunch.contentOptions.length > 0;
+  const { beginLaunchInteraction } = useLaunchFocusReturn({
     running: gameLaunch.running,
     blocked: gameLaunch.blocked,
+    pendingGameId: gameLaunch.pendingGameId,
+    contentSelectionOpen,
     windowFocused,
     routeKey: typeof launchRouteKey === 'string' ? launchRouteKey : 'library',
     fallbackNodeId: routeFallbackNodeId,
   });
   // The explicit launch-focus handoff. The origin is recorded synchronously where the UI initiates
   // the launch, which is the user's actual intent, instead of sampling whichever node happens to be
-  // focused once the backend reports a running process.
+  // focused once the backend reports a running process. Calling this on *every* launch is correct
+  // and deliberate: `beginLaunchInteraction` itself decides whether the call starts a new
+  // interaction or continues the open one, so a content-selection confirmation cannot overwrite the
+  // PLAY origin with a temporary content-option identity.
   const launchWithFocusHandoff = useMemo<GameLaunchModel>(
     () => ({
       ...gameLaunch,
       launch: (gameId: number, contentUnitId?: number) => {
-        captureLaunchOrigin();
+        beginLaunchInteraction();
         return gameLaunch.launch(gameId, contentUnitId);
       },
     }),
-    [captureLaunchOrigin, gameLaunch],
+    [beginLaunchInteraction, gameLaunch],
   );
   // The Library is the root destination, so `back` there has nothing to do and is not offered.
   useFocusBack(

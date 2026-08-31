@@ -10,6 +10,13 @@ interface UseLaunchFocusReturnOptions {
   running: RunningGameSession | null;
   /** A managed process exists whose identity could not be established. */
   blocked: boolean;
+  /** A launch request this frontend issued has not resolved yet. */
+  pendingGameId: number | null;
+  /**
+   * The launch is waiting for the user to choose a content unit. The launch interaction is still the
+   * same one: it has not resolved, and it may still continue into a running process.
+   */
+  contentSelectionOpen: boolean;
   windowFocused: boolean;
   /**
    * The logical identity of the route or scope currently on screen. A recorded launch origin is only
@@ -40,26 +47,36 @@ type ReturnPhase =
 
 export interface LaunchFocusReturn {
   /**
-   * Records the semantic launch origin. Call it synchronously where the UI initiates a launch —
-   * that is the moment of the user's intent, and it is the only moment at which the origin is
-   * unambiguous.
+   * Marks the start of a launch *interaction* and records its origin.
+   *
+   * Call it synchronously wherever the UI issues a launch — that is the moment of the user's
+   * intent. A multi-step launch (PLAY, then `contentSelectionRequired`, then choosing a version) is
+   * **one** interaction: a call made while an interaction is still open continues it and
+   * deliberately does not re-capture, because the temporary content-option node the user confirmed
+   * from no longer exists when RetroArch exits.
    */
-  captureLaunchOrigin: () => void;
+  beginLaunchInteraction: () => void;
 }
 
 /**
  * Returns RetroFrontier to the foreground once a managed game has really ended.
  *
- * Three things are deliberately kept apart:
+ * Four things are deliberately kept apart:
  *
- * 1. **Launch intent origin.** Captured synchronously by `captureLaunchOrigin()` when the UI issues
- *    the launch. Sampling whichever node happens to be focused when `running` later arrives is not
- *    the same moment: focus, and even the route, can change in between, so the recorded "origin"
- *    could belong to something the user never launched from.
- * 2. **Backend running state.** The backend remains the only authority on whether the game is still
+ * 1. **Launch interaction origin.** Captured synchronously by `beginLaunchInteraction()` when the UI
+ *    issues the launch. Sampling whichever node happens to be focused when `running` later arrives
+ *    is not the same moment: focus, and even the route, can change in between, so the recorded
+ *    "origin" could belong to something the user never launched from. The origin belongs to the
+ *    whole interaction, so a content-selection continuation keeps the identity the user really
+ *    launched from rather than the temporary option node.
+ * 2. **Interaction lifetime.** An interaction that resolves without ever starting a process — a
+ *    normalized failure, a cancelled content selection, a transport error — owns no return, so its
+ *    origin is dropped instead of being kept indefinitely and contaminating the next, independent
+ *    launch.
+ * 3. **Backend running state.** The backend remains the only authority on whether the game is still
  *    running. When it reports the session ended, the window is asked to come forward exactly once —
  *    no retry loop, and no repeated foreground stealing.
- * 3. **Post-process return target.** Resolved against the route that is current *when the window
+ * 4. **Post-process return target.** Resolved against the route that is current *when the window
  *    really comes back*. If the user navigated elsewhere while the game ran they are not dragged
  *    back: the current route's own deterministic target is used instead, and no obsolete request is
  *    left pending in another route.
@@ -71,12 +88,19 @@ export interface LaunchFocusReturn {
 export function useLaunchFocusReturn({
   running,
   blocked,
+  pendingGameId,
+  contentSelectionOpen,
   windowFocused,
   routeKey,
   fallbackNodeId,
 }: UseLaunchFocusReturnOptions): LaunchFocusReturn {
   const api = useFocusApi();
-  const launchOrigin = useRef<LaunchOrigin | null>(null);
+  /**
+   * The origin of the launch interaction that has not resolved yet, or `null` when no interaction is
+   * in flight. Being non-null *is* the "an interaction is already open" marker, which is what makes
+   * a content-selection continuation part of the same interaction rather than a new one.
+   */
+  const interactionOrigin = useRef<LaunchOrigin | null>(null);
   const previousRunning = useRef<RunningGameSession | null>(running);
   const requestedForSession = useRef<number | null>(null);
   const [returnPhase, setReturnPhase] = useState<ReturnPhase>({ kind: 'idle' });
@@ -91,13 +115,17 @@ export function useLaunchFocusReturn({
     fallbackRef.current = fallbackNodeId;
   }, [fallbackNodeId, routeKey]);
 
-  const captureLaunchOrigin = useCallback(() => {
-    launchOrigin.current = { nodeId: api.getFocusedNodeId(), routeKey: routeKeyRef.current };
+  const beginLaunchInteraction = useCallback(() => {
+    // A continuation of an interaction that is still open must not overwrite the origin the user
+    // actually launched from. Only a genuinely new interaction captures.
+    if (interactionOrigin.current !== null) return;
+    interactionOrigin.current = { nodeId: api.getFocusedNodeId(), routeKey: routeKeyRef.current };
   }, [api]);
 
   useEffect(() => {
-    // While launch state is blocked it is uncertain, so the last known session is held rather than
-    // consumed: a return is only performed once the backend can describe the state honestly again.
+    // While launch state is blocked it is uncertain, so the last known session *and* the open
+    // interaction are both held rather than consumed: a return is only performed, and an
+    // interaction only discarded, once the backend can describe the state honestly again.
     if (blocked) return;
     const previous = previousRunning.current;
     previousRunning.current = running;
@@ -110,12 +138,21 @@ export function useLaunchFocusReturn({
       // A managed session really ended. The pending return becomes observable in the same
       // transition, so the restore runs even with the window already focused.
       requestedForSession.current = previous.sessionId;
-      const origin = launchOrigin.current;
-      launchOrigin.current = null;
+      const origin = interactionOrigin.current;
+      interactionOrigin.current = null;
       setReturnPhase({ kind: 'waitingForWindow', sessionId: previous.sessionId, origin });
       void requestAppWindowFocus();
+      return;
     }
-  }, [blocked, running]);
+
+    // The interaction resolved without ever starting a process: a normalized failure, a cancelled
+    // content selection, or a transport error. There will be no return, so the origin is dropped
+    // here rather than surviving into the next, independent launch. A `contentSelectionRequired`
+    // response is deliberately *not* a resolution — the same interaction continues through it.
+    if (running === null && pendingGameId === null && !contentSelectionOpen) {
+      interactionOrigin.current = null;
+    }
+  }, [blocked, contentSelectionOpen, pendingGameId, running]);
 
   useEffect(() => {
     if (returnPhase.kind !== 'waitingForWindow') return;
@@ -134,5 +171,5 @@ export function useLaunchFocusReturn({
     api.requestFocus(fallback, { resolveOnRegister: true });
   }, [api, returnPhase, windowFocused]);
 
-  return { captureLaunchOrigin };
+  return { beginLaunchInteraction };
 }
