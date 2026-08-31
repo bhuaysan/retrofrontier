@@ -1,14 +1,34 @@
+import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 /**
  * The application-window boundary.
  *
- * M8 needs three things from the desktop window and nothing else: whether RetroFrontier owns
- * keyboard focus, when that changes, and one supported request to come back to the foreground after
- * a managed game ends. Everything goes through the Tauri window API — no `xdotool`, `wmctrl`, or
- * compositor scripting — and every call degrades to "unknown" outside the desktop shell so a plain
- * browser dev server stays usable.
+ * M8 needs four things from the desktop window and nothing else: whether this is the desktop shell
+ * at all, whether RetroFrontier owns keyboard focus, when that changes, and one supported request to
+ * come back to the foreground after a managed game ends. Everything goes through the Tauri API — no
+ * `xdotool`, `wmctrl`, or compositor scripting — and every call reports "unknown" rather than
+ * guessing.
+ *
+ * "Unknown" means different things on the two sides of this boundary, which is why the runtime is
+ * asked explicitly: in the real desktop application unknown window focus must fail *closed*, because
+ * RetroFrontier cannot honestly claim to own the controller; in a plain browser dev server there is
+ * no window ownership to assert and controller development must stay usable.
  */
+
+/**
+ * Whether this page is running inside the Tauri desktop shell.
+ *
+ * `isTauri()` is Tauri's own supported check — it reads the injected global rather than sniffing a
+ * user agent — so the boundary is testable and does not guess from the browser's identity.
+ */
+export function isDesktopRuntime(): boolean {
+  try {
+    return isTauri();
+  } catch {
+    return false;
+  }
+}
 
 function currentWindow() {
   try {
@@ -45,14 +65,21 @@ export async function requestAppWindowFocus(): Promise<boolean> {
   }
 }
 
+/**
+ * Subscribes to native window focus changes.
+ *
+ * `null` means no subscription exists. That is not the same as an empty unsubscribe function: a
+ * caller that cannot observe focus changes must not keep trusting a focus state it can never see
+ * revoked.
+ */
 export async function onAppWindowFocusChanged(
   handler: (focused: boolean) => void,
-): Promise<() => void> {
+): Promise<(() => void) | null> {
   const appWindow = currentWindow();
-  if (appWindow === null) return () => undefined;
+  if (appWindow === null) return null;
   try {
     return await appWindow.onFocusChanged(({ payload }) => handler(payload));
   } catch {
-    return () => undefined;
+    return null;
   }
 }
