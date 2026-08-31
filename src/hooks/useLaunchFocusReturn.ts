@@ -154,6 +154,10 @@ export function useLaunchFocusReturn({
     // content selection, or a transport error. There will be no return, so the origin is dropped
     // here rather than surviving into the next, independent launch. A `contentSelectionRequired`
     // response is deliberately *not* a resolution — the same interaction continues through it.
+    //
+    // This is a different question from input ownership and deliberately not a second copy of
+    // `ownsApplicationInput`: it asks whether *this launch interaction* is over, which has nothing
+    // to do with window focus and treats an open content selection as still in progress.
     if (running === null && pendingGameId === null && !contentSelectionOpen) {
       interactionOrigin.current = null;
     }

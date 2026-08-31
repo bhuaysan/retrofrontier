@@ -380,6 +380,20 @@ describe('Game Detail launch failure scope', () => {
     await waitFor(() => expect(playAction()).toHaveFocus());
   });
 
+  it('hands back to the failure scope when it replaces the selection scope', async () => {
+    const onBackToLibrary = vi.fn();
+    const { dismissFailure } = renderWithFailure({ contentSelectionFirst: true, onBackToLibrary });
+    // Both scope changes happened in one commit: the selection's release must not take the
+    // failure's freshly registered `back` handler with it.
+    await waitFor(() => expect(dismissAction()).toHaveFocus());
+    send('back');
+    expect(dismissFailure).toHaveBeenCalledTimes(1);
+    expect(onBackToLibrary).not.toHaveBeenCalled();
+    await waitFor(() => expect(failureGone()).not.toBeInTheDocument());
+    // And once both temporary surfaces are gone, `back` belongs to the screen again.
+    expect(playAction()).toHaveFocus();
+  });
+
   it('falls back to the Back action when Play cannot take focus', async () => {
     // Launch state is blocked, so Play is disabled and is not a truthful restoration target.
     renderWithFailure({ blocked: true });
