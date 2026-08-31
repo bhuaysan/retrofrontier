@@ -38,7 +38,7 @@ window keydown ────┘                        │
 | `src/components/ui/ControllerFooter.tsx` | Renders the derived hints and shell status. |
 | `src/platform/appWindow.ts` | The Tauri application-window boundary. |
 | `src/hooks/useAppWindowFocus.ts` | Whether the application window owns focus. |
-| `src/hooks/useLaunchFocusReturn.ts` | Window and DOM focus return after a managed game exits. |
+| `src/hooks/useLaunchFocusReturn.ts` | Launch interaction lifetime, and window plus DOM focus return after a managed game exits. |
 
 ## Semantic actions
 
@@ -156,7 +156,9 @@ Focus restoration keys off stable semantic identities, never DOM selectors and n
 | `detail:<action>` | Game Detail actions: back, play, favorite, metadata, cancel |
 | `detail:candidate:<providerGameId>` | A metadata candidate |
 | `launch:content:<ContentUnitId>` | A launch content choice |
-| `settings:root:<rootId>:<action>` | A per-root Settings action |
+| `detail:dismiss-launch-failure` | The launch-failure surface's dismiss action |
+| `settings:runtime:action` | The managed-runtime install/repair action |
+| `settings:root:<rootId>:<action>` | Reserved for per-root Settings actions (not yet used) |
 
 A component declares its identity with `useFocusNode`, which returns a callback ref. The registry
 holds identity ↔ element and a live getter for the node's action metadata, so a label can follow
@@ -255,6 +257,7 @@ owner (a route change, say) already has a request outstanding.
 | Scope | Entry / exit focus | `back` |
 | --- | --- | --- |
 | Launch content selection | Managed by the scope; exit restores `detail:play` | Cancels the selection |
+| Launch failure | Entry focuses DISMISS; dismissal restores `detail:play`, falling back to `detail:back` | Dismisses the failure |
 | Settings root removal | Left to Settings' existing behaviour | Cancels the removal |
 | Settings metadata-account clear | Left to Settings' existing behaviour | Cancels the confirmation |
 
@@ -262,6 +265,40 @@ The Settings confirmations already had correct, tested entry and exit focus beha
 receives focus, cancel returns to the trigger, a removed trigger falls back to the roots heading. M8
 adds containment and `back` there and deliberately leaves that behaviour alone rather than rewriting
 a working screen. Their existing `Escape` handlers still run first and consume the event.
+
+### Launch failure
+
+A normalized launch failure is a temporary surface with exactly the same requirements as the content
+selection, so it gets the same treatment rather than being a bare `InlineError`. Without a scope,
+focus stayed wherever the pending launch had left it — after a content-selected launch, typically
+BACK TO LIBRARY, because the closing selection scope found Play disabled and took its fallback — and
+controller `back` then navigated to the Library instead of dismissing a failure the user had not yet
+acknowledged.
+
+| Requirement | How |
+| --- | --- |
+| Stable scope id | `scope:launch-failure` |
+| Stable action identity | `detail:dismiss-launch-failure` |
+| Entry focus | The scope's own `initialFocus: 'auto'`, and DISMISS is the surface's first focusable |
+| `confirm` | Activates DISMISS |
+| `back` | The scope's dismiss handler — the same dismissal, from anywhere focus happens to sit |
+| Containment | The scope container is the candidate root, so directional movement cannot leave it |
+| No reach-through | `confirm`/`context` are refused while focus sits outside the scope, and the footer stops offering them |
+| Restore | `detail:play`, with `detail:back` as the truthful fallback when Play cannot take focus |
+| Pointer / Tab | Untouched: the surface is deliberately not browser-modal |
+
+No Retry is invented. The M7 launch contract offers dismissal and nothing else here, so the surface
+offers dismissal and nothing else.
+
+**Restoration is explicit, not the scope's automatic restore.** A dismissal is a user action, so at
+that moment the route is certainly still current and Play is certainly the honest target; the focus
+request is issued before the surface unmounts, while Play is still present and enabled. An *unmount*
+is a different event: if the user navigated away before dismissing, the old route must not be dragged
+back, so the scope restores nothing on unmount at all (`restore: 'none'`) and leaves no request that a
+later Game Detail could satisfy.
+
+`InlineError` itself is unchanged. Every other screen that uses it has no M8 focus requirement, and
+rewriting a shared primitive to serve one surface would have changed behaviour nobody asked to change.
 
 ### Pointer, Tab, and assistive technology
 
@@ -305,12 +342,29 @@ would drift. (The Play button's own `disabled` state is a different question —
 may be pressed — and stays where it is.)
 
 **Window focus is not assumed.** In the Tauri desktop shell, ownership requires a native focus state
-that has really been read as focused *and* a focus subscription that was really established; an
+that has really been observed as focused *and* a focus subscription that was really established; an
 unreadable state or a subscription that failed to attach fails **closed**, because RetroFrontier
 cannot honestly claim to own the controller and, without a subscription, could never learn that it
 had lost it. In a plain browser dev server there is no native window to own anything and no emulator
 to take input away, so the window counts as focused and controller development stays usable. The two
 are distinguished with Tauri's own `isTauri()` check, not a user-agent guess.
+
+**The two native observations are sequenced, not raced**, because racing them can grant ownership
+from an observation that was already wrong:
+
+1. Start failed closed. Nothing is owned until something authoritative has been observed.
+2. Establish the focus subscription **first**. Reading first leaves a gap in which a focus change can
+   happen with no listener attached; that change is then lost forever, and the read becomes the only
+   — stale — observation. Concretely: read `true`, lose focus before the listener attaches, then
+   subscribe successfully, and RetroFrontier would own the controller while actually unfocused.
+3. Only once the subscription is established, read the current native state. The listener is already
+   attached, so nothing from that point on can go unobserved.
+4. Once subscribed, **focus events are authoritative.** A read that resolves after an event arrived
+   is an older observation of a state the event has already superseded, and it is discarded rather
+   than allowed to overwrite it. An event counter captured before the read is the ordering evidence.
+
+There is exactly one read, one subscription, and then events: no polling, no retry, and no fail-open
+mode on the desktop side.
 
 The backend remains the only authority on whether a game is running. React never infers an exit from
 a timer, never inspects processes, and the M7 launch contract is unchanged.
@@ -319,20 +373,78 @@ a timer, never inspects processes, and the M7 launch contract is unchanged.
 stops delivering semantic actions and its held state is released. The poll loop keeps running so the
 footer can still say whether a controller is attached, but nothing reaches the UI. RetroFrontier does
 not raise its window, does not request focus, and uses no `xdotool`, `wmctrl`, or compositor
-scripting. Keyboard behaviour follows OS window focus naturally.
+scripting.
 
-**The launch origin is captured by an explicit handoff, not by sampling.** `captureLaunchOrigin()`
-runs synchronously where the UI issues the launch — that is the moment of the user's intent. Sampling
-whichever node happens to be focused once `running` arrives is a different moment: focus, and even
-the route, can change in between, so the recorded "origin" could belong to something the user never
-launched from. What is recorded is the semantic identity **and** the logical route it belonged to.
+**Semantic keyboard navigation is gated by the same predicate, deliberately.** `useKeyboardInput`
+receives the identical `ownsApplicationInput()` value as the controller, so `Escape`, the arrow keys,
+and the `Enter`/`Space` fallback produce no semantic action while a managed game runs, while launch
+state is blocked or pending, or while the application window is unfocused. That is intentional for
+M8 and not a leftover: there is one input-ownership boundary, and a second, more permissive rule for
+keyboard would be a second copy of the ownership question that could drift from the first. Nothing
+platform-level is suppressed by this — Tab order, native `Enter`/`Space` activation on real controls,
+text entry, and the browser's own shortcuts are untouched, because the adapter never handled those in
+the first place; what stops is only RetroFrontier's *semantic* layer. If a concrete requirement ever
+asks for keyboard navigation to stay live during an emulator session, that is a deliberate ownership
+split and needs its own decision, not a quiet divergence here.
+
+**Ownership revocation is synchronous with the commit that revokes it.** The controller poll loop
+reads its dispatch gate from a value written in a **layout** effect, not a passive one. Passive
+effects are flushed in a separate scheduler task after the commit, which leaves an interval in which
+React has already committed `ownsInput === false` while an animation frame still observes the old
+`true` — one more semantic controller frame, produced from a button that already belongs to the
+emulator. A layout effect runs inside the commit, before the browser can paint and therefore before
+any `requestAnimationFrame` callback of the next frame, so no frame can ever see a stale gate. At the
+transition, held and repeat state is dropped and whatever is physically held is *adopted* without
+emitting, in both directions. `useKeyboardInput` applies its gate the same way; its interval is not
+actually reachable, because React flushes pending passive effects before dispatching a discrete
+event, but both adapters honour the one contract rather than relying on that scheduling detail.
+
+**The launch origin is captured by an explicit handoff, not by sampling.**
+`beginLaunchInteraction()` runs synchronously where the UI issues the launch — that is the moment of
+the user's intent. Sampling whichever node happens to be focused once `running` arrives is a
+different moment: focus, and even the route, can change in between, so the recorded "origin" could
+belong to something the user never launched from. What is recorded is the semantic identity **and**
+the logical route it belonged to.
+
+**A multi-step launch is one interaction.** PLAY, a `contentSelectionRequired` answer, and the
+version the user then confirms are the same launch attempt, so the origin is captured once at its
+beginning. The shell calls `beginLaunchInteraction()` on *every* launch, and the hook decides whether
+that call starts a new interaction or continues the open one — capturing again would replace the PLAY
+identity with `launch:content:<ContentUnitId>`, a temporary node that does not exist when RetroArch
+exits. The return would then either wait for the bounded safety fallback or, if the selection surface
+remounted, hand focus to an obsolete control.
+
+The interaction is discarded exactly when it resolves **without** a process:
+
+| Outcome | Interaction |
+| --- | --- |
+| Launch request in flight (`pendingGameId` set) | held |
+| `contentSelectionRequired` | held — this is a continuation, not a resolution |
+| Content selection cancelled | discarded |
+| Normalized launch failure, at either step | discarded; the failure scope owns focus from there |
+| Transport error | discarded |
+| Process started, then exited | consumed by the return |
+| Launch state `blocked` | held, because nothing may be concluded while it is uncertain |
+
+Discarding is what keeps a later, independent launch honest: it captures a fresh origin rather than
+inheriting a stale one. This resolution test is deliberately not a second copy of
+`ownsApplicationInput()` — it asks whether *this interaction* is over, which has nothing to do with
+window focus and treats an open content selection as still in progress.
 
 **When the backend reports the managed game really ended:**
 
 1. `requestAppWindowFocus()` is called **exactly once** per ended session, through the Tauri window
    API. There is no retry, and a window manager that refuses is not fought.
 2. DOM focus is restored **only after** the application window actually reports focus. If the window
-   never comes forward, no DOM focus is stolen into an invisible window.
+   never comes forward, no DOM focus is stolen into an invisible window. **If the window already
+   owns focus when the process ends — the user came back to RetroFrontier while the game was still
+   running — the restoration happens immediately**, because the exit transition itself makes the
+   pending return observable. That is why the pending return is state (a generation token) and not a
+   ref: a ref mutation cannot schedule the restore, so a return recorded that way would wait for a
+   focus change that is never going to arrive and stay pending for the rest of the session. The
+   payload lives in a ref beside it, so consuming the return needs no second state update, and once
+   consumed it cannot repeat — a later rerender, route change, or focus change finds nothing pending
+   and steals nothing.
 3. The target is resolved against the route that is current **at that moment**. If it is still the
    route the launch started from, the captured identity is restored. If the user navigated elsewhere
    during the run they are *not* dragged back: that route's own deterministic target is used —
@@ -349,15 +461,39 @@ gained exactly one permission, `core:window:allow-set-focus`, and nothing else w
 
 Hints are derived from the focus model, never hard-coded per page: the focused node's declared
 `confirm`/`context` labels and the active scope's `back` label. They follow the *state* behind those
-actions, not only the focused identity: a `FocusProvider`-owned revision is bumped when a focused
-node's declared labels change, when a scope opens or closes, and when a back handler appears or
-disappears, and the footer subscribes to it. A Library card that keeps focus while `Context` selects
-it therefore switches from `SELECT` to `DESELECT` immediately, and Play stops offering `CONFIRM` the
-moment it is disabled. Only the footer re-renders; nothing else is invalidated. A node that declares no `context`
-action produces no `X` hint. An unregistered but natively activatable control produces a generic
-`CONFIRM`. While RetroFrontier does not own input, no action hint is shown at all, and while a
-managed game runs the footer says so instead. The existing shell status — `LOCAL LIBRARY` and the
-scan state — is unchanged, and controller connection state is shown where the static note was.
+actions, not only the focused identity. A `FocusProvider`-owned revision is bumped whenever that
+state can have changed, and the footer subscribes to it; only the footer re-renders, and nothing else
+is invalidated.
+
+The revision is bumped when:
+
+| Trigger | Why |
+| --- | --- |
+| A focused node's declared labels change | A Library card switching `SELECT` → `DESELECT`, Play losing `confirm` as it becomes disabled |
+| A scope opens or closes | It owns `back`, and it changes whether `confirm`/`context` may act at all |
+| A back handler appears or disappears | It changes what `B` may claim |
+| The focused **element** changes | Two unregistered controls both have a `null` identity and need not support the same actions, so an identity-keyed signal alone would never re-derive |
+| The focused element's own activation attributes change | A generic native control going disabled from local state, with nothing near the footer rerendering |
+
+The last two are the floor under everything that is not explicitly registered. The attribute watch is
+a single `MutationObserver` pointed at **one** element — whichever currently has focus — filtered to
+the attributes the activatability test actually reads, re-pointed on each focus change and
+disconnected on unmount. It is deliberately not a broad DOM observer.
+
+**Important dynamic actions are still registered explicitly**, because registration also buys an
+honest label. The Settings managed-runtime install/repair action is the case that motivated this: it
+goes enabled → disabled → enabled purely from local runtime state, and as `settings:runtime:action`
+the footer now names what the button really does (`INSTALL RUNTIME`, `REPAIR RUNTIME`,
+`REINSTALL RUNTIME`) and stops offering it while an installation runs, instead of showing a generic
+`CONFIRM` for a control that would refuse it. The policy is: **a control whose activation semantics
+change while it can hold focus should declare a focus identity; anything that does not is still
+covered, but only generically.**
+
+A node that declares no `context` action produces no `X` hint. An unregistered but natively
+activatable control produces a generic `CONFIRM`. While RetroFrontier does not own input, no action
+hint is shown at all, and while a managed game runs the footer says so instead. The existing shell
+status — `LOCAL LIBRARY` and the scan state — is unchanged, and controller connection state is shown
+where the static note was.
 
 ## Known limitations
 

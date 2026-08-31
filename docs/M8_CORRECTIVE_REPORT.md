@@ -17,14 +17,24 @@ support contract).
 | Branch                   | `feat/m8-controller-focus`                                                                                      |
 | Starting HEAD            | `221d2da571da831657f0e746c97516bf6f615120` — `docs(input): document M8 controller and focus architecture`       |
 | Base for the branch diff | `77f5194c76c360bd6eb14e8546a7a4e0998be1aa` (M7.5)                                                               |
-| Final HEAD               | `a7efd6d` — `fix(input): close the M8 launch ownership gap`, plus the documentation commit carrying this report |
-| Pushed                   | The six original M8 commits were already pushed. **No corrective commit was pushed.**                           |
-| PR / merge               | None. No pull request was opened; nothing was merged to `main`.                                                 |
+| Final HEAD               | `5399be498e45c10adbf5117a77a8e463345f49d2` — `docs(input): record M8 corrective findings`, the documentation commit carrying this report (`a7efd6d` is its parent) |
+| Pushed                   | The six original M8 commits were already pushed at `221d2da`. The corrective commits were **local at the time this report was written**, and were **pushed afterwards**, taking `origin/feat/m8-controller-focus` to `5399be4`. |
+| PR / merge               | None at any point. No pull request was opened; nothing was merged to `main`.                                    |
 | Working tree at start    | Clean apart from 29 pre-existing untracked review artifacts, which were left untouched.                         |
+| Superseded by            | A second, final corrective pass starting from `5399be4` — see [`docs/M8_FINAL_CORRECTIVE_REPORT.md`](M8_FINAL_CORRECTIVE_REPORT.md). |
 
 The starting state was verified, not assumed: `git rev-parse HEAD` returned `221d2da…` before any
 change, and the full branch diff `77f5194..221d2da` was read before the first finding was
 investigated.
+
+> **Repository-state correction.** The "No corrective commit was pushed" claim was true when this
+> report was generated; the branch was pushed shortly afterwards. The row above records the actual
+> history. Two further claims in this report were later found to be wrong and are corrected in the
+> final report: `docs/M5_IMPLEMENTATION_REPORT.md` did **not** remain untracked (the documentation
+> commit `5399be4` tracked it), and five behaviours this pass fixed were only partly fixed —
+> the launch-return restoration, the launch origin across content selection, the window-focus
+> bootstrap ordering, the controller ownership gate, and footer reactivity. See
+> [`docs/M8_FINAL_CORRECTIVE_REPORT.md`](M8_FINAL_CORRECTIVE_REPORT.md).
 
 Nine corrective commits were created, each scoped to one root cause:
 
@@ -574,8 +584,10 @@ page receives a real user gesture on the pad. No result is inferred from hardwar
   Nothing was added during the corrective pass.
 - **No shell utilities.** No `xdotool`, `wmctrl`, compositor scripting, or child-process use was
   introduced.
-- **Pre-existing untracked artifacts preserved.** All 29 remain untracked and byte-identical:
-  `M3_REVIEW.md` … `M6_FINAL_REVIEW_2.md` and `docs/M5_IMPLEMENTATION_REPORT.md`.
+- **Pre-existing untracked artifacts preserved.** All 29 were byte-identical, and 28 of them remain
+  untracked. (`docs/M5_IMPLEMENTATION_REPORT.md` was subsequently tracked by the documentation
+  commit `5399be4` and was restored to untracked state by the final corrective pass.) The artifacts
+  are `M3_REVIEW.md` … `M6_FINAL_REVIEW_2.md` and `docs/M5_IMPLEMENTATION_REPORT.md`.
 - `git diff --check` is clean.
 
 ## K. Remaining risks

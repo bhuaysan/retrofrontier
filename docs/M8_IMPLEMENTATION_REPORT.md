@@ -4,16 +4,28 @@
 
 |                                         |                                                                                                                                                                                        |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Starting `main` / `origin/main`         | `77f5194c76c360bd6eb14e8546a7a4e0998be1aa` (expected M7.5 squash merge; the repository had not advanced)                                                                               |
-| Branch                                  | `feat/m8-controller-focus`                                                                                                                                                             |
-| End of the original implementation pass | `221d2da571da831657f0e746c97516bf6f615120` (`docs(input): document M8 controller and focus architecture`) — the only six commits ever pushed                                           |
-| Final HEAD                              | `a7efd6d` (`fix(input): close the M8 launch ownership gap`) plus the documentation commit that carries this revision                                                                   |
-| Pushed / PR / merged                    | The six original M8 commits were pushed. **The nine corrective commits are local only:** nothing was pushed after the corrective pass, no pull request was opened, nothing was merged. |
+| Starting `main` / `origin/main`         | `77f5194c76c360bd6eb14e8546a7a4e0998be1aa` (expected M7.5 squash merge; the repository had not advanced)                                                                       |
+| Branch                                  | `feat/m8-controller-focus`                                                                                                                                                     |
+| End of the original implementation pass | `221d2da571da831657f0e746c97516bf6f615120` (`docs(input): document M8 controller and focus architecture`)                                                                      |
+| End of the first corrective pass        | `5399be498e45c10adbf5117a77a8e463345f49d2` (`docs(input): record M8 corrective findings`)                                                                                     |
+| Push history                            | The six original M8 commits were pushed first, at `221d2da`. The first corrective pass was initially local; it was **subsequently pushed**, so `origin/feat/m8-controller-focus` reached `5399be4`. |
+| PR / merged                             | None at any point. No pull request was opened and nothing was merged to `main`.                                                                                                |
 
 > This report was revised after the M8 adversarial review. It describes the **corrected**
 > implementation and the verification of that implementation, not the state at `221d2da`. The
 > finding-by-finding disposition, including the two findings that were only partially reproduced,
 > is in [`docs/M8_CORRECTIVE_REPORT.md`](M8_CORRECTIVE_REPORT.md).
+>
+> A **second, final** corrective pass was performed afterwards, starting from the pushed
+> `5399be498e45c10adbf5117a77a8e463345f49d2`. Its findings, fixes, and verification are in
+> [`docs/M8_FINAL_CORRECTIVE_REPORT.md`](M8_FINAL_CORRECTIVE_REPORT.md), and behaviour this report
+> describes that the final pass changed — the launch-return state machine, the launch interaction
+> lifetime, the window-focus bootstrap ordering, the controller ownership gate, the launch-failure
+> focus surface, and footer reactivity — is authoritative **there**, not here.
+>
+> **Repository-state note.** The sentence "the nine corrective commits are local only" was accurate
+> when this report was generated and is no longer true: those commits were pushed afterwards. The
+> table above records the actual history rather than restating the moment it was written.
 
 ### Commits created
 
@@ -26,7 +38,7 @@ feat(ui): integrate controller navigation, focus scopes, and controller footer
 docs(input): document M8 controller and focus architecture
 ```
 
-### Corrective commits (local, after the adversarial review)
+### Corrective commits (created after the adversarial review; later pushed)
 
 ```text
 23e6ebd fix(input): preserve native editing keyboard behaviour for Escape
@@ -45,10 +57,17 @@ a7efd6d fix(input): close the M8 launch ownership gap
 Clean apart from pre-existing untracked review artifacts.
 
 The 29 pre-existing untracked artifacts (`M3_REVIEW.md` … `M6_FINAL_REVIEW_2.md`,
-`docs/M5_IMPLEMENTATION_REPORT.md`) are **preserved and still untracked**. They were briefly staged
-by an over-broad `git add -A` during this work; that commit was rebuilt on the local, unshared branch
-so the artifacts are untracked again, and their content is byte-identical to what was there before.
-No other history was rewritten.
+`docs/M5_IMPLEMENTATION_REPORT.md`) are **preserved**. They were briefly staged by an over-broad
+`git add -A` during this work; that commit was rebuilt on the local, unshared branch so the artifacts
+were untracked again, and their content is byte-identical to what was there before. No other history
+was rewritten.
+
+**Correction.** One of them did not stay untracked. `docs/M5_IMPLEMENTATION_REPORT.md` was picked up
+again by the final documentation commit `5399be4` and was therefore tracked on the pushed branch,
+contrary to the claim above. The second corrective pass removed it from the index without touching
+the local file (`chore(repo): restore historical review artifact to untracked state`); see
+[`docs/M8_FINAL_CORRECTIVE_REPORT.md`](M8_FINAL_CORRECTIVE_REPORT.md) § I. The other 28 were never
+tracked at any point.
 
 ### Files added
 
