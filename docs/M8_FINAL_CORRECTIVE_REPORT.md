@@ -23,8 +23,15 @@ satisfy the requirement.
 | Starting `origin/feat/m8-controller-focus` | `5399be498e45c10adbf5117a77a8e463345f49d2` — identical, so the branch had not advanced |
 | M7.5 base (`main` / `origin/main`) | `77f5194c76c360bd6eb14e8546a7a4e0998be1aa` — both, unchanged                        |
 | Final local `HEAD`         | the ninth commit, `docs(input): finalize M8 corrective qualification record`, which carries this report (a report cannot name its own commit's hash; `git log -1` gives it) |
-| Pushed                     | **No.** The nine commits of this pass (eight code/hygiene plus this documentation commit) are local only. Nothing was pushed. |
+| Pushed                     | The nine commits of this pass (eight code/hygiene plus the documentation commit) were **local only when this report was written**. They were **subsequently pushed** as a fast-forward: `origin/feat/m8-controller-focus` went from `5399be498e45c10adbf5117a77a8e463345f49d2` to `d19b7a917f521fb53beac3c35f908ffd5ca6ef58`. No history was rewritten. |
 | PR / merge                 | None. No pull request was opened; nothing was merged to `main`.                               |
+
+> **Repository-state note, added after the fact.** The "Pushed: No" row above was accurate at the
+> moment this report was generated. The pass was reviewed and then pushed, so the row now records the
+> actual history instead. A **third** pass followed — the launch-interaction lifecycle fix in
+> [`docs/M8_LAUNCH_LIFECYCLE_FINAL_REPORT.md`](M8_LAUNCH_LIFECYCLE_FINAL_REPORT.md) — which starts
+> from `d19b7a9` and is local only unless instructed otherwise. Behaviour that pass changed (transient
+> launch-state ownership, and the content-selection scope's restoration) is authoritative **there**.
 
 The starting state was verified, not assumed, before any file was changed:
 
@@ -720,3 +727,7 @@ Linux/DualSense gate is **not** performed and cannot be self-certified from this
 `M8 FINAL CORRECTIVE PASS — READY FOR FINAL REVIEW`
 
 Subject to the manual qualification in § K, which remains an open, operator-owned gate.
+
+This verdict stood for the state at `d19b7a9`. A subsequent narrow review found one further launch
+lifecycle defect — transient launch state had no owning game — which is fixed and recorded in
+[`docs/M8_LAUNCH_LIFECYCLE_FINAL_REPORT.md`](M8_LAUNCH_LIFECYCLE_FINAL_REPORT.md).

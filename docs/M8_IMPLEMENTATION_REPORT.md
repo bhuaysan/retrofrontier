@@ -16,12 +16,18 @@
 > finding-by-finding disposition, including the two findings that were only partially reproduced,
 > is in [`docs/M8_CORRECTIVE_REPORT.md`](M8_CORRECTIVE_REPORT.md).
 >
-> A **second, final** corrective pass was performed afterwards, starting from the pushed
+> A **second** corrective pass was performed afterwards, starting from the pushed
 > `5399be498e45c10adbf5117a77a8e463345f49d2`. Its findings, fixes, and verification are in
 > [`docs/M8_FINAL_CORRECTIVE_REPORT.md`](M8_FINAL_CORRECTIVE_REPORT.md), and behaviour this report
-> describes that the final pass changed — the launch-return state machine, the launch interaction
+> describes that the second pass changed — the launch-return state machine, the launch interaction
 > lifetime, the window-focus bootstrap ordering, the controller ownership gate, the launch-failure
-> focus surface, and footer reactivity — is authoritative **there**, not here.
+> focus surface, and footer reactivity — is authoritative **there**, not here. That pass was pushed
+> as a fast-forward to `d19b7a917f521fb53beac3c35f908ffd5ca6ef58`.
+>
+> A **third** pass then fixed one remaining launch lifecycle defect: transient frontend launch state
+> was application-global and not owned by the Game Detail route that created it. The frontend launch
+> model, the transient-UI ownership rules, and the content-selection scope's focus restoration are
+> authoritative in [`docs/M8_LAUNCH_LIFECYCLE_FINAL_REPORT.md`](M8_LAUNCH_LIFECYCLE_FINAL_REPORT.md).
 >
 > **Repository-state note.** The sentence "the nine corrective commits are local only" was accurate
 > when this report was generated and is no longer true: those commits were pushed afterwards. The

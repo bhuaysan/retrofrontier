@@ -247,16 +247,29 @@ regardless of where focus sits.
 
 **Scope restoration is resolved after the commit that closed the scope.** React detaches a deleted
 subtree's refs *before* it applies that same commit's sibling updates, so a restoration performed
-inside the cleanup sees the pre-update DOM. The launch content-selection surface is exactly that
-case: choosing a version closes the surface and marks the launch pending together, and Play — the
-restoration target — is only disabled after the cleanup runs. Restoring there would hand focus to a
-control the browser blurs a moment later. The restoration therefore runs once the commit has settled,
-still as a single attempt, and stands aside if focus already landed somewhere real or if another
-owner (a route change, say) already has a request outstanding.
+inside the cleanup sees the pre-update DOM. The generic `restoreTo`/`restoreFallback` mechanism
+therefore runs once the commit has settled, still as a single attempt, and stands aside if focus
+already landed somewhere real or if another owner (a route change, say) already has a request
+outstanding.
+
+**Both launch scopes restore explicitly instead, because the generic mechanism cannot tell *why* the
+surface closed.** A user action and a route unmount are different events with different honest
+answers, and the generic cleanup fires for both. On a route unmount neither `detail:play` nor
+`detail:back` exists any more, so the restoration became a pending request with the 1.2 s safety
+timer — and the next Game Detail route to mount registered `detail:play`, satisfied that stale
+request through `resolveOnRegister`, and stole focus from its own route-entry heading. Both launch
+scopes therefore declare `restore: 'none'` and restore per user action:
+
+| Event | Focus |
+| --- | --- |
+| Content selection **cancelled** | `detail:play`, requested before the surface closes while Play is still mounted and enabled, so it resolves at once; `detail:back` is the fallback |
+| A **version confirmed** | `detail:back` — deliberately *not* Play, which the launch this click issues disables in the same commit. Back is the only Game Detail control that stays enabled through a pending launch, so it is the truthful interim target; when the launch resolves, the failure surface takes focus or the post-exit return restores Play |
+| Launch failure **dismissed** | `detail:play`, requested before the surface closes; `detail:back` as the fallback |
+| **Route unmount** (either scope) | Nothing. The user navigated away, so the old route must not be dragged back, and no request survives to steal focus from the next route |
 
 | Scope | Entry / exit focus | `back` |
 | --- | --- | --- |
-| Launch content selection | Managed by the scope; exit restores `detail:play` | Cancels the selection |
+| Launch content selection | Entry managed by the scope; **Cancel** restores `detail:play`, confirming a version moves to `detail:back`, route unmount restores nothing | Cancels the selection |
 | Launch failure | Entry focuses DISMISS; dismissal restores `detail:play`, falling back to `detail:back` | Dismisses the failure |
 | Settings root removal | Left to Settings' existing behaviour | Cancels the removal |
 | Settings metadata-account clear | Left to Settings' existing behaviour | Cancels the confirmation |
@@ -299,6 +312,8 @@ later Game Detail could satisfy.
 
 `InlineError` itself is unchanged. Every other screen that uses it has no M8 focus requirement, and
 rewriting a shared primitive to serve one surface would have changed behaviour nobody asked to change.
+
+The content-selection scope now follows the same explicit pattern; see the table above.
 
 ### Pointer, Tab, and assistive technology
 
@@ -430,6 +445,67 @@ Discarding is what keeps a later, independent launch honest: it captures a fresh
 inheriting a stale one. This resolution test is deliberately not a second copy of
 `ownsApplicationInput()` — it asks whether *this interaction* is over, which has nothing to do with
 window focus and treats an open content selection as still in progress.
+
+### Transient launch state has an owning game
+
+Transient launch state — a pending launch surface, a content-option list, a normalized failure —
+belongs to the Game Detail route that started it. `useGameLaunch` therefore owns an explicit
+presentation identity:
+
+```ts
+interface LaunchInteraction {
+  gameId: number;                                       // who started it
+  phase: 'pending' | 'contentSelection' | 'failure';    // what it is presenting
+}
+```
+
+It answers three questions without inference: which game owns the current transient launch
+interaction, whether that interaction is still open, and whether *this* Game Detail route may render
+its transient UI. It is **presentation ownership only** and is never consulted about process state —
+the backend remains the sole authority on whether a game is running.
+
+Without it, `contentOptions` and `failure` were application-global with no owner, so whichever Game
+Detail route happened to be current rendered them. Because M8 deliberately does **not** browser-trap
+Tab or the pointer inside a focus scope, leaving a temporary launch surface through ordinary
+navigation is a valid path — and taking it, then opening another game, showed Game A's version list
+(holding focus inside it) or Game A's failure on Game B. Confirming an option there would have called
+`launch(GameB, GameAContentUnitId)`; Rust rejects the mismatch, so this was never an authority
+failure, but the frontend state and the UI were wrong.
+
+Two things enforce it:
+
+- **The shell abandons the interaction** when the current route is no longer the owning game's. One
+  effect covers every navigation path — pointer, Tab, browser back, semantic back, sidebar, wordmark,
+  mobile nav — rather than one guard per control.
+- **Game Detail receives a route-scoped view.** `contentOptions` and `failure` are masked unless the
+  interaction belongs to the current game, so a screen structurally *cannot* render transient state it
+  does not own, not even for the single render between a route change and the abandonment effect.
+  `pendingGameId`, `running`, and `blocked` stay global, because those are facts about the
+  application, not about one screen's surface.
+
+**Route abandonment drops presentation and nothing else.** An IPC request cannot be cancelled by
+deleting frontend state, so the request is still allowed to resolve; `pendingGameId` stays set and
+input ownership stays released, because RetroArch may already exist. Every response is then judged on
+two independent questions — is it still the current request, and does the interaction still belong to
+the game that asked:
+
+| Response after abandonment | Handling |
+| --- | --- |
+| `started` | **Adopted.** The user asked for that process and the backend created it; a route change must never make a real running process disappear. `pendingGameId` clears, the interaction closes, and the return lifecycle takes over. |
+| `contentSelectionRequired` | `pendingGameId` clears; the option list is **discarded**, never painted on another route. |
+| `failed` | `pendingGameId` clears; the failure is **discarded**. |
+| transport rejection | Same as `failed`. |
+| launch-state event | Always authoritative, unconditionally. |
+
+`pendingGameId` clears on **every** resolution regardless of ownership, because the request really did
+resolve and the ownership predicate depends on that fact.
+
+**Only one frontend launch request may be unresolved at a time.** The invariant lives in
+`useGameLaunch`, not only in the UI: a second request would make the first response irrelevant through
+the request-generation counter, and the first request may already have created a real process. Play
+says so truthfully — `ANOTHER GAME IS LAUNCHING` — instead of looking idle. A content-option
+continuation is not a second request; the first has already resolved by then. Keying availability on
+`pendingGameId === gameId` alone was what let the second request displace the first.
 
 **When the backend reports the managed game really ended:**
 
