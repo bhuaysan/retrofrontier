@@ -1,4 +1,4 @@
-import { useFocusApi, useFocusedNodeId } from '../../focus/focusContext';
+import { useFocusActionRevision, useFocusApi, useFocusedNodeId } from '../../focus/focusContext';
 import { deriveFooterHints, NO_SUPPORTED_ACTIONS } from '../../focus/footerHints';
 
 interface ControllerFooterProps {
@@ -7,6 +7,8 @@ interface ControllerFooterProps {
   /** False while a managed game or another window owns input; no action may be claimed then. */
   interactive: boolean;
   controllerConnected: boolean;
+  /** A pad is attached whose mapping RetroFrontier cannot interpret, so it is not usable here. */
+  controllerUnsupported?: boolean;
   /** True while a managed game is running, which is why RetroFrontier is not consuming input. */
   gameRunning: boolean;
 }
@@ -22,11 +24,16 @@ export function ControllerFooter({
   status,
   interactive,
   controllerConnected,
+  controllerUnsupported = false,
   gameRunning,
 }: ControllerFooterProps) {
   const api = useFocusApi();
-  // Subscribing to the focused identity is what re-renders the footer as focus moves.
+  // Subscribing to the focused identity re-renders the footer as focus moves; subscribing to the
+  // action revision re-renders it when the *state* behind those actions changed while the focused
+  // identity stayed the same — a card toggling SELECT/DESELECT, a scope opening, Play going
+  // disabled. Without it a hint could describe an action the focused node no longer supports.
   useFocusedNodeId();
+  useFocusActionRevision();
   const hints = deriveFooterHints(interactive ? api.getSupportedActions() : NO_SUPPORTED_ACTIONS);
 
   return (
@@ -51,7 +58,11 @@ export function ControllerFooter({
         </ul>
       )}
       <span className="footer-note">
-        {controllerConnected ? 'CONTROLLER CONNECTED' : 'ROM files stay on your disk'}
+        {controllerConnected
+          ? 'CONTROLLER CONNECTED'
+          : controllerUnsupported
+            ? 'CONTROLLER NOT SUPPORTED'
+            : 'ROM files stay on your disk'}
       </span>
     </footer>
   );
