@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -358,7 +358,11 @@ describe('FocusProvider scopes', () => {
     expect(dismissed).toHaveBeenCalledTimes(1);
   });
 
-  it('restores the initiating target when the scope closes', () => {
+  // The restoration itself is unchanged; only its timing is. A closing scope resolves its target
+  // after the commit that removed it, because React applies sibling updates of that same commit
+  // after detaching the removed subtree's refs — so mid-commit the DOM still describes the old
+  // state. The assertion is therefore awaited rather than weakened.
+  it('restores the initiating target when the scope closes', async () => {
     function Harness() {
       const [open, setOpen] = useState(true);
       return <Detail onDismiss={() => setOpen(false)} open={open} />;
@@ -367,7 +371,41 @@ describe('FocusProvider scopes', () => {
     layoutDetail();
     expect(screen.getByText('OPTION A')).toHaveFocus();
     send('back');
-    expect(screen.getByText('PLAY')).toHaveFocus();
+    await waitFor(() => expect(screen.getByText('PLAY')).toHaveFocus());
+  });
+
+  it('does not displace a request another owner already made while the scope was closing', async () => {
+    function Harness() {
+      const api = useFocusApi();
+      const [open, setOpen] = useState(true);
+      return (
+        <>
+          <button
+            data-testid="navigate"
+            onClick={() => {
+              setOpen(false);
+              api.requestFocus(focusNodes.libraryHeading, { resolveOnRegister: true });
+            }}
+            type="button"
+          />
+          <h1 ref={useFocusNode({ id: focusNodes.libraryHeading })} tabIndex={-1}>
+            LIBRARY
+          </h1>
+          <DetailBody onDismiss={() => setOpen(false)} open={open} />
+        </>
+      );
+    }
+    render(
+      <FocusProvider>
+        <Harness />
+      </FocusProvider>,
+    );
+    layoutDetail();
+    act(() => {
+      fireEvent.click(screen.getByTestId('navigate'));
+    });
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'LIBRARY' })).toHaveFocus());
+    expect(screen.getByText('PLAY')).not.toHaveFocus();
   });
 });
 
@@ -397,5 +435,327 @@ describe('FocusProvider pointer and keyboard coexistence', () => {
     });
     send('up');
     expect(screen.getByText('GAME 1')).toHaveFocus();
+  });
+});
+
+describe('FocusProvider awaitSettle safety timeout', () => {
+  function SettleHarness({ ids, restore }: { ids: number[]; restore: number | null }) {
+    const api = useFocusApi();
+    const [requested, setRequested] = useState(false);
+    if (restore !== null && !requested) {
+      setRequested(true);
+      api.requestFocus(focusNodes.libraryGame(restore), {
+        awaitSettle: true,
+        fallback: focusNodes.libraryHeading,
+      });
+    }
+    return (
+      <>
+        <button data-testid="settle" onClick={() => api.settleFocusRequest()} type="button" />
+        <h1 id="heading" ref={useFocusNode({ id: focusNodes.libraryHeading })} tabIndex={-1}>
+          LIBRARY
+        </h1>
+        {ids.map((gameId) => (
+          <Card gameId={gameId} key={gameId} />
+        ))}
+      </>
+    );
+  }
+
+  it('never focuses a stale target when the safety timeout fires before the surface settles', () => {
+    vi.useFakeTimers();
+    const focused: string[] = [];
+    const focusSpy = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      focused.push(this.textContent?.trim() ?? this.id);
+    });
+    try {
+      // The old query result is still rendered and still contains GAME 2.
+      const { rerender } = render(
+        <FocusProvider>
+          <SettleHarness ids={[1, 2]} restore={2} />
+        </FocusProvider>,
+      );
+
+      // The bounded Library query outlives the safety timeout.
+      act(() => {
+        vi.advanceTimersByTime(2_000);
+      });
+
+      // The stale card must never take a focus the caller explicitly asked not to trust yet.
+      expect(focused).not.toContain('GAME 2');
+      expect(focused).toEqual(['LIBRARY']);
+
+      // The eventual new result no longer contains that game, and settling afterwards must not
+      // reopen a resolved request or steal focus again.
+      rerender(
+        <FocusProvider>
+          <SettleHarness ids={[1, 3]} restore={null} />
+        </FocusProvider>,
+      );
+      act(() => {
+        fireEvent.click(screen.getByTestId('settle'));
+      });
+      expect(focused).toEqual(['LIBRARY']);
+    } finally {
+      focusSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('still focuses the target when the surface settles with it present', () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <FocusProvider>
+          <SettleHarness ids={[1, 2]} restore={2} />
+        </FocusProvider>,
+      );
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+      act(() => {
+        fireEvent.click(screen.getByTestId('settle'));
+      });
+      expect(screen.getByText('GAME 2')).toHaveFocus();
+
+      // The resolved request must not fire again when the timer would have elapsed.
+      act(() => {
+        screen.getByText('GAME 1').focus();
+      });
+      act(() => {
+        vi.advanceTimersByTime(5_000);
+      });
+      expect(screen.getByText('GAME 1')).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('FocusProvider scope activation boundary', () => {
+  function OutsideAction({ onRun }: { onRun: () => void }) {
+    const ref = useFocusNode({
+      id: focusNodes.detail('favorite'),
+      confirm: { label: 'FAVORITE', run: onRun },
+      context: { label: 'MORE', run: onRun },
+    });
+    return (
+      <button className="outside" onClick={onRun} ref={ref} type="button">
+        FAVORITE
+      </button>
+    );
+  }
+
+  function ScopedBody({
+    onDismiss,
+    onOutside,
+    open,
+  }: {
+    onDismiss: () => void;
+    onOutside: () => void;
+    open: boolean;
+  }) {
+    const scopeRef = useFocusScope({ id: 'scope:test', onDismiss, dismissLabel: 'CANCEL' });
+    return (
+      <>
+        <Dispatcher />
+        <OutsideAction onRun={onOutside} />
+        <button className="outside-native" onClick={onOutside} type="button">
+          NATIVE OUTSIDE
+        </button>
+        {open ? (
+          <div className="scope" ref={scopeRef}>
+            <button className="scoped" type="button">
+              OPTION A
+            </button>
+            <button className="scoped" type="button">
+              OPTION B
+            </button>
+          </div>
+        ) : null}
+      </>
+    );
+  }
+
+  function Harness({ onOutside }: { onOutside: () => void }) {
+    const [open, setOpen] = useState(true);
+    return (
+      <FocusProvider>
+        <ScopedBody onDismiss={() => setOpen(false)} onOutside={onOutside} open={open} />
+      </FocusProvider>
+    );
+  }
+
+  function layoutScoped() {
+    hideDispatcher();
+    layoutColumn([
+      ...document.querySelectorAll('.scoped'),
+      ...document.querySelectorAll('.outside'),
+      ...document.querySelectorAll('.outside-native'),
+    ]);
+  }
+
+  it('refuses controller confirm on a registered node outside the active scope', () => {
+    const onOutside = vi.fn();
+    render(<Harness onOutside={onOutside} />);
+    layoutScoped();
+
+    // Tab or a pointer can still move focus outside a non-modal scope.
+    act(() => screen.getByText('FAVORITE').focus());
+    send('confirm');
+    expect(onOutside).not.toHaveBeenCalled();
+  });
+
+  it('refuses controller context on a node outside the active scope', () => {
+    const onOutside = vi.fn();
+    render(<Harness onOutside={onOutside} />);
+    layoutScoped();
+
+    act(() => screen.getByText('FAVORITE').focus());
+    send('context');
+    expect(onOutside).not.toHaveBeenCalled();
+  });
+
+  it('refuses the native-activation fallback outside the active scope', () => {
+    const onOutside = vi.fn();
+    render(<Harness onOutside={onOutside} />);
+    layoutScoped();
+
+    act(() => screen.getByText('NATIVE OUTSIDE').focus());
+    send('confirm');
+    expect(onOutside).not.toHaveBeenCalled();
+  });
+
+  it('re-enters the scope on the next directional action', () => {
+    const onOutside = vi.fn();
+    render(<Harness onOutside={onOutside} />);
+    layoutScoped();
+
+    act(() => screen.getByText('FAVORITE').focus());
+    send('down');
+    expect(screen.getByText('OPTION A')).toHaveFocus();
+  });
+
+  it('activates ordinary nodes again once the scope is dismissed', () => {
+    const onOutside = vi.fn();
+    render(<Harness onOutside={onOutside} />);
+    layoutScoped();
+
+    send('back');
+    act(() => screen.getByText('FAVORITE').focus());
+    send('confirm');
+    expect(onOutside).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('FocusProvider target focusability', () => {
+  function Restorer({
+    disabled,
+    hidden,
+    target,
+  }: {
+    disabled: boolean;
+    hidden: boolean;
+    target: string;
+  }) {
+    const api = useFocusApi();
+    const playRef = useFocusNode({ id: focusNodes.detail('play') });
+    const headingRef = useFocusNode({ id: focusNodes.libraryHeading });
+    return (
+      <>
+        <button
+          data-testid="restore"
+          onClick={() =>
+            api.requestFocus(target, {
+              fallback: focusNodes.libraryHeading,
+              resolveOnRegister: true,
+            })
+          }
+          type="button"
+        />
+        <button className="play" disabled={disabled} inert={hidden} ref={playRef} type="button">
+          PLAY
+        </button>
+        <h1 ref={headingRef} tabIndex={-1}>
+          LIBRARY
+        </h1>
+      </>
+    );
+  }
+
+  function restore() {
+    act(() => {
+      fireEvent.click(screen.getByTestId('restore'));
+    });
+  }
+
+  it('does not treat a disabled target as a successful restoration', () => {
+    render(
+      <FocusProvider>
+        <Restorer disabled hidden={false} target={focusNodes.detail('play')} />
+      </FocusProvider>,
+    );
+    restore();
+    expect(screen.getByText('PLAY')).not.toHaveFocus();
+    expect(screen.getByRole('heading', { name: 'LIBRARY' })).toHaveFocus();
+  });
+
+  it('does not treat an inert target as a successful restoration', () => {
+    render(
+      <FocusProvider>
+        <Restorer disabled={false} hidden target={focusNodes.detail('play')} />
+      </FocusProvider>,
+    );
+    restore();
+    expect(screen.getByRole('heading', { name: 'LIBRARY' })).toHaveFocus();
+  });
+
+  it('restores an enabled target and keeps the programmatic heading fallback usable', () => {
+    render(
+      <FocusProvider>
+        <Restorer disabled={false} hidden={false} target={focusNodes.detail('play')} />
+      </FocusProvider>,
+    );
+    restore();
+    expect(screen.getByText('PLAY')).toHaveFocus();
+  });
+
+  it('fails cleanly for a target that was never registered', () => {
+    render(
+      <FocusProvider>
+        <Restorer disabled={false} hidden={false} target={focusNodes.detail('missing')} />
+      </FocusProvider>,
+    );
+    restore();
+    expect(document.body).toHaveFocus();
+  });
+
+  it('reports focusNode failure rather than a false success', () => {
+    const results: boolean[] = [];
+    function Probe() {
+      const api = useFocusApi();
+      return (
+        <button
+          data-testid="probe"
+          onClick={() => {
+            results.push(api.focusNode(focusNodes.detail('play')));
+            results.push(api.focusNode(focusNodes.libraryHeading));
+          }}
+          type="button"
+        />
+      );
+    }
+    render(
+      <FocusProvider>
+        <Probe />
+        <Restorer disabled hidden={false} target={focusNodes.detail('play')} />
+      </FocusProvider>,
+    );
+    act(() => {
+      fireEvent.click(screen.getByTestId('probe'));
+    });
+    expect(results).toEqual([false, true]);
   });
 });

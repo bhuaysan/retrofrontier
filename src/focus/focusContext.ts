@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef } from 'react
 
 import type { InputAction, InputSource } from '../input/actions';
 import type { SupportedActions } from './footerHints';
+import { isProgrammaticallyFocusable } from './focusability';
 import { ROOT_FOCUS_SCOPE, type FocusNodeId, type FocusScopeId } from './focusNodes';
 import type { FocusActionSpec, FocusNodeMeta } from './focusRegistry';
 
@@ -61,6 +62,11 @@ export interface ScopeEntry {
 export interface PendingFocusRequest {
   target: FocusNodeId;
   fallback: FocusNodeId | null;
+  /**
+   * The caller declared that the target may not be trusted until the owning surface settles. The
+   * safety timeout therefore may not focus the target — only the deterministic fallback.
+   */
+  awaitSettle: boolean;
   resolveOnRegister: boolean;
 }
 
@@ -77,13 +83,29 @@ export interface FocusApi {
   requestFocus: (target: FocusNodeId, options?: FocusRequestOptions) => void;
   settleFocusRequest: () => void;
   cancelFocusRequest: () => void;
+  /** Whether a focus request is still outstanding. A later owner must not silently displace it. */
+  hasPendingFocusRequest: () => boolean;
+  /**
+   * The focused semantic identity, read synchronously. It is updated in the `focusin` handler, so a
+   * caller inside an event handler — capturing a launch origin at the moment PLAY is pressed — sees
+   * the identity that is focused right now rather than React state from the previous render.
+   */
+  getFocusedNodeId: () => FocusNodeId | null;
   dispatch: (action: InputAction, source: InputSource) => void;
   getSupportedActions: () => SupportedActions;
+  /** The declared actions of a node changed while its identity stayed the same. */
+  notifyNodeActionsChanged: (id: FocusNodeId) => void;
 }
 
 export const FocusApiContext = createContext<FocusApi | null>(null);
 export const FocusScopeContext = createContext<FocusScopeId>(ROOT_FOCUS_SCOPE);
 export const FocusStateContext = createContext<FocusNodeId | null>(null);
+/**
+ * Bumped whenever the *state* behind the supported actions changed without the focused identity
+ * changing — a node's labels, a scope opening or closing, a back handler appearing. Consumers of
+ * this context re-read `getSupportedActions()`; nothing else re-renders.
+ */
+export const FocusActionRevisionContext = createContext(0);
 
 /**
  * An inert focus API.
@@ -100,8 +122,11 @@ const INERT_FOCUS_API: FocusApi = {
   requestFocus: () => undefined,
   settleFocusRequest: () => undefined,
   cancelFocusRequest: () => undefined,
+  hasPendingFocusRequest: () => false,
+  getFocusedNodeId: () => null,
   dispatch: () => undefined,
   getSupportedActions: () => ({ confirm: null, back: null, context: null }),
+  notifyNodeActionsChanged: () => undefined,
 };
 
 export function useFocusApi(): FocusApi {
@@ -111,6 +136,18 @@ export function useFocusApi(): FocusApi {
 /** The semantic identity of the currently focused node, or `null` when it has none. */
 export function useFocusedNodeId(): FocusNodeId | null {
   return useContext(FocusStateContext);
+}
+
+/** Subscribes to changes in the supported-action state that keep the same focused identity. */
+export function useFocusActionRevision(): number {
+  return useContext(FocusActionRevisionContext);
+}
+
+/** The label part of a node's declared actions: exactly what the footer can show. */
+function actionSignature(options: FocusNodeOptions): string {
+  const spec = (action: FocusActionSpec | null | undefined) =>
+    action === null || action === undefined ? '\u0000' : action.label;
+  return `${spec(options.confirm)}\u0001${spec(options.context)}`;
 }
 
 /**
@@ -126,6 +163,17 @@ export function useFocusNode(options: FocusNodeOptions) {
   });
   const meta = useCallback((): FocusNodeMeta => optionsRef.current, []);
   const { id } = options;
+
+  // A node whose declared labels changed while it stays focused — a card toggling SELECT/DESELECT,
+  // Play losing `confirm` as it becomes disabled — must make the footer reactive. The signature
+  // guard means an ordinary rerender that changed nothing notifies nothing.
+  const signature = actionSignature(options);
+  const previousSignature = useRef(signature);
+  useEffect(() => {
+    if (previousSignature.current === signature) return;
+    previousSignature.current = signature;
+    api.notifyNodeActionsChanged(id);
+  }, [api, id, signature]);
 
   return useCallback(
     (element: HTMLElement | null) => {
@@ -192,10 +240,33 @@ export function useFocusScope(options: ScopeOptions) {
         releaseScope();
         const closing = optionsRef.current;
         if ((closing.restore ?? 'auto') === 'none') return;
-        if (closing.restoreTo === undefined || closing.restoreTo === null) return;
-        api.requestFocus(closing.restoreTo, {
-          fallback: closing.restoreFallback ?? null,
-          resolveOnRegister: true,
+        const restoreTo = closing.restoreTo;
+        if (restoreTo === undefined || restoreTo === null) return;
+        const fallback = closing.restoreFallback ?? null;
+
+        // The restoration is resolved *after* this commit, not inside it.
+        //
+        // React detaches a deleted subtree's refs before it applies the sibling updates of the same
+        // commit, so mid-commit the DOM still shows the previous state. The launch content-selection
+        // surface is exactly that case: choosing a version closes the surface and marks the launch
+        // pending in one commit, and Play — the restoration target — is only disabled after this
+        // cleanup runs. Restoring mid-commit would hand focus to a control the browser blurs a
+        // moment later. One microtask is not a poll and not a retry: it is the same single attempt,
+        // made once the DOM it depends on has settled.
+        queueMicrotask(() => {
+          // Something with a stronger claim already asked for focus — a route change issuing its own
+          // request, for instance. A closing scope must not displace it.
+          if (api.hasPendingFocusRequest()) return;
+          const active = document.activeElement;
+          if (
+            active instanceof HTMLElement &&
+            active !== document.body &&
+            isProgrammaticallyFocusable(active)
+          ) {
+            // Focus already landed somewhere real, so there is nothing to restore.
+            return;
+          }
+          api.requestFocus(restoreTo, { fallback, resolveOnRegister: true });
         });
       };
     },

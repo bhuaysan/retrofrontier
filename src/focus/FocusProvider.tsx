@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { isDirectionalAction, type InputAction } from '../input/actions';
 import {
   FocusApiContext,
+  FocusActionRevisionContext,
   FocusScopeContext,
   FocusStateContext,
   type BackEntry,
@@ -12,6 +13,7 @@ import {
   type PendingFocusRequest,
   type ScopeEntry,
 } from './focusContext';
+import { focusMoved } from './focusability';
 import { NO_SUPPORTED_ACTIONS, type SupportedActions } from './footerHints';
 import { ROOT_FOCUS_SCOPE, type FocusNodeId, type FocusScopeId } from './focusNodes';
 import { FocusRegistry } from './focusRegistry';
@@ -55,7 +57,11 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   // The focused identity is also kept in a ref so the API object never changes identity when focus
   // moves. A changing API would re-run every effect and re-attach every scope on each focus change.
   const focusedNodeIdRef = useRef<FocusNodeId | null>(null);
-  const focusedActivatable = useRef(false);
+  // Footer hints follow the *state* of the focused node, not only its identity. A revision counter
+  // is the smallest thing that makes that reactive without forcing unrelated components to rerender:
+  // it lives in its own context, so only the footer re-reads the supported actions.
+  const [actionRevision, setActionRevision] = useState(0);
+  const bumpActionRevision = useCallback(() => setActionRevision((revision) => revision + 1), []);
 
   const activeScope = useCallback(
     (): ScopeEntry | null => scopeStack.current[scopeStack.current.length - 1] ?? null,
@@ -66,9 +72,9 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     document.documentElement.dataset.inputMode = mode;
   }, []);
 
-  const focusElement = useCallback((element: HTMLElement) => {
-    element.focus();
-  }, []);
+  // Every programmatic focus goes through the same check: an element that silently refuses focus —
+  // a disabled Play button, an inert or detached node — must never be reported as a success.
+  const focusElement = useCallback((element: HTMLElement) => focusMoved(element), []);
 
   const clearPending = useCallback(() => {
     pending.current = null;
@@ -80,34 +86,60 @@ export function FocusProvider({ children }: { children: ReactNode }) {
 
   const focusNode = useCallback(
     (id: FocusNodeId) => {
-      const registration = registry.get(id);
+      const registration = registry.focusable(id);
       if (registration === null) return false;
-      focusElement(registration.element);
-      return true;
+      return focusElement(registration.element);
     },
     [focusElement, registry],
   );
 
-  const resolvePending = useCallback(() => {
-    const request = pending.current;
-    if (request === null) return;
-    clearPending();
-    if (focusNode(request.target)) return;
-    if (request.fallback !== null) focusNode(request.fallback);
-  }, [clearPending, focusNode]);
+  /**
+   * Resolves the outstanding request.
+   *
+   * `expired` is the safety timer rather than the owning surface. An `awaitSettle` request said
+   * explicitly that its target may not be trusted until the surface settles, so the timer may only
+   * take the deterministic fallback — focusing a target the caller asked us not to trust yet is the
+   * exact stale-focus bug the flag exists to prevent.
+   */
+  const resolvePending = useCallback(
+    (expired = false) => {
+      const request = pending.current;
+      if (request === null) return;
+      clearPending();
+      if (!(expired && request.awaitSettle) && focusNode(request.target)) return;
+      if (request.fallback !== null) focusNode(request.fallback);
+    },
+    [clearPending, focusNode],
+  );
+
+  const settleFocusRequest = useCallback(() => resolvePending(false), [resolvePending]);
 
   const requestFocus = useCallback(
     (target: FocusNodeId, options: FocusRequestOptions = {}) => {
       clearPending();
-      if (options.awaitSettle !== true && focusNode(target)) return;
+      const fallback = options.fallback ?? null;
+      if (options.awaitSettle !== true) {
+        if (focusNode(target)) return;
+        // The target is already mounted and refused focus — a disabled control, for instance.
+        // Waiting for it to appear would be waiting for something that is already here, so the
+        // fallback is taken immediately rather than after the safety timeout.
+        if (registry.get(target) !== null) {
+          if (fallback !== null) focusNode(fallback);
+          return;
+        }
+      }
       pending.current = {
         target,
-        fallback: options.fallback ?? null,
+        fallback,
+        awaitSettle: options.awaitSettle === true,
         resolveOnRegister: options.resolveOnRegister === true,
       };
-      pendingTimer.current = window.setTimeout(resolvePending, PENDING_FOCUS_TIMEOUT_MS);
+      pendingTimer.current = window.setTimeout(
+        () => resolvePending(true),
+        PENDING_FOCUS_TIMEOUT_MS,
+      );
     },
-    [clearPending, focusNode, resolvePending],
+    [clearPending, focusNode, registry, resolvePending],
   );
 
   const registerNode = useCallback<FocusApi['registerNode']>(
@@ -115,27 +147,59 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       const release = registry.register(registration);
       const request = pending.current;
       if (request !== null && request.resolveOnRegister && request.target === registration.id) {
-        clearPending();
-        focusElement(registration.element);
+        // The request is consumed only if the freshly registered element really took focus. A node
+        // that mounts disabled must not silently swallow the restoration.
+        if (focusElement(registration.element)) {
+          clearPending();
+        } else if (request.fallback !== null) {
+          clearPending();
+          focusNode(request.fallback);
+        }
       }
       return release;
     },
-    [clearPending, focusElement, registry],
+    [clearPending, focusElement, focusNode, registry],
   );
 
-  const registerBack = useCallback<FocusApi['registerBack']>((entry) => {
-    backEntries.current = [...backEntries.current, entry];
-    return () => {
-      backEntries.current = backEntries.current.filter((candidate) => candidate !== entry);
-    };
-  }, []);
+  const getFocusedNodeId = useCallback(() => focusedNodeIdRef.current, []);
+  const hasPendingFocusRequest = useCallback(() => pending.current !== null, []);
 
-  const pushScope = useCallback<FocusApi['pushScope']>((entry) => {
-    scopeStack.current = [...scopeStack.current, entry];
-    return () => {
-      scopeStack.current = scopeStack.current.filter((candidate) => candidate !== entry);
-    };
-  }, []);
+  const registerBack = useCallback<FocusApi['registerBack']>(
+    (entry) => {
+      backEntries.current = [...backEntries.current, entry];
+      // A new or removed back handler changes what the footer may claim about `B`.
+      bumpActionRevision();
+      return () => {
+        backEntries.current = backEntries.current.filter((candidate) => candidate !== entry);
+        bumpActionRevision();
+      };
+    },
+    [bumpActionRevision],
+  );
+
+  const pushScope = useCallback<FocusApi['pushScope']>(
+    (entry) => {
+      scopeStack.current = [...scopeStack.current, entry];
+      bumpActionRevision();
+      return () => {
+        scopeStack.current = scopeStack.current.filter((candidate) => candidate !== entry);
+        bumpActionRevision();
+      };
+    },
+    [bumpActionRevision],
+  );
+
+  /**
+   * A focused node reports that its declared actions changed while its identity stayed the same —
+   * a Library card toggling `SELECT`/`DESELECT`, or Play losing `confirm` as it becomes disabled.
+   * Only the focused node can change what the footer shows, so nothing else is invalidated.
+   */
+  const notifyNodeActionsChanged = useCallback<FocusApi['notifyNodeActionsChanged']>(
+    (id) => {
+      if (id === focusedNodeIdRef.current) bumpActionRevision();
+    },
+    [bumpActionRevision],
+  );
 
   const activeBackEntry = useCallback((): BackEntry | null => {
     const scope = activeScope();
@@ -146,6 +210,21 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     // A temporary scope that declares no dismiss behaviour deliberately swallows `back` rather
     // than letting the surface underneath act while it is still open.
     return scope === null ? null : null;
+  }, [activeScope]);
+
+  /**
+   * Whether a semantic activation may act on the currently focused element.
+   *
+   * A temporary scope owns controller actions while it is open. Focus can still leave it through Tab
+   * or a pointer — that is ordinary, non-modal accessibility and M8 does not break it — but a
+   * controller must never reach through an open scope to activate the surface underneath. Directional
+   * movement re-enters the scope, so this is a refusal, not a trap.
+   */
+  const activationAllowed = useCallback((): boolean => {
+    const scope = activeScope();
+    if (scope === null) return true;
+    const active = document.activeElement;
+    return active !== null && scope.element.contains(active);
   }, [activeScope]);
 
   const move = useCallback(
@@ -202,6 +281,8 @@ export function FocusProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      if (!activationAllowed()) return;
+
       const active = document.activeElement;
       const owner = registry.owner(active);
       const meta = owner?.meta() ?? null;
@@ -218,27 +299,32 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       }
       if (isActivatableElement(active)) (active as HTMLElement).click();
     },
-    [activeBackEntry, move, registry, setInputMode],
+    [activationAllowed, activeBackEntry, move, registry, setInputMode],
   );
 
   const getSupportedActions = useCallback((): SupportedActions => {
     const owner = registry.get(focusedNodeIdRef.current);
-    const meta = owner?.meta() ?? null;
+    // Read live rather than from a value cached at `focusin`: a focused control can become disabled
+    // while it keeps focus, and the footer must not keep claiming an action it no longer performs.
+    const activatable = isActivatableElement(document.activeElement);
     const back = activeBackEntry();
-    if (owner === null && !focusedActivatable.current && back === null) {
+    // While a temporary scope owns actions but focus sits outside it, `confirm`/`context` would be
+    // refused, so the footer must not offer them.
+    const canActivate = activationAllowed();
+    const meta = canActivate ? (owner?.meta() ?? null) : null;
+    if (owner === null && !activatable && back === null) {
       return NO_SUPPORTED_ACTIONS;
     }
     return {
-      confirm: meta?.confirm?.label ?? (focusedActivatable.current ? 'CONFIRM' : null),
+      confirm: meta?.confirm?.label ?? (canActivate && activatable ? 'CONFIRM' : null),
       back: back?.label ?? null,
       context: meta?.context?.label ?? null,
     };
-  }, [activeBackEntry, registry]);
+  }, [activationAllowed, activeBackEntry, registry]);
 
   useEffect(() => {
     const onFocusIn = (event: FocusEvent) => {
       const target = event.target;
-      focusedActivatable.current = isActivatableElement(target as Element);
       const id = registry.owner(target as Element)?.id ?? null;
       focusedNodeIdRef.current = id;
       setFocusedNodeId(id);
@@ -246,7 +332,6 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     const onFocusOut = () => {
       window.setTimeout(() => {
         if (document.activeElement === null || document.activeElement === document.body) {
-          focusedActivatable.current = false;
           focusedNodeIdRef.current = null;
           setFocusedNodeId(null);
         }
@@ -275,27 +360,37 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       pushScope,
       focusNode,
       requestFocus,
-      settleFocusRequest: resolvePending,
+      settleFocusRequest,
       cancelFocusRequest: clearPending,
+      hasPendingFocusRequest,
+      getFocusedNodeId,
       dispatch,
       getSupportedActions,
+      notifyNodeActionsChanged,
     }),
     [
       clearPending,
       dispatch,
       focusNode,
+      getFocusedNodeId,
       getSupportedActions,
+      hasPendingFocusRequest,
+      notifyNodeActionsChanged,
       pushScope,
       registerBack,
       registerNode,
       requestFocus,
-      resolvePending,
+      settleFocusRequest,
     ],
   );
 
   return (
     <FocusApiContext.Provider value={api}>
-      <FocusStateContext.Provider value={focusedNodeId}>{children}</FocusStateContext.Provider>
+      <FocusStateContext.Provider value={focusedNodeId}>
+        <FocusActionRevisionContext.Provider value={actionRevision}>
+          {children}
+        </FocusActionRevisionContext.Provider>
+      </FocusStateContext.Provider>
     </FocusApiContext.Provider>
   );
 }
