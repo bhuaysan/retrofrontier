@@ -160,6 +160,48 @@ describe('useLaunchFocusReturn launch origin', () => {
     await waitFor(() => expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1));
   });
 
+  it('restores DOM focus when the window was already focused as the process ended', async () => {
+    // The transition that creates a return must itself make the restore state observable. If the
+    // user came back to RetroFrontier while the game was still running, no further focus event
+    // arrives after the exit, so a restore path that only reacts to `windowFocused` never runs and
+    // the logical DOM focus stays lost for the rest of the session.
+    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
+    act(() => screen.getByText('PLAY').focus());
+    capture();
+
+    rerender(<Harness blocked={false} running={session} windowFocused={false} />);
+    act(() => (document.activeElement as HTMLElement).blur());
+
+    // The user manually returns to RetroFrontier while RetroArch is still running.
+    rerender(<Harness blocked={false} running={session} windowFocused />);
+    await act(async () => undefined);
+    expect(screen.getByText('PLAY')).not.toHaveFocus();
+
+    // RetroArch exits with RetroFrontier already focused.
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await waitFor(() => expect(screen.getByText('PLAY')).toHaveFocus());
+
+    // Exactly one native request, and no further focus event was needed to complete the return.
+    expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not restore again when idle state rerenders after a completed return', async () => {
+    const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
+    act(() => screen.getByText('PLAY').focus());
+    capture();
+    rerender(<Harness blocked={false} running={session} windowFocused />);
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await waitFor(() => expect(screen.getByText('PLAY')).toHaveFocus());
+
+    // The user moves focus, then unrelated rerenders happen: route state, then plain rerenders.
+    act(() => screen.getByText('FAVORITE').focus());
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    rerender(<Harness blocked={false} running={null} windowFocused />);
+    await act(async () => undefined);
+    expect(screen.getByText('FAVORITE')).toHaveFocus();
+    expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1);
+  });
+
   it('does not restore focus repeatedly once it completed', async () => {
     const { rerender } = render(<Harness blocked={false} running={null} windowFocused />);
     act(() => screen.getByText('PLAY').focus());

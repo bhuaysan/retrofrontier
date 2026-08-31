@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useFocusApi } from '../focus/focusContext';
 import type { FocusNodeId } from '../focus/focusNodes';
@@ -25,6 +25,18 @@ interface LaunchOrigin {
   nodeId: FocusNodeId | null;
   routeKey: string;
 }
+
+/**
+ * The return lifecycle, as observable state rather than a ref.
+ *
+ * It is state on purpose. The transition that *creates* a return — the backend reporting that the
+ * managed session ended — must itself make the restore path runnable, because the window may
+ * already be focused at that moment and no further focus change will ever arrive. A ref mutation
+ * cannot schedule the restore, so a return recorded that way stays pending forever.
+ */
+type ReturnPhase =
+  | { kind: 'idle' }
+  | { kind: 'waitingForWindow'; sessionId: number; origin: LaunchOrigin | null };
 
 export interface LaunchFocusReturn {
   /**
@@ -53,7 +65,8 @@ export interface LaunchFocusReturn {
  *    left pending in another route.
  *
  * DOM focus is only restored after the application window actually owns focus, so focus is never
- * handed to an invisible window.
+ * handed to an invisible window — and it is restored immediately if the window already owns focus
+ * when the process ends.
  */
 export function useLaunchFocusReturn({
   running,
@@ -65,8 +78,8 @@ export function useLaunchFocusReturn({
   const api = useFocusApi();
   const launchOrigin = useRef<LaunchOrigin | null>(null);
   const previousRunning = useRef<RunningGameSession | null>(running);
-  const returnPending = useRef(false);
   const requestedForSession = useRef<number | null>(null);
+  const [returnPhase, setReturnPhase] = useState<ReturnPhase>({ kind: 'idle' });
 
   // The current route and its deterministic target are mirrored into refs so both the synchronous
   // capture callback and the return effect read the values that are current *at the moment they
@@ -88,19 +101,28 @@ export function useLaunchFocusReturn({
     if (blocked) return;
     const previous = previousRunning.current;
     previousRunning.current = running;
-    if (previous === null || running !== null) return;
-    if (requestedForSession.current === previous.sessionId) return;
 
-    requestedForSession.current = previous.sessionId;
-    returnPending.current = true;
-    void requestAppWindowFocus();
+    if (
+      previous !== null &&
+      running === null &&
+      requestedForSession.current !== previous.sessionId
+    ) {
+      // A managed session really ended. The pending return becomes observable in the same
+      // transition, so the restore runs even with the window already focused.
+      requestedForSession.current = previous.sessionId;
+      const origin = launchOrigin.current;
+      launchOrigin.current = null;
+      setReturnPhase({ kind: 'waitingForWindow', sessionId: previous.sessionId, origin });
+      void requestAppWindowFocus();
+    }
   }, [blocked, running]);
 
   useEffect(() => {
-    if (!returnPending.current || !windowFocused) return;
-    returnPending.current = false;
-    const origin = launchOrigin.current;
-    launchOrigin.current = null;
+    if (returnPhase.kind !== 'waitingForWindow') return;
+    // No DOM focus is stolen into a window the compositor never brought forward.
+    if (!windowFocused) return;
+    setReturnPhase({ kind: 'idle' });
+    const { origin } = returnPhase;
     const fallback = fallbackRef.current;
 
     // The origin is only meaningful while its own route is still on screen. Otherwise the user
@@ -110,7 +132,7 @@ export function useLaunchFocusReturn({
       return;
     }
     api.requestFocus(fallback, { resolveOnRegister: true });
-  }, [api, windowFocused]);
+  }, [api, returnPhase, windowFocused]);
 
   return { captureLaunchOrigin };
 }
