@@ -1,4 +1,5 @@
 import { act, render } from '@testing-library/react';
+import { useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { InputAction } from '../input/actions';
@@ -56,6 +57,123 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+/**
+ * Ownership revocation must be visible to the animation-frame poller no later than the commit that
+ * revoked it.
+ *
+ * These tests are deliberately ordering-sensitive rather than settled-state assertions. The probe
+ * sits **before** the controller host in the tree, so its passive effect runs before the host's own
+ * passive effects. Firing a polled frame from there reproduces exactly the window a passive
+ * ownership gate leaves open: React has already committed `ownsInput === false`, but a poller that
+ * learns about it from a passive effect still sees the old `true` and gets one more semantic frame.
+ */
+function OwnershipFrameProbe({ armed, pump }: { armed: boolean; pump: () => void }) {
+  useEffect(() => {
+    if (armed) pump();
+  }, [armed, pump]);
+  return null;
+}
+
+/**
+ * The probe sits **before** the controller host, so its passive effect runs before the host's own
+ * passive effects. Firing a polled frame from there reproduces exactly the window a passive
+ * ownership gate leaves open: React has already committed `ownsInput === false`, but a poller that
+ * learns about it from a passive effect still sees the old `true` and gets one more semantic frame.
+ */
+function OwnershipHarness({
+  enabled,
+  onAction,
+  pump,
+}: {
+  enabled: boolean;
+  onAction: (action: InputAction) => void;
+  pump: () => void;
+}) {
+  return (
+    <>
+      <OwnershipFrameProbe armed={!enabled} pump={pump} />
+      <Harness enabled={enabled} onAction={onAction} />
+    </>
+  );
+}
+
+describe('useControllerInput ownership revocation ordering', () => {
+  let frames: FrameRequestCallback[] = [];
+
+  /** Runs every frame the hook has queued, the way the browser would on the next repaint. */
+  function pump() {
+    const queued = frames;
+    frames = [];
+    for (const callback of queued) callback(performance.now());
+  }
+
+  beforeEach(() => {
+    frames = [];
+    let handle = 0;
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback);
+      handle += 1;
+      return handle;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+  });
+
+  it('cannot dispatch a held activation on a frame that runs inside the revoking commit', () => {
+    const onAction = vi.fn();
+    const { rerender } = render(<OwnershipHarness enabled onAction={onAction} pump={pump} />);
+    pads = [fakePad()];
+    act(() => pump());
+
+    // Confirm is physically held at the exact moment RetroFrontier loses ownership.
+    pads = [withButton(GAMEPAD_BUTTON_INDEX.confirm)];
+    rerender(<OwnershipHarness enabled={false} onAction={onAction} pump={pump} />);
+    expect(onAction).not.toHaveBeenCalled();
+
+    // And it still may not fire on any later frame while ownership is elsewhere.
+    act(() => pump());
+    act(() => pump());
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it('cannot dispatch or repeat a held direction on a frame inside the revoking commit', () => {
+    const onAction = vi.fn();
+    const { rerender } = render(<OwnershipHarness enabled onAction={onAction} pump={pump} />);
+    pads = [fakePad()];
+    act(() => pump());
+
+    pads = [withButton(GAMEPAD_BUTTON_INDEX.dpadDown)];
+    rerender(<OwnershipHarness enabled={false} onAction={onAction} pump={pump} />);
+    expect(onAction).not.toHaveBeenCalled();
+    act(() => pump());
+    act(() => pump());
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it('adopts the physically held input when ownership returns, then honours a real press', () => {
+    const onAction = vi.fn();
+    const { rerender } = render(<OwnershipHarness enabled onAction={onAction} pump={pump} />);
+    pads = [fakePad()];
+    act(() => pump());
+    pads = [withButton(GAMEPAD_BUTTON_INDEX.confirm)];
+    rerender(<OwnershipHarness enabled={false} onAction={onAction} pump={pump} />);
+    act(() => pump());
+
+    // Ownership returns with Confirm still held: adopted, never replayed.
+    rerender(<OwnershipHarness enabled onAction={onAction} pump={pump} />);
+    act(() => pump());
+    act(() => pump());
+    expect(onAction).not.toHaveBeenCalled();
+
+    // Released and pressed again: a genuine press is delivered immediately.
+    pads = [fakePad()];
+    act(() => pump());
+    pads = [withButton(GAMEPAD_BUTTON_INDEX.confirm)];
+    act(() => pump());
+    expect(onAction.mock.calls).toEqual([['confirm']]);
+  });
 });
 
 describe('useControllerInput', () => {

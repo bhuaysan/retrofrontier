@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 
 import type { InputAction } from '../input/actions';
 import { keyboardAction } from '../input/keyboardAdapter';
@@ -22,7 +22,13 @@ export function useKeyboardInput({ enabled, onAction }: UseKeyboardInputOptions)
     actionRef.current = onAction;
   });
 
-  useEffect(() => {
+  // Ownership is applied in a layout effect, for the same reason as the controller poller: the
+  // listener's lifetime must match the committed ownership state, with no interval in which
+  // RetroFrontier has already given up input but a key still reaches the focus coordinator. React
+  // does flush pending passive effects before dispatching a new discrete event, so keyboard was
+  // never as exposed as the animation-frame poller — but there is one ownership contract, and both
+  // acquisition adapters honour it the same way rather than relying on that scheduling detail.
+  useLayoutEffect(() => {
     if (!enabled) return;
     const onKeyDown = (event: KeyboardEvent) => {
       const result = keyboardAction({

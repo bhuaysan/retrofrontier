@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { useEffect } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { InputAction } from '../input/actions';
@@ -23,6 +24,55 @@ function Harness({ enabled, onAction }: { enabled: boolean; onAction: (a: InputA
     </div>
   );
 }
+
+/**
+ * The probe sits before the keyboard host, so its passive effect runs before the host's own passive
+ * effects: a key delivered from there lands in the interval that a *purely* passive ownership gate
+ * would leave open.
+ *
+ * For keyboard, that interval turns out not to exist even with a passive gate, because React flushes
+ * pending passive effects before it dispatches a new discrete event — this test passes against both
+ * implementations, and is kept as a guard on the contract rather than as a reproduction. The
+ * animation-frame poller is the case where the interval is real; see `useControllerInput.test.tsx`.
+ * Both adapters apply the gate the same way so there is one ownership contract, not two.
+ */
+function OwnershipKeyProbe({ armed }: { armed: boolean }) {
+  useEffect(() => {
+    if (armed) fireEvent.keyDown(document.body, { key: 'ArrowDown' });
+  }, [armed]);
+  return null;
+}
+
+function OwnershipHarness({
+  enabled,
+  onAction,
+}: {
+  enabled: boolean;
+  onAction: (action: InputAction) => void;
+}) {
+  return (
+    <>
+      <OwnershipKeyProbe armed={!enabled} />
+      <Harness enabled={enabled} onAction={onAction} />
+    </>
+  );
+}
+
+describe('useKeyboardInput ownership revocation ordering', () => {
+  it('cannot dispatch a key delivered inside the commit that revoked ownership', () => {
+    const onAction = vi.fn();
+    const { rerender } = render(<OwnershipHarness enabled onAction={onAction} />);
+    act(() => {
+      rerender(<OwnershipHarness enabled={false} onAction={onAction} />);
+    });
+    expect(onAction).not.toHaveBeenCalled();
+
+    // Ownership returns: keys are delivered again immediately, with no replay of the lost one.
+    rerender(<OwnershipHarness enabled onAction={onAction} />);
+    fireEvent.keyDown(document.body, { key: 'ArrowUp' });
+    expect(onAction.mock.calls).toEqual([['moveUp']]);
+  });
+});
 
 describe('useKeyboardInput', () => {
   it('maps navigation keys to semantic actions', () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { InputAction } from '../input/actions';
 import {
@@ -52,12 +52,22 @@ export function useControllerInput({ enabled, onAction }: UseControllerInputOpti
     actionRef.current = onAction;
   });
 
-  useEffect(() => {
+  // The dispatch gate is applied in a **layout** effect, not a passive one.
+  //
+  // An input-ownership boundary may not allow one more semantic frame after ownership is revoked.
+  // Passive effects are flushed in a separate scheduler task after the commit, so an animation frame
+  // can run in between: React has already committed `ownsInput === false` while the poller still
+  // reads the old `true`, and a button held at that moment produces a real action that belongs to
+  // the emulator. A layout effect runs synchronously inside the commit, before the browser can paint
+  // and therefore before any `requestAnimationFrame` callback of the next frame, so no frame can
+  // ever observe a stale gate. Nothing here is a render-phase side effect.
+  useLayoutEffect(() => {
     if (enabledRef.current === enabled) return;
     enabledRef.current = enabled;
     // Adopt whatever is physically held at the exact moment ownership changes, rather than
     // deferring adoption to the next polled frame: otherwise the first genuine press after focus
-    // returns would be swallowed as if it had been held across the change.
+    // returns would be swallowed as if it had been held across the change. Releasing first drops
+    // every held and repeat state, so nothing can replay in either direction.
     const active = selectActiveGamepad(readGamepads(), stateRef.current.activeIndex);
     stateRef.current = stepGamepad(
       releaseGamepadOwnership(stateRef.current),
