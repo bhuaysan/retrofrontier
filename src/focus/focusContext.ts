@@ -3,7 +3,12 @@ import { createContext, useCallback, useContext, useEffect, useRef } from 'react
 import type { InputAction, InputSource } from '../input/actions';
 import type { SupportedActions } from './footerHints';
 import { isProgrammaticallyFocusable } from './focusability';
-import { ROOT_FOCUS_SCOPE, type FocusNodeId, type FocusScopeId } from './focusNodes';
+import {
+  ROOT_FOCUS_SCOPE,
+  type FocusNodeId,
+  type FocusScopeId,
+  type FocusZoneId,
+} from './focusNodes';
 import type { FocusActionSpec, FocusNodeMeta } from './focusRegistry';
 
 /** Elements that can be focused as scope entry points, in DOM order. */
@@ -36,6 +41,15 @@ export interface FocusRequestOptions {
   awaitSettle?: boolean;
 }
 
+export interface FocusZoneOptions {
+  id: FocusZoneId;
+  /**
+   * How `back` is answered while focus sits in this zone: a focus transition to another zone, not a
+   * route change. A temporary scope still outranks it, so a launch surface keeps owning `back`.
+   */
+  back?: ZoneBack | null;
+}
+
 export interface ScopeOptions {
   id: FocusScopeId;
   onDismiss?: () => void;
@@ -59,6 +73,22 @@ export interface ScopeEntry {
   element: HTMLElement;
 }
 
+/** What a zone declares to answer `back` from inside it. */
+export interface ZoneBack {
+  label: string;
+  run: () => void;
+}
+
+export interface ZoneEntry {
+  id: FocusZoneId;
+  element: HTMLElement;
+  /**
+   * Read live rather than captured, so a zone never has to re-register when the target of its own
+   * `back` changes — the Library's main zone returns to whichever sidebar filter is active now.
+   */
+  back: () => ZoneBack | null;
+}
+
 export interface PendingFocusRequest {
   target: FocusNodeId;
   fallback: FocusNodeId | null;
@@ -79,6 +109,12 @@ export interface FocusApi {
   }) => () => void;
   registerBack: (entry: BackEntry) => () => void;
   pushScope: (entry: ScopeEntry) => () => void;
+  /**
+   * Declares a navigation zone. Directional movement that starts inside a zone stays inside it, and
+   * the zone may answer `back`. Unlike a scope, a zone never refuses activation and never traps
+   * pointer or Tab focus.
+   */
+  pushZone: (entry: ZoneEntry) => () => void;
   focusNode: (id: FocusNodeId) => boolean;
   requestFocus: (target: FocusNodeId, options?: FocusRequestOptions) => void;
   settleFocusRequest: () => void;
@@ -118,6 +154,7 @@ const INERT_FOCUS_API: FocusApi = {
   registerNode: () => () => undefined,
   registerBack: () => () => undefined,
   pushScope: () => () => undefined,
+  pushZone: () => () => undefined,
   focusNode: () => false,
   requestFocus: () => undefined,
   settleFocusRequest: () => undefined,
@@ -274,4 +311,33 @@ export function useFocusScope(options: ScopeOptions) {
   );
 
   return attach;
+}
+
+/**
+ * Declares one navigation zone of an ordinary screen. Returns a callback ref for the region's
+ * container element.
+ *
+ * Membership is decided by DOM containment in that container — a semantic question — so the
+ * sidebar/main boundary needs no coordinate threshold and no geometry tolerance. Attach the ref
+ * conditionally to declare the zone only on the routes whose contract asks for it.
+ */
+export function useFocusZone(options: FocusZoneOptions) {
+  const api = useFocusApi();
+  const optionsRef = useRef(options);
+  useEffect(() => {
+    optionsRef.current = options;
+  });
+  const { id } = options;
+
+  return useCallback(
+    (element: HTMLElement | null) => {
+      if (element === null) return undefined;
+      return api.pushZone({
+        id,
+        element,
+        back: () => optionsRef.current.back ?? null,
+      });
+    },
+    [api, id],
+  );
 }

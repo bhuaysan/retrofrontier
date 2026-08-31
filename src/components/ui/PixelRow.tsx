@@ -14,6 +14,14 @@ interface PixelRowProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'c
   focusId?: FocusNodeId;
   /** Footer copy for `confirm` on this row. */
   confirmLabel?: string;
+  /**
+   * The *semantic* activation of this row, used by `confirm` from a controller or the keyboard
+   * instead of a synthetic click.
+   *
+   * It is deliberately not merged into `onClick`: a pointer click must do only what the user
+   * clicked, while a semantic confirmation may also hand controller focus on to another zone.
+   */
+  onConfirm?: () => void;
 }
 
 export function PixelRow({
@@ -24,11 +32,12 @@ export function PixelRow({
   activeMode = 'current',
   focusId,
   confirmLabel = 'OPEN',
+  onConfirm,
   ...props
 }: PixelRowProps) {
   const focusRef = useFocusNode({
     id: focusId ?? `row:${label}`,
-    confirm: focusId === undefined ? null : { label: confirmLabel },
+    confirm: focusId === undefined ? null : { label: confirmLabel, run: onConfirm },
   });
 
   return (

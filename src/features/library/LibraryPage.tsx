@@ -47,6 +47,11 @@ interface LibraryPageProps {
   onOpenGame: (gameId: number) => void;
   restoreFocusGameId: number | null;
   onFocusRestored: () => void;
+  /**
+   * Declares this screen's main content as the Library's main controller navigation zone. It is
+   * owned by the shell, because the sidebar is the other half of the same boundary.
+   */
+  mainZoneRef?: (element: HTMLElement | null) => void;
 }
 
 const ISSUE_COPY: Record<ScanIssue['kind'], { label: string; description: string }> = {
@@ -558,6 +563,7 @@ export function LibraryPage({
   onOpenGame,
   restoreFocusGameId,
   onFocusRestored,
+  mainZoneRef,
 }: LibraryPageProps) {
   // B1 multi-select is transient presentation state owned by the Library composition, so the
   // selection bar, the count, and every card's selected state all read one authority.
@@ -612,7 +618,12 @@ export function LibraryPage({
   ]);
 
   return (
-    <main aria-labelledby="library-heading" className="app-main" id="main-content">
+    <main
+      aria-labelledby="library-heading"
+      className="app-main"
+      id="main-content"
+      ref={mainZoneRef}
+    >
       {populated && <LibraryFilterBar library={library} systems={systems} />}
       {populated && selection.count > 0 ? (
         <LibrarySelectionBar count={selection.count} onClear={selection.clear} />

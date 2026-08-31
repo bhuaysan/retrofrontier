@@ -2694,10 +2694,13 @@ describe('AppShell M8 controller navigation and focus', () => {
     await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
     expect(screen.getByRole('button', { name: /All systems/ })).toHaveFocus();
 
-    // Right leaves the sidebar for the game grid, then moves along the rendered row.
-    await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
-    expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveFocus();
+    // The main area is entered by confirming a sidebar filter, not by a geometric sideways jump.
+    await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveFocus(),
+    );
 
+    // Inside the main area the rendered grid geometry still resolves movement.
     await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
     expect(
       screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
@@ -2705,6 +2708,206 @@ describe('AppShell M8 controller navigation and focus', () => {
 
     await pressButton(GAMEPAD_BUTTON_INDEX.dpadLeft);
     expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveFocus();
+  });
+
+  /**
+   * A1–A7: the Library is two explicit controller navigation zones, not one geometric focus field.
+   *
+   * The hardware finding these cover is that on a real DualSense directional movement crossed back
+   * and forth between the sidebar and the game grid purely because a card happened to lie in that
+   * direction, which made navigation feel accidental. Zone membership is semantic — which declared
+   * region contains the focused element — so none of these assertions depend on a pixel threshold.
+   */
+  describe('Library controller navigation zones', () => {
+    function sidebarRows() {
+      return {
+        allSystems: screen.getByRole('button', { name: /All systems/ }),
+        nes: screen.getByRole('button', { name: /Nintendo Entertainment System/ }),
+        settings: screen.getByRole('button', { name: 'Settings' }),
+      };
+    }
+
+    function cards() {
+      return {
+        kirby: screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }),
+        long: screen.getByRole('link', {
+          name: 'Open A Very Long Local Title Without Metadata details',
+        }),
+      };
+    }
+
+    async function libraryReady() {
+      render(<AppShell />);
+      await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+      layoutLibrary();
+      await connectController();
+      await inputOwnershipSettled();
+    }
+
+    it('A1: keeps directional movement in the sidebar instead of jumping to a game card', async () => {
+      await libraryReady();
+      const { allSystems } = sidebarRows();
+      act(() => allSystems.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+
+      // A card lies to the right on screen, but it belongs to the other zone.
+      expect(allSystems).toHaveFocus();
+      expect(cards().kirby).not.toHaveFocus();
+      expect(cards().long).not.toHaveFocus();
+    });
+
+    it('A2: traverses only sidebar entries with up and down', async () => {
+      await libraryReady();
+      // The grid is laid out *below* the sidebar column, so a geometric resolution would happily
+      // leave the sidebar downwards from its last entry.
+      layoutGrid(Array.from(document.querySelectorAll('[data-game-detail-link]')), 2, {
+        x: 300,
+        y: 400,
+      });
+      const { allSystems, nes, settings } = sidebarRows();
+      act(() => allSystems.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+      expect(nes).toHaveFocus();
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+      expect(settings).toHaveFocus();
+      // The last sidebar entry is an edge, not a doorway into the grid.
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+      expect(settings).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadUp);
+      expect(nes).toHaveFocus();
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadUp);
+      expect(allSystems).toHaveFocus();
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadUp);
+      expect(allSystems).toHaveFocus();
+    });
+
+    it('A3: applies a sidebar filter on confirm and then enters the main Library area', async () => {
+      await libraryReady();
+      act(() => sidebarRows().nes.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+
+      // The filter really applied.
+      await waitFor(() =>
+        expect(mocks.queryLibrary).toHaveBeenCalledWith(
+          expect.objectContaining({ systemId: 'nes' }),
+        ),
+      );
+      expect(sidebarRows().nes).toHaveAttribute('aria-pressed', 'true');
+      // And focus moved on to the first truthful main-content target for that view.
+      await waitFor(() => expect(cards().kirby).toHaveFocus());
+    });
+
+    it('A4: keeps directional movement inside the main Library area', async () => {
+      await libraryReady();
+      act(() => cards().long.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadLeft);
+      expect(cards().kirby).toHaveFocus();
+
+      // The leftmost card sits next to the sidebar; the boundary is a stop, not a crossing.
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadLeft);
+      expect(cards().kirby).toHaveFocus();
+      expect(sidebarRows().allSystems).not.toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadUp);
+      expect(sidebarRows().allSystems).not.toHaveFocus();
+      expect(sidebarRows().nes).not.toHaveFocus();
+    });
+
+    it('A5: returns focus to the active sidebar filter on back without navigating', async () => {
+      await libraryReady();
+      act(() => sidebarRows().nes.focus());
+      await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+      await waitFor(() => expect(cards().kirby).toHaveFocus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      // A focus-zone transition only: the Library is the root route and must not be left.
+      expect(sidebarRows().nes).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+      expect(screen.getByRole('heading', { name: 'LIBRARY' })).toBeInTheDocument();
+
+      // And the sidebar zone owns up/down again straight away.
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadUp);
+      expect(sidebarRows().allSystems).toHaveFocus();
+    });
+
+    it('A5: returns to the all-systems entry when no system filter is active', async () => {
+      await libraryReady();
+      act(() => cards().long.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      expect(sidebarRows().allSystems).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('A6: leaves pointer, native Tab, and search typing untouched', async () => {
+      await libraryReady();
+
+      // A pointer click on a sidebar filter must not drag focus into the grid.
+      act(() => sidebarRows().nes.click());
+      await waitFor(() =>
+        expect(mocks.queryLibrary).toHaveBeenCalledWith(
+          expect.objectContaining({ systemId: 'nes' }),
+        ),
+      );
+      expect(cards().kirby).not.toHaveFocus();
+
+      // Tab and Shift+Tab stay with the browser.
+      for (const shiftKey of [false, true]) {
+        const tab = new KeyboardEvent('keydown', {
+          key: 'Tab',
+          shiftKey,
+          bubbles: true,
+          cancelable: true,
+        });
+        window.dispatchEvent(tab);
+        expect(tab.defaultPrevented).toBe(false);
+      }
+
+      // A pointer click on a card still opens it directly.
+      act(() => cards().kirby.click());
+      await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+      expect(window.location.pathname).toBe('/games/1');
+    });
+
+    it('A6: keeps the search field editable with the caret keys', async () => {
+      await libraryReady();
+      const search = screen.getByRole('searchbox', { name: 'Search' });
+      act(() => search.focus());
+
+      fireEvent.change(search, { target: { value: 'kir' } });
+      expect(search).toHaveValue('kir');
+
+      // Inside a text field every mapped key belongs to the platform, so focus must not move.
+      for (const key of ['ArrowRight', 'ArrowDown', 'Escape']) {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        search.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(false);
+      }
+      expect(search).toHaveFocus();
+      expect(search).toHaveValue('kir');
+    });
+
+    it('A7: lands on the Library heading when the selected view has no game', async () => {
+      mocks.queryLibrary
+        .mockResolvedValueOnce(populatedLibraryPage)
+        .mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
+      await libraryReady();
+      act(() => sidebarRows().nes.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+
+      await screen.findByRole('heading', { name: 'NO GAMES MATCH FILTERS' });
+      // The honest empty-state target, not a card that no longer exists and not nothing at all.
+      await waitFor(() => expect(screen.getByRole('heading', { name: 'LIBRARY' })).toHaveFocus());
+      expect(document.body).not.toHaveFocus();
+    });
   });
 
   it('opens a game with confirm and returns to the same card with back', async () => {

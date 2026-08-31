@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ControllerFooter } from '../components/ui/ControllerFooter';
 import { InlineError } from '../components/ui/InlineError';
@@ -6,8 +6,8 @@ import { PixelRow } from '../components/ui/PixelRow';
 import type { InputAction } from '../input/actions';
 import { ownsApplicationInput } from '../input/inputOwnership';
 import { FocusProvider } from '../focus/FocusProvider';
-import { useFocusApi, useFocusBack } from '../focus/focusContext';
-import { focusNodes } from '../focus/focusNodes';
+import { useFocusApi, useFocusBack, useFocusZone } from '../focus/focusContext';
+import { focusNodes, focusZones } from '../focus/focusNodes';
 import { useAppWindowFocus } from '../hooks/useAppWindowFocus';
 import { useControllerInput } from '../hooks/useControllerInput';
 import { useKeyboardInput } from '../hooks/useKeyboardInput';
@@ -95,6 +95,7 @@ function SystemSummaryRow({
   accent,
   active,
   onClick,
+  onConfirm,
 }: {
   label: string;
   systemId: string | null;
@@ -102,6 +103,7 @@ function SystemSummaryRow({
   accent: string;
   active: boolean;
   onClick: () => void;
+  onConfirm: () => void;
 }) {
   return (
     <PixelRow
@@ -113,6 +115,7 @@ function SystemSummaryRow({
       confirmLabel="FILTER"
       focusId={focusNodes.sidebarSystem(systemId)}
       onClick={onClick}
+      onConfirm={onConfirm}
     />
   );
 }
@@ -355,7 +358,102 @@ function AppShellBody() {
     }),
     [launchWithFocusHandoff, ownsTransientLaunchUi],
   );
-  // The Library is the root destination, so `back` there has nothing to do and is not offered.
+  // ---------------------------------------------------------------------------------------------
+  // Library controller navigation zones
+  //
+  // Real DualSense qualification found directional movement crossing between the sidebar and the
+  // game grid purely because a card happened to lie in the pressed direction. The two regions are
+  // therefore declared as explicit zones: movement is resolved *within* the region the focused
+  // element belongs to, and crossing is an explicit transition. Pointer clicks, native Tab order,
+  // and text editing are untouched — a zone refuses nothing and traps nothing.
+  //
+  // Only the Library declares zones. Game Detail and Settings keep the reviewed M8 behaviour, where
+  // the sidebar is a legitimate geometric neighbour of the screen's own controls.
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * A pending handoff from a confirmed sidebar filter into the main Library area.
+   *
+   * `settleVersion` is the query result the handoff must outlive. Confirming a *different* filter
+   * starts a bounded query while the previous result stays rendered, so entering at its first card
+   * would focus a game belonging to the filter the user just left — and that card may unmount a
+   * moment later. Confirming the filter that is already active starts no query at all, so there is
+   * nothing to wait for and `settleVersion` is `null`.
+   */
+  const [libraryMainEntry, setLibraryMainEntry] = useState<{
+    id: number;
+    settleVersion: number | null;
+  } | null>(null);
+  const libraryMainEntrySequence = useRef(0);
+  // Which handoff has already been answered. It is a ref rather than a state clear because it
+  // records that an imperative side effect — moving focus — has happened, and re-answering the same
+  // handoff is what must be prevented; leaving the resolved request in state is harmless.
+  const resolvedLibraryMainEntry = useRef(0);
+  const librarySystemId = library.systemId;
+  const libraryResultVersion = library.resultVersion;
+  const enterLibraryMain = useCallback(
+    (targetSystemId: string | null) => {
+      libraryMainEntrySequence.current += 1;
+      setLibraryMainEntry({
+        id: libraryMainEntrySequence.current,
+        settleVersion: targetSystemId === librarySystemId ? null : libraryResultVersion,
+      });
+    },
+    [libraryResultVersion, librarySystemId],
+  );
+
+  useEffect(() => {
+    if (libraryMainEntry === null) return;
+    if (resolvedLibraryMainEntry.current >= libraryMainEntry.id) return;
+    // The user left the Library before the handoff could resolve; it must not drag them back.
+    if (!isLibraryRoute || scanRunning) {
+      resolvedLibraryMainEntry.current = libraryMainEntry.id;
+      return;
+    }
+    if (
+      libraryMainEntry.settleVersion !== null &&
+      library.resultVersion === libraryMainEntry.settleVersion
+    ) {
+      return;
+    }
+    if (library.initialLoading || library.refreshing || library.pageLoading) return;
+    resolvedLibraryMainEntry.current = libraryMainEntry.id;
+    // The honest first target of the *committed* result: the first game of the selected view, or
+    // the Library heading when that view has none. No focusable element is invented for this.
+    const firstGameId = library.page?.items[0]?.gameId ?? null;
+    if (firstGameId === null || !focus.focusNode(focusNodes.libraryGame(firstGameId))) {
+      focus.focusNode(focusNodes.libraryHeading);
+    }
+  }, [
+    focus,
+    isLibraryRoute,
+    library.initialLoading,
+    library.page,
+    library.pageLoading,
+    library.refreshing,
+    library.resultVersion,
+    libraryMainEntry,
+    scanRunning,
+  ]);
+
+  const librarySidebarZoneRef = useFocusZone({ id: focusZones.librarySidebar });
+  const libraryMainZoneRef = useFocusZone({
+    id: focusZones.libraryMain,
+    // `back` out of the main area is a focus transition, not a route change: the Library is the
+    // root route and there is nowhere to navigate to. It returns to the sidebar entry that is
+    // actually selected, so the next Up/Down starts from where the user really is.
+    back: {
+      label: 'SYSTEMS',
+      run: () => {
+        if (focus.focusNode(focusNodes.sidebarSystem(librarySystemId))) return;
+        focus.focusNode(focusNodes.sidebarSystem(null));
+      },
+    },
+  });
+
+  // The Library is the root destination, so there is no *route* to go back to and no route-level
+  // `back` is registered. The Library's main navigation zone declares its own `back` instead, which
+  // is a focus transition to the sidebar rather than a navigation.
   useFocusBack(
     isLibraryRoute || scanRunning ? null : { label: 'LIBRARY', run: () => onBackToLibrary() },
   );
@@ -419,7 +517,11 @@ function AppShellBody() {
       </header>
 
       {usesPersistentSidebar && !scanRunning ? (
-        <aside className="app-sidebar" aria-label="Library navigation">
+        <aside
+          className="app-sidebar"
+          aria-label="Library navigation"
+          ref={isLibraryRoute ? librarySidebarZoneRef : undefined}
+        >
           <section aria-labelledby="systems-heading">
             <p id="systems-heading" className="sidebar-label">
               <span aria-hidden="true" className="sidebar-prefix">
@@ -453,6 +555,11 @@ function AppShellBody() {
                   library.setSystemId(null);
                   navigateFromShell('library');
                 }}
+                onConfirm={() => {
+                  library.setSystemId(null);
+                  navigateFromShell('library');
+                  enterLibraryMain(null);
+                }}
               />
               {catalogSystems.map((system) => (
                 <SystemSummaryRow
@@ -465,6 +572,11 @@ function AppShellBody() {
                   onClick={() => {
                     library.setSystemId(system.id);
                     navigateFromShell('library');
+                  }}
+                  onConfirm={() => {
+                    library.setSystemId(system.id);
+                    navigateFromShell('library');
+                    enterLibraryMain(system.id);
                   }}
                 />
               ))}
@@ -526,6 +638,7 @@ function AppShellBody() {
           onOpenGame={onOpenGame}
           restoreFocusGameId={libraryFocusGameId}
           onFocusRestored={onLibraryFocusRestored}
+          mainZoneRef={libraryMainZoneRef}
         />
       ) : gameRouteState ? (
         <GameDetailPage

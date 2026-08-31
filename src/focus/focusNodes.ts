@@ -9,6 +9,18 @@ export type FocusNodeId = string;
 /** Scopes partition the navigable surface. `root` is the ordinary application scope. */
 export type FocusScopeId = string;
 
+/**
+ * Zones partition one *ordinary* screen into regions that semantic directional movement does not
+ * cross on its own.
+ *
+ * A zone is not a scope. A scope is a temporary surface that owns focus and refuses reach-through
+ * while it is open; a zone is a permanent part of a screen's layout that only answers one question:
+ * which region does the focused element belong to. Crossing between zones is therefore an explicit
+ * transition — a confirmed sidebar entry, a `back` — rather than a consequence of which element
+ * happens to lie in the pressed direction.
+ */
+export type FocusZoneId = string;
+
 export const ROOT_FOCUS_SCOPE: FocusScopeId = 'root';
 
 export const focusNodes = {
@@ -36,4 +48,11 @@ export const focusScopes = {
   launchFailure: 'scope:launch-failure' as FocusScopeId,
   rootRemoval: (rootId: number): FocusScopeId => `scope:settings-root-removal:${rootId}`,
   metadataAccountClear: 'scope:settings-metadata-clear' as FocusScopeId,
+} as const;
+
+export const focusZones = {
+  /** The Library's left sidebar: system filters and menu destinations. */
+  librarySidebar: 'zone:library-sidebar' as FocusZoneId,
+  /** The Library's main content: the filter bar, the game grid, and pagination. */
+  libraryMain: 'zone:library-main' as FocusZoneId,
 } as const;

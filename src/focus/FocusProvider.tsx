@@ -12,6 +12,7 @@ import {
   type FocusRequestOptions,
   type PendingFocusRequest,
   type ScopeEntry,
+  type ZoneEntry,
 } from './focusContext';
 import { focusMoved } from './focusability';
 import { NO_SUPPORTED_ACTIONS, type SupportedActions } from './footerHints';
@@ -50,6 +51,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   const [registry] = useState(() => new FocusRegistry());
 
   const scopeStack = useRef<ScopeEntry[]>([]);
+  const zoneEntries = useRef<ZoneEntry[]>([]);
   const backEntries = useRef<BackEntry[]>([]);
   const pending = useRef<PendingFocusRequest | null>(null);
   const pendingTimer = useRef<number | undefined>(undefined);
@@ -67,6 +69,26 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     (): ScopeEntry | null => scopeStack.current[scopeStack.current.length - 1] ?? null,
     [],
   );
+
+  /**
+   * The zone the focused element belongs to, or `null` when it belongs to none.
+   *
+   * Zones are only consulted while no temporary scope is open: a scope is the stronger claim, it
+   * already contains candidate collection, and it owns `back` outright. The innermost containing
+   * zone wins, so a nested zone could refine a broader one without either having to know about the
+   * other.
+   */
+  const activeZone = useCallback((): ZoneEntry | null => {
+    if (activeScope() !== null) return null;
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement)) return null;
+    let innermost: ZoneEntry | null = null;
+    for (const zone of zoneEntries.current) {
+      if (!zone.element.contains(active)) continue;
+      if (innermost === null || innermost.element.contains(zone.element)) innermost = zone;
+    }
+    return innermost;
+  }, [activeScope]);
 
   const setInputMode = useCallback((mode: InputMode) => {
     document.documentElement.dataset.inputMode = mode;
@@ -189,6 +211,19 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     [bumpActionRevision],
   );
 
+  const pushZone = useCallback<FocusApi['pushZone']>(
+    (entry) => {
+      zoneEntries.current = [...zoneEntries.current, entry];
+      // A zone appearing or disappearing changes what `back` may claim, exactly like a scope.
+      bumpActionRevision();
+      return () => {
+        zoneEntries.current = zoneEntries.current.filter((candidate) => candidate !== entry);
+        bumpActionRevision();
+      };
+    },
+    [bumpActionRevision],
+  );
+
   /**
    * A focused node reports that its declared actions changed while its identity stayed the same —
    * a Library card toggling `SELECT`/`DESELECT`, or Play losing `confirm` as it becomes disabled.
@@ -203,6 +238,13 @@ export function FocusProvider({ children }: { children: ReactNode }) {
 
   const activeBackEntry = useCallback((): BackEntry | null => {
     const scope = activeScope();
+    // A zone's `back` is a focus transition inside the current screen — leaving the Library's main
+    // area for its sidebar — so it outranks the screen's route-level `back`, which would navigate.
+    // It never outranks a temporary scope: `activeZone()` already declines while one is open.
+    const zoneBack = activeZone()?.back() ?? null;
+    if (zoneBack !== null) {
+      return { scope: ROOT_FOCUS_SCOPE, label: zoneBack.label, run: zoneBack.run };
+    }
     const scopeId = scope?.id ?? ROOT_FOCUS_SCOPE;
     for (let index = backEntries.current.length - 1; index >= 0; index -= 1) {
       if (backEntries.current[index].scope === scopeId) return backEntries.current[index];
@@ -210,7 +252,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     // A temporary scope that declares no dismiss behaviour deliberately swallows `back` rather
     // than letting the surface underneath act while it is still open.
     return scope === null ? null : null;
-  }, [activeScope]);
+  }, [activeScope, activeZone]);
 
   /**
    * Whether a semantic activation may act on the currently focused element.
@@ -231,7 +273,11 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     (action: InputAction) => {
       if (!isDirectionalAction(action)) return;
       const scope = activeScope();
-      const root = scope?.element ?? document.body;
+      // Candidate collection is rooted at the region the focused element really belongs to. A zone
+      // therefore contains movement by *membership*, not by a coordinate threshold: a sidebar entry
+      // and a game card are in different zones however close together they render, and the geometry
+      // algorithm keeps resolving movement normally within whichever region it is given.
+      const root = scope?.element ?? activeZone()?.element ?? document.body;
       const { candidates, elementById, idByElement } = registry.collect(root, (element) =>
         element.getBoundingClientRect(),
       );
@@ -264,7 +310,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       const element = elementById.get(nextId);
       if (element !== undefined) focusElement(element);
     },
-    [activeScope, focusElement, registry],
+    [activeScope, activeZone, focusElement, registry],
   );
 
   const dispatch = useCallback<FocusApi['dispatch']>(
@@ -397,6 +443,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       registerNode,
       registerBack,
       pushScope,
+      pushZone,
       focusNode,
       requestFocus,
       settleFocusRequest,
@@ -416,6 +463,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       hasPendingFocusRequest,
       notifyNodeActionsChanged,
       pushScope,
+      pushZone,
       registerBack,
       registerNode,
       requestFocus,
