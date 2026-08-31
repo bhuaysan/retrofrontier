@@ -109,6 +109,18 @@ function Dispatcher() {
         onClick={() => api.dispatch('moveDown', 'gamepad')}
         type="button"
       />
+      <button
+        aria-hidden="true"
+        data-testid="dispatch-confirm"
+        onClick={() => api.dispatch('confirm', 'gamepad')}
+        type="button"
+      />
+      <button
+        aria-hidden="true"
+        data-testid="dispatch-context"
+        onClick={() => api.dispatch('context', 'gamepad')}
+        type="button"
+      />
     </>
   );
 }
@@ -141,7 +153,7 @@ function renderSettings(removeExternalRoot = vi.fn().mockResolvedValue(undefined
   return { ...result, removeExternalRoot };
 }
 
-function send(action: 'back' | 'down') {
+function send(action: 'back' | 'down' | 'confirm' | 'context') {
   act(() => {
     fireEvent.click(screen.getByTestId(`dispatch-${action}`));
   });
@@ -231,5 +243,81 @@ describe('SettingsPage focus scopes', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' })).toHaveFocus(),
     );
+  });
+});
+
+describe('SettingsPage scope activation boundary', () => {
+  it('refuses controller activation outside the open removal confirmation', async () => {
+    const { removeExternalRoot } = renderSettings();
+    fireEvent.click(await screen.findByRole('button', { name: 'REMOVE ROOT' }));
+    await waitFor(() => expect(removalConfirmation()).toBeInTheDocument());
+
+    // Tab or a pointer can still leave this non-modal confirmation.
+    const outside = screen.getAllByRole('button', { name: /BACK TO LIBRARY/ })[0];
+    act(() => outside.focus());
+    send('confirm');
+    send('context');
+
+    expect(removeExternalRoot).not.toHaveBeenCalled();
+    expect(removalConfirmation()).toBeInTheDocument();
+  });
+
+  it('re-enters the removal confirmation on the next directional action', async () => {
+    renderSettings();
+    fireEvent.click(await screen.findByRole('button', { name: 'REMOVE ROOT' }));
+    await waitFor(() => expect(removalConfirmation()).toBeInTheDocument());
+    const dialog = removalConfirmation();
+    const cancel = within(dialog).getByRole('button', { name: 'CANCEL' });
+    const confirm = within(dialog).getByRole('button', { name: 'REMOVE ROOT' });
+    const outside = screen.getAllByRole('button', { name: /BACK TO LIBRARY/ })[0];
+    layoutColumn([cancel, confirm, outside]);
+
+    act(() => outside.focus());
+    send('down');
+    expect(cancel).toHaveFocus();
+  });
+
+  it('refuses controller activation outside the metadata account confirmation', async () => {
+    renderSettings();
+    fireEvent.click(await screen.findByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' }));
+    await screen.findByRole('button', { name: 'CONFIRM CLEAR ACCOUNT' });
+
+    const outside = screen.getAllByRole('button', { name: /BACK TO LIBRARY/ })[0];
+    act(() => outside.focus());
+    send('confirm');
+
+    expect(mocks.clearMetadataProviderCredentials).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'CONFIRM CLEAR ACCOUNT' })).toBeInTheDocument();
+  });
+
+  it('activates ordinary Settings controls again once a confirmation is dismissed', async () => {
+    renderSettings();
+    fireEvent.click(await screen.findByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' }));
+    await screen.findByRole('button', { name: 'CONFIRM CLEAR ACCOUNT' });
+    send('back');
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: 'CONFIRM CLEAR ACCOUNT' }),
+      ).not.toBeInTheDocument(),
+    );
+
+    const trigger = screen.getByRole('button', { name: 'CLEAR PERSONAL ACCOUNT' });
+    act(() => trigger.focus());
+    send('confirm');
+    expect(await screen.findByRole('button', { name: 'CONFIRM CLEAR ACCOUNT' })).toBeVisible();
+  });
+
+  it('keeps Escape inside the Settings credential fields out of page navigation', async () => {
+    renderSettings();
+    const username = await screen.findByLabelText('ACCOUNT NAME');
+    const password = screen.getByLabelText('ACCOUNT PASSWORD');
+    for (const field of [username, password]) {
+      act(() => field.focus());
+      // `fireEvent` returns false when a handler called preventDefault: the platform must keep the
+      // event, so the field's own Escape behaviour is not replaced by page-level navigation.
+      expect(fireEvent.keyDown(field, { key: 'Escape' })).toBe(true);
+      expect(field).toHaveFocus();
+    }
+    expect(screen.getByRole('heading', { level: 1, name: /SETTINGS/ })).toBeInTheDocument();
   });
 });

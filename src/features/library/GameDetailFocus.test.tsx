@@ -133,11 +133,17 @@ function Dispatcher() {
         onClick={() => api.dispatch('confirm', 'gamepad')}
         type="button"
       />
+      <button
+        aria-hidden="true"
+        data-testid="dispatch-context"
+        onClick={() => api.dispatch('context', 'gamepad')}
+        type="button"
+      />
     </>
   );
 }
 
-function send(action: 'back' | 'down' | 'confirm') {
+function send(action: 'back' | 'down' | 'confirm' | 'context') {
   act(() => {
     fireEvent.click(screen.getByTestId(`dispatch-${action}`));
   });
@@ -265,5 +271,125 @@ describe('Game Detail launch content selection scope', () => {
     );
     send('confirm');
     expect(launch).toHaveBeenCalledWith(7, 12);
+  });
+});
+
+describe('Game Detail scope activation boundary', () => {
+  it('refuses controller confirm on a control outside the open selection surface', () => {
+    renderWithSelection();
+    const outside = screen.getByRole('button', { name: 'Add Ridge Racer Local to favorites' });
+    const detail = detailModel();
+    void detail;
+
+    // Tab or a pointer can still leave a non-modal scope; the controller may not act out there.
+    act(() => outside.focus());
+    send('confirm');
+    expect(screen.getByRole('group', { name: 'Choose a version' })).toBeInTheDocument();
+    expect(outside).toHaveFocus();
+  });
+
+  it('refuses controller context on a control outside the open selection surface', () => {
+    const cancelContentSelection = vi.fn();
+    renderWithSelection(cancelContentSelection);
+    const back = screen.getByRole('link', { name: /BACK TO LIBRARY/ });
+    act(() => back.focus());
+    send('context');
+    send('confirm');
+    expect(screen.getByRole('group', { name: 'Choose a version' })).toBeInTheDocument();
+    expect(cancelContentSelection).not.toHaveBeenCalled();
+  });
+
+  it('re-enters the selection surface on the next directional action', () => {
+    renderWithSelection();
+    const surface = selectionSurface();
+    const first = within(surface).getByRole('button', { name: /Ridge Racer Disc 1/ });
+    const second = within(surface).getByRole('button', { name: /Ridge Racer Disc 2/ });
+    const cancel = within(surface).getByRole('button', { name: 'CANCEL' });
+    const outside = screen.getByRole('button', { name: 'Add Ridge Racer Local to favorites' });
+    layoutColumn([first, second, cancel, outside]);
+
+    act(() => outside.focus());
+    send('down');
+    expect(first).toHaveFocus();
+  });
+
+  it('activates ordinary Game Detail actions again once the scope is dismissed', async () => {
+    const { cancelContentSelection } = renderWithSelection();
+    send('back');
+    expect(cancelContentSelection).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole('button', { name: 'Play Ridge Racer Local' })).toHaveFocus();
+    send('confirm');
+  });
+});
+
+describe('Game Detail launch from a content option', () => {
+  /**
+   * The real flow: choosing a version calls `launch()`, which sets `pendingGameId` in the same
+   * commit. Play therefore becomes disabled at the exact moment the selection surface unmounts and
+   * its scope tries to restore Play.
+   */
+  function LaunchingHarness({ onLaunch }: { onLaunch: (contentUnitId?: number) => void }) {
+    const [open, setOpen] = useState(false);
+    const [pending, setPending] = useState(false);
+    return (
+      <FocusProvider>
+        <Dispatcher />
+        <button
+          aria-hidden="true"
+          data-testid="open-selection"
+          onClick={() => setOpen(true)}
+          type="button"
+        />
+        <GameDetailPage
+          detail={detailModel()}
+          gameId={7}
+          launch={launchModel({
+            contentOptions: open ? contentOptions : null,
+            pendingGameId: pending ? 7 : null,
+            phase: pending ? 'launching' : 'idle',
+            launch: async (_gameId: number, contentUnitId?: number) => {
+              onLaunch(contentUnitId);
+              setOpen(false);
+              setPending(true);
+            },
+            cancelContentSelection: () => setOpen(false),
+          })}
+          onBackToLibrary={vi.fn()}
+          onRetryReadiness={vi.fn()}
+          readinessError={null}
+          systemStatus={systemStatus}
+        />
+      </FocusProvider>
+    );
+  }
+
+  it('does not leave focus on nothing when Play is disabled by the launch it started', async () => {
+    const onLaunch = vi.fn();
+    render(<LaunchingHarness onLaunch={onLaunch} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId('open-selection'));
+    });
+
+    const option = within(selectionSurface()).getByRole('button', {
+      name: /Ridge Racer Disc 2/,
+    });
+    act(() => option.focus());
+    send('confirm');
+    expect(onLaunch).toHaveBeenCalledWith(12);
+
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument(),
+    );
+    const play = screen.getByRole('button', { name: 'Play Ridge Racer Local' });
+    expect(play).toBeDisabled();
+    // The disabled Play cannot satisfy the restore, so the scope's fallback is used instead of the
+    // request being consumed as a false success.
+    expect(play).not.toHaveFocus();
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'BACK TO LIBRARY' })).toHaveFocus(),
+    );
   });
 });
