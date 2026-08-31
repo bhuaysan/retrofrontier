@@ -5,7 +5,7 @@
 ## Context
 
 ADR-008 accepted controller navigation as a foundational capability and fixed the semantic action
-vocabulary. It did not decide *where* physical controller input is read.
+vocabulary. It did not decide _where_ physical controller input is read.
 
 M8 has two candidate acquisition points:
 
@@ -37,16 +37,34 @@ code and no change to any component.
 
 The browser adapter is chosen because it satisfies every M8 requirement with no new platform
 surface: the Standard Gamepad mapping normalizes the common pads, hotplug is reported by the
-browser, and the API is *only* readable while the page is live, which matches the ownership model
+browser, and the API is _only_ readable while the page is live, which matches the ownership model
 M8 must enforce anyway.
 
 Physical button indices and the analogue policy live in exactly one file, so a native adapter would
 replace a known, tested contract rather than a scattering of assumptions.
 
+### The support contract is Standard Gamepad mapping only
+
+The boundary accepts a device **only** when the browser reports `mapping === 'standard'`. A pad the
+engine exposes with an empty or vendor-specific mapping has undefined button indices and undefined
+axis order, so the very button table this ADR concentrates into one file would be meaningless for
+it: `confirm` could land on any face button, and a stick could steer the wrong axis. Guessing is
+worse than declining, because a mis-mapped `confirm` activates something the user did not choose.
+
+An unsupported pad is therefore never adopted for navigation, and the application says so — the
+controller footer shows `CONTROLLER NOT SUPPORTED` rather than silently ignoring the device. The
+keyboard remains fully sufficient in that state, and RetroArch still reads the pad directly for
+gameplay, so an unsupported mapping degrades navigation only.
+
+This narrows the acquisition contract deliberately: it is the honest limit of an adapter with no
+mapping database of its own, and it is exactly the condition that a native adapter (or a B10
+remapping feature) would exist to lift.
+
 ### What would justify replacing it
 
 - The Gamepad API in the shipped WebView does not see a controller that the operating system does
-  see, on a platform RetroFrontier must support.
+  see, on a platform RetroFrontier must support — or sees it only with a non-Standard mapping, which
+  the boundary declines by contract.
 - A future feature genuinely requires input while the RetroFrontier window is unfocused — a global
   "return to library" hotkey, for instance — which the browser API cannot provide by design.
 - Per-controller remapping (B10) needs identity or capability information the browser does not
@@ -61,7 +79,8 @@ M8 ships without any new native input dependency, device permission, or IPC stre
 ownership rules are enforced where the actions are produced. The cost is that the WebView's device
 support is now a dependency: a pad the engine does not recognize is invisible to RetroFrontier even
 though the emulator may still use it perfectly well, because RetroArch reads the device directly.
-That failure mode is confined to *navigating the frontend*, never to playing a game.
+That failure mode is confined to _navigating the frontend_, never to playing a game. The same is
+true, and now visible to the user, for a pad the engine sees but cannot map to the Standard layout.
 
 Controller support therefore remains a per-platform qualification item. Only Linux x86_64 with a
 DualSense is in scope for M8's qualification; Windows and macOS remain unproven.

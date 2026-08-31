@@ -25,10 +25,12 @@ window keydown ────┘                        │
 | `src/input/actions.ts` | The semantic vocabulary. |
 | `src/input/keyboardAdapter.ts` | Keyboard event → action. Pure. |
 | `src/input/gamepadAdapter.ts` | Polled gamepad frame → actions. Pure state machine. |
+| `src/input/inputOwnership.ts` | The one application-input ownership predicate. |
 | `src/hooks/useKeyboardInput.ts` | Window listener for the keyboard adapter. |
 | `src/hooks/useControllerInput.ts` | Animation-frame poll loop and ownership gating. |
 | `src/focus/focusNodes.ts` | Stable semantic focus identities and scope ids. |
 | `src/focus/focusRegistry.ts` | Identity ↔ element, and live candidate collection. |
+| `src/focus/focusability.ts` | The one focusability test: programmatic, navigable, and proven. |
 | `src/focus/spatialNavigation.ts` | Geometry-derived directional resolution. Pure. |
 | `src/focus/focusContext.ts` | Hooks components use: node, back, scope, API. |
 | `src/focus/FocusProvider.tsx` | The coordinator: dispatch, requests, scopes, input mode. |
@@ -57,7 +59,7 @@ mappings exist in exactly two places: `keyboardAdapter.ts` and `GAMEPAD_BUTTON_I
 | Input | Action |
 | --- | --- |
 | `ArrowUp` / `ArrowDown` / `ArrowLeft` / `ArrowRight` | `moveUp` / `moveDown` / `moveLeft` / `moveRight` |
-| `Escape` | `back` |
+| `Escape` | `back`, only outside a text-editing control |
 | `ContextMenu`, `Shift+F10` | `context` |
 | `Enter`, `Space` | `confirm`, only when the target has no native activation |
 
@@ -69,9 +71,13 @@ in most cases:
 - `Ctrl`/`Alt`/`Meta` chords belong to the browser and the window manager;
 - `Tab` and `Shift+Tab` are never handled, so the native tab order is untouched;
 - inside a text-editing control — `input` (except button-like types), `textarea`, `select`,
-  `contenteditable`, `role="textbox"` — movement, `confirm`, and `context` are all suppressed, so
-  typing, caret movement, and native select behaviour are never hijacked. `back` stays available so
-  a scope can be dismissed from inside a field;
+  `contenteditable`, `role="textbox"` — **every** mapped key is suppressed, `Escape` included, so
+  typing, caret movement, native select behaviour, and a field's own `Escape` all stay with the
+  platform. Turning `Escape` into a page-level `back` there was wrong twice over: it navigated away
+  from the Settings credential fields, and it suppressed the Library search field's native behaviour
+  on a route that has no semantic Back at all. A scope that wants `Escape` from inside a field
+  handles it locally and consumes the event — which is exactly what both Settings confirmations
+  already do, and the adapter honours that through `defaultPrevented`;
 - `Enter`/`Space` on a `button`, `a[href]`, `input`, `select`, `textarea`, or `summary` produce no
   semantic action, because the browser already activates those. Nothing is ever activated twice.
 
@@ -80,7 +86,15 @@ The listener is attached to `window` in the bubble phase, after React's own hand
 ### Controller
 
 Read from the browser Gamepad API on `requestAnimationFrame`, using the W3C Standard Gamepad
-mapping:
+mapping.
+
+**Only `mapping === 'standard'` is accepted.** These indices mean nothing on a pad the browser could
+not normalize, so reading them would produce arbitrary actions from arbitrary buttons. A pad with any
+other mapping is never selected, is never interpreted even if a caller passes it in, and cannot block
+a usable Standard-mapped pad at a higher index. It is reported honestly as connected-but-unsupported
+— the footer says `CONTROLLER NOT SUPPORTED` and the document carries
+`data-controller="unsupported"` — rather than being shown as a working controller or hidden
+entirely. Remapping is out of M8 scope (B10); see [ADR-014](adr/ADR-014-input-acquisition-boundary.md).
 
 | Physical | Action |
 | --- | --- |
@@ -96,14 +110,18 @@ mapping:
 | --- | --- | --- |
 | `enterDeadzone` | `0.55` | Deflection required to *start* a direction. |
 | `exitDeadzone` | `0.35` | Deflection below which a held direction is released. |
+| `axisDominanceMargin` | `0.15` | How far the other axis must exceed the held axis to take over. |
 | `initialRepeatDelayMs` | `400` | Pause before a held direction begins repeating. |
 | `repeatIntervalMs` | `110` | Bounded interval while it stays held. |
 
 - **Hysteresis.** The exit threshold is well below the enter threshold, so a stick resting near one
   threshold cannot oscillate in and out of a direction. Jitter inside the band changes nothing.
-- **Dominant axis.** Only the larger of `|x|` and `|y|` produces a direction. A diagonal therefore
-  yields exactly one direction, never two, and an exactly equal deflection yields none rather than
-  an arbitrary winner.
+- **Dominant axis, with a deterministic tie-break.** Exactly one direction is produced, never two.
+  While a direction is held, that axis keeps dominance until the other axis exceeds it by
+  `axisDominanceMargin`; with nothing held the larger deflection wins, and an exact tie resolves to
+  the **horizontal** axis, the documented fixed priority. The margin is the dominance counterpart to
+  the deadzone hysteresis: it gives the exact 45° case an answer instead of a dead spot, and it stops
+  a stick resting near the diagonal from alternating direction every time `|x|` and `|y|` cross.
 - **D-pad precedence.** A pressed D-pad direction always wins over the stick, so holding both is
   deterministic.
 - **Repeat is UI-paced, not frame-paced.** One action on press, then a pause, then a bounded
@@ -181,7 +199,18 @@ programmatically across a route or data change.
   from the previous query result must not take a focus it is about to lose.
 - A single bounded timer (1.2 s) applies the fallback if neither happens. It is a safety net, not a
   retry loop: there is no polling, no repeated `setTimeout`, and a resolved request never fires
-  again.
+  again. **The timer may never resolve an `awaitSettle` target.** That request said explicitly that
+  its target may not be trusted until the surface settles, so an expired one takes the deterministic
+  fallback and nothing else; focusing the stale target would be the exact bug the flag exists to
+  prevent. A later `settleFocusRequest()` then finds nothing pending and steals no focus.
+- A target that is *present but cannot take focus* — disabled, hidden, inert — is a definitive
+  answer, not something to wait for: the fallback is used immediately rather than after the timeout.
+
+**A restoration counts as successful only when focus really moved.** `focusability.ts` is the single
+test, and it separates two questions: a focus *request* may target a programmatic-only node such as a
+heading with `tabindex="-1"`, while directional *movement* may not. `focusMoved()` performs the
+attempt and then reads `document.activeElement`, because only the browser knows whether an element
+accepted focus. A request is never consumed by an attempt that silently did nothing.
 
 ### Library → Game Detail → Library
 
@@ -198,9 +227,30 @@ does not fire again — later focus changes by the user are not overridden.
 
 ### Scopes
 
-A temporary surface owns focus while it is mounted. `useFocusScope` returns a container ref; while
-the container is attached, it is the root of candidate collection, so directional movement cannot
-leave it, and the scope's own dismiss handler answers `back`.
+A temporary surface owns focus **and controller actions** while it is mounted. `useFocusScope`
+returns a container ref; while the container is attached, it is the root of candidate collection, so
+directional movement cannot leave it, and the scope's own dismiss handler answers `back`.
+
+Focus itself can still leave a scope through `Tab`, `Shift+Tab`, or a pointer click — these surfaces
+are deliberately not browser-modal, and trapping `Tab` would break ordinary accessibility. What is
+forbidden is *acting* out there:
+
+> **A controller can never activate an underlying surface while a temporary scope is active.**
+
+`confirm` and `context` are refused whenever `document.activeElement` is outside the active scope,
+and the footer stops offering them, because a hint that names an action which would be refused is a
+lie. Nothing is trapped and nothing is force-focused: the next directional action simply re-enters
+the scope at its first candidate. `back` still reaches the innermost scope's dismiss handler
+regardless of where focus sits.
+
+**Scope restoration is resolved after the commit that closed the scope.** React detaches a deleted
+subtree's refs *before* it applies that same commit's sibling updates, so a restoration performed
+inside the cleanup sees the pre-update DOM. The launch content-selection surface is exactly that
+case: choosing a version closes the surface and marks the launch pending together, and Play — the
+restoration target — is only disabled after the cleanup runs. Restoring there would hand focus to a
+control the browser blurs a moment later. The restoration therefore runs once the commit has settled,
+still as a single attempt, and stands aside if focus already landed somewhere real or if another
+owner (a route change, say) already has a request outstanding.
 
 | Scope | Entry / exit focus | `back` |
 | --- | --- | --- |
@@ -236,11 +286,31 @@ has a companion and that no companion introduces an outline or a new token.
 
 ## Window focus and RetroArch ownership
 
-RetroFrontier owns UI input only while
+`src/input/inputOwnership.ts` holds the one ownership predicate for the whole application:
 
 ```
-window is focused  ∧  launch.running === null  ∧  !launch.blocked
+windowFocused  ∧  !launch.blocked  ∧  launch.running === null  ∧  launch.pendingGameId === null
 ```
+
+`pendingGameId` is in there deliberately. M7 creates the process and settles the launch inside the
+backend, so between the launch request and the authoritative running state there is an interval in
+which React still sees `running === null` while RetroArch may already exist. Ownership is therefore
+released at the **launch request**, not when the running state arrives. It returns as soon as the
+backend can describe the state honestly again: a failed launch and a `contentSelectionRequired`
+response both clear the pending id without starting a process, so the failure message and the
+content-selection surface stay immediately interactive.
+
+There is exactly one predicate rather than a copy per consumer, because a second copy of this rule
+would drift. (The Play button's own `disabled` state is a different question — whether *this control*
+may be pressed — and stays where it is.)
+
+**Window focus is not assumed.** In the Tauri desktop shell, ownership requires a native focus state
+that has really been read as focused *and* a focus subscription that was really established; an
+unreadable state or a subscription that failed to attach fails **closed**, because RetroFrontier
+cannot honestly claim to own the controller and, without a subscription, could never learn that it
+had lost it. In a plain browser dev server there is no native window to own anything and no emulator
+to take input away, so the window counts as focused and controller development stays usable. The two
+are distinguished with Tauri's own `isTauri()` check, not a user-agent guess.
 
 The backend remains the only authority on whether a game is running. React never infers an exit from
 a timer, never inspects processes, and the M7 launch contract is unchanged.
@@ -251,14 +321,23 @@ footer can still say whether a controller is attached, but nothing reaches the U
 not raise its window, does not request focus, and uses no `xdotool`, `wmctrl`, or compositor
 scripting. Keyboard behaviour follows OS window focus naturally.
 
-**When the backend reports the managed game really ended:** the launch origin — the semantic
-identity focused when the launch started, captured once and deliberately not updated during the run
-— is restored in two steps.
+**The launch origin is captured by an explicit handoff, not by sampling.** `captureLaunchOrigin()`
+runs synchronously where the UI issues the launch — that is the moment of the user's intent. Sampling
+whichever node happens to be focused once `running` arrives is a different moment: focus, and even
+the route, can change in between, so the recorded "origin" could belong to something the user never
+launched from. What is recorded is the semantic identity **and** the logical route it belonged to.
+
+**When the backend reports the managed game really ended:**
 
 1. `requestAppWindowFocus()` is called **exactly once** per ended session, through the Tauri window
    API. There is no retry, and a window manager that refuses is not fought.
 2. DOM focus is restored **only after** the application window actually reports focus. If the window
    never comes forward, no DOM focus is stolen into an invisible window.
+3. The target is resolved against the route that is current **at that moment**. If it is still the
+   route the launch started from, the captured identity is restored. If the user navigated elsewhere
+   during the run they are *not* dragged back: that route's own deterministic target is used —
+   `library:heading`, `settings:heading`, or `detail:play` — and no obsolete request is left pending
+   in another route to steal focus later.
 
 While `blocked` is true the last known session is held rather than consumed, so a return still
 happens once the backend can describe the state honestly again.
@@ -269,7 +348,12 @@ gained exactly one permission, `core:window:allow-set-focus`, and nothing else w
 ## Controller footer
 
 Hints are derived from the focus model, never hard-coded per page: the focused node's declared
-`confirm`/`context` labels and the active scope's `back` label. A node that declares no `context`
+`confirm`/`context` labels and the active scope's `back` label. They follow the *state* behind those
+actions, not only the focused identity: a `FocusProvider`-owned revision is bumped when a focused
+node's declared labels change, when a scope opens or closes, and when a back handler appears or
+disappears, and the footer subscribes to it. A Library card that keeps focus while `Context` selects
+it therefore switches from `SELECT` to `DESELECT` immediately, and Play stops offering `CONFIRM` the
+moment it is disabled. Only the footer re-renders; nothing else is invalidated. A node that declares no `context`
 action produces no `X` hint. An unregistered but natively activatable control produces a generic
 `CONFIRM`. While RetroFrontier does not own input, no action hint is shown at all, and while a
 managed game runs the footer says so instead. The existing shell status — `LOCAL LIBRARY` and the
