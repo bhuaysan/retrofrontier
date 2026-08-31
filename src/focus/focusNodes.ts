@@ -30,6 +30,8 @@ export const focusNodes = {
 
 export const focusScopes = {
   launchContentSelection: 'scope:launch-content' as FocusScopeId,
+  /** A normalized launch failure. Temporary, and it owns `back` while it is open. */
+  launchFailure: 'scope:launch-failure' as FocusScopeId,
   rootRemoval: (rootId: number): FocusScopeId => `scope:settings-root-removal:${rootId}`,
   metadataAccountClear: 'scope:settings-metadata-clear' as FocusScopeId,
 } as const;

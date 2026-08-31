@@ -6,7 +6,12 @@ import { FocusProvider } from '../../focus/FocusProvider';
 import { useFocusApi } from '../../focus/focusContext';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
 import type { GameLaunchModel } from '../../hooks/useGameLaunch';
-import type { LaunchContentOption, LibraryGameDetail, SystemStatus } from '../../platform/ipc';
+import type {
+  LaunchContentOption,
+  LaunchFailure,
+  LibraryGameDetail,
+  SystemStatus,
+} from '../../platform/ipc';
 import { installRectStub, layoutColumn } from '../../test/geometry';
 import { GameDetailPage } from './GameDetailPage';
 
@@ -67,6 +72,20 @@ const contentOptions: LaunchContentOption[] = [
     availability: 'available',
   },
 ];
+
+const launchFailure: LaunchFailure = {
+  code: 'runtimeNotReady',
+  message: 'The managed RetroArch runtime is not installed.',
+  context: {
+    systemId: 'playstation',
+    coreId: null,
+    biosRequirementIds: [],
+    runtimeState: null,
+    hostPrerequisite: null,
+    exitCode: null,
+    contentOptions: [],
+  },
+};
 
 function detailModel(): GameDetailModel {
   return {
@@ -193,6 +212,193 @@ function selectionSurface() {
 
 beforeEach(() => {
   installRectStub();
+});
+
+/**
+ * A normalized launch failure is a temporary surface exactly like the content selection: it appears
+ * in response to an action, it owns `back` while it is open, and dismissing it must put focus back
+ * where the launch started from. Without a scope, focus stayed wherever the pending launch had left
+ * it — typically BACK TO LIBRARY — and controller `back` navigated away instead of dismissing.
+ *
+ * The failure is always raised *after* mount, because that is the only way it can ever occur: it is
+ * the answer to a launch the user started on this screen. Rendering it at mount would race the
+ * route-entry heading focus and test a state the application cannot reach.
+ */
+interface FailureHarnessOptions {
+  contentSelectionFirst?: boolean;
+  blocked?: boolean;
+  onBackToLibrary?: () => void;
+  detail?: GameDetailModel;
+}
+
+function renderWithFailure(options: FailureHarnessOptions = {}) {
+  const dismissFailure = vi.fn();
+  const detail = options.detail ?? detailModel();
+  function Harness() {
+    const [failed, setFailed] = useState(false);
+    const [selecting, setSelecting] = useState(false);
+    const [onDetail, setOnDetail] = useState(true);
+    return (
+      <FocusProvider>
+        <Dispatcher />
+        <button
+          aria-hidden="true"
+          data-testid="open-selection"
+          onClick={() => setSelecting(true)}
+          type="button"
+        />
+        <button
+          aria-hidden="true"
+          data-testid="fail-launch"
+          onClick={() => {
+            setSelecting(false);
+            setFailed(true);
+          }}
+          type="button"
+        />
+        <button
+          aria-hidden="true"
+          data-testid="leave-route"
+          onClick={() => setOnDetail(false)}
+          type="button"
+        />
+        {onDetail ? (
+          <GameDetailPage
+            detail={detail}
+            gameId={7}
+            launch={launchModel({
+              blocked: options.blocked ?? false,
+              contentOptions: selecting ? contentOptions : null,
+              failure: failed ? launchFailure : null,
+              dismissFailure: () => {
+                dismissFailure();
+                setFailed(false);
+              },
+            })}
+            onBackToLibrary={options.onBackToLibrary ?? vi.fn()}
+            onRetryReadiness={vi.fn()}
+            readinessError={null}
+            systemStatus={systemStatus}
+          />
+        ) : (
+          <button type="button">LIBRARY HEADING</button>
+        )}
+      </FocusProvider>
+    );
+  }
+  render(<Harness />);
+  if (options.contentSelectionFirst === true) {
+    act(() => {
+      fireEvent.click(screen.getByTestId('open-selection'));
+    });
+  }
+  act(() => {
+    fireEvent.click(screen.getByTestId('fail-launch'));
+  });
+  return { detail, dismissFailure };
+}
+
+function failureSurface() {
+  return screen.getByRole('group', { name: 'Launch failed' });
+}
+
+function dismissAction() {
+  return within(failureSurface()).getByRole('button', { name: 'DISMISS' });
+}
+
+function playAction() {
+  return screen.getByRole('button', { name: 'Play Ridge Racer Local' });
+}
+
+function backAction() {
+  return screen.getByRole('link', { name: /BACK TO LIBRARY/ });
+}
+
+function failureGone() {
+  return screen.queryByRole('group', { name: 'Launch failed' });
+}
+
+describe('Game Detail launch failure scope', () => {
+  it('moves focus to DISMISS when a launch failure appears', async () => {
+    renderWithFailure();
+    await waitFor(() => expect(dismissAction()).toHaveFocus());
+  });
+
+  it('dismisses with confirm and restores the Play action', async () => {
+    const { dismissFailure } = renderWithFailure();
+    await waitFor(() => expect(dismissAction()).toHaveFocus());
+    send('confirm');
+    expect(dismissFailure).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(failureGone()).not.toBeInTheDocument());
+    expect(playAction()).toHaveFocus();
+  });
+
+  it('dismisses with back instead of navigating to the Library', async () => {
+    const onBackToLibrary = vi.fn();
+    const { dismissFailure } = renderWithFailure({ onBackToLibrary });
+    await waitFor(() => expect(dismissAction()).toHaveFocus());
+
+    // Focus is deliberately moved outside first: `back` must still reach the innermost surface.
+    act(() => backAction().focus());
+    send('back');
+    expect(onBackToLibrary).not.toHaveBeenCalled();
+    expect(dismissFailure).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(failureGone()).not.toBeInTheDocument());
+    expect(playAction()).toHaveFocus();
+  });
+
+  it('keeps directional movement inside the failure surface', async () => {
+    renderWithFailure();
+    await waitFor(() => expect(dismissAction()).toHaveFocus());
+    const dismiss = dismissAction();
+    const outside = screen.getByRole('button', { name: 'Add Ridge Racer Local to favorites' });
+    layoutColumn([dismiss, outside]);
+    act(() => dismiss.focus());
+    send('down');
+    expect(dismiss).toHaveFocus();
+  });
+
+  it('refuses to activate an underlying control reached with the pointer', async () => {
+    const { detail } = renderWithFailure();
+    await waitFor(() => expect(dismissAction()).toHaveFocus());
+
+    // Tab or a click can legitimately move focus out of a non-modal surface; acting out there with
+    // a controller may not.
+    act(() => screen.getByRole('button', { name: 'Add Ridge Racer Local to favorites' }).focus());
+    send('confirm');
+    send('context');
+    expect(detail.toggleFavorite).not.toHaveBeenCalled();
+    expect(failureGone()).toBeInTheDocument();
+  });
+
+  it('takes focus after a content-selected launch fails, then restores Play', async () => {
+    const { dismissFailure } = renderWithFailure({ contentSelectionFirst: true });
+    await waitFor(() => expect(dismissAction()).toHaveFocus());
+    expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument();
+    send('confirm');
+    expect(dismissFailure).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(playAction()).toHaveFocus());
+  });
+
+  it('falls back to the Back action when Play cannot take focus', async () => {
+    // Launch state is blocked, so Play is disabled and is not a truthful restoration target.
+    renderWithFailure({ blocked: true });
+    await waitFor(() => expect(dismissAction()).toHaveFocus());
+    send('confirm');
+    await waitFor(() => expect(backAction()).toHaveFocus());
+  });
+
+  it('does not force focus back when the surface unmounts with the route', async () => {
+    renderWithFailure();
+    await waitFor(() => expect(dismissAction()).toHaveFocus());
+    act(() => {
+      fireEvent.click(screen.getByTestId('leave-route'));
+    });
+    act(() => screen.getByText('LIBRARY HEADING').focus());
+    await act(async () => undefined);
+    // The old route is gone; nothing may drag the user back to it.
+    expect(screen.getByText('LIBRARY HEADING')).toHaveFocus();
+  });
 });
 
 describe('Game Detail launch content selection scope', () => {

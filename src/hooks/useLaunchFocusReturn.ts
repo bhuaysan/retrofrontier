@@ -33,17 +33,11 @@ interface LaunchOrigin {
   routeKey: string;
 }
 
-/**
- * The return lifecycle, as observable state rather than a ref.
- *
- * It is state on purpose. The transition that *creates* a return — the backend reporting that the
- * managed session ended — must itself make the restore path runnable, because the window may
- * already be focused at that moment and no further focus change will ever arrive. A ref mutation
- * cannot schedule the restore, so a return recorded that way stays pending forever.
- */
-type ReturnPhase =
-  | { kind: 'idle' }
-  | { kind: 'waitingForWindow'; sessionId: number; origin: LaunchOrigin | null };
+/** A return that has been created and is waiting for the application window to own focus. */
+interface PendingReturn {
+  sessionId: number;
+  origin: LaunchOrigin | null;
+}
 
 export interface LaunchFocusReturn {
   /**
@@ -103,7 +97,17 @@ export function useLaunchFocusReturn({
   const interactionOrigin = useRef<LaunchOrigin | null>(null);
   const previousRunning = useRef<RunningGameSession | null>(running);
   const requestedForSession = useRef<number | null>(null);
-  const [returnPhase, setReturnPhase] = useState<ReturnPhase>({ kind: 'idle' });
+  /**
+   * The return that is waiting for window focus, and the state that makes it *observable*.
+   *
+   * The generation is the reactivity: the transition that creates a return — the backend reporting
+   * that the managed session ended — must itself make the restore path runnable, because the window
+   * may already be focused at that moment and no further focus change will ever arrive. A return
+   * recorded only in a ref could never schedule its own restore and would stay pending forever.
+   * The payload stays in a ref so consuming it needs no second state update and no extra render.
+   */
+  const pendingReturn = useRef<PendingReturn | null>(null);
+  const [returnGeneration, setReturnGeneration] = useState(0);
 
   // The current route and its deterministic target are mirrored into refs so both the synchronous
   // capture callback and the return effect read the values that are current *at the moment they
@@ -140,7 +144,8 @@ export function useLaunchFocusReturn({
       requestedForSession.current = previous.sessionId;
       const origin = interactionOrigin.current;
       interactionOrigin.current = null;
-      setReturnPhase({ kind: 'waitingForWindow', sessionId: previous.sessionId, origin });
+      pendingReturn.current = { sessionId: previous.sessionId, origin };
+      setReturnGeneration((generation) => generation + 1);
       void requestAppWindowFocus();
       return;
     }
@@ -155,11 +160,14 @@ export function useLaunchFocusReturn({
   }, [blocked, contentSelectionOpen, pendingGameId, running]);
 
   useEffect(() => {
-    if (returnPhase.kind !== 'waitingForWindow') return;
+    const pending = pendingReturn.current;
+    if (pending === null) return;
     // No DOM focus is stolen into a window the compositor never brought forward.
     if (!windowFocused) return;
-    setReturnPhase({ kind: 'idle' });
-    const { origin } = returnPhase;
+    // Consumed once. A later rerender, route change, or focus change finds nothing pending, so the
+    // restoration cannot repeat and cannot fight a focus the user has since moved themselves.
+    pendingReturn.current = null;
+    const { origin } = pending;
     const fallback = fallbackRef.current;
 
     // The origin is only meaningful while its own route is still on screen. Otherwise the user
@@ -169,7 +177,9 @@ export function useLaunchFocusReturn({
       return;
     }
     api.requestFocus(fallback, { resolveOnRegister: true });
-  }, [api, returnPhase, windowFocused]);
+    // `returnGeneration` is a reactivity token, not a value this effect reads: it is what makes the
+    // exit transition itself schedule this effect.
+  }, [api, returnGeneration, windowFocused]);
 
   return { beginLaunchInteraction };
 }

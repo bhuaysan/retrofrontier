@@ -2,9 +2,9 @@ import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject }
 
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
-import { PixelArrow, PixelStar } from '../../components/ui/PixelIcon';
+import { PixelArrow, PixelStar, WarningIcon } from '../../components/ui/PixelIcon';
 import { FocusScope } from '../../focus/FocusProvider';
-import { useFocusNode, useFocusScope } from '../../focus/focusContext';
+import { useFocusApi, useFocusNode, useFocusScope } from '../../focus/focusContext';
 import { focusNodes, focusScopes } from '../../focus/focusNodes';
 import { getMetadataAction, hasSelectableCandidates, metadataStateCopy } from './metadataActions';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
@@ -694,6 +694,69 @@ function CancelContentSelection({ launch }: { launch: GameLaunchModel }) {
 }
 
 /**
+ * The launch-failure surface.
+ *
+ * A normalized launch failure is a temporary surface with the same requirements as the
+ * content-selection one, so it gets the same treatment rather than being a bare `InlineError` that
+ * leaves focus wherever the pending launch happened to drop it: DISMISS receives entry focus,
+ * `confirm` and `back` both dismiss, directional movement stays inside, and a controller cannot
+ * reach through it to activate the screen underneath. `InlineError` itself is untouched, because
+ * every other screen that uses it has no M8 requirement here.
+ *
+ * Restoration is explicit rather than delegated to the scope's automatic restore. Dismissal is a
+ * user action, so at that moment the route is certainly still current and PLAY is certainly the
+ * honest target — with the Back action as the truthful fallback when PLAY cannot take focus. An
+ * *unmount* is a different thing entirely: if the user navigated away before dismissing, the old
+ * route must not be dragged back, so nothing is restored on unmount at all.
+ */
+function LaunchFailureNotice({ launch }: { launch: GameLaunchModel }) {
+  const api = useFocusApi();
+  const failure = launch.failure;
+  const dismiss = () => {
+    // Ordered deliberately: focus first, while PLAY is still mounted and enabled, then dismiss.
+    api.requestFocus(focusNodes.detail('play'), {
+      fallback: focusNodes.detail('back'),
+      resolveOnRegister: true,
+    });
+    launch.dismissFailure();
+  };
+  const scopeRef = useFocusScope({
+    id: focusScopes.launchFailure,
+    dismissLabel: 'DISMISS',
+    onDismiss: dismiss,
+    restore: 'none',
+  });
+  if (failure === null) return null;
+  const hint = launchFailureHint(failure.code);
+  return (
+    <FocusScope id={focusScopes.launchFailure}>
+      <aside aria-label="Launch failed" className="inline-error" ref={scopeRef} role="group">
+        <WarningIcon className="inline-error-icon" />
+        {/* The alert stays on the copy, so the title and the message are still announced together
+            exactly as the shared `InlineError` announced them. */}
+        <div className="inline-error-copy" role="alert">
+          <strong>{launchFailureTitle(failure.code)}</strong>
+          <p>{[failure.message, hint].filter(Boolean).join(' ')}</p>
+        </div>
+        <LaunchFailureDismiss onDismiss={dismiss} />
+      </aside>
+    </FocusScope>
+  );
+}
+
+function LaunchFailureDismiss({ onDismiss }: { onDismiss: () => void }) {
+  const focusRef = useFocusNode({
+    id: focusNodes.detail('dismiss-launch-failure'),
+    confirm: { label: 'DISMISS' },
+  });
+  return (
+    <PixelButton onClick={onDismiss} ref={focusRef} type="button" variant="secondary">
+      DISMISS
+    </PixelButton>
+  );
+}
+
+/**
  * The M7 Play action.
  *
  * Rust decides whether a launch may proceed, so this control never pre-judges readiness: it stays
@@ -793,16 +856,7 @@ function LaunchAction({
         </FocusScope>
       ) : null}
 
-      {launch.failure ? (
-        <InlineError
-          title={launchFailureTitle(launch.failure.code)}
-          message={[launch.failure.message, launchFailureHint(launch.failure.code)]
-            .filter((part): part is string => Boolean(part))
-            .join(' ')}
-          actionLabel="DISMISS"
-          onAction={() => launch.dismissFailure()}
-        />
-      ) : null}
+      {launch.failure ? <LaunchFailureNotice launch={launch} /> : null}
     </>
   );
 }

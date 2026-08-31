@@ -2599,8 +2599,18 @@ describe('AppShell M8 controller navigation and focus', () => {
         },
       });
     });
+    // Ownership returns immediately, and the failure surface — a temporary M8 focus scope — takes
+    // entry focus. The controller can therefore act on it at once.
+    const failure = await screen.findByRole('group', { name: 'Launch failed' });
+    const dismiss = within(failure).getByRole('button', { name: 'DISMISS' });
+    await waitFor(() => expect(dismiss).toHaveFocus());
+    await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Launch failed' })).not.toBeInTheDocument(),
+    );
+    expect(play).toHaveFocus();
+
     layoutColumn([play, favorite]);
-    act(() => play.focus());
     await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
     expect(favorite).toHaveFocus();
   });
@@ -2652,15 +2662,24 @@ describe('AppShell M8 controller navigation and focus', () => {
         },
       });
     });
-    layoutColumn([play, favorite]);
     // Ownership has returned while the direction is still physically held: it must be adopted, not
     // replayed, so nothing moves until it is released and pressed again.
+    const failure = await screen.findByRole('group', { name: 'Launch failed' });
+    const dismiss = within(failure).getByRole('button', { name: 'DISMISS' });
+    await waitFor(() => expect(dismiss).toHaveFocus());
     await polled();
     await polled();
-    expect(favorite).not.toHaveFocus();
+    expect(dismiss).toHaveFocus();
 
+    // Released, dismissed, and only then does a fresh press move again.
     pads = [fakePad()];
     await polled();
+    await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Launch failed' })).not.toBeInTheDocument(),
+    );
+    layoutColumn([play, favorite]);
+    expect(play).toHaveFocus();
     await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
     expect(favorite).toHaveFocus();
   });
