@@ -22,8 +22,8 @@ Nothing from the previous passes was rewritten, and no Rust source file was touc
 | Starting local `HEAD`      | `d19b7a917f521fb53beac3c35f908ffd5ca6ef58`                                                |
 | Starting `origin/feat/m8-controller-focus` | `d19b7a917f521fb53beac3c35f908ffd5ca6ef58` — identical                    |
 | M7.5 base (`main` / `origin/main`) | `77f5194c76c360bd6eb14e8546a7a4e0998be1aa` — both, unchanged                      |
-| Final local `HEAD`         | the documentation commit of this pass (`git log -1`)                                      |
-| Pushed                     | **No.** This pass is local only unless instructed otherwise.                              |
+| Final `HEAD` of the lifecycle pass | `31bd77541280c5f623f78bdaa740cee562096983` — `docs(launch): finalize M8 interaction ownership record`, the third of the three commits below. Later commits on this branch are outside the pass this report describes. |
+| Pushed                     | The lifecycle pass recorded by this report was initially local-only at report creation. It was subsequently pushed unchanged as the fast-forward `d19b7a917f521fb53beac3c35f908ffd5ca6ef58..31bd77541280c5f623f78bdaa740cee562096983`. This row records that historical event and does not attempt to describe the repository's future/current HEAD. |
 | PR / merge                 | None. No pull request was opened; nothing was merged to `main`.                            |
 
 Verified before any edit:
