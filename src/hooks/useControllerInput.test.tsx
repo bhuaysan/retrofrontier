@@ -123,6 +123,30 @@ describe('useControllerInput', () => {
     expect(onAction).toHaveBeenCalledWith('confirm');
   });
 
+  it('does not dispatch mapped actions for a non-standard pad', () => {
+    const onAction = vi.fn();
+    render(<Harness enabled onAction={onAction} />);
+    pads = [fakePad(0, { mapping: '' })];
+    frame();
+    pads = [withButton(GAMEPAD_BUTTON_INDEX.confirm, fakePad(0, { mapping: '' }))];
+    frame();
+    frame();
+    expect(onAction).not.toHaveBeenCalled();
+    expect(document.documentElement.dataset.controller).toBe('unsupported');
+  });
+
+  it('lets a standard pad at a higher index win over a non-standard pad at index 0', () => {
+    const onAction = vi.fn();
+    render(<Harness enabled onAction={onAction} />);
+    pads = [fakePad(0, { mapping: '' }), fakePad(1)];
+    frame();
+    expect(document.documentElement.dataset.controller).toBe('connected');
+    pads = [fakePad(0, { mapping: '' }), withButton(GAMEPAD_BUTTON_INDEX.confirm, fakePad(1))];
+    frame();
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledWith('confirm');
+  });
+
   it('stops polling when it unmounts', () => {
     const onAction = vi.fn();
     const { unmount } = render(<Harness enabled onAction={onAction} />);

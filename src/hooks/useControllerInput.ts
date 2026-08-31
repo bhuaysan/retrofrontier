@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { InputAction } from '../input/actions';
 import {
   createGamepadState,
+  hasUnsupportedGamepad,
   releaseGamepadOwnership,
   selectActiveGamepad,
   stepGamepad,
@@ -38,8 +39,12 @@ function readGamepads(): (GamepadSnapshot | null)[] {
  */
 export function useControllerInput({ enabled, onAction }: UseControllerInputOptions): {
   connected: boolean;
+  unsupported: boolean;
 } {
   const [connected, setConnected] = useState(false);
+  // A pad the browser could not normalize to the Standard Gamepad mapping is attached but unusable.
+  // The UI says that honestly rather than claiming a working controller or claiming none at all.
+  const [unsupported, setUnsupported] = useState(false);
   const stateRef = useRef<GamepadState>(createGamepadState());
   const enabledRef = useRef(enabled);
   const actionRef = useRef(onAction);
@@ -70,6 +75,7 @@ export function useControllerInput({ enabled, onAction }: UseControllerInputOpti
       const pads = readGamepads();
       const active = selectActiveGamepad(pads, stateRef.current.activeIndex);
       setConnected(active !== null);
+      setUnsupported(active === null && hasUnsupportedGamepad(pads));
 
       if (!enabledRef.current) {
         // Ownership belongs elsewhere: track the controller, deliver nothing, and stay ready to
@@ -95,8 +101,12 @@ export function useControllerInput({ enabled, onAction }: UseControllerInputOpti
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.controller = connected ? 'connected' : 'disconnected';
-  }, [connected]);
+    document.documentElement.dataset.controller = connected
+      ? 'connected'
+      : unsupported
+        ? 'unsupported'
+        : 'disconnected';
+  }, [connected, unsupported]);
 
-  return { connected };
+  return { connected, unsupported };
 }

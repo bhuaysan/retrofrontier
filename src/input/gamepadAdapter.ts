@@ -3,9 +3,10 @@ import type { DirectionalAction, InputAction } from './actions';
 /**
  * The one place physical gamepad button indices exist.
  *
- * Indices follow the W3C Standard Gamepad mapping. A pad that does not report `standard` mapping
- * is still read through the same indices, because that is the only layout the browser exposes;
- * remapping is deliberately out of M8 scope.
+ * Indices follow the W3C Standard Gamepad mapping, and M8 accepts **only** pads the browser
+ * normalizes to that mapping. Reading these indices from a pad whose layout the browser could not
+ * normalize would produce arbitrary actions from arbitrary buttons; remapping is out of M8 scope,
+ * so such a pad stays connected-but-unsupported instead.
  */
 export const GAMEPAD_BUTTON_INDEX = {
   confirm: 0,
@@ -31,9 +32,36 @@ export const GAMEPAD_AXIS_INDEX = { horizontal: 0, vertical: 1 } as const;
 export const GAMEPAD_TUNING = {
   enterDeadzone: 0.55,
   exitDeadzone: 0.35,
+  /**
+   * How far the other axis must exceed the currently held axis before the direction switches.
+   *
+   * This is the dominance counterpart to the deadzone hysteresis. Without it a stick resting near
+   * the diagonal alternates direction whenever `|x|` and `|y|` cross, which emits a burst of
+   * conflicting movement; with it, a held axis keeps dominance until the other axis wins clearly.
+   * It also gives the exact-tie case a deterministic answer: the held axis stays.
+   */
+  axisDominanceMargin: 0.15,
   initialRepeatDelayMs: 400,
   repeatIntervalMs: 110,
 } as const;
+
+/**
+ * The mapping contract M8 can interpret.
+ *
+ * `standard` is the W3C Standard Gamepad mapping the browser has already normalized to a known
+ * button and axis layout. Anything else exposes a device-specific layout that `GAMEPAD_BUTTON_INDEX`
+ * would misread.
+ */
+export function isSupportedGamepad(snapshot: GamepadSnapshot | null): snapshot is GamepadSnapshot {
+  return snapshot !== null && snapshot.connected && snapshot.mapping === 'standard';
+}
+
+/** A pad is attached that RetroFrontier cannot interpret. Reported honestly, never as usable. */
+export function hasUnsupportedGamepad(pads: readonly (GamepadSnapshot | null)[]): boolean {
+  return pads.some(
+    (snapshot) => snapshot !== null && snapshot.connected && snapshot.mapping !== 'standard',
+  );
+}
 
 export interface GamepadButtonLike {
   pressed: boolean;
@@ -103,7 +131,9 @@ export function releaseGamepadOwnership(state: GamepadState): GamepadState {
 /**
  * Picks the one controller whose input is accepted.
  *
- * The currently active controller keeps ownership while it stays connected, so plugging in a second
+ * Only pads whose mapping RetroFrontier can interpret are eligible, so a non-standard pad at a low
+ * index can never take ownership from a usable Standard-mapped pad at a higher index. Among those,
+ * the currently active controller keeps ownership while it stays connected, so plugging in a second
  * pad never moves control or duplicates actions. Otherwise the lowest connected index wins, which
  * makes the choice deterministic rather than dependent on enumeration order.
  */
@@ -111,9 +141,7 @@ export function selectActiveGamepad(
   pads: readonly (GamepadSnapshot | null)[],
   activeIndex: number | null,
 ): GamepadSnapshot | null {
-  const connected = pads.filter(
-    (padSnapshot): padSnapshot is GamepadSnapshot => padSnapshot !== null && padSnapshot.connected,
-  );
+  const connected = pads.filter(isSupportedGamepad);
   if (connected.length === 0) return null;
   const active = connected.find((padSnapshot) => padSnapshot.index === activeIndex);
   if (active !== undefined) return active;
@@ -150,10 +178,24 @@ function analogueDirection(
   const activeY = magnitudeY >= (verticalHeld ? exitDeadzone : enterDeadzone);
 
   if (!activeX && !activeY) return null;
-  if (activeX && activeY && magnitudeX === magnitudeY) return null;
-  if (activeX && (!activeY || magnitudeX > magnitudeY)) return x > 0 ? 'moveRight' : 'moveLeft';
-  if (activeY) return y > 0 ? 'moveDown' : 'moveUp';
-  return null;
+  if (!activeY) return x > 0 ? 'moveRight' : 'moveLeft';
+  if (!activeX) return y > 0 ? 'moveDown' : 'moveUp';
+
+  // Both axes are deflected. Exactly one direction is produced, chosen deterministically:
+  //  - a held axis keeps dominance until the other axis exceeds it by the dominance margin, which
+  //    covers the exact 45° tie and stops noise around the diagonal alternating directions;
+  //  - with nothing held, the larger deflection wins and an exact tie resolves to the horizontal
+  //    axis, the documented fixed priority.
+  const { axisDominanceMargin } = GAMEPAD_TUNING;
+  const horizontal = () => (x > 0 ? 'moveRight' : 'moveLeft');
+  const vertical = () => (y > 0 ? 'moveDown' : 'moveUp');
+  if (horizontalHeld) {
+    return magnitudeY > magnitudeX + axisDominanceMargin ? vertical() : horizontal();
+  }
+  if (verticalHeld) {
+    return magnitudeX > magnitudeY + axisDominanceMargin ? horizontal() : vertical();
+  }
+  return magnitudeX >= magnitudeY ? horizontal() : vertical();
 }
 
 export interface GamepadStepResult {
@@ -173,7 +215,11 @@ export function stepGamepad(
   snapshot: GamepadSnapshot | null,
   now: number,
 ): GamepadStepResult {
-  if (snapshot === null) {
+  // A pad whose mapping was not normalized to the Standard Gamepad layout is treated exactly like
+  // no pad at all: its button indices and axes mean something else, so nothing may be derived from
+  // them. `selectActiveGamepad` already filters these out; this is the same policy enforced at the
+  // one place that reads indices, so no caller can bypass it.
+  if (!isSupportedGamepad(snapshot)) {
     return { state: { ...releaseGamepadOwnership(state), activeIndex: null }, actions: [] };
   }
 
