@@ -1,3 +1,4 @@
+import { isControllerNavigable, isProgrammaticallyFocusable } from './focusability';
 import type { FocusNodeId, FocusScopeId } from './focusNodes';
 import type { NavigationCandidate } from './spatialNavigation';
 
@@ -32,14 +33,6 @@ export interface FocusNodeRegistration {
 const NAVIGABLE_SELECTOR = ['a[href]', 'button', 'input', 'select', 'textarea', '[tabindex]'].join(
   ', ',
 );
-
-function isNavigable(element: HTMLElement): boolean {
-  if (element.hasAttribute('disabled')) return false;
-  if (element.getAttribute('aria-hidden') === 'true') return false;
-  if (element.getAttribute('tabindex') === '-1') return false;
-  if (element.closest('[aria-hidden="true"], [inert]') !== null) return false;
-  return true;
-}
 
 export interface CollectedCandidates {
   candidates: NavigationCandidate[];
@@ -79,6 +72,18 @@ export class FocusRegistry {
     return registration.element.isConnected ? registration : null;
   }
 
+  /**
+   * The registered node for an id, only while it could actually accept a focus request.
+   *
+   * A node that is present but disabled, hidden, or inert is *present* — so a request must not keep
+   * waiting for it to mount — but it is not a valid restoration target.
+   */
+  focusable(id: FocusNodeId | null): FocusNodeRegistration | null {
+    const registration = this.get(id);
+    if (registration === null) return null;
+    return isProgrammaticallyFocusable(registration.element) ? registration : null;
+  }
+
   /** The nearest registered node at or above an element. */
   owner(element: Element | null): FocusNodeRegistration | null {
     let current: Element | null = element;
@@ -111,7 +116,7 @@ export class FocusRegistry {
     const idByElement = new Map<HTMLElement, string>();
 
     for (const element of root.querySelectorAll<HTMLElement>(NAVIGABLE_SELECTOR)) {
-      if (!isNavigable(element)) continue;
+      if (!isControllerNavigable(element)) continue;
       const rect = measure(element);
       if (rect.width <= 0 || rect.height <= 0) continue;
       const id = this.navigationId(element);
