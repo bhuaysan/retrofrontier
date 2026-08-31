@@ -101,8 +101,12 @@ export function keyboardAction(event: KeyboardEventLike): KeyboardActionResult |
     case 'ArrowRight':
       return editing ? null : { action: 'moveRight', preventDefault: true };
     case 'Escape':
-      // Back stays available inside a text field so a scope can always be dismissed from within it.
-      return { action: 'back', preventDefault: true };
+      // Escape belongs to the editing control while one has focus. A search field's own Escape
+      // behaviour, and the Settings credential fields, must not become page-level navigation —
+      // the Library has no semantic Back at all. A scope that wants Escape from inside a field
+      // handles it itself and consumes the event, which this adapter already honours through
+      // `defaultPrevented`.
+      return editing ? null : { action: 'back', preventDefault: true };
     case 'ContextMenu':
       return editing ? null : { action: 'context', preventDefault: true };
     case 'F10':

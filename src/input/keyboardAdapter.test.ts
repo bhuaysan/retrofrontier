@@ -38,7 +38,7 @@ describe('keyboardAction', () => {
     });
   });
 
-  it('maps Escape to back and the context-menu chords to context', () => {
+  it('maps Escape outside an editing control to back, and the context-menu chords to context', () => {
     expect(keyboardAction(press('Escape'))?.action).toBe('back');
     expect(keyboardAction(press('ContextMenu'))?.action).toBe('context');
     expect(keyboardAction(press('F10', { shiftKey: true }))?.action).toBe('context');
@@ -78,9 +78,39 @@ describe('keyboardAction', () => {
     }
   });
 
-  it('still allows back out of a text-editing control', () => {
-    const target = element('<input type="search" />');
-    expect(keyboardAction(press('Escape', { target }))?.action).toBe('back');
+  // Replaces an earlier assertion that Escape inside a text-editing control produced a semantic
+  // `back`. That contract was wrong: it turned Escape in the Library search — a route with no
+  // semantic Back at all — and Escape in the Settings credential fields into page-level navigation,
+  // and it suppressed the native Escape behaviour of a search input. A scope that wants Escape from
+  // inside a field handles it locally, exactly as the two Settings confirmations already do.
+  it('leaves Escape inside a text-editing control to the platform', () => {
+    for (const html of [
+      '<input type="search" />',
+      '<input type="text" name="username" />',
+      '<input type="password" />',
+      '<textarea></textarea>',
+      '<select><option>a</option></select>',
+      '<div contenteditable="true"></div>',
+      '<div role="textbox"></div>',
+    ]) {
+      const target = element(html);
+      expect(keyboardAction(press('Escape', { target }))).toBeNull();
+    }
+  });
+
+  it('still produces back from an ordinary non-editing focus target', () => {
+    for (const html of [
+      '<button type="button">CANCEL</button>',
+      '<a href="/library">LIBRARY</a>',
+      '<input type="checkbox" />',
+      '<h1 tabindex="-1">LIBRARY</h1>',
+    ]) {
+      const target = element(html);
+      expect(keyboardAction(press('Escape', { target }))).toEqual({
+        action: 'back',
+        preventDefault: true,
+      });
+    }
   });
 
   it('treats non-text input types as ordinary focus targets', () => {
