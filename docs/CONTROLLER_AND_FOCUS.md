@@ -17,6 +17,7 @@ window keydown ────┘                        │
                                             ├─► focus registry (semantic identity ↔ element)
                                             ├─► spatial navigation (rendered geometry)
                                             ├─► focus scopes (temporary surfaces)
+                                            ├─► focus zones (regions of one screen)
                                             └─► supported actions ──► controller footer
 ```
 
@@ -32,8 +33,8 @@ window keydown ────┘                        │
 | `src/focus/focusRegistry.ts` | Identity ↔ element, and live candidate collection. |
 | `src/focus/focusability.ts` | The one focusability test: programmatic, navigable, and proven. |
 | `src/focus/spatialNavigation.ts` | Geometry-derived directional resolution. Pure. |
-| `src/focus/focusContext.ts` | Hooks components use: node, back, scope, API. |
-| `src/focus/FocusProvider.tsx` | The coordinator: dispatch, requests, scopes, input mode. |
+| `src/focus/focusContext.ts` | Hooks components use: node, back, scope, zone, API. |
+| `src/focus/FocusProvider.tsx` | The coordinator: dispatch, requests, scopes, zones, input mode. |
 | `src/focus/footerHints.ts` | Supported actions → footer hints. Pure. |
 | `src/components/ui/ControllerFooter.tsx` | Renders the derived hints and shell status. |
 | `src/platform/appWindow.ts` | The Tauri application-window boundary. |
@@ -75,7 +76,7 @@ in most cases:
   typing, caret movement, native select behaviour, and a field's own `Escape` all stay with the
   platform. Turning `Escape` into a page-level `back` there was wrong twice over: it navigated away
   from the Settings credential fields, and it suppressed the Library search field's native behaviour
-  on a route that has no semantic Back at all. A scope that wants `Escape` from inside a field
+  on a route whose only `back` is a focus transition the search field is not part of. A scope that wants `Escape` from inside a field
   handles it locally and consumes the event — which is exactly what both Settings confirmations
   already do, and the adapter honours that through `defaultPrevented`;
 - `Enter`/`Space` on a `button`, `a[href]`, `input`, `select`, `textarea`, or `summary` produce no
@@ -181,8 +182,12 @@ Resolution: candidates strictly ahead in the requested direction are scored by
 `primaryDistance + 3 × crossAxisDistance`, with candidates that overlap the current row (horizontal)
 or column (vertical) preferred over any that do not. Left and right therefore stay on the visual
 row, up and down stay in the column, and both fall back to the nearest candidate ahead when the row
-or column ends — which is how movement leaves the grid for the sidebar. **There is no wrapping:** an
+or column ends. **There is no wrapping:** an
 edge is a stop. Ties resolve by document order, so movement is reproducible.
+
+Geometry answers *where* to go within a region; it does not answer *which region the user means to
+be in*. Where a screen has two regions that must not be crossed by direction alone, that is stated
+explicitly — see [Zones](#zones).
 
 Registration is not required for reachability. Explicitly registered nodes carry a semantic identity
 and honest action labels; every other visible, enabled control in the scope is still reachable,
@@ -226,6 +231,76 @@ accepted focus. A request is never consumed by an attempt that silently did noth
 
 Nothing is focused speculatively, no detached node is ever focused, and once the request resolves it
 does not fire again — later focus changes by the user are not overridden.
+
+### Zones
+
+A **zone** is a permanent region of an ordinary screen that semantic directional movement does not
+leave on its own. It is not a scope, and the two are deliberately different things:
+
+| | Scope | Zone |
+| --- | --- | --- |
+| Lifetime | A temporary surface, while it is mounted | Part of a screen's layout |
+| Movement | Cannot leave it | Does not leave it by direction alone |
+| Activation | `confirm`/`context` refused outside it | Never refused |
+| `back` | Owns it outright | Answers it only when no scope is open |
+| Crossing | By dismissing the surface | By an explicit transition |
+
+Membership is decided by **DOM containment in a declared container**, which is a semantic question.
+There is no coordinate threshold, no "left of 300px", and no geometry tolerance anywhere in it; the
+existing geometry algorithm keeps resolving movement normally *within* whichever region it is given,
+because the candidate root becomes that region instead of the document.
+
+`useFocusZone({ id, back })` returns a container ref. Attaching it conditionally is how a screen
+declares a zone only on the routes whose contract asks for one. The innermost containing zone wins,
+so a nested zone can refine a broader one without either knowing about the other. While a temporary
+scope is open, zones stand aside entirely — a scope is the stronger claim and already contains
+candidate collection.
+
+#### The Library's two zones
+
+Real DualSense qualification found directional movement crossing back and forth between the sidebar
+and the game grid purely because a card happened to render in the pressed direction. Geometry was
+answering a question it cannot answer: *which region does the user mean to be in?* Both regions were
+in one candidate field, so `moveRight` from a sidebar row scored a card as the nearest thing ahead
+and took it, and `moveLeft` from the leftmost card scored a sidebar row and took that. Nothing was
+broken; the model simply had no notion of a region, so every boundary crossing was accidental.
+
+| Zone | Container | Contract |
+| --- | --- | --- |
+| `zone:library-sidebar` | The Library route's `<aside>` | Up/Down traverse sidebar entries only. Right does **not** reach a game card. An edge is a stop. |
+| `zone:library-main` | The Library route's `<main>` | The filter bar, the grid, and pagination navigate by rendered geometry as before, and movement never falls back into the sidebar. |
+
+| Transition | Trigger | Behaviour |
+| --- | --- | --- |
+| Sidebar → main | `confirm` on a system-filter row | The filter is applied normally, then focus moves to the first game of the *committed* result for that view, or to `library:heading` when the view has none |
+| Main → sidebar | `back` | Focus returns to the sidebar entry that is actually selected, falling back to the all-systems row. **A focus transition only:** the Library is the root route and is never navigated away from |
+
+The handoff is **settle-aware**, for the same reason the Library return is. Confirming a *different*
+filter starts a bounded query while the previous result is still rendered, so entering at "the first
+card" immediately would focus a game belonging to the filter the user just left, and that card may
+unmount in the next commit. The handoff therefore waits for a newly committed result with no load
+channel active, and only then names its target. Confirming the filter that is *already* active starts
+no query at all, so there is nothing to wait for and it resolves at once. If a query never resolves,
+nothing is focused and the user stays on the sidebar row — no focus is stolen into an uncertain view.
+No focusable element is invented to satisfy any of this.
+
+**The semantic path and the pointer path are deliberately separate.** A sidebar filter row declares
+its own `confirm` action, which applies the filter *and* hands focus on; its `onClick` applies the
+filter and nothing else. A mouse user who clicks a filter therefore keeps their focus where it was,
+and a mouse user can still click a game card directly — a controller rule must not reach into
+pointer behaviour.
+
+**This is not a focus trap.** Nothing is browser-modal, no key is trapped, and none of `Tab`,
+`Shift+Tab`, pointer clicks, search typing, or assistive-technology focus is affected: a zone only
+changes where *semantic directional movement* looks for candidates, and `focusin` still adopts
+whatever the platform focused. The one consequence worth naming is asymmetry at the shared header:
+while focus sits inside a zone, directional movement stays in that zone, so the header's search field
+and theme toggle are reached by pointer or Tab rather than by a D-pad direction — while focus sits in
+the header, which is in no zone, movement behaves exactly as before and can enter either region.
+
+Only the Library declares zones. Game Detail and Settings keep the reviewed M8 behaviour, where the
+sidebar is a legitimate geometric neighbour of the screen's own controls, and the launch scopes on
+Game Detail keep owning `back` unconditionally.
 
 ### Scopes
 

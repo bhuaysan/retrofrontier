@@ -402,7 +402,9 @@ See [`docs/M7_5_RUNTIME_QUALIFICATION.md`](docs/M7_5_RUNTIME_QUALIFICATION.md) a
 
 See [`docs/CONTROLLER_AND_FOCUS.md`](docs/CONTROLLER_AND_FOCUS.md),
 [ADR-014](docs/adr/ADR-014-input-acquisition-boundary.md), and
-[`docs/M8_IMPLEMENTATION_REPORT.md`](docs/M8_IMPLEMENTATION_REPORT.md).
+[`docs/M8_IMPLEMENTATION_REPORT.md`](docs/M8_IMPLEMENTATION_REPORT.md), and — for the two findings
+from the first physical DualSense/Wayland session —
+[`docs/M8_HARDWARE_CORRECTIVE_REPORT.md`](docs/M8_HARDWARE_CORRECTIVE_REPORT.md).
 
 - [x] semantic input actions
 - [x] keyboard mapping
@@ -416,8 +418,11 @@ See [`docs/CONTROLLER_AND_FOCUS.md`](docs/CONTROLLER_AND_FOCUS.md),
 - [x] window-focus gating and RetroArch focus ownership
 - [x] controller footer derived from the focus model
 - [x] primary settings navigation
+- [x] explicit Library controller navigation zones (sidebar / main)
+- [x] managed RetroArch launches fullscreen
 - [x] regression tests
-- [ ] manual Linux controller/RetroArch qualification
+- [ ] manual Linux controller/RetroArch qualification — first session found two issues, both
+      corrected and awaiting requalification
 - [ ] Windows and macOS controller qualification
 - [ ] controller remapping UI and persistence (B10)
 
