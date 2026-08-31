@@ -120,12 +120,14 @@ function launchModel(overrides: Partial<GameLaunchModel> = {}): GameLaunchModel 
     running: null,
     blocked: false,
     pendingGameId: null,
+    interaction: null,
     failure: null,
     contentOptions: null,
     diagnostics: [],
     launch: vi.fn().mockResolvedValue(undefined),
     dismissFailure: vi.fn(),
     cancelContentSelection: vi.fn(),
+    abandonInteraction: vi.fn(),
     ...overrides,
   };
 }

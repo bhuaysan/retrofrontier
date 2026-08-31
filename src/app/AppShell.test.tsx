@@ -2246,6 +2246,285 @@ describe('AppShell M6.7 B1 library card selection', () => {
   });
 });
 
+/**
+ * Transient launch state — a pending request, a content-option list, a normalized failure — belongs
+ * to the Game Detail route that started it. M8 deliberately does not browser-trap Tab or the pointer
+ * inside a focus scope, so the user can leave a temporary launch surface through ordinary navigation
+ * instead of the semantic Cancel/Dismiss action. These tests exercise the real shell and the real
+ * `useGameLaunch()` state path along exactly that route.
+ */
+describe('AppShell M8 launch interaction ownership', () => {
+  const twoGameSummary = {
+    totalGames: 2,
+    favoriteGames: 1,
+    systems: [{ systemId: 'nes' as const, gameCount: 2 }],
+  };
+
+  const secondGameDetail: LibraryGameDetail = {
+    gameId: 2,
+    systemId: 'nes',
+    localTitle: 'Second Game Local',
+    availability: 'available',
+    favorite: false,
+    contentUnits: [
+      {
+        unitId: 201,
+        rootId: 1,
+        kind: 'singleFile',
+        localTitle: 'Second Game Local',
+        primaryRelativePath: 'NES/Second.nes',
+        fileCount: 1,
+        availability: 'available',
+      },
+    ],
+  };
+
+  const unmatchedMetadata: GameMetadataState = {
+    ...populatedGameMetadata,
+    gameId: 2,
+    status: 'noMatch',
+    matchType: null,
+    deterministic: false,
+    providerGameId: null,
+    providerRomId: null,
+    metadata: null,
+  };
+
+  const gameOneOptions = [
+    {
+      contentUnitId: 101,
+      localTitle: 'Kirby Disc 1',
+      kind: 'singleFile' as const,
+      fileCount: 1,
+      availability: 'available' as const,
+    },
+    {
+      contentUnitId: 102,
+      localTitle: 'Kirby Disc 2',
+      kind: 'singleFile' as const,
+      fileCount: 1,
+      availability: 'available' as const,
+    },
+  ];
+
+  const gameOneFailure = {
+    code: 'runtimeNotReady' as const,
+    message: 'The managed runtime is not ready.',
+    context: {
+      systemId: 'nes' as const,
+      coreId: null,
+      biosRequirementIds: [],
+      runtimeState: null,
+      hostPrerequisite: null,
+      exitCode: null,
+      contentOptions: [],
+    },
+  };
+
+  beforeEach(() => {
+    setupDefaults();
+    installRectStub();
+    window.history.replaceState({}, '', '/library');
+    mocks.getLibrarySummary.mockResolvedValue(twoGameSummary);
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    // Both boundaries take a request object, so the fixture is selected by its `gameId` field.
+    mocks.getLibraryGameDetail.mockImplementation(async (request: { gameId: number }) =>
+      request.gameId === 2 ? secondGameDetail : populatedGameDetail,
+    );
+    mocks.getGameMetadata.mockImplementation(async (request: { gameId: number }) =>
+      request.gameId === 2 ? unmatchedMetadata : populatedGameMetadata,
+    );
+  });
+
+  function footerHints() {
+    return screen.getByRole('list', { name: 'Controller actions' });
+  }
+
+  /** Opens Game A's Detail route the way the Library does. */
+  async function openFirstGame() {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    fireEvent.click(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }));
+    return screen.findByRole('button', { name: 'Play Kirby’s Adventure' });
+  }
+
+  /**
+   * Leaves the current Game Detail route with the pointer, through the BACK TO LIBRARY link. This is
+   * a native navigation path, not the semantic Cancel/Dismiss action, and it stays available while a
+   * temporary launch scope is open because those surfaces are deliberately not browser-modal.
+   */
+  async function leaveByPointer() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole('link', { name: /BACK TO LIBRARY/ }));
+    });
+    await screen.findByRole('heading', { name: 'LIBRARY' });
+  }
+
+  async function openSecondGame() {
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
+      );
+    });
+    return screen.findByRole('button', { name: 'Play Second Game Local' });
+  }
+
+  it('does not render another game’s content options after the route is abandoned', async () => {
+    mocks.launchGame.mockResolvedValue({
+      status: 'contentSelectionRequired',
+      options: gameOneOptions,
+    });
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    // Game A owns a version-selection surface.
+    expect(await screen.findByRole('group', { name: 'Choose a version' })).toBeInTheDocument();
+
+    // The user leaves without pressing CANCEL, then opens Game B.
+    await leaveByPointer();
+    await openSecondGame();
+
+    expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Kirby Disc 1/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Kirby Disc 2/ })).not.toBeInTheDocument();
+    // No stale CANCEL is offered as the Back action either.
+    expect(within(footerHints()).queryByText('CANCEL')).not.toBeInTheDocument();
+  });
+
+  it('does not render or focus another game’s launch failure after the route is abandoned', async () => {
+    mocks.launchGame.mockResolvedValue({ status: 'failed', error: gameOneFailure });
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    const failure = await screen.findByRole('group', { name: 'Launch failed' });
+    await waitFor(() =>
+      expect(within(failure).getByRole('button', { name: 'DISMISS' })).toHaveFocus(),
+    );
+
+    // The user leaves without dismissing, then opens Game B.
+    await leaveByPointer();
+    const secondPlay = await openSecondGame();
+
+    expect(screen.queryByRole('group', { name: 'Launch failed' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'DISMISS' })).not.toBeInTheDocument();
+    // Game B's own route-entry focus is untouched by the abandoned surface.
+    expect(secondPlay).not.toHaveFocus();
+    expect(within(footerHints()).queryByText('DISMISS')).not.toBeInTheDocument();
+  });
+
+  it('refuses a second launch request while one is still unresolved', async () => {
+    let settleLaunch: ((value: LaunchResponse) => void) | undefined;
+    mocks.launchGame.mockImplementation(
+      () =>
+        new Promise<LaunchResponse>((resolve) => {
+          settleLaunch = resolve;
+        }),
+    );
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    expect(mocks.launchGame).toHaveBeenCalledTimes(1);
+
+    await leaveByPointer();
+    const secondPlay = await openSecondGame();
+
+    // Game A's request is still unresolved, so Game B may not issue a second one.
+    expect(secondPlay).toBeDisabled();
+    await act(async () => {
+      fireEvent.click(secondPlay);
+    });
+    expect(mocks.launchGame).toHaveBeenCalledTimes(1);
+    // And it says so truthfully rather than looking merely idle.
+    expect(secondPlay).toHaveTextContent('ANOTHER GAME IS LAUNCHING');
+
+    // The abandoned request is still allowed to resolve; the settled result must not resurrect
+    // Game A's transient surface on Game B.
+    await act(async () => {
+      settleLaunch?.({ status: 'failed', error: gameOneFailure });
+    });
+    expect(screen.queryByRole('group', { name: 'Launch failed' })).not.toBeInTheDocument();
+    // Ownership is free again, so Game B can launch now.
+    await waitFor(() => expect(secondPlay).not.toBeDisabled());
+  });
+
+  it('adopts an authoritative running session started by an abandoned request', async () => {
+    let settleLaunch: ((value: LaunchResponse) => void) | undefined;
+    mocks.launchGame.mockImplementation(
+      () =>
+        new Promise<LaunchResponse>((resolve) => {
+          settleLaunch = resolve;
+        }),
+    );
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    await leaveByPointer();
+    await openSecondGame();
+
+    // The backend really started the process the user asked for before navigating away. Route
+    // abandonment drops the *presentation*, never the authoritative process result.
+    await act(async () => {
+      settleLaunch?.({
+        status: 'started',
+        session: { sessionId: 9, gameId: 1, contentUnitId: 101, coreId: 'nestopia', startedAt: 1 },
+        diagnostics: [],
+      });
+    });
+
+    // The footer states the running fact, and Game B's Play is refused because a game is running.
+    await waitFor(() =>
+      expect(screen.getByText('RETROARCH HAS CONTROLLER INPUT')).toBeInTheDocument(),
+    );
+    const secondPlayAgain = screen.getByRole('button', { name: 'Play Second Game Local' });
+    expect(secondPlayAgain).toBeDisabled();
+    expect(secondPlayAgain).toHaveTextContent('ANOTHER GAME IS RUNNING');
+    // And no transient Game A surface came with it.
+    expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Launch failed' })).not.toBeInTheDocument();
+  });
+
+  it('discards a content-selection answer that arrives after the route was abandoned', async () => {
+    let settleLaunch: ((value: LaunchResponse) => void) | undefined;
+    mocks.launchGame.mockImplementation(
+      () =>
+        new Promise<LaunchResponse>((resolve) => {
+          settleLaunch = resolve;
+        }),
+    );
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    await leaveByPointer();
+    await openSecondGame();
+
+    await act(async () => {
+      settleLaunch?.({ status: 'contentSelectionRequired', options: gameOneOptions });
+    });
+    expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the owning route’s transient surface while the user stays on it', async () => {
+    mocks.launchGame.mockResolvedValue({
+      status: 'contentSelectionRequired',
+      options: gameOneOptions,
+    });
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    // Rerendering the same route must not be mistaken for leaving it.
+    const surface = await screen.findByRole('group', { name: 'Choose a version' });
+    await act(async () => undefined);
+    expect(surface).toBeInTheDocument();
+    expect(within(surface).getByRole('button', { name: /Kirby Disc 1/ })).toBeInTheDocument();
+  });
+});
+
 describe('AppShell M8 controller navigation and focus', () => {
   const populatedM8Summary = {
     totalGames: 2,

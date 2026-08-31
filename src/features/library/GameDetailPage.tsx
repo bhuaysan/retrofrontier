@@ -775,14 +775,20 @@ function LaunchAction({
   const runningThisGame = launch.running?.gameId === gameId;
   const runningAnotherGame = launch.running !== null && !runningThisGame;
   const pending = launch.pendingGameId === gameId;
-  const disabled = pending || launch.running !== null || launch.blocked;
+  // Only one frontend launch request may be unresolved at a time, so a request belonging to *another*
+  // game refuses this control too. Keying availability on `pendingGameId === gameId` alone let a
+  // second request be issued from a different Game Detail before the first had resolved.
+  const anotherLaunchPending = launch.pendingGameId !== null && !pending;
+  const disabled = pending || anotherLaunchPending || launch.running !== null || launch.blocked;
   const label = runningThisGame
     ? 'RUNNING'
     : pending
       ? 'LAUNCHING…'
-      : runningAnotherGame
-        ? 'ANOTHER GAME IS RUNNING'
-        : 'PLAY';
+      : anotherLaunchPending
+        ? 'ANOTHER GAME IS LAUNCHING'
+        : runningAnotherGame
+          ? 'ANOTHER GAME IS RUNNING'
+          : 'PLAY';
   // Play is also the target a return from RetroArch restores, so it keeps its identity even while
   // it is disabled; the footer stops offering `confirm` for it in that state.
   const playRef = useFocusNode({

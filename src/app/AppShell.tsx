@@ -297,12 +297,24 @@ function AppShellBody() {
       : isSettingsRoute
         ? focusNodes.settings('heading')
         : focusNodes.libraryHeading;
+  // Transient launch state belongs to the Game Detail route that started it. Leaving that route
+  // abandons the *presentation* — content options, a normalized failure, the pending surface — and
+  // nothing else: the IPC request stays in flight, `pendingGameId` stays set, and input ownership
+  // stays released, because RetroArch may already exist. M8 deliberately does not browser-trap Tab
+  // or the pointer inside a focus scope, so this path is reachable without the semantic
+  // Cancel/Dismiss action and must be handled rather than assumed away.
+  const launchInteractionGameId = gameLaunch.interaction?.gameId ?? null;
+  const { abandonInteraction } = gameLaunch;
+  useEffect(() => {
+    if (launchInteractionGameId === null) return;
+    if (launchInteractionGameId === currentGameId) return;
+    abandonInteraction();
+  }, [abandonInteraction, currentGameId, launchInteractionGameId]);
   // A multi-step launch is one interaction: PLAY, a `contentSelectionRequired` answer, and the
   // version the user then confirms all belong to the same launch, so the origin is captured once at
   // its beginning. The launch facts are handed over so the hook can tell a continuation from a
   // resolution and never keep an origin that can no longer produce a return.
-  const contentSelectionOpen =
-    gameLaunch.contentOptions !== null && gameLaunch.contentOptions.length > 0;
+  const contentSelectionOpen = gameLaunch.interaction?.phase === 'contentSelection';
   const { beginLaunchInteraction } = useLaunchFocusReturn({
     running: gameLaunch.running,
     blocked: gameLaunch.blocked,
@@ -327,6 +339,21 @@ function AppShellBody() {
       },
     }),
     [beginLaunchInteraction, gameLaunch],
+  );
+  // The route-scoped view handed to Game Detail. Scoping here rather than inside the screen means a
+  // Game Detail route structurally *cannot* render transient launch state it does not own, even for
+  // the single render between a route change and the abandonment effect above. `pendingGameId`,
+  // `running`, and `blocked` stay global, because those are facts about the application, not about
+  // one screen's transient surface.
+  const ownsTransientLaunchUi =
+    launchInteractionGameId !== null && launchInteractionGameId === currentGameId;
+  const launchForGameDetail = useMemo<GameLaunchModel>(
+    () => ({
+      ...launchWithFocusHandoff,
+      contentOptions: ownsTransientLaunchUi ? launchWithFocusHandoff.contentOptions : null,
+      failure: ownsTransientLaunchUi ? launchWithFocusHandoff.failure : null,
+    }),
+    [launchWithFocusHandoff, ownsTransientLaunchUi],
   );
   // The Library is the root destination, so `back` there has nothing to do and is not offered.
   useFocusBack(
@@ -503,7 +530,7 @@ function AppShellBody() {
       ) : gameRouteState ? (
         <GameDetailPage
           detail={gameDetail}
-          launch={launchWithFocusHandoff}
+          launch={launchForGameDetail}
           gameId={currentGameId}
           onBackToLibrary={onBackToLibrary}
           onRetryReadiness={() => void refreshCatalog()}
