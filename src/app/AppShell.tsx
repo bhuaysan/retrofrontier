@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ControllerFooter } from '../components/ui/ControllerFooter';
 import { InlineError } from '../components/ui/InlineError';
 import { PixelRow } from '../components/ui/PixelRow';
 import type { InputAction } from '../input/actions';
+import { ownsApplicationInput } from '../input/inputOwnership';
 import { FocusProvider } from '../focus/FocusProvider';
 import { useFocusApi, useFocusBack } from '../focus/focusContext';
 import { focusNodes } from '../focus/focusNodes';
@@ -15,7 +16,7 @@ import { useContentRoots } from '../hooks/useContentRoots';
 import { useLibrarySummary } from '../hooks/useLibrarySummary';
 import { useLibraryQuery } from '../hooks/useLibraryQuery';
 import { useGameDetail } from '../hooks/useGameDetail';
-import { useGameLaunch } from '../hooks/useGameLaunch';
+import { useGameLaunch, type GameLaunchModel } from '../hooks/useGameLaunch';
 import { useScanState } from '../hooks/useScanState';
 import { useSystemCatalog } from '../hooks/useSystemCatalog';
 import { pickExternalContentRoot } from '../platform/folderPicker';
@@ -262,10 +263,16 @@ function AppShellBody() {
   // the shell owns the hook rather than the detail screen.
   const gameLaunch = useGameLaunch();
   const windowFocused = useAppWindowFocus();
-  // RetroFrontier owns UI input only while its own window is focused and no managed game is
-  // authoritative. While RetroArch runs, or while launch state is uncertain, controller input
-  // belongs to the emulator and RetroFrontier neither consumes it nor fights for the window.
-  const ownsInput = windowFocused && gameLaunch.running === null && !gameLaunch.blocked;
+  // One authoritative ownership predicate for the whole application. It is deliberately conservative
+  // about the launch transition: the backend may already have spawned RetroArch while React still
+  // sees `running === null`, so ownership is released at the launch request rather than when the
+  // running state arrives. See `src/input/inputOwnership.ts`.
+  const ownsInput = ownsApplicationInput({
+    windowFocused,
+    running: gameLaunch.running,
+    blocked: gameLaunch.blocked,
+    pendingGameId: gameLaunch.pendingGameId,
+  });
   const onInputAction = useCallback(
     (action: InputAction) => focus.dispatch(action, 'gamepad'),
     [focus],
@@ -274,17 +281,42 @@ function AppShellBody() {
     (action: InputAction) => focus.dispatch(action, 'keyboard'),
     [focus],
   );
-  const { connected: controllerConnected } = useControllerInput({
-    enabled: ownsInput,
-    onAction: onInputAction,
-  });
+  const { connected: controllerConnected, unsupported: controllerUnsupported } = useControllerInput(
+    {
+      enabled: ownsInput,
+      onAction: onInputAction,
+    },
+  );
   useKeyboardInput({ enabled: ownsInput, onAction: onKeyboardAction });
-  useLaunchFocusReturn({
+  // The logical context a launch belongs to. A return after a managed game only restores the
+  // captured origin while this is still the context the launch was started from.
+  const launchRouteKey = gameRouteState !== null ? `game:${currentGameId}` : route;
+  const routeFallbackNodeId =
+    gameRouteState !== null
+      ? focusNodes.detail('play')
+      : isSettingsRoute
+        ? focusNodes.settings('heading')
+        : focusNodes.libraryHeading;
+  const { captureLaunchOrigin } = useLaunchFocusReturn({
     running: gameLaunch.running,
     blocked: gameLaunch.blocked,
     windowFocused,
-    fallbackNodeId: currentGameId === null ? focusNodes.libraryHeading : focusNodes.detail('play'),
+    routeKey: typeof launchRouteKey === 'string' ? launchRouteKey : 'library',
+    fallbackNodeId: routeFallbackNodeId,
   });
+  // The explicit launch-focus handoff. The origin is recorded synchronously where the UI initiates
+  // the launch, which is the user's actual intent, instead of sampling whichever node happens to be
+  // focused once the backend reports a running process.
+  const launchWithFocusHandoff = useMemo<GameLaunchModel>(
+    () => ({
+      ...gameLaunch,
+      launch: (gameId: number, contentUnitId?: number) => {
+        captureLaunchOrigin();
+        return gameLaunch.launch(gameId, contentUnitId);
+      },
+    }),
+    [captureLaunchOrigin, gameLaunch],
+  );
   // The Library is the root destination, so `back` there has nothing to do and is not offered.
   useFocusBack(
     isLibraryRoute || scanRunning ? null : { label: 'LIBRARY', run: () => onBackToLibrary() },
@@ -460,7 +492,7 @@ function AppShellBody() {
       ) : gameRouteState ? (
         <GameDetailPage
           detail={gameDetail}
-          launch={gameLaunch}
+          launch={launchWithFocusHandoff}
           gameId={currentGameId}
           onBackToLibrary={onBackToLibrary}
           onRetryReadiness={() => void refreshCatalog()}
@@ -488,6 +520,7 @@ function AppShellBody() {
       {showsFooter ? (
         <ControllerFooter
           controllerConnected={controllerConnected}
+          controllerUnsupported={controllerUnsupported}
           gameRunning={gameLaunch.running !== null}
           interactive={ownsInput}
           status={footerStatus}
