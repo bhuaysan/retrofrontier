@@ -52,6 +52,70 @@ pub fn response_object(body: &[u8]) -> Result<Value, MalformedResponse> {
         .ok_or(MalformedResponse)
 }
 
+/// Names why a body could not be read as a provider envelope.
+///
+/// Diagnostic only — it never widens what is accepted. `MalformedResponse` deliberately carries no
+/// detail so no call site can branch on it, but an operator staring at a failing library needs to
+/// know whether the provider sent broken JSON, sent an error envelope, or sent something this
+/// parser does not understand. Those demand completely different responses and the failure class
+/// cannot tell them apart.
+///
+/// The returned text describes structure only: key names, JSON types, and the parser's own
+/// position and message. It never includes a value from the body.
+pub fn describe_envelope_failure(body: &[u8]) -> String {
+    let root: Value = match serde_json::from_slice(body) {
+        Ok(root) => root,
+        Err(error) => {
+            return format!(
+                "body is not valid JSON: {} at line {} column {}",
+                error.classify_text(),
+                error.line(),
+                error.column()
+            )
+        }
+    };
+
+    let Some(object) = root.as_object() else {
+        return format!("root is {}, not an object", json_type_name(&root));
+    };
+    let keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    match object.get("response") {
+        None => format!("root has no `response` key; keys are {keys:?}"),
+        Some(response) => format!(
+            "`response` is {}, not an object; root keys are {keys:?}",
+            json_type_name(response)
+        ),
+    }
+}
+
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+trait ClassifyText {
+    fn classify_text(&self) -> &'static str;
+}
+
+impl ClassifyText for serde_json::Error {
+    fn classify_text(&self) -> &'static str {
+        use serde_json::error::Category;
+        match self.classify() {
+            Category::Io => "read error",
+            Category::Syntax => "syntax error",
+            // The usual cause of this one is a byte sequence that is not valid UTF-8.
+            Category::Data => "unexpected data or encoding",
+            Category::Eof => "unexpected end of input (truncated)",
+        }
+    }
+}
+
 /// Extracts the dynamic quota snapshot.
 ///
 /// Values are merged from the user profile and the server block so a guest profile, a member
@@ -568,6 +632,36 @@ mod tests {
         assert_eq!(record.matched_rom.unwrap().size_bytes, Some(10));
     }
 
+    #[test]
+    fn an_envelope_failure_is_described_precisely_and_leaks_no_values() {
+        // Broken JSON names the parser's own position.
+        let truncated = describe_envelope_failure(br#"{"header":{"a":1"#);
+        assert!(truncated.contains("not valid JSON"), "{truncated}");
+        assert!(truncated.contains("line"), "{truncated}");
+
+        // A body that parses but is not an envelope names the structure it found instead.
+        let wrong_shape =
+            describe_envelope_failure(br#"{"header":{},"response":"nope","secret":"hunter2"}"#);
+        assert!(
+            wrong_shape.contains("`response` is a string"),
+            "{wrong_shape}"
+        );
+        assert!(wrong_shape.contains("header"), "{wrong_shape}");
+        // Key names are structure; values never are.
+        assert!(!wrong_shape.contains("hunter2"), "{wrong_shape}");
+        assert!(!wrong_shape.contains("nope"), "{wrong_shape}");
+
+        let missing = describe_envelope_failure(br#"{"header":{}}"#);
+        assert!(missing.contains("no `response` key"), "{missing}");
+
+        let not_object = describe_envelope_failure(b"[1,2,3]");
+        assert!(not_object.contains("root is an array"), "{not_object}");
+
+        // Bytes that are not valid UTF-8 are a real provider failure mode, and must be named as
+        // an encoding problem rather than reported as a structural one.
+        let latin1 = describe_envelope_failure(b"{\"response\":{\"nom\":\"caf\xe9\"}}");
+        assert!(latin1.contains("not valid JSON"), "{latin1}");
+    }
     #[test]
     fn malformed_bodies_are_rejected_rather_than_producing_empty_metadata() {
         assert_eq!(response_object(b"not json"), Err(MalformedResponse));

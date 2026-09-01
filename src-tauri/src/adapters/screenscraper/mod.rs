@@ -166,6 +166,8 @@ fn log_malformed_body(context: &'static str, body: &[u8]) {
     tracing::warn!(
         context,
         bytes = body.len(),
+        // Structure only: which check failed, and where. Never a value from the body.
+        reason = %parse::describe_envelope_failure(body),
         excerpt = %redact_text(&excerpt),
         "metadata provider returned a body that could not be understood"
     );
