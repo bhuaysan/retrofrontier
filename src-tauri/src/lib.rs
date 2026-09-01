@@ -30,8 +30,9 @@ use application::metadata::CREDENTIAL_VAULT_SERVICE;
 use application::AppState;
 use application::{
     LaunchApplicationService, LaunchConfig, LibraryApplicationService, MetadataApplicationService,
-    MetadataConfig, MetadataWorker, ProviderCredentialState, RuntimeApplicationService,
-    RuntimeManager, SystemsApplicationService, TauriLaunchEventSink, TauriMetadataStateEventSink,
+    MetadataConfig, MetadataScrapeApplicationService, MetadataScrapeConfig, MetadataWorkSignal,
+    MetadataWorker, ProviderCredentialState, RuntimeApplicationService, RuntimeManager,
+    SystemsApplicationService, TauriLaunchEventSink, TauriMetadataStateEventSink,
     TauriScanEventSink,
 };
 use domain::system::SystemCatalog;
@@ -136,12 +137,27 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
         );
     }
 
-    let metadata = initialize_metadata(app, &app_data_dir, database.pool().clone())?;
+    // One work signal is shared by the metadata service, the scrape orchestrator and the worker,
+    // so explicitly requested work never waits out the worker's idle sleep.
+    let work_signal = MetadataWorkSignal::new();
+    let metadata = initialize_metadata(app, &app_data_dir, database.pool().clone(), work_signal)?;
     let media_delivery = Arc::new(CachedCoverDelivery::new(
         database.pool().clone(),
         MetadataPaths::new(&app_data_dir),
     ));
-    let metadata_worker = Arc::new(MetadataWorker::new(metadata.clone()));
+    let metadata_scrape = Arc::new(tauri::async_runtime::block_on(
+        MetadataScrapeApplicationService::initialize(
+            database.pool().clone(),
+            Arc::new(SystemClock),
+            metadata.work_signal(),
+            metadata.provider_id(),
+            MetadataScrapeConfig::default(),
+        ),
+    )?);
+    let metadata_worker = Arc::new(MetadataWorker::new(
+        metadata.clone(),
+        metadata_scrape.clone(),
+    ));
     metadata_worker.start();
 
     Ok(AppState::new(
@@ -152,6 +168,7 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
         library,
         launch,
         metadata,
+        metadata_scrape,
         media_delivery,
         metadata_worker,
     ))
@@ -166,6 +183,7 @@ fn initialize_metadata(
     app: &tauri::AppHandle,
     app_data_dir: &std::path::Path,
     pool: sqlx::SqlitePool,
+    signal: MetadataWorkSignal,
 ) -> Result<Arc<MetadataApplicationService>, error::AppError> {
     #[cfg(debug_assertions)]
     adapters::credentials::load_development_environment_file(std::path::Path::new(".env"));
@@ -215,9 +233,11 @@ fn initialize_metadata(
         Arc::new(RandomJitter),
         MetadataConfig::default(),
     ))?;
-    Ok(Arc::new(service.with_event_sink(Arc::new(
-        TauriMetadataStateEventSink::new(app.clone()),
-    ))))
+    Ok(Arc::new(
+        service
+            .with_event_sink(Arc::new(TauriMetadataStateEventSink::new(app.clone())))
+            .with_work_signal(signal),
+    ))
 }
 
 pub fn run() {
@@ -297,7 +317,11 @@ pub fn run() {
             commands::metadata::clear_game_metadata_candidate,
             commands::metadata::set_metadata_provider_credentials,
             commands::metadata::clear_metadata_provider_credentials,
-            commands::metadata::get_metadata_provider_account
+            commands::metadata::get_metadata_provider_account,
+            commands::metadata::preview_metadata_scrape,
+            commands::metadata::get_metadata_scrape_status,
+            commands::metadata::start_metadata_scrape,
+            commands::metadata::stop_metadata_scrape
         ])
         .run(tauri::generate_context!())
         .expect("error while running RetroFrontier");

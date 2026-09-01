@@ -2,6 +2,7 @@ mod app_info;
 pub mod launch;
 pub mod library;
 pub mod metadata;
+pub mod metadata_scrape;
 mod runtime;
 pub mod runtime_manager;
 mod systems;
@@ -17,6 +18,9 @@ pub use metadata::{
     MetadataApplicationService, MetadataConfig, MetadataWorker, ProviderCredentialState,
     TauriMetadataStateEventSink,
 };
+pub use metadata_scrape::{
+    MetadataScrapeApplicationService, MetadataScrapeConfig, MetadataWorkSignal,
+};
 pub use runtime::{RuntimeApplicationService, RuntimeInstallResponse, RuntimeInstallState};
 pub use runtime_manager::RuntimeManager;
 use std::sync::Arc;
@@ -30,6 +34,7 @@ pub struct AppState {
     systems: SystemsApplicationService,
     library: LibraryApplicationService,
     metadata: Arc<MetadataApplicationService>,
+    metadata_scrape: Arc<MetadataScrapeApplicationService>,
     media_delivery: Arc<CachedCoverDelivery>,
     _metadata_worker: Arc<MetadataWorker>,
     _instance_lock: Arc<ApplicationInstanceLock>,
@@ -45,6 +50,7 @@ impl AppState {
         library: LibraryApplicationService,
         launch: LaunchApplicationService,
         metadata: Arc<MetadataApplicationService>,
+        metadata_scrape: Arc<MetadataScrapeApplicationService>,
         media_delivery: Arc<CachedCoverDelivery>,
         metadata_worker: Arc<MetadataWorker>,
     ) -> Self {
@@ -55,6 +61,7 @@ impl AppState {
             systems,
             library,
             metadata,
+            metadata_scrape,
             media_delivery,
             _metadata_worker: metadata_worker,
             _instance_lock: Arc::new(instance_lock),
@@ -83,6 +90,10 @@ impl AppState {
 
     pub fn metadata(&self) -> &MetadataApplicationService {
         &self.metadata
+    }
+
+    pub fn metadata_scrape(&self) -> &MetadataScrapeApplicationService {
+        &self.metadata_scrape
     }
 
     pub fn media_delivery(&self) -> &CachedCoverDelivery {

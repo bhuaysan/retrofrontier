@@ -15,6 +15,7 @@ use crate::adapters::credentials::{
     SecretString, UserCredentials,
 };
 use crate::adapters::metadata_paths::MetadataPaths;
+use crate::application::metadata_scrape::{MetadataScrapeApplicationService, MetadataWorkSignal};
 use crate::domain::library::{cached_cover_reference, ContentUnit, GameId, UnixTimestamp};
 use crate::domain::metadata::{
     evidence_for_unit, GameMetadataState, MatchEvidence, MatchType, MediaAssetKind,
@@ -216,6 +217,8 @@ pub struct MetadataApplicationService {
     provider_id: MetadataProviderId,
     developer_credentials_configured: bool,
     event_sink: Arc<dyn MetadataStateEventSink>,
+    /// Wakes the worker when an explicit request adds work it should not sleep through.
+    signal: MetadataWorkSignal,
 }
 
 impl MetadataApplicationService {
@@ -288,6 +291,7 @@ impl MetadataApplicationService {
             provider_id,
             developer_credentials_configured,
             event_sink: Arc::new(NoopMetadataStateEventSink),
+            signal: MetadataWorkSignal::new(),
         })
     }
 
@@ -296,6 +300,19 @@ impl MetadataApplicationService {
     pub fn with_event_sink(mut self, event_sink: Arc<dyn MetadataStateEventSink>) -> Self {
         self.event_sink = event_sink;
         self
+    }
+
+    /// Shares one work signal with the scrape orchestrator and the worker.
+    ///
+    /// There is exactly one signal and one worker. Explicit work raises it; the worker's idle sleep
+    /// is what it shortens.
+    pub fn with_work_signal(mut self, signal: MetadataWorkSignal) -> Self {
+        self.signal = signal;
+        self
+    }
+
+    pub fn work_signal(&self) -> MetadataWorkSignal {
+        self.signal.clone()
     }
 
     fn notify_state_changed(&self, game_id: GameId) {
@@ -471,7 +488,9 @@ impl MetadataApplicationService {
                 MetadataJobKind::Identify,
                 self.clock.now_ms(),
             )
-            .await
+            .await?;
+        self.signal.notify();
+        Ok(())
     }
 
     /// Enqueues a refresh.
@@ -512,6 +531,7 @@ impl MetadataApplicationService {
                 .enqueue_job(game_id, self.provider_id, MetadataJobKind::Identify, now)
                 .await?;
         }
+        self.signal.notify();
         Ok(())
     }
 
@@ -536,7 +556,9 @@ impl MetadataApplicationService {
             .await?;
         self.repository
             .enqueue_job(game_id, self.provider_id, MetadataJobKind::Identify, now)
-            .await
+            .await?;
+        self.signal.notify();
+        Ok(())
     }
 
     pub async fn clear_provider_candidate(&self, game_id: GameId) -> Result<(), AppError> {
@@ -596,21 +618,6 @@ impl MetadataApplicationService {
             .await?;
         self.credentials.set_user(None);
         Ok(())
-    }
-
-    /// Enqueues identification for games that have no provider relationship yet.
-    pub async fn enqueue_missing_metadata(&self) -> Result<usize, AppError> {
-        let now = self.clock.now_ms();
-        let games = self
-            .repository
-            .games_needing_metadata(self.provider_id, self.config.batch_size)
-            .await?;
-        for game_id in &games {
-            self.repository
-                .enqueue_job(*game_id, self.provider_id, MetadataJobKind::Identify, now)
-                .await?;
-        }
-        Ok(games.len())
     }
 
     /// Marks accepted matches whose evidence no longer holds and schedules re-identification.
@@ -1695,6 +1702,10 @@ fn basename_of(relative_path: &str) -> String {
 /// lives in SQLite, so the UI simply reads it whenever it wants.
 pub struct MetadataWorker {
     service: Arc<MetadataApplicationService>,
+    /// Orchestrates user-initiated scrape runs. It feeds the same queue the worker drains; it is
+    /// not a second worker and never issues a provider request of its own.
+    scrape: Arc<MetadataScrapeApplicationService>,
+    signal: MetadataWorkSignal,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     started: std::sync::atomic::AtomicBool,
 }
@@ -1708,9 +1719,14 @@ const WORKER_IDLE_PAUSE_MS: u64 = 60_000;
 const WORKER_MAX_PAUSE_MS: u64 = 300_000;
 
 impl MetadataWorker {
-    pub fn new(service: Arc<MetadataApplicationService>) -> Self {
+    pub fn new(
+        service: Arc<MetadataApplicationService>,
+        scrape: Arc<MetadataScrapeApplicationService>,
+    ) -> Self {
         Self {
+            signal: service.work_signal(),
             service,
+            scrape,
             shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             started: std::sync::atomic::AtomicBool::new(false),
         }
@@ -1729,19 +1745,27 @@ impl MetadataWorker {
         }
 
         let service = self.service.clone();
+        let scrape = self.scrape.clone();
+        let signal = self.signal.clone();
         let shutdown = self.shutdown.clone();
         let batch = service.config.batch_size.max(1);
         tauri::async_runtime::spawn(async move {
             tracing::info!("metadata worker started");
             while !shutdown.load(Ordering::SeqCst) {
-                let pause = match run_worker_round(&service, batch).await {
+                let pause = match run_worker_round(&service, &scrape, batch).await {
                     Ok(pause) => pause,
                     Err(error) => {
                         error.log();
                         WORKER_IDLE_PAUSE_MS
                     }
                 };
-                tokio::time::sleep(std::time::Duration::from_millis(pause)).await;
+                // Sleep, but not through explicit new work. The wake-up only ends the pause early;
+                // the next round still re-checks provider deferral, quota and per-job retry timing
+                // before anything is sent, so this cannot jump a wait the provider asked for.
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(pause)) => {}
+                    _ = signal.notified() => {}
+                }
             }
             tracing::info!("metadata worker stopped");
         });
@@ -1754,21 +1778,30 @@ impl MetadataWorker {
     }
 }
 
-/// One worker round: revalidate, top up the queue, then process what is runnable.
+/// One worker round.
+///
+/// Recover leaked claims, revalidate accepted relationships, advance any explicitly started scrape
+/// run, then process whatever is runnable.
+///
+/// There is deliberately no first-time top-up step. Discovering a game locally no longer means
+/// sending it to the provider: that is now something the user starts from Settings. Automatic
+/// revalidation stays exactly where it was — it protects the integrity of relationships the user
+/// already has, which is a different question from whether to go and fetch new ones.
 async fn run_worker_round(
     service: &MetadataApplicationService,
+    scrape: &MetadataScrapeApplicationService,
     batch: usize,
 ) -> Result<u64, AppError> {
     service.recover_expired_claims().await?;
     service.revalidate_matches().await?;
-    service.enqueue_missing_metadata().await?;
+    let advance = scrape.advance().await?;
     let processed = service.process_ready_jobs(batch).await?;
 
     if let Some(wait_until) = processed.wait_until {
         let delay = wait_until.saturating_sub(service.clock.now_ms()).max(0) as u64;
         return Ok(delay.clamp(WORKER_MIN_PAUSE_MS, WORKER_MAX_PAUSE_MS));
     }
-    Ok(if processed.total() == 0 {
+    Ok(if processed.total() == 0 && !advance.did_work() {
         WORKER_IDLE_PAUSE_MS
     } else {
         WORKER_MIN_PAUSE_MS
@@ -1785,6 +1818,7 @@ mod tests {
         cached_cover_reference, ContentUnitKind, LibraryMetadataMatchState, LibraryQuery,
     };
     use crate::domain::metadata::{MetadataJobState, NormalizedMetadata};
+    use crate::domain::metadata_scrape::{MetadataJobBand, MetadataScrapeMode};
     use crate::domain::system::{SystemCatalog, SystemId};
     use crate::services::library_scanner::NoopScanEventSink;
     use crate::services::metadata_provider::{
@@ -1974,6 +2008,16 @@ mod tests {
         }
     }
 
+    /// The same ROM after its bytes were replaced in place, matching the fixture's new hashes.
+    fn replaced_rom() -> ProviderRomRecord {
+        ProviderRomRecord {
+            crc32: Some("11111111".to_owned()),
+            md5: Some("11111111111111111111111111111111".to_owned()),
+            sha1: Some("1111111111111111111111111111111111111111".to_owned()),
+            ..matched_rom()
+        }
+    }
+
     fn synthetic_cover() -> ProviderCoverDescriptor {
         ProviderCoverDescriptor {
             provider_media_type: "box-2D".to_owned(),
@@ -2038,6 +2082,7 @@ mod tests {
         app_data: PathBuf,
         pool: SqlitePool,
         service: Arc<MetadataApplicationService>,
+        scrape: Arc<MetadataScrapeApplicationService>,
         provider: Arc<FakeProvider>,
         clock: Arc<ManualClock>,
         vault: Arc<InMemoryCredentialVault>,
@@ -2066,6 +2111,7 @@ mod tests {
                 &app_data,
             )
             .await;
+            let scrape = build_scrape_service(pool.clone(), clock.clone(), &service).await;
 
             Self {
                 _directory: directory,
@@ -2073,6 +2119,7 @@ mod tests {
                 app_data,
                 pool,
                 service,
+                scrape,
                 provider,
                 clock,
                 vault,
@@ -2094,6 +2141,41 @@ mod tests {
                 &self.app_data,
             )
             .await;
+            self.scrape =
+                build_scrape_service(self.pool.clone(), self.clock.clone(), &self.service).await;
+        }
+
+        /// Runs exactly the round the background worker runs, without the sleep between rounds.
+        async fn worker_round(&self) {
+            super::run_worker_round(&self.service, &self.scrape, 8)
+                .await
+                .expect("a worker round should not fail");
+        }
+
+        /// Drives scrape orchestration and job processing until the run settles.
+        async fn drain_scrape(&self, rounds: usize) {
+            for _ in 0..rounds {
+                let advance = self
+                    .scrape
+                    .advance()
+                    .await
+                    .expect("a scrape round should not fail");
+                let processed = self
+                    .service
+                    .process_ready_jobs(8)
+                    .await
+                    .expect("a scheduling round should not fail");
+                if !advance.did_work() && processed.total() == 0 {
+                    break;
+                }
+            }
+        }
+
+        async fn scrape_status(&self) -> crate::domain::metadata_scrape::MetadataScrapeStatus {
+            self.scrape
+                .status()
+                .await
+                .expect("scrape status should load")
         }
 
         /// Runs scheduling rounds until nothing more happens or the round budget is exhausted.
@@ -2138,6 +2220,29 @@ mod tests {
                 .await
                 .expect("scheduler state should load")
         }
+    }
+
+    async fn build_scrape_service(
+        pool: SqlitePool,
+        clock: Arc<ManualClock>,
+        service: &MetadataApplicationService,
+    ) -> Arc<MetadataScrapeApplicationService> {
+        Arc::new(
+            MetadataScrapeApplicationService::initialize(
+                pool,
+                clock,
+                service.work_signal(),
+                service.provider_id(),
+                // A small window keeps the feeder observable in tests without changing its rules.
+                crate::application::metadata_scrape::MetadataScrapeConfig {
+                    feed_window: 8,
+                    feed_batch: 4,
+                    reconcile_limit: 64,
+                },
+            )
+            .await
+            .expect("scrape service should initialize"),
+        )
     }
 
     async fn build_service(
@@ -4101,22 +4206,134 @@ mod tests {
     // -------------------------------------------------------------------------------- scheduling
 
     #[tokio::test]
-    async fn games_without_a_provider_relationship_are_enqueued_in_bounded_batches() {
+    async fn discovering_a_game_locally_does_not_send_it_to_the_provider() {
         let harness = Harness::new().await;
         for _ in 0..3 {
             insert_single_file_game(&harness.pool).await;
         }
 
-        let enqueued = harness.service.enqueue_missing_metadata().await.unwrap();
-        assert_eq!(enqueued, 3);
+        // Several worker rounds: the queue must stay empty on its own.
+        for _ in 0..3 {
+            harness.worker_round().await;
+        }
 
-        // Running it again must not duplicate work.
-        assert_eq!(harness.service.enqueue_missing_metadata().await.unwrap(), 0);
         let job_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM metadata_jobs")
             .fetch_one(&harness.pool)
             .await
             .unwrap();
-        assert_eq!(job_count, 3);
+        assert_eq!(
+            job_count, 0,
+            "a library scan discovers content locally; it does not scrape it"
+        );
+        assert!(
+            harness.provider.calls().is_empty(),
+            "no provider call may happen without the user asking for one"
+        );
+    }
+
+    #[tokio::test]
+    async fn starting_a_missing_metadata_run_is_what_creates_first_time_provider_work() {
+        let harness = Harness::new().await;
+        for _ in 0..3 {
+            insert_single_file_game(&harness.pool).await;
+        }
+
+        harness.worker_round().await;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM metadata_jobs")
+                .fetch_one(&harness.pool)
+                .await
+                .unwrap(),
+            0
+        );
+
+        let preview = harness
+            .scrape
+            .preview(MetadataScrapeMode::MissingMetadata)
+            .await
+            .unwrap();
+        assert_eq!(preview.eligible_games, 3);
+
+        harness
+            .scrape
+            .start(MetadataScrapeMode::MissingMetadata)
+            .await
+            .unwrap();
+
+        let jobs: Vec<(i64, String)> =
+            sqlx::query_as("SELECT priority, kind FROM metadata_jobs ORDER BY id")
+                .fetch_all(&harness.pool)
+                .await
+                .unwrap();
+        assert_eq!(jobs.len(), 3);
+        for (priority, kind) in &jobs {
+            assert_eq!(kind, "identify");
+            assert_eq!(
+                *priority,
+                MetadataJobBand::Bulk.priority(MetadataJobKind::Identify),
+                "scrape-run work belongs in the bulk band"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_matches_are_still_revalidated_automatically() {
+        // The policy change removes automatic *first-time* scraping. Evidence integrity for
+        // relationships the user already has is a different question and is unaffected.
+        let harness = Harness::new().await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "The Example Quest"),
+            None,
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("a"), None)));
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.drain(4).await;
+        assert_eq!(
+            harness.state(game_id).await.status,
+            ProviderMatchStatus::Matched
+        );
+
+        // M4 keeps every local identifier stable while replacing the bytes in place, so only the
+        // stored evidence can notice.
+        sqlx::query(
+            "UPDATE content_files SET sha1 = '1111111111111111111111111111111111111111', \
+             md5 = '11111111111111111111111111111111', crc32 = '11111111'",
+        )
+        .execute(&harness.pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE content_units SET fingerprint = 'fingerprint-2'")
+            .execute(&harness.pool)
+            .await
+            .unwrap();
+
+        // The provider now knows the replaced bytes, so the automatic sweep can re-establish the
+        // relationship. What matters here is that nobody had to ask it to.
+        harness.provider.reset_calls();
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(replaced_rom()), "The Example Quest"),
+            None,
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("b"), None)));
+
+        harness.worker_round().await;
+
+        assert!(
+            harness.provider.calls().contains(&"identify"),
+            "replaced content must still be re-identified without the user asking"
+        );
+        assert!(
+            harness
+                .job(game_id, MetadataJobKind::Identify)
+                .await
+                .is_some(),
+            "the integrity sweep still schedules its own re-identification"
+        );
     }
 
     #[tokio::test]
