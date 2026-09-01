@@ -20,7 +20,8 @@ use crate::release::definition::{
     ComponentDerivation, ReleaseComponentDefinition, ReleaseDefinition, ReleaseInput,
 };
 use crate::release::inventory::{
-    derive_component_inventory, read_seven_zip_member, repackage_zip_subtree_as_tar,
+    derive_component_inventory, read_seven_zip_member, repackage_seven_zip_member_as_tar,
+    repackage_zip_subtree_as_tar,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -92,7 +93,7 @@ pub async fn construct_release(
 
     for component in &definition.components {
         let input = definition.input(component.derivation.input())?;
-        let artifact = acquire_component_artifact(component, input, cache).await?;
+        let artifact = derive_component_artifact(component, input, cache).await?;
         let published = targets_directory.join(&component.target_name);
         write_new_file(&published, &artifact)?;
 
@@ -270,7 +271,7 @@ pub fn verify_by_extraction(
     Ok(())
 }
 
-async fn acquire_component_artifact(
+pub async fn derive_component_artifact(
     component: &ReleaseComponentDefinition,
     input: &ReleaseInput,
     cache: &InputCache,
@@ -281,6 +282,9 @@ async fn acquire_component_artifact(
         ComponentDerivation::SevenZipMember { member, .. } => {
             read_seven_zip_member(&input_path, member, MAX_INPUT_BYTES)
         }
+        ComponentDerivation::SevenZipMemberTar {
+            member, entry_name, ..
+        } => repackage_seven_zip_member_as_tar(&input_path, member, entry_name, MAX_INPUT_BYTES),
         ComponentDerivation::ZipSubtreeTar { subtree, .. } => {
             repackage_zip_subtree_as_tar(&input_path, subtree, MAX_INPUT_BYTES)
         }

@@ -17,7 +17,7 @@
 //! RETROFRONTIER_RUNTIME_TUF_ROOT=<repo>/metadata/root.json \
 //! RETROFRONTIER_RUNTIME_METADATA_URL=file://<repo>/metadata/ \
 //! RETROFRONTIER_RUNTIME_TARGETS_URL=file://<repo>/repository-targets/ \
-//! RETROFRONTIER_RUNTIME_MANIFEST_TARGET=rf-runtime-linux-x86_64-001.manifest.json \
+//! RETROFRONTIER_RUNTIME_MANIFEST_TARGET=rf-runtime-linux-x86_64-002.manifest.json \
 //! RETROFRONTIER_QUALIFICATION_APP_DATA=$HOME/.local/share/com.retrofrontier.desktop \
 //!   cargo test --features release-tools --lib qualification -- --ignored --nocapture --test-threads=1
 //! ```
