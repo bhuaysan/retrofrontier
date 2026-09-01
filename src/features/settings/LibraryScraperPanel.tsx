@@ -6,7 +6,12 @@ import { useFocusNode, useFocusScope } from '../../focus/focusContext';
 import { focusNodes, focusScopes } from '../../focus/focusNodes';
 import type { MetadataScrapeModel } from '../../hooks/useMetadataScrape';
 import type { MetadataScrapeMode, MetadataScrapeRun } from '../../platform/ipc';
-import { scrapeModeCopy, scrapeResultRows, scrapeRunCopy } from './scrapeStatus';
+import {
+  scrapeModeCopy,
+  scrapeResultRows,
+  scrapeRunCopy,
+  scrapeStartBlockedReason,
+} from './scrapeStatus';
 
 /**
  * Target size above which starting is confirmed first.
@@ -27,6 +32,8 @@ interface LibraryScraperPanelProps {
    * that RetroFrontier cannot support.
    */
   providerWaiting: boolean;
+  /** Whether this build has usable ScreenScraper application configuration at all. */
+  providerConfigured: boolean;
   onReviewMatches: () => void;
 }
 
@@ -105,6 +112,7 @@ function ScrapeProgress({ run }: { run: MetadataScrapeRun }) {
 export function LibraryScraperPanel({
   scrape,
   providerWaiting,
+  providerConfigured,
   onReviewMatches,
 }: LibraryScraperPanelProps) {
   const [confirming, setConfirming] = useState<'start' | 'stop' | null>(null);
@@ -112,6 +120,7 @@ export function LibraryScraperPanel({
   const confirmationButton = useRef<HTMLButtonElement>(null);
   const primaryAction = useRef<HTMLButtonElement>(null);
   const returnFocusToPrimary = useRef(false);
+  const previousActive = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
 
   const run = scrape.status?.run ?? null;
@@ -122,7 +131,13 @@ export function LibraryScraperPanel({
   // effect has to reset it when a run starts.
   const showSummary = finishedRun !== null && finishedRun.id !== dismissedRunId;
   const eligible = scrape.eligibleGames;
-  const canStart = !active && !busy && eligible !== null && eligible > 0;
+  const startBlockedReason = scrapeStartBlockedReason({
+    mode: scrape.mode,
+    eligibleGames: eligible,
+    providerConfigured,
+    loading: scrape.previewLoading && eligible === null,
+  });
+  const canStart = !active && !busy && startBlockedReason === null;
 
   // The confirmation owns focus and `back` while it is open; entry and exit focus are handled by the
   // effect below so a controller never lands on a button that has just been unmounted.
@@ -173,6 +188,16 @@ export function LibraryScraperPanel({
       (primaryAction.current ?? heading.current)?.focus();
     }
   }, [confirming]);
+
+  // Starting and finishing a run each replace the whole idle/active block, taking the button that
+  // had focus with them. Focus is reclaimed only when this transition actually orphaned it, so a
+  // run that starts or ends while the user is reading somewhere else does not pull them back here.
+  useEffect(() => {
+    if (previousActive.current === active) return;
+    previousActive.current = active;
+    const orphaned = document.activeElement === null || document.activeElement === document.body;
+    if (orphaned) (primaryAction.current ?? heading.current)?.focus();
+  }, [active]);
 
   const beginStart = () => {
     if (!canStart) return;
@@ -341,6 +366,11 @@ export function LibraryScraperPanel({
                 ? 'COUNTING ELIGIBLE GAMES…'
                 : `${eligible ?? 0} ${eligible === 1 ? 'GAME' : 'GAMES'} ELIGIBLE`}
           </p>
+          {startBlockedReason ? (
+            <p className="scrape-blocked" id="scrape-blocked-reason">
+              {startBlockedReason}
+            </p>
+          ) : null}
 
           {confirming === 'start' ? (
             <div
@@ -388,7 +418,7 @@ export function LibraryScraperPanel({
           ) : (
             <div className="scrape-actions">
               <PixelButton
-                aria-describedby="scrape-help"
+                aria-describedby={startBlockedReason ? 'scrape-blocked-reason' : 'scrape-help'}
                 disabled={!canStart}
                 onClick={beginStart}
                 ref={(node) => {

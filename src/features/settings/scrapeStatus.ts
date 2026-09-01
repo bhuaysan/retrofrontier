@@ -77,6 +77,39 @@ export function scrapeRunCopy(run: MetadataScrapeRun, providerWaiting = false): 
   }
 }
 
+/**
+ * Why START SCRAPER cannot be pressed, or `null` when it can.
+ *
+ * A disabled control with no stated reason is a dead end: the user is left to guess whether the
+ * scraper is broken, still loading, or simply has nothing to do. Each branch names the actual
+ * condition rather than restating that the button is unavailable.
+ */
+export function scrapeStartBlockedReason({
+  mode,
+  eligibleGames,
+  providerConfigured,
+  loading,
+}: {
+  mode: MetadataScrapeMode;
+  eligibleGames: number | null;
+  providerConfigured: boolean;
+  loading: boolean;
+}): string | null {
+  if (loading) return null;
+  if (!providerConfigured) {
+    return 'This build has no ScreenScraper application configuration, so no metadata can be fetched. A personal account cannot supply it.';
+  }
+  if (eligibleGames === null) {
+    return 'RetroFrontier could not count the games this run would cover.';
+  }
+  if (eligibleGames === 0) {
+    return mode === 'missingMetadata'
+      ? 'Every game in the library has already been through ScreenScraper. Games that were matched, came back with no match, need review, or are an unsupported format are not scraped again.'
+      : 'There are no accepted ScreenScraper matches to refresh yet.';
+  }
+  return null;
+}
+
 export type ScrapeResultRow = {
   label: string;
   value: number;

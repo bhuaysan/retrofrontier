@@ -95,25 +95,36 @@ function Dispatcher() {
 function Harness({
   onReviewMatches,
   providerWaiting,
+  providerConfigured,
 }: {
   onReviewMatches: () => void;
   providerWaiting: boolean;
+  providerConfigured: boolean;
 }) {
   const scrape = useMetadataScrape();
   return (
     <LibraryScraperPanel
       onReviewMatches={onReviewMatches}
+      providerConfigured={providerConfigured}
       providerWaiting={providerWaiting}
       scrape={scrape}
     />
   );
 }
 
-function renderPanel(onReviewMatches = vi.fn(), providerWaiting = false) {
+function renderPanel(
+  onReviewMatches = vi.fn(),
+  providerWaiting = false,
+  providerConfigured = true,
+) {
   const result = render(
     <FocusProvider>
       <Dispatcher />
-      <Harness onReviewMatches={onReviewMatches} providerWaiting={providerWaiting} />
+      <Harness
+        onReviewMatches={onReviewMatches}
+        providerConfigured={providerConfigured}
+        providerWaiting={providerWaiting}
+      />
       <ControllerFooter controllerConnected gameRunning={false} interactive status="SETTINGS" />
     </FocusProvider>,
   );
@@ -150,6 +161,45 @@ describe('LibraryScraperPanel', () => {
 
     await screen.findByText('7 GAMES ELIGIBLE');
     expect(screen.getByRole('radio', { name: /REFRESH MATCHED GAMES/ })).toBeChecked();
+  });
+
+  it('says why the scraper cannot start when this build has no provider configuration', async () => {
+    renderPanel(vi.fn(), false, false);
+
+    await screen.findByText('148 GAMES ELIGIBLE');
+    expect(screen.getByRole('button', { name: 'START SCRAPER' })).toBeDisabled();
+    expect(screen.getByText(/no ScreenScraper application configuration/i)).toBeInTheDocument();
+  });
+
+  it('says why the scraper cannot start when nothing is eligible', async () => {
+    mocks.previewMetadataScrape.mockResolvedValue({ mode: 'missingMetadata', eligibleGames: 0 });
+    renderPanel();
+
+    await screen.findByText('0 GAMES ELIGIBLE');
+    expect(screen.getByRole('button', { name: 'START SCRAPER' })).toBeDisabled();
+    // A disabled control with no stated reason is a dead end.
+    expect(screen.getByText(/already been through ScreenScraper/i)).toBeInTheDocument();
+  });
+
+  it('states the refresh-specific reason when there is nothing matched to refresh', async () => {
+    mocks.previewMetadataScrape.mockImplementation(async ({ mode }: { mode: string }) => ({
+      mode,
+      eligibleGames: mode === 'missingMetadata' ? 148 : 0,
+    }));
+    renderPanel();
+    await screen.findByText('148 GAMES ELIGIBLE');
+
+    fireEvent.click(screen.getByRole('radio', { name: /REFRESH MATCHED GAMES/ }));
+
+    await screen.findByText(/no accepted ScreenScraper matches to refresh/i);
+    expect(screen.getByRole('button', { name: 'START SCRAPER' })).toBeDisabled();
+  });
+
+  it('states no reason while the count is still being read', async () => {
+    renderPanel();
+    expect(screen.queryByText(/already been through ScreenScraper/i)).not.toBeInTheDocument();
+    await screen.findByText('148 GAMES ELIGIBLE');
+    expect(screen.getByRole('button', { name: 'START SCRAPER' })).toBeEnabled();
   });
 
   it('starts a small run without a confirmation', async () => {
@@ -367,8 +417,24 @@ describe('LibraryScraperPanel controller navigation', () => {
     send('confirm');
 
     await screen.findByText('SCRAPER RUNNING');
-    // The button that had focus is gone; something focusable must still hold it.
-    expect(document.activeElement).not.toBe(document.body);
-    expect(screen.getByRole('button', { name: 'STOP SCRAPER' })).toBeInTheDocument();
+    // START is gone. Focus must land on the control that replaced it, not on the document body.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'STOP SCRAPER' })).toHaveFocus());
+  });
+
+  it('does not pull focus back when a run ends while the user is elsewhere', async () => {
+    mocks.getMetadataScrapeStatus.mockResolvedValue(status('running'));
+    renderPanel();
+    await screen.findByText('SCRAPER RUNNING');
+
+    // The user has moved on to another control entirely.
+    const elsewhere = screen.getByTestId('dispatch-back');
+    act(() => elsewhere.focus());
+
+    mocks.getMetadataScrapeStatus.mockResolvedValue(
+      status('completed', { matched: 148, waiting: 0 }),
+    );
+    await screen.findByText('SCRAPE COMPLETE');
+
+    expect(elsewhere).toHaveFocus();
   });
 });

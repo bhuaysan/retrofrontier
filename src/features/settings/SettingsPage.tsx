@@ -329,6 +329,7 @@ function MetadataProviderPanel({
 
       <LibraryScraperPanel
         onReviewMatches={onReviewMatches}
+        providerConfigured={status?.credentialsConfigured ?? true}
         providerWaiting={status !== null && hasActiveProviderDeferral(status, now)}
         scrape={scrape}
       />

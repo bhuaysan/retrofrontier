@@ -19,6 +19,45 @@ use crate::domain::metadata_scrape::{
 use crate::error::AppError;
 use sqlx::{Row, SqlitePool};
 
+/// Which parked failures mean "RetroFrontier could not ask", not "the provider answered".
+///
+/// Mirrors `ProviderFailureClass::blocks_until_configuration_changes`, which is every `Permanent`
+/// disposition. Kept literal because sqlx accepts only static SQL;
+/// `configuration_failure_classes_match_the_domain` asserts the two lists agree.
+#[cfg(test)]
+const CONFIGURATION_FAILURE_CLASSES: &str = "('invalid_request', \
+     'developer_authentication_failed', 'user_authentication_failed', 'client_rejected', \
+     'credentials_unavailable')";
+
+/// Missing Metadata eligibility. Binds: provider, provider, provider.
+const MISSING_ELIGIBILITY_COUNT: &str = "SELECT COUNT(*) FROM games g \
+     LEFT JOIN provider_matches pm ON pm.game_id = g.id AND pm.provider_id = ? \
+     WHERE ( \
+         (pm.id IS NULL AND NOT EXISTS (SELECT 1 FROM metadata_jobs j \
+              WHERE j.game_id = g.id AND j.provider_id = ?)) \
+         OR (pm.status = 'failed' AND pm.last_failure IN ('invalid_request', \
+             'developer_authentication_failed', 'user_authentication_failed', \
+             'client_rejected', 'credentials_unavailable')) \
+     ) AND NOT EXISTS (SELECT 1 FROM metadata_jobs j \
+         WHERE j.game_id = g.id AND j.provider_id = ? \
+         AND j.state IN ('pending', 'running', 'deferred'))";
+
+/// The same set, materialized as a run's fixed target. Binds: run, now, provider, provider,
+/// provider.
+const MISSING_ELIGIBILITY_SNAPSHOT: &str = "INSERT INTO metadata_scrape_run_items \
+     (run_id, game_id, state, updated_at) \
+     SELECT ?, g.id, 'pending', ? FROM games g \
+     LEFT JOIN provider_matches pm ON pm.game_id = g.id AND pm.provider_id = ? \
+     WHERE ( \
+         (pm.id IS NULL AND NOT EXISTS (SELECT 1 FROM metadata_jobs j \
+              WHERE j.game_id = g.id AND j.provider_id = ?)) \
+         OR (pm.status = 'failed' AND pm.last_failure IN ('invalid_request', \
+             'developer_authentication_failed', 'user_authentication_failed', \
+             'client_rejected', 'credentials_unavailable')) \
+     ) AND NOT EXISTS (SELECT 1 FROM metadata_jobs j \
+         WHERE j.game_id = g.id AND j.provider_id = ? \
+         AND j.state IN ('pending', 'running', 'deferred'))";
+
 #[derive(Clone)]
 pub struct MetadataScrapeRepository {
     pool: SqlitePool,
@@ -35,27 +74,33 @@ impl MetadataScrapeRepository {
     ///
     /// The two predicates are deliberately narrow.
     ///
-    /// *Missing* means untouched: no provider relationship and no metadata job of any kind. A
-    /// no-match, an ambiguous candidate set, an unsupported shape and a parked failure are all
-    /// answers, so a repeated run does not re-ask the provider about them.
+    /// *Missing* means the provider has never answered about this game. That is usually "untouched"
+    /// — no provider relationship and no metadata job — but it also covers a game whose only
+    /// recorded outcome is a failure about RetroFrontier's own configuration. A build with no
+    /// ScreenScraper credentials parks every identification with `credentials_unavailable`, and
+    /// treating that as an answer would hide those games from every future run even after the
+    /// configuration is fixed. A no-match, an ambiguous candidate set, an unsupported shape and a
+    /// genuinely exhausted retry budget *are* answers, and a repeated run does not re-ask them.
+    ///
+    /// A game with live work is never eligible either way: whatever is queued will answer it.
     ///
     /// *Refresh* means an accepted match that still names a provider game, which is exactly the
     /// condition the existing per-game refresh action requires before it will refresh rather than
     /// re-identify.
+    ///
+    /// The count below and the snapshot in `create_run` must select exactly the same set. They are
+    /// separate statements because sqlx takes only static SQL, so
+    /// `the_preview_count_matches_what_a_run_actually_targets` holds them in step.
     pub async fn count_eligible_games(
         &self,
         provider_id: MetadataProviderId,
         mode: MetadataScrapeMode,
     ) -> Result<i64, AppError> {
         match mode {
-            MetadataScrapeMode::MissingMetadata => sqlx::query_scalar(
-                "SELECT COUNT(*) FROM games g \
-                 LEFT JOIN provider_matches pm ON pm.game_id = g.id AND pm.provider_id = ? \
-                 LEFT JOIN metadata_jobs mj ON mj.game_id = g.id AND mj.provider_id = ? \
-                 WHERE pm.id IS NULL AND mj.id IS NULL",
-            )
-            .bind(provider_id.as_db())
-            .bind(provider_id.as_db()),
+            MetadataScrapeMode::MissingMetadata => sqlx::query_scalar(MISSING_ELIGIBILITY_COUNT)
+                .bind(provider_id.as_db())
+                .bind(provider_id.as_db())
+                .bind(provider_id.as_db()),
             MetadataScrapeMode::RefreshMatched => sqlx::query_scalar(
                 "SELECT COUNT(*) FROM provider_matches pm WHERE pm.provider_id = ? \
                  AND pm.status = 'matched' AND pm.provider_game_id IS NOT NULL",
@@ -107,17 +152,12 @@ impl MetadataScrapeRepository {
         let run_id = MetadataScrapeRunId(run_id);
 
         match mode {
-            MetadataScrapeMode::MissingMetadata => sqlx::query(
-                "INSERT INTO metadata_scrape_run_items (run_id, game_id, state, updated_at) \
-                 SELECT ?, g.id, 'pending', ? FROM games g \
-                 LEFT JOIN provider_matches pm ON pm.game_id = g.id AND pm.provider_id = ? \
-                 LEFT JOIN metadata_jobs mj ON mj.game_id = g.id AND mj.provider_id = ? \
-                 WHERE pm.id IS NULL AND mj.id IS NULL",
-            )
-            .bind(run_id.0)
-            .bind(now)
-            .bind(provider_id.as_db())
-            .bind(provider_id.as_db()),
+            MetadataScrapeMode::MissingMetadata => sqlx::query(MISSING_ELIGIBILITY_SNAPSHOT)
+                .bind(run_id.0)
+                .bind(now)
+                .bind(provider_id.as_db())
+                .bind(provider_id.as_db())
+                .bind(provider_id.as_db()),
             MetadataScrapeMode::RefreshMatched => sqlx::query(
                 "INSERT INTO metadata_scrape_run_items (run_id, game_id, state, updated_at) \
                  SELECT ?, pm.game_id, 'pending', ? FROM provider_matches pm \
@@ -762,6 +802,23 @@ mod tests {
             .expect("match fixture");
         }
 
+        /// A relationship parked by a failure, carrying the class that parked it.
+        async fn insert_failed_match(&self, game_id: GameId, last_failure: &str) {
+            sqlx::query(
+                "INSERT INTO provider_matches \
+                 (game_id, provider_id, status, last_failure, created_at, updated_at) \
+                 VALUES (?, ?, 'failed', ?, ?, ?)",
+            )
+            .bind(game_id.0)
+            .bind(PROVIDER.as_db())
+            .bind(last_failure)
+            .bind(NOW)
+            .bind(NOW)
+            .execute(&self.pool)
+            .await
+            .expect("failed match fixture");
+        }
+
         async fn insert_unsupported(&self, game_id: GameId) {
             sqlx::query(
                 "INSERT INTO provider_matches \
@@ -898,6 +955,214 @@ mod tests {
                     .expect("item lookup"),
                 None,
                 "game {excluded} must not be a Missing Metadata target"
+            );
+        }
+    }
+
+    #[test]
+    fn configuration_failure_classes_match_the_domain() {
+        use crate::domain::metadata::ProviderFailureClass;
+
+        let every_class = [
+            ProviderFailureClass::InvalidRequest,
+            ProviderFailureClass::ProviderRestricted,
+            ProviderFailureClass::DeveloperAuthenticationFailed,
+            ProviderFailureClass::UserAuthenticationFailed,
+            ProviderFailureClass::NoMatch,
+            ProviderFailureClass::ProviderUnavailable,
+            ProviderFailureClass::ClientRejected,
+            ProviderFailureClass::CapacityDeferred,
+            ProviderFailureClass::DailyQuotaExceeded,
+            ProviderFailureClass::NegativeQuotaExceeded,
+            ProviderFailureClass::Transport,
+            ProviderFailureClass::TransientServer,
+            ProviderFailureClass::MalformedResponse,
+            ProviderFailureClass::CredentialsUnavailable,
+            ProviderFailureClass::MediaUnavailable,
+        ];
+
+        // The eligibility SQL cannot call into the domain, so this proves the literal list is the
+        // same set — including for any class added later.
+        for class in every_class {
+            let in_sql = CONFIGURATION_FAILURE_CLASSES.contains(&format!("'{}'", class.as_db()));
+            assert_eq!(
+                in_sql,
+                class.blocks_until_configuration_changes(),
+                "{class:?} is classified differently in SQL and in the domain"
+            );
+        }
+        assert!(MISSING_ELIGIBILITY_COUNT.contains("'credentials_unavailable'"));
+        assert!(MISSING_ELIGIBILITY_SNAPSHOT.contains("'credentials_unavailable'"));
+    }
+
+    #[tokio::test]
+    async fn a_build_with_no_provider_configuration_does_not_lose_its_games_forever() {
+        // The exact shape a pre-M8.5 automatic scrape leaves behind on a build with no ScreenScraper
+        // credentials: every game parked, with both a job row and a match row.
+        let fixture = Fixture::new().await;
+        let games = fixture.insert_games(7).await;
+        for game_id in &games {
+            fixture
+                .insert_failed_match(*game_id, "credentials_unavailable")
+                .await;
+            fixture
+                .insert_job(*game_id, MetadataJobKind::Identify, "failed")
+                .await;
+        }
+
+        assert_eq!(
+            fixture
+                .repository
+                .count_eligible_games(PROVIDER, MetadataScrapeMode::MissingMetadata)
+                .await
+                .expect("preview should count"),
+            7,
+            "the provider never answered about these games; it could not be asked"
+        );
+
+        // Once configuration is fixed a run reaches them, and the feeder revives the parked jobs
+        // rather than leaving them behind.
+        let run_id = fixture
+            .repository
+            .create_run(PROVIDER, MetadataScrapeMode::MissingMetadata, NOW)
+            .await
+            .expect("run should be created")
+            .expect("a run should exist");
+        assert_eq!(
+            fixture
+                .repository
+                .progress(run_id)
+                .await
+                .expect("progress")
+                .total_games,
+            7
+        );
+
+        fixture
+            .repository
+            .feed_pending_items(
+                run_id,
+                PROVIDER,
+                MetadataScrapeMode::MissingMetadata,
+                10,
+                NOW,
+            )
+            .await
+            .expect("feeding should succeed");
+        assert_eq!(
+            fixture
+                .job_state(games[0], MetadataJobKind::Identify)
+                .await
+                .as_deref(),
+            Some("pending")
+        );
+        assert_eq!(
+            fixture
+                .repository
+                .owned_job_count(run_id)
+                .await
+                .expect("owned jobs"),
+            7
+        );
+    }
+
+    #[tokio::test]
+    async fn a_configuration_blocked_game_with_live_work_is_left_to_that_work() {
+        let fixture = Fixture::new().await;
+        let games = fixture.insert_games(1).await;
+        fixture
+            .insert_failed_match(games[0], "credentials_unavailable")
+            .await;
+        // The user already asked for this one by hand, so a run must not target it as well.
+        fixture
+            .insert_job(games[0], MetadataJobKind::Identify, "pending")
+            .await;
+
+        assert_eq!(
+            fixture
+                .repository
+                .count_eligible_games(PROVIDER, MetadataScrapeMode::MissingMetadata)
+                .await
+                .expect("preview should count"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn an_exhausted_retry_budget_is_still_an_answer() {
+        // A transport failure that burned its whole retry budget did reach the provider repeatedly.
+        // It is not a configuration problem, so a later run does not re-ask it.
+        let fixture = Fixture::new().await;
+        let games = fixture.insert_games(1).await;
+        fixture.insert_failed_match(games[0], "transport").await;
+        fixture
+            .insert_job(games[0], MetadataJobKind::Identify, "failed")
+            .await;
+
+        assert_eq!(
+            fixture
+                .repository
+                .count_eligible_games(PROVIDER, MetadataScrapeMode::MissingMetadata)
+                .await
+                .expect("preview should count"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn the_preview_count_matches_what_a_run_actually_targets() {
+        // The count and the snapshot are separate SQL statements; a mixed library proves they
+        // still select the same set.
+        let fixture = Fixture::new().await;
+        let games = fixture.insert_games(9).await;
+
+        // games[0], games[1]: untouched.
+        fixture.insert_match(games[2], "matched", Some("1")).await;
+        fixture.insert_match(games[3], "ambiguous", None).await;
+        fixture.insert_match(games[4], "no_match", None).await;
+        fixture.insert_unsupported(games[5]).await;
+        fixture
+            .insert_failed_match(games[6], "credentials_unavailable")
+            .await;
+        fixture
+            .insert_job(games[6], MetadataJobKind::Identify, "failed")
+            .await;
+        fixture.insert_failed_match(games[7], "transport").await;
+        fixture
+            .insert_job(games[7], MetadataJobKind::Identify, "failed")
+            .await;
+        fixture
+            .insert_job(games[8], MetadataJobKind::Identify, "deferred")
+            .await;
+
+        let previewed = fixture
+            .repository
+            .count_eligible_games(PROVIDER, MetadataScrapeMode::MissingMetadata)
+            .await
+            .expect("preview should count");
+        let run_id = fixture
+            .repository
+            .create_run(PROVIDER, MetadataScrapeMode::MissingMetadata, NOW)
+            .await
+            .expect("run should be created")
+            .expect("a run should exist");
+        let targeted = fixture
+            .repository
+            .progress(run_id)
+            .await
+            .expect("progress")
+            .total_games;
+
+        assert_eq!(previewed, 3, "two untouched plus one configuration-blocked");
+        assert_eq!(targeted, previewed);
+        for eligible in [games[0], games[1], games[6]] {
+            assert_eq!(
+                fixture
+                    .repository
+                    .item_state(run_id, eligible)
+                    .await
+                    .expect("item lookup"),
+                Some(MetadataScrapeItemState::Pending)
             );
         }
     }

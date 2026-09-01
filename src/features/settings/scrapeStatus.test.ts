@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { MetadataScrapeRun, MetadataScrapeRunStatus } from '../../platform/ipc';
-import { scrapeModeCopy, scrapeResultRows, scrapeRunCopy } from './scrapeStatus';
+import {
+  scrapeModeCopy,
+  scrapeResultRows,
+  scrapeRunCopy,
+  scrapeStartBlockedReason,
+} from './scrapeStatus';
 
 function run(status: MetadataScrapeRunStatus): MetadataScrapeRun {
   return {
@@ -105,5 +110,48 @@ describe('scrapeResultRows', () => {
     expect(rows.map((row) => row.value)).toEqual([119, 14, 10, 0, 0]);
     // The buckets are the whole of the processed figure; nothing waiting is folded into them.
     expect(rows.reduce((total, row) => total + row.value, 0)).toBe(143);
+  });
+});
+
+describe('scrapeStartBlockedReason', () => {
+  const base = {
+    mode: 'missingMetadata' as const,
+    eligibleGames: 148,
+    providerConfigured: true,
+    loading: false,
+  };
+
+  it('gives no reason when the scraper can actually start', () => {
+    expect(scrapeStartBlockedReason(base)).toBeNull();
+  });
+
+  it('stays silent while the count is still being read rather than guessing', () => {
+    expect(scrapeStartBlockedReason({ ...base, eligibleGames: null, loading: true })).toBeNull();
+  });
+
+  it('names a missing application configuration ahead of the game count', () => {
+    // Without configuration the count is beside the point: nothing can be fetched either way.
+    const reason = scrapeStartBlockedReason({ ...base, providerConfigured: false });
+    expect(reason).toMatch(/application configuration/i);
+    expect(scrapeStartBlockedReason({ ...base, providerConfigured: false, eligibleGames: 0 })).toBe(
+      reason,
+    );
+  });
+
+  it('explains an empty missing-metadata target without implying the games are broken', () => {
+    const reason = scrapeStartBlockedReason({ ...base, eligibleGames: 0 });
+    expect(reason).toMatch(/already been through ScreenScraper/i);
+    // It must say why those games are excluded, not merely that there are none.
+    expect(reason).toMatch(/no match|need review|unsupported/i);
+  });
+
+  it('explains an empty refresh target in its own terms', () => {
+    expect(scrapeStartBlockedReason({ ...base, mode: 'refreshMatched', eligibleGames: 0 })).toMatch(
+      /no accepted ScreenScraper matches/i,
+    );
+  });
+
+  it('reports a failed count as a failed count', () => {
+    expect(scrapeStartBlockedReason({ ...base, eligibleGames: null })).toMatch(/could not count/i);
   });
 });

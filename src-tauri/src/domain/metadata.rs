@@ -620,6 +620,17 @@ impl ProviderFailureClass {
     pub const fn defers_provider(self) -> bool {
         matches!(self.disposition(), FailureDisposition::DeferForProvider)
     }
+
+    /// True when the failure describes RetroFrontier's own configuration rather than the content.
+    ///
+    /// Every `Permanent` class is one of these — a malformed request, an authentication failure, a
+    /// rejected client build, absent credentials — and `Permanent` is defined as "do not retry until
+    /// configuration or content changes". The provider was never actually asked about the game, so a
+    /// job parked this way records that RetroFrontier could not ask, not that an answer exists. That
+    /// distinction matters wherever "already answered" is used to exclude a game from future work.
+    pub const fn blocks_until_configuration_changes(self) -> bool {
+        matches!(self.disposition(), FailureDisposition::Permanent)
+    }
 }
 
 /// Dynamic provider quota/concurrency snapshot.
