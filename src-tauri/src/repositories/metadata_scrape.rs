@@ -1315,6 +1315,124 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------------------------ promotion
+
+    #[tokio::test]
+    async fn an_explicit_request_promotes_bulk_work_instead_of_duplicating_it() {
+        let fixture = Fixture::new().await;
+        let games = fixture.insert_games(2).await;
+        let run_id = fixture
+            .repository
+            .create_run(PROVIDER, MetadataScrapeMode::MissingMetadata, NOW)
+            .await
+            .expect("run should be created")
+            .expect("a run should exist");
+        fixture
+            .repository
+            .feed_pending_items(
+                run_id,
+                PROVIDER,
+                MetadataScrapeMode::MissingMetadata,
+                10,
+                NOW,
+            )
+            .await
+            .expect("feeding should succeed");
+
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM metadata_jobs")
+            .fetch_one(&fixture.pool)
+            .await
+            .expect("job total");
+        assert_eq!(before, 2);
+        assert_eq!(
+            fixture
+                .job_priority(games[0], MetadataJobKind::Identify)
+                .await,
+            Some(MetadataJobBand::Bulk.priority(MetadataJobKind::Identify))
+        );
+
+        // The user opens this game and asks for its metadata by hand.
+        crate::repositories::metadata::MetadataRepository::new(fixture.pool.clone())
+            .enqueue_job(games[0], PROVIDER, MetadataJobKind::Identify, NOW + 1)
+            .await
+            .expect("an explicit request should enqueue");
+
+        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM metadata_jobs")
+            .fetch_one(&fixture.pool)
+            .await
+            .expect("job total");
+        assert_eq!(after, 2, "promotion must not create a second job");
+        assert_eq!(
+            fixture
+                .job_priority(games[0], MetadataJobKind::Identify)
+                .await,
+            Some(MetadataJobBand::Interactive.priority(MetadataJobKind::Identify)),
+            "the promoted job must run in the interactive band"
+        );
+        assert_eq!(
+            fixture
+                .repository
+                .owned_job_count(run_id)
+                .await
+                .expect("owned jobs"),
+            1,
+            "the promoted job is no longer owned by the run"
+        );
+
+        // The M5 scheduler claims the promoted job before the bulk one.
+        let claim_order: Vec<i64> = sqlx::query_scalar(
+            "SELECT game_id FROM metadata_jobs WHERE provider_id = ? \
+             AND state IN ('pending', 'deferred') ORDER BY priority ASC, id ASC",
+        )
+        .bind(PROVIDER.as_db())
+        .fetch_all(&fixture.pool)
+        .await
+        .expect("claim ordering");
+        assert_eq!(claim_order, vec![games[0].0, games[1].0]);
+    }
+
+    #[tokio::test]
+    async fn promoting_a_running_job_does_not_restart_it() {
+        let fixture = Fixture::new().await;
+        let games = fixture.insert_games(1).await;
+        let run_id = fixture
+            .repository
+            .create_run(PROVIDER, MetadataScrapeMode::MissingMetadata, NOW)
+            .await
+            .expect("run should be created")
+            .expect("a run should exist");
+        fixture
+            .repository
+            .feed_pending_items(
+                run_id,
+                PROVIDER,
+                MetadataScrapeMode::MissingMetadata,
+                10,
+                NOW,
+            )
+            .await
+            .expect("feeding should succeed");
+        sqlx::query("UPDATE metadata_jobs SET state = 'running', attempts = 2, claimed_at = ?")
+            .bind(NOW)
+            .execute(&fixture.pool)
+            .await
+            .expect("claim");
+
+        crate::repositories::metadata::MetadataRepository::new(fixture.pool.clone())
+            .enqueue_job(games[0], PROVIDER, MetadataJobKind::Identify, NOW + 1)
+            .await
+            .expect("an explicit request should enqueue");
+
+        let (state, attempts): (String, i64) =
+            sqlx::query_as("SELECT state, attempts FROM metadata_jobs WHERE game_id = ?")
+                .bind(games[0].0)
+                .fetch_one(&fixture.pool)
+                .await
+                .expect("job row");
+        assert_eq!(state, "running", "an in-flight request is never restarted");
+        assert_eq!(attempts, 2, "its retry budget is untouched");
+    }
+
     // ------------------------------------------------------------------------ reconciliation
 
     #[tokio::test]
