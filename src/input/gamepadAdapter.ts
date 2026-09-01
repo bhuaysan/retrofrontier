@@ -12,6 +12,11 @@ export const GAMEPAD_BUTTON_INDEX = {
   confirm: 0,
   back: 1,
   context: 2,
+  /**
+   * The upper face button — DualSense Triangle, Xbox-style Y — the only face button the Standard
+   * Gamepad layout still left unmapped. It carries the direct Library Search transition.
+   */
+  search: 3,
   dpadUp: 12,
   dpadDown: 13,
   dpadLeft: 14,
@@ -81,6 +86,7 @@ interface ActivationState {
   confirm: boolean;
   back: boolean;
   context: boolean;
+  search: boolean;
 }
 
 export interface GamepadState {
@@ -98,7 +104,12 @@ export interface GamepadState {
   buttons: ActivationState;
 }
 
-const NO_BUTTONS: ActivationState = { confirm: false, back: false, context: false };
+const NO_BUTTONS: ActivationState = {
+  confirm: false,
+  back: false,
+  context: false,
+  search: false,
+};
 
 export function createGamepadState(): GamepadState {
   return {
@@ -258,11 +269,13 @@ export function stepGamepad(
     confirm: pressed(snapshot, GAMEPAD_BUTTON_INDEX.confirm),
     back: pressed(snapshot, GAMEPAD_BUTTON_INDEX.back),
     context: pressed(snapshot, GAMEPAD_BUTTON_INDEX.context),
+    search: pressed(snapshot, GAMEPAD_BUTTON_INDEX.search),
   };
   if (!adopting) {
     if (buttons.confirm && !base.buttons.confirm) actions.push('confirm');
     if (buttons.back && !base.buttons.back) actions.push('back');
     if (buttons.context && !base.buttons.context) actions.push('context');
+    if (buttons.search && !base.buttons.search) actions.push('search');
   }
 
   return {

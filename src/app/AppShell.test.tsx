@@ -2910,6 +2910,206 @@ describe('AppShell M8 controller navigation and focus', () => {
     });
   });
 
+  /**
+   * The direct Library Search controller action.
+   *
+   * Search lives in the shared top bar, outside both Library zones, so directional movement
+   * deliberately cannot reach it. Real operator qualification asked for a way to get there with the
+   * controller anyway; the answer is an explicit semantic transition on the upper face button, not a
+   * hole in zone containment.
+   */
+  describe('Library controller search action', () => {
+    function searchField() {
+      return screen.getByRole('searchbox', { name: 'Search' });
+    }
+
+    function sidebarRows() {
+      return {
+        allSystems: screen.getByRole('button', { name: /All systems/ }),
+        nes: screen.getByRole('button', { name: /Nintendo Entertainment System/ }),
+      };
+    }
+
+    function cards() {
+      return {
+        kirby: screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }),
+        long: screen.getByRole('link', {
+          name: 'Open A Very Long Local Title Without Metadata details',
+        }),
+      };
+    }
+
+    async function libraryReady() {
+      render(<AppShell />);
+      await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+      layoutLibrary();
+      await connectController();
+      await inputOwnershipSettled();
+    }
+
+    it('A1: reaches Search from the sidebar zone', async () => {
+      await libraryReady();
+      act(() => sidebarRows().allSystems.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+
+      expect(searchField()).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('A2: reaches Search from the main Library zone', async () => {
+      await libraryReady();
+      act(() => cards().kirby.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+
+      expect(searchField()).toHaveFocus();
+    });
+
+    it('A2: reaches Search from the Library heading and from another header control', async () => {
+      await libraryReady();
+
+      act(() => screen.getByRole('heading', { name: 'LIBRARY' }).focus());
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+
+      act(() => screen.getByRole('button', { name: 'Go to Library' }).focus());
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+    });
+
+    it('A3: returns to the originating main card with back', async () => {
+      await libraryReady();
+      act(() => cards().long.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      expect(cards().long).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('A3: pressing search again inside Search keeps the origin it was entered from', async () => {
+      await libraryReady();
+      act(() => cards().long.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      expect(cards().long).toHaveFocus();
+    });
+
+    it('A3: returns to the originating sidebar entry with back', async () => {
+      await libraryReady();
+      act(() => sidebarRows().nes.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      expect(sidebarRows().nes).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('A4: falls back to the Library when the origin disappeared while Search was focused', async () => {
+      mocks.queryLibrary
+        .mockResolvedValueOnce(populatedLibraryPage)
+        .mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
+      await libraryReady();
+      act(() => cards().kirby.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+
+      // Typing a query that matches nothing removes the card the origin identified. The search
+      // input is debounced, so the empty result only commits after that delay.
+      fireEvent.change(searchField(), { target: { value: 'nothing matches this' } });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 260));
+      });
+      await screen.findByRole('heading', { name: /NO MATCH FOR/ });
+      expect(searchField()).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      // The documented fallback: the selected sidebar entry, then all systems, then the heading.
+      expect(sidebarRows().allSystems).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('A5: does nothing and offers no SEARCH hint when no Search field is rendered', async () => {
+      mocks.getLibrarySummary.mockResolvedValue({
+        totalGames: 0,
+        favoriteGames: 0,
+        systems: [],
+      });
+      mocks.queryLibrary.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
+      render(<AppShell />);
+      await screen.findByRole('heading', { name: 'LIBRARY' });
+      layoutLibrary();
+      await connectController();
+      await inputOwnershipSettled();
+      expect(screen.queryByRole('searchbox', { name: 'Search' })).not.toBeInTheDocument();
+
+      act(() => sidebarRows().allSystems.focus());
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+
+      expect(sidebarRows().allSystems).toHaveFocus();
+      expect(within(footerHints()).queryByText('SEARCH')).not.toBeInTheDocument();
+    });
+
+    it('offers the SEARCH hint only while the action is really available', async () => {
+      await libraryReady();
+      act(() => sidebarRows().allSystems.focus());
+      expect(within(footerHints()).getByText('SEARCH')).toBeInTheDocument();
+
+      act(() => cards().kirby.focus());
+      expect(within(footerHints()).getByText('SEARCH')).toBeInTheDocument();
+    });
+
+    it('A8: leaves pointer, Tab, typing, caret keys, and Escape with the platform', async () => {
+      await libraryReady();
+      act(() => cards().kirby.focus());
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      const search = searchField();
+      expect(search).toHaveFocus();
+
+      fireEvent.change(search, { target: { value: 'kir' } });
+      expect(search).toHaveValue('kir');
+
+      for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Escape']) {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        search.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(false);
+      }
+      expect(search).toHaveFocus();
+      expect(search).toHaveValue('kir');
+
+      for (const shiftKey of [false, true]) {
+        const tab = new KeyboardEvent('keydown', {
+          key: 'Tab',
+          shiftKey,
+          bubbles: true,
+          cancelable: true,
+        });
+        window.dispatchEvent(tab);
+        expect(tab.defaultPrevented).toBe(false);
+      }
+
+      // Leaving Search by pointer must not arm a later forced restoration of the captured origin.
+      act(() => sidebarRows().allSystems.focus());
+      expect(sidebarRows().allSystems).toHaveFocus();
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+      expect(cards().kirby).not.toHaveFocus();
+    });
+  });
+
   it('opens a game with confirm and returns to the same card with back', async () => {
     render(<AppShell />);
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });

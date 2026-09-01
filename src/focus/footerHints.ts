@@ -8,9 +8,10 @@ export const ACTION_BUTTON_GLYPH: Record<ActivationAction, string> = {
   confirm: 'A',
   back: 'B',
   context: 'X',
+  search: 'Y',
 };
 
-const HINT_ORDER: readonly ActivationAction[] = ['confirm', 'back', 'context'];
+const HINT_ORDER: readonly ActivationAction[] = ['confirm', 'back', 'context', 'search'];
 
 export interface FooterHint {
   action: ActivationAction;
@@ -26,9 +27,16 @@ export interface SupportedActions {
   confirm: string | null;
   back: string | null;
   context: string | null;
+  /** The direct Search transition, offered only where a Search field really exists. */
+  search: string | null;
 }
 
-export const NO_SUPPORTED_ACTIONS: SupportedActions = { confirm: null, back: null, context: null };
+export const NO_SUPPORTED_ACTIONS: SupportedActions = {
+  confirm: null,
+  back: null,
+  context: null,
+  search: null,
+};
 
 /**
  * Derives the footer hints from the focus model.

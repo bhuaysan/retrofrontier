@@ -68,6 +68,19 @@ export interface BackEntry {
   run: () => void;
 }
 
+/**
+ * A declared `search` transition.
+ *
+ * It is scope-tagged exactly like a `BackEntry`, which is what keeps an owning temporary scope from
+ * being reached through: a scope that declares no search entry of its own simply has none, so the
+ * action does nothing and the footer stays silent about it.
+ */
+export interface SearchEntry {
+  scope: FocusScopeId;
+  label: string;
+  run: () => void;
+}
+
 export interface ScopeEntry {
   id: FocusScopeId;
   element: HTMLElement;
@@ -108,6 +121,11 @@ export interface FocusApi {
     meta: () => FocusNodeMeta;
   }) => () => void;
   registerBack: (entry: BackEntry) => () => void;
+  /**
+   * Declares the direct `search` transition of the current screen or scope. Unlike a zone `back`,
+   * it is a deliberate zone *exit*, so it is reachable from every region of the screen.
+   */
+  registerSearch: (entry: SearchEntry) => () => void;
   pushScope: (entry: ScopeEntry) => () => void;
   /**
    * Declares a navigation zone. Directional movement that starts inside a zone stays inside it, and
@@ -153,6 +171,7 @@ export const FocusActionRevisionContext = createContext(0);
 const INERT_FOCUS_API: FocusApi = {
   registerNode: () => () => undefined,
   registerBack: () => () => undefined,
+  registerSearch: () => () => undefined,
   pushScope: () => () => undefined,
   pushZone: () => () => undefined,
   focusNode: () => false,
@@ -162,7 +181,7 @@ const INERT_FOCUS_API: FocusApi = {
   hasPendingFocusRequest: () => false,
   getFocusedNodeId: () => null,
   dispatch: () => undefined,
-  getSupportedActions: () => ({ confirm: null, back: null, context: null }),
+  getSupportedActions: () => ({ confirm: null, back: null, context: null, search: null }),
   notifyNodeActionsChanged: () => undefined,
 };
 
@@ -234,6 +253,31 @@ export function useFocusBack(entry: { label: string; run: () => void } | null) {
   useEffect(() => {
     if (label === null) return;
     return api.registerBack({
+      scope,
+      label,
+      run: () => entryRef.current?.run(),
+    });
+  }, [api, label, scope]);
+}
+
+/**
+ * Declares the screen's direct `search` transition, or nothing when the screen has no Search field.
+ *
+ * Passing `null` — an empty Library, a route with no search — registers nothing at all, so the
+ * action is inert and the footer never advertises `SEARCH`.
+ */
+export function useFocusSearch(entry: { label: string; run: () => void } | null) {
+  const api = useFocusApi();
+  const scope = useContext(FocusScopeContext);
+  const entryRef = useRef(entry);
+  useEffect(() => {
+    entryRef.current = entry;
+  });
+  const label = entry?.label ?? null;
+
+  useEffect(() => {
+    if (label === null) return;
+    return api.registerSearch({
       scope,
       label,
       run: () => entryRef.current?.run(),

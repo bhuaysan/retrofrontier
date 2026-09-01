@@ -12,6 +12,7 @@ import {
   type FocusRequestOptions,
   type PendingFocusRequest,
   type ScopeEntry,
+  type SearchEntry,
   type ZoneEntry,
 } from './focusContext';
 import { focusMoved } from './focusability';
@@ -53,6 +54,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
   const scopeStack = useRef<ScopeEntry[]>([]);
   const zoneEntries = useRef<ZoneEntry[]>([]);
   const backEntries = useRef<BackEntry[]>([]);
+  const searchEntries = useRef<SearchEntry[]>([]);
   const pending = useRef<PendingFocusRequest | null>(null);
   const pendingTimer = useRef<number | undefined>(undefined);
   const [focusedNodeId, setFocusedNodeId] = useState<FocusNodeId | null>(null);
@@ -199,6 +201,19 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     [bumpActionRevision],
   );
 
+  const registerSearch = useCallback<FocusApi['registerSearch']>(
+    (entry) => {
+      searchEntries.current = [...searchEntries.current, entry];
+      // A Search field appearing or disappearing changes what `Y` may claim.
+      bumpActionRevision();
+      return () => {
+        searchEntries.current = searchEntries.current.filter((candidate) => candidate !== entry);
+        bumpActionRevision();
+      };
+    },
+    [bumpActionRevision],
+  );
+
   const pushScope = useCallback<FocusApi['pushScope']>(
     (entry) => {
       scopeStack.current = [...scopeStack.current, entry];
@@ -253,6 +268,22 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     // than letting the surface underneath act while it is still open.
     return scope === null ? null : null;
   }, [activeScope, activeZone]);
+
+  /**
+   * The `search` transition that applies right now, or `null`.
+   *
+   * Unlike `back`, a zone never answers it: `search` is an explicit zone *exit*, so it is the same
+   * entry wherever inside the screen focus happens to sit. A temporary scope still owns the action
+   * — only entries declared in the active scope are eligible — so a launch surface cannot be
+   * reached through.
+   */
+  const activeSearchEntry = useCallback((): SearchEntry | null => {
+    const scopeId = activeScope()?.id ?? ROOT_FOCUS_SCOPE;
+    for (let index = searchEntries.current.length - 1; index >= 0; index -= 1) {
+      if (searchEntries.current[index].scope === scopeId) return searchEntries.current[index];
+    }
+    return null;
+  }, [activeScope]);
 
   /**
    * Whether a semantic activation may act on the currently focused element.
@@ -327,6 +358,13 @@ export function FocusProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      // An explicit transition, not an activation of the focused node, so it deliberately does not
+      // go through `activationAllowed()`: reaching Search never acts on the surface underneath.
+      if (action === 'search') {
+        activeSearchEntry()?.run();
+        return;
+      }
+
       if (!activationAllowed()) return;
 
       const active = document.activeElement;
@@ -345,7 +383,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       }
       if (isActivatableElement(active)) (active as HTMLElement).click();
     },
-    [activationAllowed, activeBackEntry, move, registry, setInputMode],
+    [activationAllowed, activeBackEntry, activeSearchEntry, move, registry, setInputMode],
   );
 
   const getSupportedActions = useCallback((): SupportedActions => {
@@ -354,19 +392,21 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     // while it keeps focus, and the footer must not keep claiming an action it no longer performs.
     const activatable = isActivatableElement(document.activeElement);
     const back = activeBackEntry();
+    const search = activeSearchEntry();
     // While a temporary scope owns actions but focus sits outside it, `confirm`/`context` would be
     // refused, so the footer must not offer them.
     const canActivate = activationAllowed();
     const meta = canActivate ? (owner?.meta() ?? null) : null;
-    if (owner === null && !activatable && back === null) {
+    if (owner === null && !activatable && back === null && search === null) {
       return NO_SUPPORTED_ACTIONS;
     }
     return {
       confirm: meta?.confirm?.label ?? (canActivate && activatable ? 'CONFIRM' : null),
       back: back?.label ?? null,
       context: meta?.context?.label ?? null,
+      search: search?.label ?? null,
     };
-  }, [activationAllowed, activeBackEntry, registry]);
+  }, [activationAllowed, activeBackEntry, activeSearchEntry, registry]);
 
   useEffect(() => {
     /**
@@ -442,6 +482,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
     () => ({
       registerNode,
       registerBack,
+      registerSearch,
       pushScope,
       pushZone,
       focusNode,
@@ -466,6 +507,7 @@ export function FocusProvider({ children }: { children: ReactNode }) {
       pushZone,
       registerBack,
       registerNode,
+      registerSearch,
       requestFocus,
       settleFocusRequest,
     ],

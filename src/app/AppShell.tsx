@@ -6,7 +6,13 @@ import { PixelRow } from '../components/ui/PixelRow';
 import type { InputAction } from '../input/actions';
 import { ownsApplicationInput } from '../input/inputOwnership';
 import { FocusProvider } from '../focus/FocusProvider';
-import { useFocusApi, useFocusBack, useFocusZone } from '../focus/focusContext';
+import {
+  useFocusApi,
+  useFocusBack,
+  useFocusNode,
+  useFocusSearch,
+  useFocusZone,
+} from '../focus/focusContext';
 import { focusNodes, focusZones } from '../focus/focusNodes';
 import { useAppWindowFocus } from '../hooks/useAppWindowFocus';
 import { useControllerInput } from '../hooks/useControllerInput';
@@ -124,19 +130,29 @@ function LibrarySearch({
   value,
   onChange,
   onClear,
+  onFocus,
+  onBlur,
 }: {
   value: string;
   onChange: (value: string) => void;
   onClear: () => void;
+  onFocus: () => void;
+  onBlur: () => void;
 }) {
+  // A semantic identity so the controller's explicit Search transition can name this field rather
+  // than a DOM selector. It changes nothing about pointer or Tab reachability.
+  const focusRef = useFocusNode({ id: focusNodes.librarySearch });
   return (
     <search className="library-search">
       <input
         autoComplete="off"
         aria-label="Search"
         id="library-search-input"
+        onBlur={onBlur}
         onChange={(event) => onChange(event.target.value)}
+        onFocus={onFocus}
         placeholder="Search"
+        ref={focusRef}
         spellCheck="false"
         type="search"
         value={value}
@@ -457,6 +473,61 @@ function AppShellBody() {
   useFocusBack(
     isLibraryRoute || scanRunning ? null : { label: 'LIBRARY', run: () => onBackToLibrary() },
   );
+
+  /**
+   * The direct Library Search transition.
+   *
+   * Search sits in the shared top bar, outside both Library zones, so directional movement cannot
+   * reach it and must not: a zone that leaked at one edge would stop being a zone. Real operator
+   * qualification still wanted a controller route to it, so this is an explicit *exit* on the upper
+   * face button rather than a hole in containment — available from the sidebar, from the main area,
+   * from the Library heading, and from another header control alike.
+   *
+   * `searchRendered` is exactly the condition the header renders the field under, so the action and
+   * the footer hint can never claim a field that does not exist.
+   */
+  const searchRendered =
+    isLibraryRoute && !scanRunning && summary !== null && summary.totalGames > 0;
+  const [searchFocused, setSearchFocused] = useState(false);
+  // The semantic identity focus came from when Search was entered by controller, so `back` can hand
+  // it straight back. It is captured at the transition and dropped the moment focus leaves Search,
+  // which is what keeps a pointer or Tab departure from arming a later forced restoration.
+  const searchOrigin = useRef<string | null>(null);
+
+  useFocusSearch(
+    searchRendered
+      ? {
+          label: 'SEARCH',
+          run: () => {
+            const origin = focus.getFocusedNodeId();
+            if (!focus.focusNode(focusNodes.librarySearch)) return;
+            // Pressing it again while already in Search keeps the origin it was entered from,
+            // rather than overwriting it with Search itself.
+            if (origin !== focusNodes.librarySearch) searchOrigin.current = origin;
+          },
+        }
+      : null,
+  );
+
+  // `back` while Search owns focus returns to where the controller came from. It is registered only
+  // while the field is really focused, so it never answers `back` for the rest of the screen, and it
+  // is a focus transition only — the Library is the root route and is never navigated away from.
+  useFocusBack(
+    searchRendered && searchFocused
+      ? {
+          label: 'BACK',
+          run: () => {
+            const origin = searchOrigin.current;
+            searchOrigin.current = null;
+            if (origin !== null && focus.focusNode(origin)) return;
+            // The documented fallback chain, used when the origin is gone or never existed.
+            if (focus.focusNode(focusNodes.sidebarSystem(librarySystemId))) return;
+            if (focus.focusNode(focusNodes.sidebarSystem(null))) return;
+            focus.focusNode(focusNodes.libraryHeading);
+          },
+        }
+      : null,
+  );
   const detailSystemStatus = gameDetail.localDetail
     ? (catalogStatuses.find((status) => status.id === gameDetail.localDetail?.systemId) ?? null)
     : null;
@@ -483,10 +554,15 @@ function AppShellBody() {
         >
           RETRO<span>FRONTIER</span>
         </button>
-        {isLibraryRoute && !scanRunning && summary && summary.totalGames > 0 ? (
+        {searchRendered ? (
           <LibrarySearch
+            onBlur={() => {
+              searchOrigin.current = null;
+              setSearchFocused(false);
+            }}
             onChange={library.setSearchInput}
             onClear={library.clearSearch}
+            onFocus={() => setSearchFocused(true)}
             value={library.searchInput}
           />
         ) : null}

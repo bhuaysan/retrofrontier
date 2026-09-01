@@ -27,6 +27,8 @@ export const focusNodes = {
   /** A Library game's own Game Detail target — the native card link. */
   libraryGame: (gameId: number): FocusNodeId => `library:game:${gameId}`,
   libraryHeading: 'library:heading' as FocusNodeId,
+  /** The shared top bar's Library Search field. Outside both Library zones by design. */
+  librarySearch: 'library:search' as FocusNodeId,
   /** `null` is the "all systems" row. */
   sidebarSystem: (systemId: string | null): FocusNodeId => `sidebar:system:${systemId ?? 'all'}`,
   sidebarRoute: (route: string): FocusNodeId => `sidebar:route:${route}`,

@@ -327,6 +327,31 @@ describe('stepGamepad activation buttons', () => {
     ]);
     expect(emitted).toEqual([[], ['back'], [], ['context']]);
   });
+
+  // A6: the upper face button is an activation button like the other three, not a repeating one.
+  it('emits search once for a held upper face button', () => {
+    const search = withButton(GAMEPAD_BUTTON_INDEX.search);
+    const { emitted } = run([
+      { snapshot: pad(), now: 0 },
+      { snapshot: search, now: 16 },
+      { snapshot: search, now: 32 },
+      { snapshot: search, now: 5_000 },
+      { snapshot: pad(), now: 5_016 },
+      { snapshot: search, now: 5_032 },
+    ]);
+    expect(emitted).toEqual([[], ['search'], [], [], [], ['search']]);
+  });
+
+  it('reads search from Standard Gamepad button 3 and leaves the other faces alone', () => {
+    expect(GAMEPAD_BUTTON_INDEX.search).toBe(3);
+    const { emitted } = run([
+      { snapshot: pad(), now: 0 },
+      { snapshot: withButton(GAMEPAD_BUTTON_INDEX.confirm), now: 16 },
+      { snapshot: pad(), now: 32 },
+      { snapshot: withButton(GAMEPAD_BUTTON_INDEX.search), now: 48 },
+    ]);
+    expect(emitted).toEqual([[], ['confirm'], [], ['search']]);
+  });
 });
 
 describe('stepGamepad ownership changes', () => {
@@ -380,5 +405,25 @@ describe('stepGamepad ownership changes', () => {
     expect(released.actions).toEqual([]);
     const pressedAgain = stepGamepad(released.state, held, 6_016);
     expect(pressedAgain.actions).toEqual(['moveDown', 'confirm']);
+  });
+
+  // A7: search adopts and releases with the same ownership discipline as the other activations.
+  it('does not replay a held search button when ownership returns', () => {
+    const held = withButton(GAMEPAD_BUTTON_INDEX.search);
+    let state = createGamepadState();
+    state = stepGamepad(state, pad(), 0).state;
+    expect(stepGamepad(state, held, 16).actions).toEqual(['search']);
+    state = stepGamepad(state, held, 16).state;
+
+    state = releaseGamepadOwnership(state);
+
+    const returning = stepGamepad(state, held, 5_000);
+    expect(returning.actions).toEqual([]);
+    const stillHeldSearch = stepGamepad(returning.state, held, 9_000);
+    expect(stillHeldSearch.actions).toEqual([]);
+
+    const released = stepGamepad(stillHeldSearch.state, pad(), 9_016);
+    expect(released.actions).toEqual([]);
+    expect(stepGamepad(released.state, held, 9_032).actions).toEqual(['search']);
   });
 });

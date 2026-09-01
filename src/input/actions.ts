@@ -6,7 +6,7 @@
  * button index.
  */
 export type InputAction =
-  'moveUp' | 'moveDown' | 'moveLeft' | 'moveRight' | 'confirm' | 'back' | 'context';
+  'moveUp' | 'moveDown' | 'moveLeft' | 'moveRight' | 'confirm' | 'back' | 'context' | 'search';
 
 export type DirectionalAction = Extract<
   InputAction,
@@ -14,10 +14,10 @@ export type DirectionalAction = Extract<
 >;
 
 /** The activation actions. They are edge-triggered and never repeat while held. */
-export type ActivationAction = Extract<InputAction, 'confirm' | 'back' | 'context'>;
+export type ActivationAction = Extract<InputAction, 'confirm' | 'back' | 'context' | 'search'>;
 
 export const DIRECTIONAL_ACTIONS = ['moveUp', 'moveDown', 'moveLeft', 'moveRight'] as const;
-export const ACTIVATION_ACTIONS = ['confirm', 'back', 'context'] as const;
+export const ACTIVATION_ACTIONS = ['confirm', 'back', 'context', 'search'] as const;
 
 export function isDirectionalAction(action: InputAction): action is DirectionalAction {
   return (DIRECTIONAL_ACTIONS as readonly InputAction[]).includes(action);
