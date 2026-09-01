@@ -1,9 +1,11 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
 
 import type {
   ContentRoot,
+  LaunchResponse,
+  LaunchState,
   GameMetadataState,
   LibraryGameDetail,
   LibraryPage,
@@ -11,6 +13,8 @@ import type {
   ScanProgress,
   ScanSummary,
 } from '../platform/ipc';
+import { GAMEPAD_BUTTON_INDEX } from '../input/gamepadAdapter';
+import { installRectStub, layoutColumn, layoutGrid } from '../test/geometry';
 import { AppShell } from './AppShell';
 
 const mocks = vi.hoisted(() => {
@@ -64,6 +68,12 @@ const mocks = vi.hoisted(() => {
     completedHandlers: new Set<(summary: ScanSummary) => void>(),
     metadataHandlers: new Set<(event: MetadataStateChanged) => void>(),
     pickExternalContentRoot: vi.fn(),
+    isAppWindowFocused: vi.fn(),
+    onAppWindowFocusChanged: vi.fn(),
+    requestAppWindowFocus: vi.fn(),
+    isDesktopRuntime: vi.fn(),
+    windowFocusHandlers: new Set<(focused: boolean) => void>(),
+    launchHandlers: new Set<(event: { state: LaunchState }) => void>(),
   };
 });
 
@@ -98,6 +108,13 @@ vi.mock('../platform/ipc', () => ({
 
 vi.mock('../platform/folderPicker', () => ({
   pickExternalContentRoot: mocks.pickExternalContentRoot,
+}));
+
+vi.mock('../platform/appWindow', () => ({
+  isAppWindowFocused: mocks.isAppWindowFocused,
+  onAppWindowFocusChanged: mocks.onAppWindowFocusChanged,
+  requestAppWindowFocus: mocks.requestAppWindowFocus,
+  isDesktopRuntime: mocks.isDesktopRuntime,
 }));
 
 const managedRoot: ContentRoot = {
@@ -301,11 +318,31 @@ function setupDefaults() {
     mocks.getLaunchState,
     mocks.launchGame,
     mocks.onGameLaunchStateChanged,
+    mocks.isAppWindowFocused,
+    mocks.onAppWindowFocusChanged,
+    mocks.requestAppWindowFocus,
+    mocks.isDesktopRuntime,
   ]) {
     mock.mockReset();
   }
+  mocks.windowFocusHandlers.clear();
+  mocks.launchHandlers.clear();
+  // The shell is exercised on the real desktop ownership path, where unknown native window focus
+  // fails closed; a plain browser session is covered by `useAppWindowFocus.test.tsx`.
+  mocks.isDesktopRuntime.mockReturnValue(true);
+  mocks.isAppWindowFocused.mockResolvedValue(true);
+  mocks.requestAppWindowFocus.mockResolvedValue(true);
+  mocks.onAppWindowFocusChanged.mockImplementation(async (handler: (focused: boolean) => void) => {
+    mocks.windowFocusHandlers.add(handler);
+    return () => mocks.windowFocusHandlers.delete(handler);
+  });
   mocks.getLaunchState.mockResolvedValue({ running: null, blocked: false });
-  mocks.onGameLaunchStateChanged.mockResolvedValue(() => undefined);
+  mocks.onGameLaunchStateChanged.mockImplementation(
+    async (handler: (event: { state: LaunchState }) => void) => {
+      mocks.launchHandlers.add(handler);
+      return () => mocks.launchHandlers.delete(handler);
+    },
+  );
   mocks.getLibrarySummary.mockResolvedValue({ totalGames: 0, favoriteGames: 0, systems: [] });
   mocks.queryLibrary.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
   mocks.getLibraryGameDetail.mockResolvedValue(populatedGameDetail);
@@ -2206,5 +2243,1479 @@ describe('AppShell M6.7 B1 library card selection', () => {
     expect(await screen.findByRole('heading', { name: 'Page Two Game' })).toBeVisible();
     expect(screen.queryByRole('group', { name: 'Library selection' })).not.toBeInTheDocument();
     expect(screen.queryByText(/SELECTED/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Transient launch state — a pending request, a content-option list, a normalized failure — belongs
+ * to the Game Detail route that started it. M8 deliberately does not browser-trap Tab or the pointer
+ * inside a focus scope, so the user can leave a temporary launch surface through ordinary navigation
+ * instead of the semantic Cancel/Dismiss action. These tests exercise the real shell and the real
+ * `useGameLaunch()` state path along exactly that route.
+ */
+describe('AppShell M8 launch interaction ownership', () => {
+  const twoGameSummary = {
+    totalGames: 2,
+    favoriteGames: 1,
+    systems: [{ systemId: 'nes' as const, gameCount: 2 }],
+  };
+
+  const secondGameDetail: LibraryGameDetail = {
+    gameId: 2,
+    systemId: 'nes',
+    localTitle: 'Second Game Local',
+    availability: 'available',
+    favorite: false,
+    contentUnits: [
+      {
+        unitId: 201,
+        rootId: 1,
+        kind: 'singleFile',
+        localTitle: 'Second Game Local',
+        primaryRelativePath: 'NES/Second.nes',
+        fileCount: 1,
+        availability: 'available',
+      },
+    ],
+  };
+
+  const unmatchedMetadata: GameMetadataState = {
+    ...populatedGameMetadata,
+    gameId: 2,
+    status: 'noMatch',
+    matchType: null,
+    deterministic: false,
+    providerGameId: null,
+    providerRomId: null,
+    metadata: null,
+  };
+
+  const gameOneOptions = [
+    {
+      contentUnitId: 101,
+      localTitle: 'Kirby Disc 1',
+      kind: 'singleFile' as const,
+      fileCount: 1,
+      availability: 'available' as const,
+    },
+    {
+      contentUnitId: 102,
+      localTitle: 'Kirby Disc 2',
+      kind: 'singleFile' as const,
+      fileCount: 1,
+      availability: 'available' as const,
+    },
+  ];
+
+  const gameOneFailure = {
+    code: 'runtimeNotReady' as const,
+    message: 'The managed runtime is not ready.',
+    context: {
+      systemId: 'nes' as const,
+      coreId: null,
+      biosRequirementIds: [],
+      runtimeState: null,
+      hostPrerequisite: null,
+      exitCode: null,
+      contentOptions: [],
+    },
+  };
+
+  beforeEach(() => {
+    setupDefaults();
+    installRectStub();
+    window.history.replaceState({}, '', '/library');
+    mocks.getLibrarySummary.mockResolvedValue(twoGameSummary);
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    // Both boundaries take a request object, so the fixture is selected by its `gameId` field.
+    mocks.getLibraryGameDetail.mockImplementation(async (request: { gameId: number }) =>
+      request.gameId === 2 ? secondGameDetail : populatedGameDetail,
+    );
+    mocks.getGameMetadata.mockImplementation(async (request: { gameId: number }) =>
+      request.gameId === 2 ? unmatchedMetadata : populatedGameMetadata,
+    );
+  });
+
+  function footerHints() {
+    return screen.getByRole('list', { name: 'Controller actions' });
+  }
+
+  /** Opens Game A's Detail route the way the Library does. */
+  async function openFirstGame() {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    fireEvent.click(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }));
+    return screen.findByRole('button', { name: 'Play Kirby’s Adventure' });
+  }
+
+  /**
+   * Leaves the current Game Detail route with the pointer, through the BACK TO LIBRARY link. This is
+   * a native navigation path, not the semantic Cancel/Dismiss action, and it stays available while a
+   * temporary launch scope is open because those surfaces are deliberately not browser-modal.
+   */
+  async function leaveByPointer() {
+    await act(async () => {
+      fireEvent.click(screen.getByRole('link', { name: /BACK TO LIBRARY/ }));
+    });
+    await screen.findByRole('heading', { name: 'LIBRARY' });
+  }
+
+  async function openSecondGame() {
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
+      );
+    });
+    return screen.findByRole('button', { name: 'Play Second Game Local' });
+  }
+
+  it('does not render another game’s content options after the route is abandoned', async () => {
+    mocks.launchGame.mockResolvedValue({
+      status: 'contentSelectionRequired',
+      options: gameOneOptions,
+    });
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    // Game A owns a version-selection surface.
+    expect(await screen.findByRole('group', { name: 'Choose a version' })).toBeInTheDocument();
+
+    // The user leaves without pressing CANCEL, then opens Game B.
+    await leaveByPointer();
+    await openSecondGame();
+
+    expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Kirby Disc 1/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Kirby Disc 2/ })).not.toBeInTheDocument();
+    // No stale CANCEL is offered as the Back action either.
+    expect(within(footerHints()).queryByText('CANCEL')).not.toBeInTheDocument();
+  });
+
+  it('does not render or focus another game’s launch failure after the route is abandoned', async () => {
+    mocks.launchGame.mockResolvedValue({ status: 'failed', error: gameOneFailure });
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    const failure = await screen.findByRole('group', { name: 'Launch failed' });
+    await waitFor(() =>
+      expect(within(failure).getByRole('button', { name: 'DISMISS' })).toHaveFocus(),
+    );
+
+    // The user leaves without dismissing, then opens Game B.
+    await leaveByPointer();
+    const secondPlay = await openSecondGame();
+
+    expect(screen.queryByRole('group', { name: 'Launch failed' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'DISMISS' })).not.toBeInTheDocument();
+    // Game B's own route-entry focus is untouched by the abandoned surface.
+    expect(secondPlay).not.toHaveFocus();
+    expect(within(footerHints()).queryByText('DISMISS')).not.toBeInTheDocument();
+  });
+
+  it('refuses a second launch request while one is still unresolved', async () => {
+    let settleLaunch: ((value: LaunchResponse) => void) | undefined;
+    mocks.launchGame.mockImplementation(
+      () =>
+        new Promise<LaunchResponse>((resolve) => {
+          settleLaunch = resolve;
+        }),
+    );
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    expect(mocks.launchGame).toHaveBeenCalledTimes(1);
+
+    await leaveByPointer();
+    const secondPlay = await openSecondGame();
+
+    // Game A's request is still unresolved, so Game B may not issue a second one.
+    expect(secondPlay).toBeDisabled();
+    await act(async () => {
+      fireEvent.click(secondPlay);
+    });
+    expect(mocks.launchGame).toHaveBeenCalledTimes(1);
+    // And it says so truthfully rather than looking merely idle.
+    expect(secondPlay).toHaveTextContent('ANOTHER GAME IS LAUNCHING');
+
+    // The abandoned request is still allowed to resolve; the settled result must not resurrect
+    // Game A's transient surface on Game B.
+    await act(async () => {
+      settleLaunch?.({ status: 'failed', error: gameOneFailure });
+    });
+    expect(screen.queryByRole('group', { name: 'Launch failed' })).not.toBeInTheDocument();
+    // Ownership is free again, so Game B can launch now.
+    await waitFor(() => expect(secondPlay).not.toBeDisabled());
+  });
+
+  it('adopts an authoritative running session started by an abandoned request', async () => {
+    let settleLaunch: ((value: LaunchResponse) => void) | undefined;
+    mocks.launchGame.mockImplementation(
+      () =>
+        new Promise<LaunchResponse>((resolve) => {
+          settleLaunch = resolve;
+        }),
+    );
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    await leaveByPointer();
+    await openSecondGame();
+
+    // The backend really started the process the user asked for before navigating away. Route
+    // abandonment drops the *presentation*, never the authoritative process result.
+    await act(async () => {
+      settleLaunch?.({
+        status: 'started',
+        session: { sessionId: 9, gameId: 1, contentUnitId: 101, coreId: 'nestopia', startedAt: 1 },
+        diagnostics: [],
+      });
+    });
+
+    // The footer states the running fact, and Game B's Play is refused because a game is running.
+    await waitFor(() =>
+      expect(screen.getByText('RETROARCH HAS CONTROLLER INPUT')).toBeInTheDocument(),
+    );
+    const secondPlayAgain = screen.getByRole('button', { name: 'Play Second Game Local' });
+    expect(secondPlayAgain).toBeDisabled();
+    expect(secondPlayAgain).toHaveTextContent('ANOTHER GAME IS RUNNING');
+    // And no transient Game A surface came with it.
+    expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Launch failed' })).not.toBeInTheDocument();
+  });
+
+  it('discards a content-selection answer that arrives after the route was abandoned', async () => {
+    let settleLaunch: ((value: LaunchResponse) => void) | undefined;
+    mocks.launchGame.mockImplementation(
+      () =>
+        new Promise<LaunchResponse>((resolve) => {
+          settleLaunch = resolve;
+        }),
+    );
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    await leaveByPointer();
+    await openSecondGame();
+
+    await act(async () => {
+      settleLaunch?.({ status: 'contentSelectionRequired', options: gameOneOptions });
+    });
+    expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the owning route’s transient surface while the user stays on it', async () => {
+    mocks.launchGame.mockResolvedValue({
+      status: 'contentSelectionRequired',
+      options: gameOneOptions,
+    });
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    // Rerendering the same route must not be mistaken for leaving it.
+    const surface = await screen.findByRole('group', { name: 'Choose a version' });
+    await act(async () => undefined);
+    expect(surface).toBeInTheDocument();
+    expect(within(surface).getByRole('button', { name: /Kirby Disc 1/ })).toBeInTheDocument();
+  });
+  /**
+   * Isolates the stale focus-*request* risk, separately from the stale *surface*.
+   *
+   * The route is left through the sidebar, to Settings and then back to the Library. Neither
+   * destination issues a focus request of its own and `navigateFromShell` clears the Library's
+   * return target, so nothing else claims focus: the closing content scope's generic restoration is
+   * the only thing that can create a request. Its target, `detail:play`, does not exist on either
+   * destination, so it becomes a pending request with the 1.2 s safety timer — and the next Game
+   * Detail route to mount registers `detail:play` and satisfies it, stealing focus from that route's
+   * own entry target.
+   */
+  it('leaves no stale detail:play request when a content scope closes with the route', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mocks.launchGame.mockResolvedValue({
+        status: 'contentSelectionRequired',
+        options: gameOneOptions,
+      });
+      const play = await openFirstGame();
+      await act(async () => {
+        fireEvent.click(play);
+      });
+      const surface = await screen.findByRole('group', { name: 'Choose a version' });
+      // Focus sits inside the surface, so unmounting it really does drop focus to the body.
+      act(() =>
+        within(surface)
+          .getByRole('button', { name: /Kirby Disc 1/ })
+          .focus(),
+      );
+
+      // Sidebar navigation: pointer-reachable, and not the semantic CANCEL.
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+      });
+      await screen.findByRole('heading', { name: 'SETTINGS' });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /All systems/ }));
+      });
+      await screen.findByRole('heading', { name: 'LIBRARY' });
+
+      const secondPlay = await openSecondGame();
+      const secondHeading = screen.getByRole('heading', { level: 1, name: 'Second Game Local' });
+      // Game B's route-entry focus wins and keeps winning across the whole safety interval.
+      await waitFor(() => expect(secondHeading).toHaveFocus());
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(secondHeading).toHaveFocus();
+      expect(secondPlay).not.toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores Play when the content selection is cancelled semantically', async () => {
+    mocks.launchGame.mockResolvedValue({
+      status: 'contentSelectionRequired',
+      options: gameOneOptions,
+    });
+    const play = await openFirstGame();
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    const surface = await screen.findByRole('group', { name: 'Choose a version' });
+    await act(async () => {
+      fireEvent.click(within(surface).getByRole('button', { name: 'CANCEL' }));
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument(),
+    );
+    // Cancel is a user action on a route that is certainly still current, so Play really is the
+    // honest target — this is the behaviour route unmount must NOT share.
+    await waitFor(() => expect(play).toHaveFocus());
+  });
+});
+
+describe('AppShell M8 controller navigation and focus', () => {
+  const populatedM8Summary = {
+    totalGames: 2,
+    favoriteGames: 1,
+    systems: [{ systemId: 'nes' as const, gameCount: 2 }],
+  };
+
+  let pads: (FakeGamepad | null)[] = [];
+
+  interface FakeGamepad {
+    index: number;
+    id: string;
+    mapping: string;
+    connected: boolean;
+    buttons: { pressed: boolean }[];
+    axes: number[];
+  }
+
+  function fakePad(pressedIndex: number | null = null): FakeGamepad {
+    return {
+      index: 0,
+      id: 'Qualification Pad (STANDARD GAMEPAD)',
+      mapping: 'standard',
+      connected: true,
+      buttons: Array.from({ length: 17 }, (_value, index) => ({ pressed: index === pressedIndex })),
+      axes: [0, 0, 0, 0],
+    };
+  }
+
+  /** Lets the real animation-frame polling loop observe the current controller state. */
+  async function polled() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 32));
+    });
+  }
+
+  /** Presses one Standard Gamepad button and lets the polling loop observe press and release. */
+  async function pressButton(buttonIndex: number) {
+    pads = [fakePad(buttonIndex)];
+    await polled();
+    pads = [fakePad()];
+    await polled();
+  }
+
+  async function connectController() {
+    pads = [fakePad()];
+    await polled();
+  }
+
+  function layoutLibrary() {
+    layoutGrid(Array.from(document.querySelectorAll('[data-game-detail-link]')), 2);
+    layoutColumn(Array.from(document.querySelectorAll('.pixel-row')));
+  }
+
+  function footerHints() {
+    return screen.getByRole('list', { name: 'Controller actions' });
+  }
+
+  /**
+   * Flushes the native window-focus resolution.
+   *
+   * The desktop ownership gate starts closed and only opens once `isAppWindowFocused()` and the
+   * focus subscription have both resolved, so a test that asserts on keyboard or controller
+   * behaviour must let those settle first — otherwise it would pass merely because input was not
+   * owned yet.
+   */
+  async function inputOwnershipSettled() {
+    await act(async () => undefined);
+    expect(mocks.isDesktopRuntime).toHaveBeenCalled();
+  }
+
+  beforeEach(() => {
+    setupDefaults();
+    installRectStub();
+    pads = [];
+    vi.stubGlobal('navigator', { ...window.navigator, getGamepads: () => pads });
+    window.history.replaceState({}, '', '/library');
+    mocks.getLibrarySummary.mockResolvedValue(populatedM8Summary);
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('moves Library focus across the rendered grid with the D-pad', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    await connectController();
+    // With nothing focused, the first directional action enters the first navigable node.
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+    expect(screen.getByRole('button', { name: /All systems/ })).toHaveFocus();
+
+    // The main area is entered by confirming a sidebar filter, not by a geometric sideways jump.
+    await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveFocus(),
+    );
+
+    // Inside the main area the rendered grid geometry still resolves movement.
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+    expect(
+      screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
+    ).toHaveFocus();
+
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadLeft);
+    expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveFocus();
+  });
+
+  /**
+   * A1–A7: the Library is two explicit controller navigation zones, not one geometric focus field.
+   *
+   * The hardware finding these cover is that on a real DualSense directional movement crossed back
+   * and forth between the sidebar and the game grid purely because a card happened to lie in that
+   * direction, which made navigation feel accidental. Zone membership is semantic — which declared
+   * region contains the focused element — so none of these assertions depend on a pixel threshold.
+   */
+  describe('Library controller navigation zones', () => {
+    function sidebarRows() {
+      return {
+        allSystems: screen.getByRole('button', { name: /All systems/ }),
+        nes: screen.getByRole('button', { name: /Nintendo Entertainment System/ }),
+        settings: screen.getByRole('button', { name: 'Settings' }),
+      };
+    }
+
+    function cards() {
+      return {
+        kirby: screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }),
+        long: screen.getByRole('link', {
+          name: 'Open A Very Long Local Title Without Metadata details',
+        }),
+      };
+    }
+
+    async function libraryReady() {
+      render(<AppShell />);
+      await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+      layoutLibrary();
+      await connectController();
+      await inputOwnershipSettled();
+    }
+
+    it('A1: keeps directional movement in the sidebar instead of jumping to a game card', async () => {
+      await libraryReady();
+      const { allSystems } = sidebarRows();
+      act(() => allSystems.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+
+      // A card lies to the right on screen, but it belongs to the other zone.
+      expect(allSystems).toHaveFocus();
+      expect(cards().kirby).not.toHaveFocus();
+      expect(cards().long).not.toHaveFocus();
+    });
+
+    it('A2: traverses only sidebar entries with up and down', async () => {
+      await libraryReady();
+      // The grid is laid out *below* the sidebar column, so a geometric resolution would happily
+      // leave the sidebar downwards from its last entry.
+      layoutGrid(Array.from(document.querySelectorAll('[data-game-detail-link]')), 2, {
+        x: 300,
+        y: 400,
+      });
+      const { allSystems, nes, settings } = sidebarRows();
+      act(() => allSystems.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+      expect(nes).toHaveFocus();
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+      expect(settings).toHaveFocus();
+      // The last sidebar entry is an edge, not a doorway into the grid.
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+      expect(settings).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadUp);
+      expect(nes).toHaveFocus();
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadUp);
+      expect(allSystems).toHaveFocus();
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadUp);
+      expect(allSystems).toHaveFocus();
+    });
+
+    it('A3: applies a sidebar filter on confirm and then enters the main Library area', async () => {
+      await libraryReady();
+      act(() => sidebarRows().nes.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+
+      // The filter really applied.
+      await waitFor(() =>
+        expect(mocks.queryLibrary).toHaveBeenCalledWith(
+          expect.objectContaining({ systemId: 'nes' }),
+        ),
+      );
+      expect(sidebarRows().nes).toHaveAttribute('aria-pressed', 'true');
+      // And focus moved on to the first truthful main-content target for that view.
+      await waitFor(() => expect(cards().kirby).toHaveFocus());
+    });
+
+    it('A4: keeps directional movement inside the main Library area', async () => {
+      await libraryReady();
+      act(() => cards().long.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadLeft);
+      expect(cards().kirby).toHaveFocus();
+
+      // The leftmost card sits next to the sidebar; the boundary is a stop, not a crossing.
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadLeft);
+      expect(cards().kirby).toHaveFocus();
+      expect(sidebarRows().allSystems).not.toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadUp);
+      expect(sidebarRows().allSystems).not.toHaveFocus();
+      expect(sidebarRows().nes).not.toHaveFocus();
+    });
+
+    it('A5: returns focus to the active sidebar filter on back without navigating', async () => {
+      await libraryReady();
+      act(() => sidebarRows().nes.focus());
+      await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+      await waitFor(() => expect(cards().kirby).toHaveFocus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      // A focus-zone transition only: the Library is the root route and must not be left.
+      expect(sidebarRows().nes).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+      expect(screen.getByRole('heading', { name: 'LIBRARY' })).toBeInTheDocument();
+
+      // And the sidebar zone owns up/down again straight away.
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadUp);
+      expect(sidebarRows().allSystems).toHaveFocus();
+    });
+
+    it('A5: returns to the all-systems entry when no system filter is active', async () => {
+      await libraryReady();
+      act(() => cards().long.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      expect(sidebarRows().allSystems).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('A6: leaves pointer, native Tab, and search typing untouched', async () => {
+      await libraryReady();
+
+      // A pointer click on a sidebar filter must not drag focus into the grid.
+      act(() => sidebarRows().nes.click());
+      await waitFor(() =>
+        expect(mocks.queryLibrary).toHaveBeenCalledWith(
+          expect.objectContaining({ systemId: 'nes' }),
+        ),
+      );
+      expect(cards().kirby).not.toHaveFocus();
+
+      // Tab and Shift+Tab stay with the browser.
+      for (const shiftKey of [false, true]) {
+        const tab = new KeyboardEvent('keydown', {
+          key: 'Tab',
+          shiftKey,
+          bubbles: true,
+          cancelable: true,
+        });
+        window.dispatchEvent(tab);
+        expect(tab.defaultPrevented).toBe(false);
+      }
+
+      // A pointer click on a card still opens it directly.
+      act(() => cards().kirby.click());
+      await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+      expect(window.location.pathname).toBe('/games/1');
+    });
+
+    it('A6: keeps the search field editable with the caret keys', async () => {
+      await libraryReady();
+      const search = screen.getByRole('searchbox', { name: 'Search' });
+      act(() => search.focus());
+
+      fireEvent.change(search, { target: { value: 'kir' } });
+      expect(search).toHaveValue('kir');
+
+      // Inside a text field every mapped key belongs to the platform, so focus must not move.
+      for (const key of ['ArrowRight', 'ArrowDown', 'Escape']) {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        search.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(false);
+      }
+      expect(search).toHaveFocus();
+      expect(search).toHaveValue('kir');
+    });
+
+    it('A7: lands on the Library heading when the selected view has no game', async () => {
+      mocks.queryLibrary
+        .mockResolvedValueOnce(populatedLibraryPage)
+        .mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
+      await libraryReady();
+      act(() => sidebarRows().nes.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+
+      await screen.findByRole('heading', { name: 'NO GAMES MATCH FILTERS' });
+      // The honest empty-state target, not a card that no longer exists and not nothing at all.
+      await waitFor(() => expect(screen.getByRole('heading', { name: 'LIBRARY' })).toHaveFocus());
+      expect(document.body).not.toHaveFocus();
+    });
+  });
+
+  /**
+   * The direct Library Search controller action.
+   *
+   * Search lives in the shared top bar, outside both Library zones, so directional movement
+   * deliberately cannot reach it. Real operator qualification asked for a way to get there with the
+   * controller anyway; the answer is an explicit semantic transition on the upper face button, not a
+   * hole in zone containment.
+   */
+  describe('Library controller search action', () => {
+    function searchField() {
+      return screen.getByRole('searchbox', { name: 'Search' });
+    }
+
+    function sidebarRows() {
+      return {
+        allSystems: screen.getByRole('button', { name: /All systems/ }),
+        nes: screen.getByRole('button', { name: /Nintendo Entertainment System/ }),
+      };
+    }
+
+    function cards() {
+      return {
+        kirby: screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }),
+        long: screen.getByRole('link', {
+          name: 'Open A Very Long Local Title Without Metadata details',
+        }),
+      };
+    }
+
+    async function libraryReady() {
+      render(<AppShell />);
+      await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+      layoutLibrary();
+      await connectController();
+      await inputOwnershipSettled();
+    }
+
+    it('A1: reaches Search from the sidebar zone', async () => {
+      await libraryReady();
+      act(() => sidebarRows().allSystems.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+
+      expect(searchField()).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('A2: reaches Search from the main Library zone', async () => {
+      await libraryReady();
+      act(() => cards().kirby.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+
+      expect(searchField()).toHaveFocus();
+    });
+
+    it('A2: reaches Search from the Library heading and from another header control', async () => {
+      await libraryReady();
+
+      act(() => screen.getByRole('heading', { name: 'LIBRARY' }).focus());
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+
+      act(() => screen.getByRole('button', { name: 'Go to Library' }).focus());
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+    });
+
+    it('A3: returns to the originating main card with back', async () => {
+      await libraryReady();
+      act(() => cards().long.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      expect(cards().long).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('A3: pressing search again inside Search keeps the origin it was entered from', async () => {
+      await libraryReady();
+      act(() => cards().long.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      expect(cards().long).toHaveFocus();
+    });
+
+    it('A3: returns to the originating sidebar entry with back', async () => {
+      await libraryReady();
+      act(() => sidebarRows().nes.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      expect(sidebarRows().nes).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('A4: falls back to the Library when the origin disappeared while Search was focused', async () => {
+      mocks.queryLibrary
+        .mockResolvedValueOnce(populatedLibraryPage)
+        .mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
+      await libraryReady();
+      act(() => cards().kirby.focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      expect(searchField()).toHaveFocus();
+
+      // Typing a query that matches nothing removes the card the origin identified. The search
+      // input is debounced, so the empty result only commits after that delay.
+      fireEvent.change(searchField(), { target: { value: 'nothing matches this' } });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 260));
+      });
+      await screen.findByRole('heading', { name: /NO MATCH FOR/ });
+      expect(searchField()).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      // The documented fallback: the selected sidebar entry, then all systems, then the heading.
+      expect(sidebarRows().allSystems).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('A5: does nothing and offers no SEARCH hint when no Search field is rendered', async () => {
+      mocks.getLibrarySummary.mockResolvedValue({
+        totalGames: 0,
+        favoriteGames: 0,
+        systems: [],
+      });
+      mocks.queryLibrary.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
+      render(<AppShell />);
+      await screen.findByRole('heading', { name: 'LIBRARY' });
+      layoutLibrary();
+      await connectController();
+      await inputOwnershipSettled();
+      expect(screen.queryByRole('searchbox', { name: 'Search' })).not.toBeInTheDocument();
+
+      act(() => sidebarRows().allSystems.focus());
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+
+      expect(sidebarRows().allSystems).toHaveFocus();
+      expect(within(footerHints()).queryByText('SEARCH')).not.toBeInTheDocument();
+    });
+
+    it('offers the SEARCH hint only while the action is really available', async () => {
+      await libraryReady();
+      act(() => sidebarRows().allSystems.focus());
+      expect(within(footerHints()).getByText('SEARCH')).toBeInTheDocument();
+
+      act(() => cards().kirby.focus());
+      expect(within(footerHints()).getByText('SEARCH')).toBeInTheDocument();
+    });
+
+    it('A8: leaves pointer, Tab, typing, caret keys, and Escape with the platform', async () => {
+      await libraryReady();
+      act(() => cards().kirby.focus());
+      await pressButton(GAMEPAD_BUTTON_INDEX.search);
+      const search = searchField();
+      expect(search).toHaveFocus();
+
+      fireEvent.change(search, { target: { value: 'kir' } });
+      expect(search).toHaveValue('kir');
+
+      for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Escape']) {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        search.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(false);
+      }
+      expect(search).toHaveFocus();
+      expect(search).toHaveValue('kir');
+
+      for (const shiftKey of [false, true]) {
+        const tab = new KeyboardEvent('keydown', {
+          key: 'Tab',
+          shiftKey,
+          bubbles: true,
+          cancelable: true,
+        });
+        window.dispatchEvent(tab);
+        expect(tab.defaultPrevented).toBe(false);
+      }
+
+      // Leaving Search by pointer must not arm a later forced restoration of the captured origin.
+      act(() => sidebarRows().allSystems.focus());
+      expect(sidebarRows().allSystems).toHaveFocus();
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+      expect(cards().kirby).not.toHaveFocus();
+    });
+  });
+
+  it('opens a game with confirm and returns to the same card with back', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    await connectController();
+    act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+    await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+
+    await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+    expect(window.location.pathname).toBe('/games/1');
+
+    await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+    await screen.findByRole('heading', { name: 'LIBRARY' });
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveFocus(),
+    );
+  });
+
+  it('selects the focused card with context without opening it', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    await connectController();
+    act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+    await pressButton(GAMEPAD_BUTTON_INDEX.context);
+
+    expect(window.location.pathname).toBe('/library');
+    expect(await screen.findByText('1 SELECTED')).toBeVisible();
+  });
+
+  it('shows only the actions the focused node really supports', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    act(() => {
+      screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus();
+    });
+    expect(within(footerHints()).getByText('OPEN')).toBeInTheDocument();
+    expect(within(footerHints()).getByText('SELECT')).toBeInTheDocument();
+    // The Library is the root destination, so there is nothing to go back to.
+    expect(within(footerHints()).queryByText('LIBRARY')).not.toBeInTheDocument();
+
+    act(() => {
+      screen.getByRole('button', { name: /All systems/ }).focus();
+    });
+    expect(within(footerHints()).queryByText('SELECT')).not.toBeInTheDocument();
+  });
+
+  it('offers a back hint on Game Detail and none on the Library root', async () => {
+    window.history.replaceState({}, '', '/games/1');
+    render(<AppShell />);
+    await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+
+    expect(within(footerHints()).getByText('LIBRARY')).toBeInTheDocument();
+  });
+
+  it('stops consuming controller input while a managed game is running', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    act(() => {
+      mocks.launchHandlers.forEach((handler) =>
+        handler({
+          state: {
+            running: {
+              sessionId: 7,
+              gameId: 1,
+              contentUnitId: 101,
+              coreId: 'nestopia',
+              startedAt: 1,
+            },
+            blocked: false,
+          },
+        }),
+      );
+    });
+
+    await connectController();
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+    expect(document.body).toHaveFocus();
+  });
+
+  it('stops consuming controller input while launch state is blocked', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    act(() => {
+      mocks.launchHandlers.forEach((handler) =>
+        handler({ state: { running: null, blocked: true } }),
+      );
+    });
+
+    await connectController();
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+    expect(document.body).toHaveFocus();
+  });
+
+  it('stops consuming controller input while the application window is unfocused', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(false)));
+
+    await connectController();
+    act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+    expect(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' })).toHaveFocus();
+
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(true)));
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+    expect(
+      screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
+    ).toHaveFocus();
+  });
+
+  it('returns the window once and restores launch focus when the game ends', async () => {
+    window.history.replaceState({}, '', '/games/1');
+    render(<AppShell />);
+    const play = await screen.findByRole('button', { name: 'Play Kirby’s Adventure' });
+    act(() => play.focus());
+
+    act(() =>
+      mocks.launchHandlers.forEach((handler) =>
+        handler({
+          state: {
+            running: {
+              sessionId: 7,
+              gameId: 1,
+              contentUnitId: 101,
+              coreId: 'nestopia',
+              startedAt: 1,
+            },
+            blocked: false,
+          },
+        }),
+      ),
+    );
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(false)));
+    expect(mocks.requestAppWindowFocus).not.toHaveBeenCalled();
+
+    // Whatever happens to DOM focus while RetroArch owns the screen, the launch origin is what the
+    // return restores.
+    act(() => screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' }).focus());
+
+    act(() =>
+      mocks.launchHandlers.forEach((handler) =>
+        handler({ state: { running: null, blocked: false } }),
+      ),
+    );
+    await waitFor(() => expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: 'Play Kirby’s Adventure' })).not.toHaveFocus();
+
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(true)));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Play Kirby’s Adventure' })).toHaveFocus(),
+    );
+
+    // A later window focus change must not steal focus a second time.
+    act(() => screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' }).focus());
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(false)));
+    act(() => mocks.windowFocusHandlers.forEach((handler) => handler(true)));
+    expect(
+      screen.getByRole('button', { name: 'Add Kirby’s Adventure to favorites' }),
+    ).toHaveFocus();
+    expect(mocks.requestAppWindowFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Tab, pointer focus, and search typing working alongside controller navigation', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    const search = screen.getByRole('searchbox', { name: 'Search' });
+    act(() => search.focus());
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    expect(search).toHaveFocus();
+    fireEvent.change(search, { target: { value: 'kirby' } });
+    expect(search).toHaveValue('kirby');
+
+    act(() => {
+      screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus();
+    });
+    fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+    expect(
+      screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
+    ).toHaveFocus();
+  });
+
+  it('stops consuming controller input while a launch request is still pending', async () => {
+    // The backend creates the process and settles the launch before the authoritative running state
+    // reaches React. Ownership must therefore be released at the launch request, not at `running`.
+    window.history.replaceState({}, '', '/games/1');
+    let settleLaunch: ((value: LaunchResponse) => void) | undefined;
+    mocks.launchGame.mockImplementation(
+      () =>
+        new Promise<LaunchResponse>((resolve) => {
+          settleLaunch = resolve;
+        }),
+    );
+
+    render(<AppShell />);
+    const play = await screen.findByRole('button', { name: 'Play Kirby’s Adventure' });
+    const favorite = screen.getByRole('button', {
+      name: 'Add Kirby’s Adventure to favorites',
+    });
+    layoutColumn([play, favorite]);
+
+    await connectController();
+    act(() => play.focus());
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    expect(mocks.launchGame).toHaveBeenCalledTimes(1);
+
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+    expect(favorite).not.toHaveFocus();
+    await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+    expect(mocks.launchGame).toHaveBeenCalledTimes(1);
+
+    // The launch failed without ever starting a process: ownership returns immediately.
+    await act(async () => {
+      settleLaunch?.({
+        status: 'failed',
+        error: {
+          code: 'runtimeNotReady',
+          message: 'The managed runtime is not ready.',
+          context: {
+            systemId: 'nes',
+            coreId: null,
+            biosRequirementIds: [],
+            runtimeState: null,
+            hostPrerequisite: null,
+            exitCode: null,
+            contentOptions: [],
+          },
+        },
+      });
+    });
+    // Ownership returns immediately, and the failure surface — a temporary M8 focus scope — takes
+    // entry focus. The controller can therefore act on it at once.
+    const failure = await screen.findByRole('group', { name: 'Launch failed' });
+    const dismiss = within(failure).getByRole('button', { name: 'DISMISS' });
+    await waitFor(() => expect(dismiss).toHaveFocus());
+    await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Launch failed' })).not.toBeInTheDocument(),
+    );
+    expect(play).toHaveFocus();
+
+    layoutColumn([play, favorite]);
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+    expect(favorite).toHaveFocus();
+  });
+
+  it('does not replay a direction held across the launch transition', async () => {
+    window.history.replaceState({}, '', '/games/1');
+    let settleLaunch: ((value: LaunchResponse) => void) | undefined;
+    mocks.launchGame.mockImplementation(
+      () =>
+        new Promise<LaunchResponse>((resolve) => {
+          settleLaunch = resolve;
+        }),
+    );
+
+    render(<AppShell />);
+    const play = await screen.findByRole('button', { name: 'Play Kirby’s Adventure' });
+    const favorite = screen.getByRole('button', {
+      name: 'Add Kirby’s Adventure to favorites',
+    });
+    layoutColumn([play, favorite]);
+
+    await connectController();
+    act(() => play.focus());
+    await act(async () => {
+      fireEvent.click(play);
+    });
+
+    // The direction stays physically held for the whole uncertain interval and beyond it.
+    pads = [fakePad(GAMEPAD_BUTTON_INDEX.dpadDown)];
+    await polled();
+    await polled();
+    expect(favorite).not.toHaveFocus();
+
+    await act(async () => {
+      settleLaunch?.({
+        status: 'failed',
+        error: {
+          code: 'runtimeNotReady',
+          message: 'The managed runtime is not ready.',
+          context: {
+            systemId: 'nes',
+            coreId: null,
+            biosRequirementIds: [],
+            runtimeState: null,
+            hostPrerequisite: null,
+            exitCode: null,
+            contentOptions: [],
+          },
+        },
+      });
+    });
+    // Ownership has returned while the direction is still physically held: it must be adopted, not
+    // replayed, so nothing moves until it is released and pressed again.
+    const failure = await screen.findByRole('group', { name: 'Launch failed' });
+    const dismiss = within(failure).getByRole('button', { name: 'DISMISS' });
+    await waitFor(() => expect(dismiss).toHaveFocus());
+    await polled();
+    await polled();
+    expect(dismiss).toHaveFocus();
+
+    // Released, dismissed, and only then does a fresh press move again.
+    pads = [fakePad()];
+    await polled();
+    await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Launch failed' })).not.toBeInTheDocument(),
+    );
+    layoutColumn([play, favorite]);
+    expect(play).toHaveFocus();
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+    expect(favorite).toHaveFocus();
+  });
+
+  it('lets the controller act on content selection once the launch request resolved', async () => {
+    window.history.replaceState({}, '', '/games/1');
+    mocks.launchGame.mockResolvedValue({
+      status: 'contentSelectionRequired',
+      options: [
+        {
+          contentUnitId: 11,
+          localTitle: 'Kirby Disc 1',
+          kind: 'singleFile',
+          fileCount: 1,
+          availability: 'available',
+        },
+        {
+          contentUnitId: 12,
+          localTitle: 'Kirby Disc 2',
+          kind: 'singleFile',
+          fileCount: 1,
+          availability: 'available',
+        },
+      ],
+    });
+
+    render(<AppShell />);
+    const play = await screen.findByRole('button', { name: 'Play Kirby’s Adventure' });
+    await connectController();
+    act(() => play.focus());
+    await act(async () => {
+      fireEvent.click(play);
+    });
+
+    const surface = await screen.findByRole('group', { name: 'Choose a version' });
+    const first = within(surface).getByRole('button', { name: /Kirby Disc 1/ });
+    const second = within(surface).getByRole('button', { name: /Kirby Disc 2/ });
+    layoutColumn([first, second]);
+    act(() => first.focus());
+
+    await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+    expect(second).toHaveFocus();
+    await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+    expect(mocks.launchGame).toHaveBeenLastCalledWith({ gameId: 1, contentUnitId: 12 });
+  });
+
+  it('updates the footer action immediately when the focused card changes state', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    layoutLibrary();
+
+    await connectController();
+    const card = screen.getByRole('link', { name: 'Open Kirby’s Adventure details' });
+    act(() => card.focus());
+    expect(within(footerHints()).getByText('SELECT')).toBeInTheDocument();
+
+    // Context selects the card. Its focus identity does not change, but the action it now supports
+    // does, and the footer must say so without waiting for anything else to move.
+    await pressButton(GAMEPAD_BUTTON_INDEX.context);
+    expect(card).toHaveFocus();
+    expect(within(footerHints()).getByText('DESELECT')).toBeInTheDocument();
+    expect(within(footerHints()).queryByText('SELECT')).not.toBeInTheDocument();
+
+    await pressButton(GAMEPAD_BUTTON_INDEX.context);
+    expect(within(footerHints()).getByText('SELECT')).toBeInTheDocument();
+  });
+
+  it('drops the confirm hint when the focused control becomes disabled', async () => {
+    window.history.replaceState({}, '', '/games/1');
+    let settleLaunch: ((value: LaunchResponse) => void) | undefined;
+    mocks.launchGame.mockImplementation(
+      () =>
+        new Promise<LaunchResponse>((resolve) => {
+          settleLaunch = resolve;
+        }),
+    );
+
+    render(<AppShell />);
+    const play = await screen.findByRole('button', { name: 'Play Kirby’s Adventure' });
+    act(() => play.focus());
+    expect(within(footerHints()).getByText('PLAY')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    expect(within(footerHints()).queryByText('PLAY')).not.toBeInTheDocument();
+    expect(settleLaunch).toBeDefined();
+  });
+
+  it('leaves Escape in the Library search to the platform instead of navigating', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    await inputOwnershipSettled();
+
+    const search = screen.getByRole('searchbox', { name: 'Search' });
+    act(() => search.focus());
+    fireEvent.change(search, { target: { value: 'kirby' } });
+    // `fireEvent` returns false when a handler called preventDefault. The Library has no semantic
+    // Back at all, so suppressing the field's own Escape would remove behaviour and add none.
+    const notPrevented = fireEvent.keyDown(search, { key: 'Escape' });
+
+    expect(notPrevented).toBe(true);
+    expect(window.location.pathname).toBe('/library');
+    expect(search).toHaveFocus();
+  });
+
+  it('does not navigate away when Escape is pressed in the Settings credential fields', async () => {
+    window.history.replaceState({}, '', '/settings');
+    render(<AppShell />);
+    const username = await screen.findByLabelText('ACCOUNT NAME');
+    const password = screen.getByLabelText('ACCOUNT PASSWORD');
+    await inputOwnershipSettled();
+
+    for (const field of [username, password]) {
+      act(() => field.focus());
+      expect(fireEvent.keyDown(field, { key: 'Escape' })).toBe(true);
+      expect(field).toHaveFocus();
+      expect(window.location.pathname).toBe('/settings');
+    }
+  });
+
+  it('still produces the route back from an ordinary focused control', async () => {
+    window.history.replaceState({}, '', '/games/1');
+    render(<AppShell />);
+    await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+
+    await inputOwnershipSettled();
+
+    const back = screen.getByRole('link', { name: /BACK TO LIBRARY/ });
+    act(() => back.focus());
+    fireEvent.keyDown(back, { key: 'Escape' });
+    await screen.findByRole('heading', { name: 'LIBRARY' });
+    expect(window.location.pathname).toBe('/library');
+  });
+
+  it('shows a scope back hint while a temporary surface is open and removes it after', async () => {
+    window.history.replaceState({}, '', '/games/1');
+    mocks.launchGame.mockResolvedValue({
+      status: 'contentSelectionRequired',
+      options: [
+        {
+          contentUnitId: 11,
+          localTitle: 'Kirby Disc 1',
+          kind: 'singleFile',
+          fileCount: 1,
+          availability: 'available',
+        },
+      ],
+    });
+
+    render(<AppShell />);
+    const play = await screen.findByRole('button', { name: 'Play Kirby’s Adventure' });
+    act(() => play.focus());
+    expect(within(footerHints()).getByText('LIBRARY')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(play);
+    });
+    await screen.findByRole('group', { name: 'Choose a version' });
+    // The innermost scope owns `back` while it is open.
+    expect(within(footerHints()).getByText('CANCEL')).toBeInTheDocument();
+    expect(within(footerHints()).queryByText('LIBRARY')).not.toBeInTheDocument();
+
+    await connectController();
+    await pressButton(GAMEPAD_BUTTON_INDEX.back);
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Choose a version' })).not.toBeInTheDocument(),
+    );
+    expect(within(footerHints()).getByText('LIBRARY')).toBeInTheDocument();
+    expect(within(footerHints()).queryByText('CANCEL')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The qualified WebKitGTK/DualSense physical layout, driven end to end.
+   *
+   * Every other controller test in this file presses **canonical** Standard Gamepad indices, which
+   * proves the semantic layer but cannot prove which physical button reaches it. On the qualification
+   * hardware the operator measured `Gamepad.buttons` directly: Cross 0, Circle 1, Triangle 2, Square
+   * 3 — the two upper/left face buttons transposed relative to the canonical layout, with
+   * `mapping === 'standard'` all the same. These tests press those raw indices and assert the
+   * behaviour the operator will physically re-test, so the mapping can no longer obscure which action
+   * was really sent.
+   */
+  describe('qualified WebKitGTK DualSense physical layout', () => {
+    /** WebKitGTK 2.52.5 in the Linux Tauri WebView. */
+    const WEBKITGTK_LINUX_UA =
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15';
+    /** WebKitGTK reports the Linux kernel device name verbatim as `Gamepad.id`. */
+    const DUALSENSE_ID = 'Sony Interactive Entertainment DualSense Wireless Controller';
+    /** Raw physical indices as measured on the qualification hardware. */
+    const RAW = { cross: 0, circle: 1, triangle: 2, square: 3 } as const;
+
+    function dualsense(pressedIndex: number | null = null): FakeGamepad {
+      return { ...fakePad(pressedIndex), id: DUALSENSE_ID };
+    }
+
+    /** Presses one **raw** browser button index, as the affected engine would report it. */
+    async function pressRaw(rawIndex: number) {
+      pads = [dualsense(rawIndex)];
+      await polled();
+      pads = [dualsense()];
+      await polled();
+    }
+
+    async function libraryReady() {
+      render(<AppShell />);
+      await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+      layoutLibrary();
+      pads = [dualsense()];
+      await polled();
+      await inputOwnershipSettled();
+    }
+
+    function searchField() {
+      return screen.getByRole('searchbox', { name: 'Search' });
+    }
+
+    beforeEach(() => {
+      vi.stubGlobal('navigator', {
+        ...window.navigator,
+        userAgent: WEBKITGTK_LINUX_UA,
+        getGamepads: () => pads,
+      });
+    });
+
+    it('reaches Search with physical Triangle from the sidebar zone, and Back restores the sidebar entry', async () => {
+      await libraryReady();
+      const allSystems = screen.getByRole('button', { name: /All systems/ });
+      act(() => allSystems.focus());
+
+      await pressRaw(RAW.triangle);
+      expect(searchField()).toHaveFocus();
+
+      await pressRaw(RAW.circle);
+      expect(allSystems).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('reaches Search with physical Triangle from the main Library zone, and Back restores the card', async () => {
+      await libraryReady();
+      const kirby = screen.getByRole('link', { name: 'Open Kirby’s Adventure details' });
+      act(() => kirby.focus());
+
+      await pressRaw(RAW.triangle);
+      expect(searchField()).toHaveFocus();
+
+      await pressRaw(RAW.circle);
+      expect(kirby).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('selects the focused card with physical Square without opening it', async () => {
+      await libraryReady();
+      act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+
+      await pressRaw(RAW.square);
+
+      expect(window.location.pathname).toBe('/library');
+      expect(await screen.findByText('1 SELECTED')).toBeVisible();
+    });
+
+    it('opens the focused card with physical Cross', async () => {
+      await libraryReady();
+      act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+
+      await pressRaw(RAW.cross);
+
+      await waitFor(() => expect(window.location.pathname).toBe('/games/1'));
+    });
+
+    it('keeps the footer expressing the semantic layout, not the raw browser indices', async () => {
+      await libraryReady();
+      act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+
+      // X stays the context glyph and Y the search glyph: the footer describes canonical Standard
+      // Gamepad semantics, which is what normalization restores.
+      const hints = within(footerHints());
+      expect(hints.getByText('SELECT').closest('li')).toHaveTextContent('X');
+      expect(hints.getByText('SEARCH').closest('li')).toHaveTextContent('Y');
+    });
   });
 });

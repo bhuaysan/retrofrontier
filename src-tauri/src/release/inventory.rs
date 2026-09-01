@@ -296,10 +296,6 @@ pub fn read_seven_zip_member(
 }
 
 /// Repackage one zip subtree as a deterministic tar rooted at that subtree.
-///
-/// Determinism matters: the produced bytes are pinned by digest in the release definition, so the
-/// modification time, ownership, ordering, and mode of every entry are fixed rather than inherited
-/// from the build host or the upstream archive.
 pub fn repackage_zip_subtree_as_tar(
     artifact: &Path,
     subtree: &str,
@@ -355,11 +351,69 @@ pub fn repackage_zip_subtree_as_tar(
         )));
     }
 
+    // Controller profiles and emulator support data are read-only text and binary blobs, never
+    // code the runtime loads, so nothing in a repackaged subtree is marked executable.
+    build_deterministic_tar(&directories, &files, 0o644)
+}
+
+/// Package one member of a 7z container as a deterministic single-entry tar.
+///
+/// The official version-addressed RetroArch stable core bundle ships each libretro core as a bare
+/// `.so` inside one large 7z, so a core taken from it has no upstream archive of its own that could
+/// be redistributed verbatim. The member is lifted out and packaged under `entry_name`, which is
+/// what the component's `executable_relative_path` then resolves against.
+pub fn repackage_seven_zip_member_as_tar(
+    artifact: &Path,
+    member: &str,
+    entry_name: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, RuntimeError> {
+    let bytes = read_seven_zip_member(artifact, member, max_bytes)?;
+    package_executable_as_tar(bytes, entry_name)
+}
+
+/// Package one native-code blob as a deterministic single-entry tar under `entry_name`.
+///
+/// Split out from [`repackage_seven_zip_member_as_tar`] so the packaging contract — determinism,
+/// the flat entry name, and the executable bit — is testable without a 7z container.
+pub fn package_executable_as_tar(
+    bytes: Vec<u8>,
+    entry_name: &str,
+) -> Result<Vec<u8>, RuntimeError> {
+    let path = relative_path(entry_name)?;
+    if path.as_str().contains('/') {
+        return Err(RuntimeError::Extraction(format!(
+            "entry name '{entry_name}' must be a flat filename"
+        )));
+    }
+    if bytes.is_empty() {
+        return Err(RuntimeError::Extraction(format!(
+            "entry '{entry_name}' is empty"
+        )));
+    }
+    let mut files = BTreeMap::new();
+    files.insert(path, bytes);
+    // This derivation exists to carry native code the runtime dlopens, so the single entry is
+    // executable. `RuntimeManifest::validate_for_linux_x86_64` requires a component's declared
+    // executable to be an executable file, and it must live under an approved code root.
+    build_deterministic_tar(&Default::default(), &files, 0o755)
+}
+
+/// Build a tar whose bytes depend only on the entries, never on the build host.
+///
+/// Determinism matters: the produced bytes are pinned by digest in the release definition, so the
+/// modification time, ownership, ordering, and mode of every entry are fixed rather than inherited
+/// from the build host or the upstream archive.
+fn build_deterministic_tar(
+    directories: &std::collections::BTreeSet<RelativePath>,
+    files: &BTreeMap<RelativePath, Vec<u8>>,
+    file_mode: u32,
+) -> Result<Vec<u8>, RuntimeError> {
     let mut output = Vec::new();
     {
         let mut builder = tar::Builder::new(&mut output);
         builder.mode(tar::HeaderMode::Deterministic);
-        for directory in &directories {
+        for directory in directories {
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(tar::EntryType::Directory);
             header.set_mode(0o755);
@@ -371,10 +425,10 @@ pub fn repackage_zip_subtree_as_tar(
                 .append_data(&mut header, directory.to_path_buf(), std::io::empty())
                 .map_err(RuntimeError::Io)?;
         }
-        for (path, bytes) in &files {
+        for (path, bytes) in files {
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(tar::EntryType::Regular);
-            header.set_mode(0o644);
+            header.set_mode(file_mode);
             header.set_size(bytes.len() as u64);
             header.set_mtime(0);
             header.set_uid(0);
@@ -472,6 +526,77 @@ mod tests {
         assert!(paths.contains(&"runtime/support/dolphin-sys/GC".to_owned()));
         assert!(paths.contains(&"runtime/support/dolphin-sys/wiitdb.txt".to_owned()));
         assert!(!paths.iter().any(|path| path.contains("license.txt")));
+    }
+
+    /// The core components taken from the version-addressed stable bundle are derived through
+    /// this packaging step, so its three guarantees are asserted directly: the bytes are
+    /// reproducible, the single entry lands at the component's `executable_relative_path`, and it
+    /// is executable — a non-executable core would be refused by the manifest validator.
+    #[test]
+    fn packaging_a_core_binary_is_deterministic_and_executable() {
+        use super::package_executable_as_tar;
+
+        let core = b"\x7fELF native core bytes".to_vec();
+        let first = package_executable_as_tar(core.clone(), "nestopia_libretro.so").unwrap();
+        let second = package_executable_as_tar(core.clone(), "nestopia_libretro.so").unwrap();
+        assert_eq!(first, second, "packaging must be reproducible");
+
+        let directory = tempdir().unwrap();
+        let artifact = directory.path().join("nestopia_libretro.so.tar");
+        std::fs::write(&artifact, &first).unwrap();
+        let install_path = RelativePath::new("cores/nestopia").unwrap();
+        let inventory =
+            derive_component_inventory(&install_path, ArchiveFormat::Tar, &artifact).unwrap();
+
+        assert_eq!(inventory.len(), 2);
+        assert_eq!(inventory[0].path, install_path);
+        let entry = &inventory[1];
+        assert_eq!(entry.path.as_str(), "cores/nestopia/nestopia_libretro.so");
+        assert_eq!(entry.entry_type, InstalledEntryType::File);
+        assert!(entry.executable, "a core the runtime dlopens is executable");
+        assert_eq!(entry.size_bytes, core.len() as u64);
+    }
+
+    /// A nested entry name would put the core somewhere the component does not declare.
+    #[test]
+    fn a_nested_or_empty_core_entry_is_refused() {
+        use super::package_executable_as_tar;
+
+        assert!(package_executable_as_tar(b"core".to_vec(), "cores/nestopia_libretro.so").is_err());
+        assert!(package_executable_as_tar(b"core".to_vec(), "../escape.so").is_err());
+        assert!(package_executable_as_tar(Vec::new(), "empty_libretro.so").is_err());
+    }
+
+    /// Support data is never marked executable, even though both derivations share one tar builder.
+    #[test]
+    fn a_repackaged_support_subtree_is_not_executable() {
+        let directory = tempdir().unwrap();
+        let artifact = directory.path().join("support.zip");
+        let file = std::fs::File::create(&artifact).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file(
+                "root/udev/Pad.cfg",
+                zip::write::SimpleFileOptions::default().unix_permissions(0o755),
+            )
+            .unwrap();
+        writer.write_all(b"input_driver = \"udev\"\n").unwrap();
+        writer.finish().unwrap();
+
+        let tar = repackage_zip_subtree_as_tar(&artifact, "root", 1024 * 1024).unwrap();
+        let tar_path = directory.path().join("support.tar");
+        std::fs::write(&tar_path, &tar).unwrap();
+        let inventory = derive_component_inventory(
+            &RelativePath::new("runtime/support/joypad-autoconfig").unwrap(),
+            ArchiveFormat::Tar,
+            &tar_path,
+        )
+        .unwrap();
+
+        assert!(
+            inventory.iter().all(|entry| !entry.executable),
+            "read-only support data must not become executable"
+        );
     }
 
     #[test]

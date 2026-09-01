@@ -127,9 +127,10 @@ impl LaunchPaths {
         self.runtime_user_root.join("remaps")
     }
 
-    pub fn autoconfig_root(&self) -> PathBuf {
-        self.runtime_user_root.join("autoconfig")
-    }
+    // There is deliberately no writable `autoconfig` directory. Controller profiles are read-only
+    // managed support data, so `joypad_autoconfig_dir` names the verified immutable profile tree in
+    // the active runtime version instead. The private directory that used to be created here was
+    // always empty, which is precisely why the managed RetroArch could not configure a real pad.
 
     pub fn cache_root(&self) -> PathBuf {
         self.runtime_user_root.join("cache")
@@ -219,7 +220,6 @@ impl LaunchPaths {
             self.playlists_root(),
             self.history_root(),
             self.remaps_root(),
-            self.autoconfig_root(),
             self.cache_root(),
             self.thumbnails_root(),
             self.wallpapers_root(),

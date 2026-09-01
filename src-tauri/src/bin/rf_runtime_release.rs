@@ -10,14 +10,18 @@
 //!
 //! `build` verifies pinned inputs, derives every component artefact, emits the canonical release
 //! manifest and runtime policy, and proves the manifest by extracting it through the real client
-//! extractor. `publish` additionally signs a TUF 1.0 repository. `pin` reports the digests and
-//! lengths a maintainer needs when first introducing or refreshing a definition, and never edits
-//! the definition itself, so a pin change is always a reviewed commit.
+//! extractor. `publish` additionally signs a TUF 1.0 repository. `pin` reports both the cached
+//! upstream input digests and the digests of every *derived* component artefact a maintainer needs
+//! when first introducing or refreshing a definition, and never edits the definition itself, so a
+//! pin change is always a reviewed commit.
 //!
 //! No network access happens without a pinned HTTPS URL, and no downloaded byte is used before its
 //! length and SHA-256 match the definition.
 
-use retrofrontier_lib::release::construct::{construct_release, InputCache};
+use retrofrontier_lib::release::construct::{
+    construct_release, derive_component_artifact, InputCache,
+};
+use retrofrontier_lib::release::definition::ReleaseDefinition;
 use retrofrontier_lib::release::tuf::{publish_release, KeyDirectory};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -145,14 +149,18 @@ async fn run(arguments: Arguments) -> Result<(), String> {
 }
 
 /// Report the digests a maintainer needs to write a definition, without mutating it.
+///
+/// Two things need pinning and they are not the same: the *upstream input* bytes, and the *derived
+/// component artefact* bytes. Reporting only the former left a maintainer introducing a new
+/// derivation to discover the artefact pin by running `build` and reading its refusal, which is a
+/// guessing loop. Both are reported here, and neither is ever written back into the definition —
+/// a pin change stays a reviewed commit.
 async fn report_pins(arguments: &Arguments, cache: &InputCache) -> Result<(), String> {
-    // Constructing with intentionally wrong pins is not useful, so `pin` reports what it sees on
-    // disk in the input cache. A maintainer downloads once, inspects provenance, and commits the
-    // values by hand.
+    let mut any = false;
+
+    println!("cached inputs");
     let entries = std::fs::read_dir(&arguments.cache)
         .map_err(|error| format!("input cache is unreadable: {error}"))?;
-    let _ = cache;
-    let mut any = false;
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
         if !entry
@@ -165,7 +173,7 @@ async fn report_pins(arguments: &Arguments, cache: &InputCache) -> Result<(), St
         let bytes = std::fs::read(entry.path()).map_err(|error| error.to_string())?;
         let digest = retrofrontier_lib::release::canonical::sha256_hex(&bytes);
         println!(
-            "{:<36} {:>12}  {}",
+            "  {:<52} {:>12}  {}",
             entry.file_name().to_string_lossy(),
             bytes.len(),
             digest
@@ -177,6 +185,38 @@ async fn report_pins(arguments: &Arguments, cache: &InputCache) -> Result<(), St
             "no cached inputs found in {}",
             arguments.cache.display()
         ));
+    }
+
+    // Deriving needs the definition's inputs to be present and to match their own pins, which is
+    // exactly the state a maintainer is in after downloading and reviewing provenance.
+    let definition_bytes =
+        std::fs::read(&arguments.definition).map_err(|error| error.to_string())?;
+    let definition =
+        ReleaseDefinition::parse(&definition_bytes).map_err(|error| error.to_string())?;
+    println!("derived component artefacts");
+    for component in &definition.components {
+        let input = definition
+            .input(component.derivation.input())
+            .map_err(|error| error.to_string())?;
+        match derive_component_artifact(component, input, cache).await {
+            Ok(artifact) => {
+                let digest = retrofrontier_lib::release::canonical::sha256_hex(&artifact);
+                let matches = artifact.len() as u64 == component.artifact_size_bytes
+                    && digest == component.artifact_sha256.to_hex();
+                println!(
+                    "  {:<52} {:>12}  {}  {}",
+                    component.target_name,
+                    artifact.len(),
+                    digest,
+                    if matches {
+                        "matches pin"
+                    } else {
+                        "PIN MISMATCH"
+                    }
+                );
+            }
+            Err(error) => println!("  {:<52} unavailable: {error}", component.target_name),
+        }
     }
     Ok(())
 }

@@ -18,6 +18,16 @@ use std::collections::BTreeSet;
 
 pub const RELEASE_DEFINITION_SCHEMA_VERSION: u32 = 1;
 
+/// The committed *active* Linux x86_64 release definition, relative to the crate manifest.
+///
+/// Exactly one definition per platform is the build input. Superseded generations are kept beside
+/// it as historical records and are never built or published again.
+pub const ACTIVE_LINUX_DEFINITION: &str = "../release/linux-x86_64/runtime-release.json";
+
+/// Every superseded Linux x86_64 release generation, oldest first, relative to the crate manifest.
+pub const HISTORICAL_LINUX_DEFINITIONS: &[&str] =
+    &["../release/linux-x86_64/history/runtime-release-001.json"];
+
 /// The maximum accepted size of a release definition document.
 pub const MAX_DEFINITION_BYTES: u64 = 512 * 1024;
 
@@ -79,6 +89,18 @@ pub enum ComponentDerivation {
         input: SafeIdentifier,
         member: String,
     },
+    /// One named member of a 7z container is packaged as a deterministic single-entry tar.
+    ///
+    /// The official *version-addressed* RetroArch stable core bundle ships every libretro core as a
+    /// bare `.so` inside one 7z, so a core taken from it has no upstream archive of its own to
+    /// redistribute verbatim. Deriving a tar keeps the component a self-describing archive whose
+    /// installed layout is declared, rather than introducing a bare-file component format.
+    SevenZipMemberTar {
+        input: SafeIdentifier,
+        member: String,
+        /// The flat filename the member is installed as, inside the component's install path.
+        entry_name: String,
+    },
     /// One subtree of a zip is repackaged as a deterministic tar whose root is that subtree.
     ///
     /// Extraction never rewrites archive paths, so a support component whose upstream archive
@@ -94,6 +116,7 @@ impl ComponentDerivation {
         match self {
             Self::UpstreamFile { input }
             | Self::SevenZipMember { input, .. }
+            | Self::SevenZipMemberTar { input, .. }
             | Self::ZipSubtreeTar { input, .. } => input,
         }
     }
@@ -252,6 +275,96 @@ impl ReleaseDefinition {
                     ))
                 })?;
             }
+            if let ComponentDerivation::SevenZipMemberTar {
+                member, entry_name, ..
+            } = &component.derivation
+            {
+                RelativePath::new(member.clone()).map_err(|_| {
+                    RuntimeError::Manifest(format!(
+                        "component '{}' declares an unsafe 7z member",
+                        component.id
+                    ))
+                })?;
+                validate_target_name(entry_name).map_err(|_| {
+                    RuntimeError::Manifest(format!(
+                        "component '{}' declares an unsafe 7z member entry name",
+                        component.id
+                    ))
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The authenticated contents of this release: what a client actually ends up installing.
+    ///
+    /// Keyed by component id, valued by the target name and the pinned artefact identity, because
+    /// those three together are what TUF publishes and what the client verifies. Release-level
+    /// metadata is deliberately excluded — this answers "do two definitions ship the same bytes",
+    /// not "are two definitions textually equal".
+    pub fn authenticated_contents(&self) -> std::collections::BTreeMap<String, String> {
+        self.components
+            .iter()
+            .map(|component| {
+                (
+                    component.id.as_str().to_owned(),
+                    format!(
+                        "{}:sha256:{}:{}",
+                        component.target_name,
+                        component.artifact_sha256.to_hex(),
+                        component.artifact_size_bytes
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    /// Check that `self` is a legitimate successor of the already-published `previous` release.
+    ///
+    /// ADR-012 gives a Runtime Release an immutable id and a monotonically increasing sequence, and
+    /// makes the authenticated targets immutable. Those three rules have one consequence that is
+    /// easy to violate by editing a definition in place: changing what a release ships is not a
+    /// re-publication of that release, it is a *new* release. Both halves are enforced here.
+    ///
+    /// This is not the anti-rollback floor. `minimum_safe_release_sequence` is a security
+    /// revocation decision about a specific compromised or unsafe release, so it is deliberately
+    /// not raised just because a newer generation exists.
+    pub fn supersedes(&self, previous: &Self) -> Result<(), RuntimeError> {
+        if self.release_sequence <= previous.release_sequence {
+            return Err(RuntimeError::Manifest(format!(
+                "release '{}' has sequence {} which does not exceed the sequence {} of '{}'",
+                self.release_id,
+                self.release_sequence,
+                previous.release_sequence,
+                previous.release_id
+            )));
+        }
+        if self.authenticated_contents() == previous.authenticated_contents() {
+            return Ok(());
+        }
+        for (label, current, earlier) in [
+            (
+                "release id",
+                self.release_id.as_str(),
+                previous.release_id.as_str(),
+            ),
+            (
+                "manifest id",
+                self.manifest_id.as_str(),
+                previous.manifest_id.as_str(),
+            ),
+            (
+                "manifest target name",
+                self.manifest_target_name.as_str(),
+                previous.manifest_target_name.as_str(),
+            ),
+        ] {
+            if current == earlier {
+                return Err(RuntimeError::Manifest(format!(
+                    "authenticated contents changed but the {label} '{current}' is unchanged; \
+                     a new release generation is required"
+                )));
+            }
         }
         Ok(())
     }
@@ -280,6 +393,7 @@ fn validate_target_name(name: &str) -> Result<(), RuntimeError> {
 #[cfg(test)]
 mod tests {
     use super::{ReleaseDefinition, RELEASE_DEFINITION_SCHEMA_VERSION};
+    use crate::domain::runtime::ComponentKind;
 
     fn definition_json(mutate: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
         let mut value: serde_json::Value = serde_json::json!({
@@ -377,6 +491,273 @@ mod tests {
             value["minimum_safe_release_sequence"] = serde_json::json!(2);
         });
         assert!(ReleaseDefinition::parse(&regressed).is_err());
+    }
+
+    /// The committed Linux release definition is a reviewed artefact, so its shape is asserted
+    /// here rather than only being exercised by a maintainer running the construction tool.
+    ///
+    /// B2/B4: the managed controller-profile database is a pinned, authenticated component of the
+    /// release, taken from an immutable upstream revision, and no host RetroArch location appears
+    /// anywhere in the definition.
+    #[test]
+    fn the_committed_linux_definition_pins_the_managed_controller_profiles() {
+        let definition = active_definition();
+
+        let component = definition
+            .components
+            .iter()
+            .find(|component| component.id.as_str() == "joypad-autoconfig")
+            .expect("the release ships managed controller profiles");
+        assert_eq!(
+            component.kind,
+            crate::domain::runtime::ComponentKind::SupportAsset
+        );
+        assert_eq!(
+            component.install_path.as_str(),
+            "runtime/support/joypad-autoconfig"
+        );
+        assert!(component.executable_relative_path.is_none());
+        // An immutable upstream revision, not a rolling "latest" asset.
+        assert_eq!(
+            component.source_revision.as_deref(),
+            Some("38cf938bba0adbde375972053068f10d955a9d14")
+        );
+        assert_eq!(component.license, "MIT");
+        // The derived artefact is pinned by its own digest and length, not only the upstream input's.
+        assert!(component.artifact_size_bytes > 0);
+
+        let input = definition.input(component.derivation.input()).unwrap();
+        assert!(input
+            .url
+            .starts_with("https://codeload.github.com/libretro/retroarch-joypad-autoconfig/zip/"));
+        assert!(input
+            .url
+            .ends_with("38cf938bba0adbde375972053068f10d955a9d14"));
+        assert!(input.provenance.contains("libretro"));
+
+        // B4: no host RetroArch autoconfig location is a source for anything in this release.
+        for input in &definition.inputs {
+            for forbidden in [
+                "/usr/share/libretro/autoconfig",
+                "/.config/retroarch",
+                "/.local/share/retroarch",
+            ] {
+                assert!(!input.url.contains(forbidden), "{forbidden}");
+            }
+        }
+    }
+
+    fn read_definition(relative: &str) -> ReleaseDefinition {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+        ReleaseDefinition::parse(&std::fs::read(&path).unwrap())
+            .unwrap_or_else(|error| panic!("{relative} must parse: {error}"))
+    }
+
+    fn active_definition() -> ReleaseDefinition {
+        read_definition(super::ACTIVE_LINUX_DEFINITION)
+    }
+
+    /// R1 — changing what a release ships while keeping its identity is refused.
+    ///
+    /// This is the finding that produced Release 002: the managed controller-profile component
+    /// changed the authenticated contents while `rf-runtime-1.22.2-linux-x86_64-001`,
+    /// `release_sequence = 1`, and `rf-runtime-linux-x86_64-001.manifest.json` were left in place.
+    /// ADR-012 makes an authenticated Runtime Release target immutable, so that is a new
+    /// generation, not a re-publication.
+    #[test]
+    fn changed_contents_cannot_keep_the_previous_release_identity() {
+        let active = active_definition();
+        let previous = read_definition(super::HISTORICAL_LINUX_DEFINITIONS[0]);
+
+        assert_ne!(
+            active.authenticated_contents(),
+            previous.authenticated_contents(),
+            "Release 002 exists because its authenticated contents differ from Release 001"
+        );
+        active
+            .supersedes(&previous)
+            .expect("the committed active definition must be a legitimate successor");
+
+        // The exact defect: same identity, different contents.
+        let mut impostor = active.clone();
+        impostor.release_id = previous.release_id.clone();
+        impostor.manifest_id = previous.manifest_id.clone();
+        impostor.manifest_target_name = previous.manifest_target_name.clone();
+        impostor.release_sequence = previous.release_sequence + 1;
+        let error = impostor
+            .supersedes(&previous)
+            .expect_err("changed contents under a published identity must be refused");
+        assert!(
+            format!("{error}").contains("release id"),
+            "unexpected error: {error}"
+        );
+
+        // One changed component pin is enough; it does not take a whole new component.
+        let mut repinned = previous.clone();
+        repinned.release_sequence += 1;
+        repinned.components[1].artifact_sha256 =
+            crate::domain::runtime::Sha256Digest::from_hex(&"c".repeat(64)).unwrap();
+        assert!(repinned.supersedes(&previous).is_err());
+
+        // Republishing byte-identical contents under the same identity is not what this forbids.
+        let mut reissued = previous.clone();
+        reissued.release_sequence += 1;
+        reissued.supersedes(&previous).unwrap();
+    }
+
+    /// R2 — a new generation must advance the release sequence.
+    #[test]
+    fn a_new_release_sequence_must_exceed_the_previous_one() {
+        let active = active_definition();
+        let previous = read_definition(super::HISTORICAL_LINUX_DEFINITIONS[0]);
+
+        assert!(
+            active.release_sequence > previous.release_sequence,
+            "the active definition must advance the sequence"
+        );
+
+        for regressed in [previous.release_sequence, previous.release_sequence - 1] {
+            let mut candidate = active.clone();
+            candidate.release_sequence = regressed;
+            candidate.minimum_safe_release_sequence = regressed;
+            let error = candidate
+                .supersedes(&previous)
+                .expect_err("a non-advancing sequence must be refused");
+            assert!(
+                format!("{error}").contains("does not exceed"),
+                "unexpected error: {error}"
+            );
+        }
+
+        // The anti-rollback floor is a security decision, not a version selector, so a new
+        // generation on its own must not raise it. Release 001 is superseded, not revoked.
+        assert_eq!(
+            active.minimum_safe_release_sequence, previous.minimum_safe_release_sequence,
+            "minimum_safe_release_sequence is an anti-rollback floor and needs its own decision"
+        );
+    }
+
+    /// R3 — no rolling core input may reach the active release definition.
+    ///
+    /// The four `buildbot.libretro.com/nightly/linux/x86_64/latest/` core URLs Release 001 pinned
+    /// had already been rotated upstream, which made a committed, published release impossible to
+    /// reconstruct. Re-pinning a rolling URL only resets the clock, so the active definition must
+    /// name no rolling path at all.
+    #[test]
+    fn the_active_definition_pins_no_rolling_upstream_url() {
+        let active = active_definition();
+        for input in &active.inputs {
+            for rolling in ["/nightly/", "/latest/"] {
+                assert!(
+                    !input.url.contains(rolling),
+                    "input '{}' pins the rolling path '{rolling}': {}",
+                    input.id,
+                    input.url
+                );
+            }
+        }
+
+        // Every core is derived from the version-addressed stable bundle for the pinned RetroArch
+        // version, so the core bytes are addressed by that version rather than by a moving pointer.
+        let bundle = "https://buildbot.libretro.com/stable/1.22.2/linux/x86_64/RetroArch_cores.7z";
+        for component in &active.components {
+            if component.kind != ComponentKind::Core {
+                continue;
+            }
+            let input = active.input(component.derivation.input()).unwrap();
+            assert_eq!(
+                input.url, bundle,
+                "core '{}' must come from the version-addressed stable bundle",
+                component.id
+            );
+            assert!(
+                matches!(
+                    component.derivation,
+                    super::ComponentDerivation::SevenZipMemberTar { .. }
+                ),
+                "core '{}' must be derived from a named bundle member",
+                component.id
+            );
+        }
+    }
+
+    /// R4 — the active release must be complete, `joypad-autoconfig` included.
+    ///
+    /// A release built without the managed controller-profile component installs a runtime whose
+    /// controller does not work inside RetroArch, which is the M8 acceptance blocker.
+    #[test]
+    fn the_active_definition_declares_every_required_component() {
+        let active = active_definition();
+        let declared: Vec<&str> = active
+            .components
+            .iter()
+            .map(|component| component.id.as_str())
+            .collect();
+        assert_eq!(
+            declared,
+            vec![
+                "retroarch",
+                "nestopia",
+                "bsnes-mercury-balanced",
+                "beetle-psx",
+                "dolphin",
+                "dolphin-sys",
+                "joypad-autoconfig",
+            ]
+        );
+    }
+
+    /// R5 — qualification must select the active manifest, never a superseded one.
+    ///
+    /// The manifest target is chosen by `RETROFRONTIER_RUNTIME_MANIFEST_TARGET`, so the documented
+    /// qualification configuration *is* the selection. A superseded target name left behind there
+    /// sends an operator's requalification at the old release.
+    #[test]
+    fn every_documented_qualification_target_is_the_active_manifest() {
+        let active = active_definition();
+        let superseded: Vec<String> = super::HISTORICAL_LINUX_DEFINITIONS
+            .iter()
+            .map(|path| read_definition(path).manifest_target_name)
+            .collect();
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let sources = [
+            "src/release/qualification.rs",
+            "../docs/M7_5_RUNTIME_QUALIFICATION.md",
+            "../docs/M8_FINAL_HARDWARE_INPUT_REPORT.md",
+        ];
+        let variable = crate::adapters::runtime_release_source::MANIFEST_TARGET_VARIABLE;
+        let mut found = 0_usize;
+        for source in sources {
+            let text = std::fs::read_to_string(root.join(source))
+                .unwrap_or_else(|error| panic!("{source} must be readable: {error}"));
+            for line in text.lines() {
+                let Some((_, selected)) = line.split_once(&format!("{variable}=")) else {
+                    continue;
+                };
+                // Shell snippets continue lines with a trailing backslash, and Markdown quotes
+                // values in backticks; neither is part of the selected target name.
+                let selected = selected
+                    .trim()
+                    .trim_end_matches('\\')
+                    .trim()
+                    .trim_matches('`')
+                    .trim_matches('"');
+                assert_eq!(
+                    selected, active.manifest_target_name,
+                    "{source} selects '{selected}' rather than the active manifest"
+                );
+                assert!(
+                    !superseded.iter().any(|name| name == selected),
+                    "{source} still selects the superseded manifest '{selected}'"
+                );
+                found += 1;
+            }
+        }
+        assert!(
+            found >= 2,
+            "the qualification selection must stay documented; found {found} occurrences"
+        );
     }
 
     #[test]

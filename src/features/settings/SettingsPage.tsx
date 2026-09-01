@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { InlineError } from '../../components/ui/InlineError';
+import { useFocusNode, useFocusScope } from '../../focus/focusContext';
+import { focusNodes, focusScopes } from '../../focus/focusNodes';
 import { PixelButton } from '../../components/ui/PixelButton';
 import { ExternalLinkIcon, FolderIcon, PixelArrow } from '../../components/ui/PixelIcon';
 import { useManagedRuntime } from '../../hooks/useManagedRuntime';
@@ -83,6 +85,17 @@ function RootCard({
 }) {
   const managed = root.kind === 'managed';
   const enabled = root.enabled && root.availability !== 'disabled';
+  // The confirmation owns focus while it is open: navigation stays inside it and `back` cancels.
+  // Entry and exit focus stay with this screen's existing, already-verified behaviour.
+  const removalScopeRef = useFocusScope({
+    id: focusScopes.rootRemoval(root.id),
+    dismissLabel: 'CANCEL',
+    initialFocus: 'none',
+    restore: 'none',
+    onDismiss: () => {
+      if (!busy) onCancelRemoval();
+    },
+  });
   return (
     <article className={`root-card${managed ? ' root-card--managed' : ''}`}>
       <div className="root-card-heading">
@@ -112,6 +125,7 @@ function RootCard({
         ) : removalPending ? (
           <div
             className="root-confirm-actions"
+            ref={removalScopeRef}
             role="alertdialog"
             aria-modal="false"
             aria-labelledby={`remove-root-title-${root.id}`}
@@ -171,6 +185,17 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
   const focusClearTrigger = useRef(false);
   const status = provider.providerStatus;
   const [now, setNow] = useState(() => Date.now());
+  const clearScopeRef = useFocusScope({
+    id: focusScopes.metadataAccountClear,
+    dismissLabel: 'CANCEL',
+    initialFocus: 'none',
+    restore: 'none',
+    onDismiss: () => {
+      if (provider.credentialsPending) return;
+      focusClearTrigger.current = true;
+      setConfirmingClear(false);
+    },
+  });
   const statusCopy = status ? providerStatusCopy(status, now) : null;
   const deferCopy =
     status && hasActiveProviderDeferral(status, now) && status.deferReason !== null
@@ -384,6 +409,7 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
                   aria-describedby="metadata-clear-account-copy"
                   aria-labelledby="metadata-clear-account-title"
                   className="metadata-clear-confirmation"
+                  ref={clearScopeRef}
                   onKeyDown={(event) => {
                     if (event.key === 'Escape' && !provider.credentialsPending) {
                       event.preventDefault();
@@ -477,6 +503,7 @@ export function SettingsPage({
   const [lastOperation, setLastOperation] = useState<RootOperation | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const rootsHeading = useRef<HTMLHeadingElement>(null);
+  const settingsHeadingRef = useFocusNode({ id: focusNodes.settings('heading') });
   const confirmationButton = useRef<HTMLButtonElement>(null);
   const removeTriggers = useRef(new Map<number, HTMLButtonElement>());
 
@@ -551,7 +578,10 @@ export function SettingsPage({
           BACK TO LIBRARY
         </PixelButton>
         <div className="section-heading">
-          <h1 id="settings-heading">
+          {/* A programmatic focus target only, exactly like the Library heading: it is the
+              deterministic Settings fallback for a focus return, and directional movement never
+              lands on it. */}
+          <h1 id="settings-heading" ref={settingsHeadingRef} tabIndex={-1}>
             <PixelArrow className="heading-arrow" />
             SETTINGS
           </h1>

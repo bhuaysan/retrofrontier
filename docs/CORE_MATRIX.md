@@ -9,11 +9,13 @@ unresolved row until the research below has produced an approved managed core, s
 platform review.
 
 Resolved policy is *not* the same as an available core, but as of M7.5 all four resolved rows are
-**built, installable, and verified**: `rf-runtime-1.22.2-linux-x86_64-001` ships every one of them
-as an authenticated component, and readiness reports the approved default core as available once
-RuntimeManager has verified that installation. See
-[`docs/M7_5_RUNTIME_QUALIFICATION.md`](M7_5_RUNTIME_QUALIFICATION.md) for the exact artefacts,
-digests, and licences.
+**built, installable, and verified**: the active `rf-runtime-1.22.2-linux-x86_64-002` ships every one
+of them as an authenticated component, and readiness reports the approved default core as available
+once RuntimeManager has verified that installation. See
+[`docs/M7_5_RUNTIME_QUALIFICATION.md`](M7_5_RUNTIME_QUALIFICATION.md) for the original Release 001
+artefacts and licences, and
+[`docs/M8_FINAL_HARDWARE_INPUT_REPORT.md`](M8_FINAL_HARDWARE_INPUT_REPORT.md) for the Release 002
+digests and the immutable core source they now come from.
 
 RetroFrontier still has no *public production* Runtime Release source, TUF root, or hosting
 decision (ADR-012); those remain M10 gates. A build without a configured release source reports the
@@ -60,10 +62,14 @@ authoritative identity source for these dumps.
 
 Every resolved core is a separately identified TUF target in the Linux x86_64 release. Exact
 upstream sources, artefact digests, sizes, and licences are recorded in
-[`release/linux-x86_64/runtime-release.json`](../release/linux-x86_64/runtime-release.json) and
-tabulated in [`docs/M7_5_RUNTIME_QUALIFICATION.md`](M7_5_RUNTIME_QUALIFICATION.md). All four were
-re-verified against upstream on 2026-08-30; no core was substituted, and every upstream project
-listed above is unchanged.
+[`release/linux-x86_64/runtime-release.json`](../release/linux-x86_64/runtime-release.json).
+
+As of Release 002 all four cores are derived from the single version-addressed
+`buildbot.libretro.com/stable/1.22.2/linux/x86_64/RetroArch_cores.7z` bundle rather than from four
+rolling nightly URLs, so the release stays reconstructable. No core was substituted and every
+upstream project listed above is unchanged, but the **binaries did change**: the stable 1.22.2 build
+of a core is not byte-identical to the nightly build Release 001 shipped. The old and new digests are
+compared in [`docs/M8_FINAL_HARDWARE_INPUT_REPORT.md`](M8_FINAL_HARDWARE_INPUT_REPORT.md).
 
 | Managed component | Installed at | Executable |
 |---|---|---|

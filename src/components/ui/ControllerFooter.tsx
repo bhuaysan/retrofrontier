@@ -1,0 +1,69 @@
+import { useFocusActionRevision, useFocusApi, useFocusedNodeId } from '../../focus/focusContext';
+import { deriveFooterHints, NO_SUPPORTED_ACTIONS } from '../../focus/footerHints';
+
+interface ControllerFooterProps {
+  /** The existing shell status line. */
+  status: string;
+  /** False while a managed game or another window owns input; no action may be claimed then. */
+  interactive: boolean;
+  controllerConnected: boolean;
+  /** A pad is attached whose mapping RetroFrontier cannot interpret, so it is not usable here. */
+  controllerUnsupported?: boolean;
+  /** True while a managed game is running, which is why RetroFrontier is not consuming input. */
+  gameRunning: boolean;
+}
+
+/**
+ * The shell footer.
+ *
+ * Hints are derived from the focus model — the focused node's declared actions and the active
+ * scope's back behaviour — never hard-coded per page. An action that the current focus target does
+ * not support is simply absent, so the footer cannot claim a button does something it does not.
+ */
+export function ControllerFooter({
+  status,
+  interactive,
+  controllerConnected,
+  controllerUnsupported = false,
+  gameRunning,
+}: ControllerFooterProps) {
+  const api = useFocusApi();
+  // Subscribing to the focused identity re-renders the footer as focus moves; subscribing to the
+  // action revision re-renders it when the *state* behind those actions changed while the focused
+  // identity stayed the same — a card toggling SELECT/DESELECT, a scope opening, Play going
+  // disabled. Without it a hint could describe an action the focused node no longer supports.
+  useFocusedNodeId();
+  useFocusActionRevision();
+  const hints = deriveFooterHints(interactive ? api.getSupportedActions() : NO_SUPPORTED_ACTIONS);
+
+  return (
+    <footer className="app-footer">
+      <span>LOCAL LIBRARY</span>
+      <span aria-hidden="true">·</span>
+      <span>{status}</span>
+      <span className="footer-spacer" />
+      {gameRunning ? (
+        <span className="footer-note">RETROARCH HAS CONTROLLER INPUT</span>
+      ) : (
+        <ul aria-label="Controller actions" className="footer-hints">
+          {hints.map((hint) => (
+            <li className="footer-hint" key={hint.action}>
+              <span aria-hidden="true" className="footer-hint-button">
+                {hint.button}
+              </span>
+              <span className="visually-hidden">Button {hint.button}:</span>
+              <span className="footer-hint-label">{hint.label}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <span className="footer-note">
+        {controllerConnected
+          ? 'CONTROLLER CONNECTED'
+          : controllerUnsupported
+            ? 'CONTROLLER NOT SUPPORTED'
+            : 'ROM files stay on your disk'}
+      </span>
+    </footer>
+  );
+}

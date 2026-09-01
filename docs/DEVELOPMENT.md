@@ -30,6 +30,16 @@ PlayStation, and GameCube, authoritative PlayStation BIOS identities, a semantic
 child environment, durable managed-process identity, play sessions, per-game core overrides, and the
 Game Detail Play interaction. See [`docs/RETROARCH_LAUNCH.md`](RETROARCH_LAUNCH.md).
 
+M8 adds controller and keyboard navigation with a deterministic focus lifecycle: a semantic action
+vocabulary, a keyboard adapter and a browser Gamepad API adapter behind one replaceable acquisition
+boundary, a focus registry keyed by stable semantic identities, geometry-derived spatial navigation
+for the responsive grid, temporary focus scopes, focus hints derived from the focus model rather
+than hard-coded per page, and conservative focus ownership around a managed game. RetroFrontier
+stops consuming controller input while its window is unfocused or while RetroArch is authoritative,
+and asks for the foreground exactly once when the backend reports the game ended. See
+[`docs/CONTROLLER_AND_FOCUS.md`](CONTROLLER_AND_FOCUS.md) and
+[ADR-014](adr/ADR-014-input-acquisition-boundary.md).
+
 ## Prerequisites
 
 - Node.js 22 LTS

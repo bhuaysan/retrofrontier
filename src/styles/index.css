@@ -59,8 +59,18 @@ button {
   color: inherit;
 }
 
+/* A6 V5 focus language, extended to controller-driven focus.
+   The focus-visible pseudo-class is a keyboard and pointer heuristic: the Gamepad API produces no
+   input events, so a browser cannot know that a controller moved focus and would leave the accepted
+   focus states invisible. Every A6 focus rule therefore carries a companion selector applying the
+   very same declarations while data-input-mode="controller" is set on the document. No new focus
+   visual, no focus ring, and no new token is introduced — only the condition under which the
+   accepted ones apply. The attribute is set by the focus coordinator and reverts on the next
+   keyboard or pointer interaction. */
 button:focus-visible,
-a:focus-visible {
+a:focus-visible,
+[data-input-mode='controller'] button:focus,
+[data-input-mode='controller'] a:focus {
   outline: none;
 }
 
@@ -121,7 +131,8 @@ a:focus-visible {
   color: var(--accent-2);
 }
 
-.wordmark:focus-visible {
+.wordmark:focus-visible,
+[data-input-mode='controller'] .wordmark:focus {
   color: var(--bg);
   background: var(--text);
 }
@@ -161,7 +172,9 @@ a:focus-visible {
 }
 
 .theme-option:hover,
-.theme-option:focus-visible {
+.theme-option:focus-visible,
+[data-input-mode='controller'] .theme-option:hover,
+[data-input-mode='controller'] .theme-option:focus {
   color: var(--bg);
   background: var(--text);
 }
@@ -227,7 +240,9 @@ a:focus-visible {
 }
 
 .library-search button:hover,
-.library-search button:focus-visible {
+.library-search button:focus-visible,
+[data-input-mode='controller'] .library-search button:hover,
+[data-input-mode='controller'] .library-search button:focus {
   color: var(--bg);
   background: var(--text);
 }
@@ -534,7 +549,8 @@ a:focus-visible {
   box-shadow: 1px 1px 0 var(--shadow);
 }
 
-.pixel-button:focus-visible {
+.pixel-button:focus-visible,
+[data-input-mode='controller'] .pixel-button:focus {
   color: var(--bg);
   background: var(--text);
   transform: translate(-1px, -1px);
@@ -686,7 +702,9 @@ a:focus-visible {
 }
 
 .text-link:hover,
-.text-link:focus-visible {
+.text-link:focus-visible,
+[data-input-mode='controller'] .text-link:hover,
+[data-input-mode='controller'] .text-link:focus {
   color: var(--bg);
   background: var(--text);
 }
@@ -1381,6 +1399,43 @@ a:focus-visible {
   color: var(--text-dim);
 }
 
+/* Controller footer hints. They are derived from the focused node's declared actions, so the list
+   is empty whenever the focus target supports nothing — the footer never claims a button works. */
+.footer-hints {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.footer-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+}
+
+.footer-hint-button {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: var(--bg);
+  font-family: var(--font-label);
+  font-size: 9px;
+  background: var(--text);
+  border: 2px solid var(--border);
+}
+
+.footer-hint-label {
+  font-family: var(--font-meta);
+  font-size: 18px;
+  letter-spacing: 0.02em;
+}
+
 .library-browser {
   display: flex;
   flex-direction: column;
@@ -1439,7 +1494,9 @@ a:focus-visible {
 }
 
 .library-selection-clear:hover,
-.library-selection-clear:focus-visible {
+.library-selection-clear:focus-visible,
+[data-input-mode='controller'] .library-selection-clear:hover,
+[data-input-mode='controller'] .library-selection-clear:focus {
   color: var(--bg);
   background: var(--text);
   transform: translate(-1px, -1px);
@@ -1492,7 +1549,11 @@ a:focus-visible {
 .library-filter:hover,
 .library-filter:focus-visible,
 .library-filter-reset:hover,
-.library-filter-reset:focus-visible {
+.library-filter-reset:focus-visible,
+[data-input-mode='controller'] .library-filter:hover,
+[data-input-mode='controller'] .library-filter:focus,
+[data-input-mode='controller'] .library-filter-reset:hover,
+[data-input-mode='controller'] .library-filter-reset:focus {
   color: var(--bg);
   background: var(--text);
   transform: translate(-1px, -1px);
@@ -1681,7 +1742,8 @@ a:focus-visible {
 
 /* A6 V5 rule 3 — the image card zooms only for "open this game". Focusing the standalone selection
    control inverts that control instead (rule 2), so the two focus targets stay distinguishable. */
-.game-card:has(.game-card-title-link:focus-visible) {
+.game-card:has(.game-card-title-link:focus-visible),
+[data-input-mode='controller'] .game-card:has(.game-card-title-link:focus) {
   z-index: 2;
   box-shadow: var(--shadow-focus);
   transform: scale(1.08);
@@ -1780,17 +1842,22 @@ a:focus-visible {
    Keyboard focus stays distinguishable from the selected fill, and it must not trigger the card's
    rule-3 detail zoom, which is scoped to the detail anchor alone. */
 .game-card-select:hover,
-.game-card-select:focus-visible {
+.game-card-select:focus-visible,
+[data-input-mode='controller'] .game-card-select:hover,
+[data-input-mode='controller'] .game-card-select:focus {
   background: var(--text);
 }
 
-.game-card-select:focus-visible {
+.game-card-select:focus-visible,
+[data-input-mode='controller'] .game-card-select:focus {
   transform: translate(-1px, -1px);
   box-shadow: 3px 3px 0 var(--shadow);
 }
 
 .game-card-select[aria-pressed='true']:hover,
-.game-card-select[aria-pressed='true']:focus-visible {
+.game-card-select[aria-pressed='true']:focus-visible,
+[data-input-mode='controller'] .game-card-select[aria-pressed='true']:hover,
+[data-input-mode='controller'] .game-card-select[aria-pressed='true']:focus {
   color: var(--bg);
 }
 
@@ -1814,7 +1881,11 @@ a:focus-visible {
 .game-card-title-link,
 .game-card-title-link:visited,
 .game-card-title-link:hover,
-.game-card-title-link:focus-visible {
+.game-card-title-link:focus-visible,
+[data-input-mode='controller'] .game-card-title-link,
+[data-input-mode='controller'] .game-card-title-link:visited,
+[data-input-mode='controller'] .game-card-title-link:hover,
+[data-input-mode='controller'] .game-card-title-link:focus {
   display: block;
   overflow: hidden;
   color: var(--text);
@@ -1914,7 +1985,9 @@ a:focus-visible {
 }
 
 .game-detail-back:hover,
-.game-detail-back:focus-visible {
+.game-detail-back:focus-visible,
+[data-input-mode='controller'] .game-detail-back:hover,
+[data-input-mode='controller'] .game-detail-back:focus {
   color: var(--bg);
   background: var(--text);
   transform: translate(-1px, -1px);
@@ -2047,7 +2120,9 @@ a:focus-visible {
    A focused heading instead gets the same accent underline the rest of Detail already uses for
    status emphasis: perceivable, design-consistent, and not a control affordance. */
 .game-detail-title:focus-visible,
-.game-detail-section-heading h2:focus-visible {
+.game-detail-section-heading h2:focus-visible,
+[data-input-mode='controller'] .game-detail-title:focus,
+[data-input-mode='controller'] .game-detail-section-heading h2:focus {
   outline: none;
   text-decoration: underline;
   text-decoration-color: var(--accent-3);
@@ -2156,7 +2231,9 @@ a:focus-visible {
 }
 
 .game-detail-play:hover:not(:disabled),
-.game-detail-play:focus-visible {
+.game-detail-play:focus-visible,
+[data-input-mode='controller'] .game-detail-play:hover:not(:disabled),
+[data-input-mode='controller'] .game-detail-play:focus {
   transform: translate(-1px, -1px);
   box-shadow: 4px 4px 0 var(--shadow);
 }
@@ -2233,7 +2310,9 @@ a:focus-visible {
 }
 
 .game-detail-launch-selection li button:hover,
-.game-detail-launch-selection li button:focus-visible {
+.game-detail-launch-selection li button:focus-visible,
+[data-input-mode='controller'] .game-detail-launch-selection li button:hover,
+[data-input-mode='controller'] .game-detail-launch-selection li button:focus {
   color: var(--bg);
   background: var(--text);
 }
@@ -2263,7 +2342,9 @@ a:focus-visible {
 }
 
 .game-detail-favorite:hover:not([aria-busy='true']),
-.game-detail-favorite:focus-visible {
+.game-detail-favorite:focus-visible,
+[data-input-mode='controller'] .game-detail-favorite:hover:not([aria-busy='true']),
+[data-input-mode='controller'] .game-detail-favorite:focus {
   color: var(--bg);
   background: var(--text);
   transform: translate(-1px, -1px);
@@ -2818,7 +2899,9 @@ a:focus-visible {
   }
 
   .mobile-nav-link:hover,
-  .mobile-nav-link:focus-visible {
+  .mobile-nav-link:focus-visible,
+  [data-input-mode='controller'] .mobile-nav-link:hover,
+  [data-input-mode='controller'] .mobile-nav-link:focus {
     color: var(--bg);
     background: var(--text);
   }

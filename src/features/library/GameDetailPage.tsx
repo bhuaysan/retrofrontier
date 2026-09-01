@@ -2,7 +2,10 @@ import { useEffect, useRef, type CSSProperties, type ReactNode, type RefObject }
 
 import { InlineError } from '../../components/ui/InlineError';
 import { PixelButton } from '../../components/ui/PixelButton';
-import { PixelArrow, PixelStar } from '../../components/ui/PixelIcon';
+import { PixelArrow, PixelStar, WarningIcon } from '../../components/ui/PixelIcon';
+import { FocusScope } from '../../focus/FocusProvider';
+import { useFocusApi, useFocusNode, useFocusScope } from '../../focus/focusContext';
+import { focusNodes, focusScopes } from '../../focus/focusNodes';
 import { getMetadataAction, hasSelectableCandidates, metadataStateCopy } from './metadataActions';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
 import type { GameLaunchModel } from '../../hooks/useGameLaunch';
@@ -251,6 +254,10 @@ function metadataOperationPendingLabel(kind: GameDetailModel['metadataActionKind
 }
 
 function BackToLibrary({ onBackToLibrary }: { onBackToLibrary: () => void }) {
+  const focusRef = useFocusNode({
+    id: focusNodes.detail('back'),
+    confirm: { label: 'LIBRARY' },
+  });
   return (
     <a
       className="game-detail-back"
@@ -259,6 +266,7 @@ function BackToLibrary({ onBackToLibrary }: { onBackToLibrary: () => void }) {
         event.preventDefault();
         onBackToLibrary();
       }}
+      ref={focusRef}
     >
       <PixelArrow direction="left" />
       <span>BACK TO LIBRARY</span>
@@ -445,23 +453,55 @@ function MetadataCandidates({
                   <span>{date}</span>
                 </div>
               </div>
-              <PixelButton
-                aria-busy={selectingCandidate || undefined}
-                aria-pressed={selected}
-                aria-label={`${selectingCandidate ? 'Selecting' : 'Select'} ${candidate.title} candidate ${index + 1}`}
-                className="metadata-candidate-action"
-                disabled={detail.metadataActionPending}
-                onClick={() => void detail.selectMetadataCandidate(candidate.providerGameId)}
-                type="button"
-                variant={selected ? 'primary' : 'secondary'}
-              >
-                {selectingCandidate ? 'SELECTING…' : selected ? 'SELECTED' : 'SELECT'}
-              </PixelButton>
+              <MetadataCandidateAction
+                busy={selectingCandidate}
+                detail={detail}
+                index={index}
+                providerGameId={candidate.providerGameId}
+                selected={selected}
+                title={candidate.title}
+              />
             </li>
           );
         })}
       </ul>
     </div>
+  );
+}
+
+function MetadataCandidateAction({
+  busy,
+  detail,
+  index,
+  providerGameId,
+  selected,
+  title,
+}: {
+  busy: boolean;
+  detail: GameDetailModel;
+  index: number;
+  providerGameId: string;
+  selected: boolean;
+  title: string;
+}) {
+  const focusRef = useFocusNode({
+    id: focusNodes.detailCandidate(providerGameId),
+    confirm: detail.metadataActionPending ? null : { label: 'SELECT MATCH' },
+  });
+  return (
+    <PixelButton
+      aria-busy={busy || undefined}
+      aria-pressed={selected}
+      aria-label={`${busy ? 'Selecting' : 'Select'} ${title} candidate ${index + 1}`}
+      className="metadata-candidate-action"
+      disabled={detail.metadataActionPending}
+      onClick={() => void detail.selectMetadataCandidate(providerGameId)}
+      ref={focusRef}
+      type="button"
+      variant={selected ? 'primary' : 'secondary'}
+    >
+      {busy ? 'SELECTING…' : selected ? 'SELECTED' : 'SELECT'}
+    </PixelButton>
   );
 }
 
@@ -483,6 +523,15 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
   const userConfirmed =
     metadataState?.userSelection !== null && metadataState?.userSelection !== undefined;
   const sourceCredit = metadataState?.metadata?.provenance.sourceCredit ?? null;
+
+  const metadataActionRef = useFocusNode({
+    id: focusNodes.detail('metadata-action'),
+    confirm: detail.metadataActionPending ? null : { label: action?.label ?? 'METADATA' },
+  });
+  const forgetSelectionRef = useFocusNode({
+    id: focusNodes.detail('metadata-forget'),
+    confirm: detail.metadataActionPending ? null : { label: 'FORGET CHOICE' },
+  });
 
   const runMetadataAction = () => {
     if (!action) return;
@@ -551,6 +600,7 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
             aria-busy={detail.metadataActionPending}
             disabled={detail.metadataActionPending || detail.metadataLoading}
             onClick={runMetadataAction}
+            ref={metadataActionRef}
             type="button"
             variant="secondary"
           >
@@ -582,6 +632,7 @@ function MetadataSection({ detail }: { detail: GameDetailModel }) {
           <PixelButton
             disabled={detail.metadataActionPending}
             onClick={() => void detail.clearMetadataSelection()}
+            ref={forgetSelectionRef}
             type="button"
             variant="secondary"
           >
@@ -601,6 +652,99 @@ function contentOptionLabel(option: LaunchContentOption) {
   return `${option.localTitle} · ${contentKindLabel(option.kind)} · ${formatFileCount(option.fileCount)}`;
 }
 
+function LaunchContentOptionAction({
+  onConfirm,
+  option,
+}: {
+  onConfirm: (contentUnitId: number) => void;
+  option: LaunchContentOption;
+}) {
+  const focusRef = useFocusNode({
+    id: focusNodes.launchContent(option.contentUnitId),
+    confirm: { label: 'PLAY VERSION' },
+  });
+  return (
+    <button onClick={() => onConfirm(option.contentUnitId)} ref={focusRef} type="button">
+      {contentOptionLabel(option)}
+    </button>
+  );
+}
+
+function CancelContentSelection({ onCancel }: { onCancel: () => void }) {
+  const focusRef = useFocusNode({
+    id: focusNodes.detail('cancel-content-selection'),
+    confirm: { label: 'CANCEL' },
+  });
+  return (
+    <button className="text-link" onClick={onCancel} ref={focusRef} type="button">
+      CANCEL
+    </button>
+  );
+}
+
+/**
+ * The launch-failure surface.
+ *
+ * A normalized launch failure is a temporary surface with the same requirements as the
+ * content-selection one, so it gets the same treatment rather than being a bare `InlineError` that
+ * leaves focus wherever the pending launch happened to drop it: DISMISS receives entry focus,
+ * `confirm` and `back` both dismiss, directional movement stays inside, and a controller cannot
+ * reach through it to activate the screen underneath. `InlineError` itself is untouched, because
+ * every other screen that uses it has no M8 requirement here.
+ *
+ * Restoration is explicit rather than delegated to the scope's automatic restore. Dismissal is a
+ * user action, so at that moment the route is certainly still current and PLAY is certainly the
+ * honest target — with the Back action as the truthful fallback when PLAY cannot take focus. An
+ * *unmount* is a different thing entirely: if the user navigated away before dismissing, the old
+ * route must not be dragged back, so nothing is restored on unmount at all.
+ */
+function LaunchFailureNotice({ launch }: { launch: GameLaunchModel }) {
+  const api = useFocusApi();
+  const failure = launch.failure;
+  const dismiss = () => {
+    // Ordered deliberately: focus first, while PLAY is still mounted and enabled, then dismiss.
+    api.requestFocus(focusNodes.detail('play'), {
+      fallback: focusNodes.detail('back'),
+      resolveOnRegister: true,
+    });
+    launch.dismissFailure();
+  };
+  const scopeRef = useFocusScope({
+    id: focusScopes.launchFailure,
+    dismissLabel: 'DISMISS',
+    onDismiss: dismiss,
+    restore: 'none',
+  });
+  if (failure === null) return null;
+  const hint = launchFailureHint(failure.code);
+  return (
+    <FocusScope id={focusScopes.launchFailure}>
+      <aside aria-label="Launch failed" className="inline-error" ref={scopeRef} role="group">
+        <WarningIcon className="inline-error-icon" />
+        {/* The alert stays on the copy, so the title and the message are still announced together
+            exactly as the shared `InlineError` announced them. */}
+        <div className="inline-error-copy" role="alert">
+          <strong>{launchFailureTitle(failure.code)}</strong>
+          <p>{[failure.message, hint].filter(Boolean).join(' ')}</p>
+        </div>
+        <LaunchFailureDismiss onDismiss={dismiss} />
+      </aside>
+    </FocusScope>
+  );
+}
+
+function LaunchFailureDismiss({ onDismiss }: { onDismiss: () => void }) {
+  const focusRef = useFocusNode({
+    id: focusNodes.detail('dismiss-launch-failure'),
+    confirm: { label: 'DISMISS' },
+  });
+  return (
+    <PixelButton onClick={onDismiss} ref={focusRef} type="button" variant="secondary">
+      DISMISS
+    </PixelButton>
+  );
+}
+
 /**
  * The M7 Play action.
  *
@@ -617,21 +761,75 @@ function LaunchAction({
   launch: GameLaunchModel;
   title: string;
 }) {
+  const api = useFocusApi();
   const runningThisGame = launch.running?.gameId === gameId;
   const runningAnotherGame = launch.running !== null && !runningThisGame;
   const pending = launch.pendingGameId === gameId;
-  const disabled = pending || launch.running !== null || launch.blocked;
+  // Only one frontend launch request may be unresolved at a time, so a request belonging to *another*
+  // game refuses this control too. Keying availability on `pendingGameId === gameId` alone let a
+  // second request be issued from a different Game Detail before the first had resolved.
+  const anotherLaunchPending = launch.pendingGameId !== null && !pending;
+  const disabled = pending || anotherLaunchPending || launch.running !== null || launch.blocked;
   const label = runningThisGame
     ? 'RUNNING'
     : pending
       ? 'LAUNCHING…'
-      : runningAnotherGame
-        ? 'ANOTHER GAME IS RUNNING'
-        : 'PLAY';
+      : anotherLaunchPending
+        ? 'ANOTHER GAME IS LAUNCHING'
+        : runningAnotherGame
+          ? 'ANOTHER GAME IS RUNNING'
+          : 'PLAY';
+  // Play is also the target a return from RetroArch restores, so it keeps its identity even while
+  // it is disabled; the footer stops offering `confirm` for it in that state.
+  const playRef = useFocusNode({
+    id: focusNodes.detail('play'),
+    confirm: disabled ? null : { label: 'PLAY' },
+  });
+  /**
+   * Cancelling the version selection.
+   *
+   * Focus is requested *before* the surface closes, while Play is still mounted and enabled, so the
+   * request resolves at once. Cancel is a user action, which means the route is certainly still
+   * current and Play really is the honest target.
+   */
+  const cancelContentSelection = () => {
+    api.requestFocus(focusNodes.detail('play'), {
+      fallback: focusNodes.detail('back'),
+      resolveOnRegister: true,
+    });
+    launch.cancelContentSelection();
+  };
+  /**
+   * Confirming a version.
+   *
+   * Play must **not** be requested here: the launch this click issues disables it immediately, and a
+   * request for a control the browser is about to blur is the stale-focus bug that
+   * `focusability.ts` exists to catch. The Back action is the only Game Detail control that stays
+   * enabled through a pending launch, so it is the truthful interim target — the same place focus
+   * ended up before, now reached deliberately instead of through a disabled-target fallback. When
+   * the launch resolves, the failure surface takes focus or the post-exit return restores Play.
+   */
+  const confirmContentOption = (contentUnitId: number) => {
+    api.requestFocus(focusNodes.detail('back'));
+    void launch.launch(gameId, contentUnitId);
+  };
+  const contentScopeRef = useFocusScope({
+    id: focusScopes.launchContentSelection,
+    dismissLabel: 'CANCEL',
+    onDismiss: cancelContentSelection,
+    // Restoration is explicit, per user action, rather than generic on close — exactly as the
+    // launch-failure scope does it. The generic cleanup cannot tell "the user cancelled" from "the
+    // route unmounted", and on a route unmount neither `detail:play` nor `detail:back` exists any
+    // more, so it created a pending request with the 1.2 s safety timer. The next Game Detail route
+    // to mount then registered `detail:play`, satisfied that stale request through
+    // `resolveOnRegister`, and stole focus from its own route-entry target.
+    restore: 'none',
+  });
 
   return (
     <>
       <button
+        ref={playRef}
         aria-busy={pending || undefined}
         aria-label={runningThisGame ? `${title} is running` : `Play ${title}`}
         className="game-detail-play"
@@ -667,41 +865,57 @@ function LaunchAction({
       </div>
 
       {launch.contentOptions && launch.contentOptions.length > 0 ? (
-        <div className="game-detail-launch-selection">
-          <h3>CHOOSE A VERSION</h3>
-          <ul>
-            {launch.contentOptions.map((option) => (
-              <li key={option.contentUnitId}>
-                <button
-                  onClick={() => void launch.launch(gameId, option.contentUnitId)}
-                  type="button"
-                >
-                  {contentOptionLabel(option)}
-                </button>
-              </li>
-            ))}
-          </ul>
-          <button
-            className="text-link"
-            onClick={() => launch.cancelContentSelection()}
-            type="button"
+        <FocusScope id={focusScopes.launchContentSelection}>
+          <div
+            aria-label="Choose a version"
+            className="game-detail-launch-selection"
+            ref={contentScopeRef}
+            role="group"
           >
-            CANCEL
-          </button>
-        </div>
+            <h3>CHOOSE A VERSION</h3>
+            <ul>
+              {launch.contentOptions.map((option) => (
+                <li key={option.contentUnitId}>
+                  <LaunchContentOptionAction onConfirm={confirmContentOption} option={option} />
+                </li>
+              ))}
+            </ul>
+            <CancelContentSelection onCancel={cancelContentSelection} />
+          </div>
+        </FocusScope>
       ) : null}
 
-      {launch.failure ? (
-        <InlineError
-          title={launchFailureTitle(launch.failure.code)}
-          message={[launch.failure.message, launchFailureHint(launch.failure.code)]
-            .filter((part): part is string => Boolean(part))
-            .join(' ')}
-          actionLabel="DISMISS"
-          onAction={() => launch.dismissFailure()}
-        />
-      ) : null}
+      {launch.failure ? <LaunchFailureNotice launch={launch} /> : null}
     </>
+  );
+}
+
+function FavoriteAction({
+  detail,
+  favorite,
+  title,
+}: {
+  detail: GameDetailModel;
+  favorite: boolean;
+  title: string;
+}) {
+  const focusRef = useFocusNode({
+    id: focusNodes.detail('favorite'),
+    confirm: { label: favorite ? 'UNFAVORITE' : 'FAVORITE' },
+  });
+  return (
+    <button
+      aria-busy={detail.favoritePending || undefined}
+      aria-label={favorite ? `Remove ${title} from favorites` : `Add ${title} to favorites`}
+      aria-pressed={favorite}
+      className="game-detail-favorite"
+      onClick={() => void detail.toggleFavorite()}
+      ref={focusRef}
+      type="button"
+    >
+      <PixelStar filled={favorite} />
+      {favorite ? 'FAVORITED' : 'ADD TO FAVORITES'}
+    </button>
   );
 }
 
@@ -824,21 +1038,11 @@ export function GameDetailPage({
                   {gameId !== null ? (
                     <LaunchAction gameId={gameId} launch={launch} title={title} />
                   ) : null}
-                  <button
-                    aria-busy={detail.favoritePending || undefined}
-                    aria-label={
-                      localDetail.favorite
-                        ? `Remove ${title} from favorites`
-                        : `Add ${title} to favorites`
-                    }
-                    aria-pressed={localDetail.favorite}
-                    className="game-detail-favorite"
-                    onClick={() => void detail.toggleFavorite()}
-                    type="button"
-                  >
-                    <PixelStar filled={localDetail.favorite} />
-                    {localDetail.favorite ? 'FAVORITED' : 'ADD TO FAVORITES'}
-                  </button>
+                  <FavoriteAction
+                    detail={detail}
+                    favorite={localDetail.favorite}
+                    title={title}
+                  ></FavoriteAction>
                   {detail.favoriteError ? (
                     <p className="game-detail-action-error" role="alert">
                       FAVORITE NOT UPDATED · TRY AGAIN

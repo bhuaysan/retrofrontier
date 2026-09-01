@@ -20,6 +20,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// The authenticated Runtime Release component that carries the managed joypad-autoconfig profile
+/// database, and the RetroArch joypad driver whose profiles the qualified runtime actually reads.
+///
+/// RetroArch resolves a profile at `joypad_autoconfig_dir/<joypad driver>/<device>.cfg`, and the
+/// qualified managed RetroArch 1.22.2 selects `udev` on Linux by its own default — the real launch
+/// log says `[Input] Found joypad driver: "udev"`. RetroFrontier therefore adds no driver setting of
+/// its own; it only has to make sure the directory RetroArch scans is the verified managed database
+/// and that the driver directory it will look in is really there.
+pub const JOYPAD_AUTOCONFIG_COMPONENT: &str = "joypad-autoconfig";
+pub const MANAGED_JOYPAD_DRIVER: &str = "udev";
+
 /// The approved core one launch resolved, with the absolute managed paths it needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCore {
@@ -51,6 +62,8 @@ pub struct LaunchPreparation<'a> {
     pub content_path: &'a Path,
     /// Validated user BIOS files, as (documented filename, absolute user path).
     pub bios_files: &'a [(String, PathBuf)],
+    /// The verified managed controller-profile root, from `resolve_controller_profiles`.
+    pub controller_profiles_root: &'a Path,
 }
 
 /// Builds and starts one controlled managed RetroArch launch.
@@ -125,6 +138,38 @@ impl RetroArchService {
             return Err(unavailable());
         }
         Ok(target)
+    }
+
+    /// Resolve the verified managed controller-profile root RetroArch is pointed at.
+    ///
+    /// The profiles are an authenticated Runtime Release support component, so a runtime that does
+    /// not carry them is not launchable: RetroArch would detect the pad and then find no profile,
+    /// which is the qualified failure this exists to prevent. `RuntimeNotReady` is the honest code —
+    /// the defect is in the installed release, not in the game, the core, or the user's BIOS.
+    ///
+    /// The database root is the component's install path, and the driver subdirectory RetroArch
+    /// will actually scan must really be there: a release that carried the component but not the
+    /// `udev` profiles would leave a real controller unconfigured exactly as before, so that is
+    /// refused here rather than discovered by the player. Neither may be a symbolic link, which
+    /// would let something outside the verified tree decide what RetroArch reads.
+    pub fn resolve_controller_profiles(
+        runtime: &VerifiedLaunchRuntime,
+    ) -> Result<PathBuf, LaunchFailure> {
+        let not_ready = || LaunchFailure::new(LaunchErrorCode::RuntimeNotReady);
+        let component = SafeIdentifier::new(JOYPAD_AUTOCONFIG_COMPONENT)
+            .map_err(|_| LaunchFailure::new(LaunchErrorCode::InternalLaunchFailure))?;
+        let database_root = runtime
+            .support_assets
+            .get(&component)
+            .ok_or_else(not_ready)?;
+        let real_directory =
+            |path: &Path| fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir());
+        if !real_directory(database_root)
+            || !real_directory(&database_root.join(MANAGED_JOYPAD_DRIVER))
+        {
+            return Err(not_ready());
+        }
+        Ok(database_root.clone())
     }
 
     /// Resolve the approved core: a valid per-game override, otherwise the approved system
@@ -237,9 +282,13 @@ impl RetroArchService {
             .ok_or_else(config_failed)?
             .to_path_buf();
         let config_path = self.paths.config_file();
-        RetroArchConfig::build(&self.paths, &core_directory)
-            .write(&config_path)
-            .map_err(|_| config_failed())?;
+        RetroArchConfig::build(
+            &self.paths,
+            &core_directory,
+            request.controller_profiles_root,
+        )
+        .write(&config_path)
+        .map_err(|_| config_failed())?;
 
         let environment = build_child_environment(&self.paths, &host_environment());
         let mut diagnostics = Vec::new();
@@ -431,6 +480,11 @@ mod tests {
         }
     }
 
+    /// The value `resolve_controller_profiles` produces for a synthetic runtime.
+    fn profiles_root(runtime: &VerifiedLaunchRuntime) -> PathBuf {
+        RetroArchService::resolve_controller_profiles(runtime).unwrap()
+    }
+
     fn content_root(files: &[&str]) -> TempDir {
         let directory = tempdir().unwrap();
         for relative in files {
@@ -457,6 +511,21 @@ mod tests {
         fs::write(&core_path, b"synthetic core").unwrap();
 
         let mut support_assets = BTreeMap::new();
+        // Every real Runtime Release carries the managed joypad-autoconfig driver directory, so the
+        // synthetic runtime does too; the tests that cover its absence remove it deliberately.
+        let profiles = installation.join("runtime/support/joypad-autoconfig");
+        fs::create_dir_all(profiles.join("udev")).unwrap();
+        fs::write(
+            profiles
+                .join("udev")
+                .join("Sony Interactive Entertainment DualSense Wireless Controller.cfg"),
+            b"input_driver = \"udev\"\n",
+        )
+        .unwrap();
+        support_assets.insert(
+            SafeIdentifier::new(super::JOYPAD_AUTOCONFIG_COMPONENT).unwrap(),
+            profiles,
+        );
         if let Some((asset_component, relative)) = support {
             let asset = installation.join(relative);
             fs::create_dir_all(&asset).unwrap();
@@ -756,6 +825,115 @@ mod tests {
             .starts_with(complete.path().join("runtime/versions/install-1")));
     }
 
+    /// The managed controller-profile root is what the generated configuration points at, and a
+    /// runtime that cannot provide it is refused rather than launched with a dead controller.
+    #[test]
+    fn the_controller_profile_root_comes_only_from_the_verified_managed_runtime() {
+        let directory = tempdir().unwrap();
+        let (runtime, _app_run) =
+            launch_runtime(directory.path(), "nestopia", &[SystemId::Nes], None);
+
+        let root = RetroArchService::resolve_controller_profiles(&runtime).unwrap();
+        assert_eq!(
+            root,
+            directory
+                .path()
+                .join("runtime/versions/install-1/runtime/support/joypad-autoconfig")
+        );
+        assert!(root.join("udev").is_dir());
+
+        // A release without the component at all.
+        let mut missing = runtime.clone();
+        missing
+            .support_assets
+            .remove(&SafeIdentifier::new(super::JOYPAD_AUTOCONFIG_COMPONENT).unwrap());
+        assert_eq!(
+            RetroArchService::resolve_controller_profiles(&missing)
+                .unwrap_err()
+                .code,
+            LaunchErrorCode::RuntimeNotReady
+        );
+
+        // A release that carries the component but not the driver directory RetroArch will scan.
+        let empty = tempdir().unwrap();
+        let mut hollow = runtime.clone();
+        hollow.support_assets.insert(
+            SafeIdentifier::new(super::JOYPAD_AUTOCONFIG_COMPONENT).unwrap(),
+            empty.path().to_path_buf(),
+        );
+        assert_eq!(
+            RetroArchService::resolve_controller_profiles(&hollow)
+                .unwrap_err()
+                .code,
+            LaunchErrorCode::RuntimeNotReady
+        );
+
+        // A symbolic link would let an unverified tree decide what RetroArch reads.
+        let linked = tempdir().unwrap();
+        let link = linked.path().join("joypad-autoconfig");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        let mut redirected = runtime.clone();
+        redirected.support_assets.insert(
+            SafeIdentifier::new(super::JOYPAD_AUTOCONFIG_COMPONENT).unwrap(),
+            link,
+        );
+        assert_eq!(
+            RetroArchService::resolve_controller_profiles(&redirected)
+                .unwrap_err()
+                .code,
+            LaunchErrorCode::RuntimeNotReady
+        );
+    }
+
+    /// B3/B4: the generated configuration names the verified managed database and nothing else.
+    #[test]
+    fn the_generated_configuration_points_at_the_managed_controller_profiles_only() {
+        let app_data = tempdir().unwrap();
+        let runtime_directory = tempdir().unwrap();
+        let content = content_root(&["NES/Game.nes"]);
+        let (runtime, app_run) =
+            launch_runtime(runtime_directory.path(), "nestopia", &[SystemId::Nes], None);
+        let core =
+            RetroArchService::resolve_core(&SystemCatalog::v1(), SystemId::Nes, None, &runtime)
+                .unwrap();
+        let service = service(app_data.path(), Vec::new());
+
+        let context = service
+            .prepare(LaunchPreparation {
+                app_run_path: &app_run,
+                core: &core,
+                content_path: &content.path().join("NES/Game.nes"),
+                bios_files: &[],
+                controller_profiles_root: &profiles_root(&runtime),
+            })
+            .unwrap();
+
+        let rendered = fs::read_to_string(&context.config_path).unwrap();
+        let expected = profiles_root(&runtime);
+        assert!(rendered.contains(&format!(
+            "joypad_autoconfig_dir = \"{}\"\n",
+            expected.display()
+        )));
+        // The private writable directory that used to be named here no longer exists at all.
+        assert!(!rendered.contains("runtime-user/autoconfig"));
+        assert!(!service
+            .paths()
+            .runtime_user_root()
+            .join("autoconfig")
+            .exists());
+        // B4: no host RetroArch autoconfig location is consulted, and RetroFrontier claims no
+        // authority over the driver or over autodetection, because the managed defaults are right.
+        for forbidden in [
+            "/usr/share/libretro/autoconfig",
+            "/usr/local/share/libretro/autoconfig",
+            "/.config/retroarch",
+            "input_joypad_driver",
+            "input_autodetect_enable",
+        ] {
+            assert!(!rendered.contains(forbidden), "{forbidden}");
+        }
+    }
+
     #[test]
     fn the_prepared_launch_uses_absolute_managed_paths_and_no_path_lookup() {
         let app_data = tempdir().unwrap();
@@ -783,6 +961,7 @@ mod tests {
                 core: &core,
                 content_path: &content_path,
                 bios_files: &[],
+                controller_profiles_root: &profiles_root(&runtime),
             })
             .unwrap();
 
@@ -803,6 +982,21 @@ mod tests {
         assert!(context.working_directory.starts_with(app_data.path()));
         assert!(context.config_path.is_file());
         assert!(context.diagnostics.is_empty());
+
+        // B4: the argument contract is exactly `--config`, `-L`, content, and nothing else. Launch
+        // presentation — fullscreen included — is decided in the generated configuration, so there
+        // is one canonical control path rather than a flag and a setting that could disagree.
+        let flags: Vec<String> = context
+            .arguments
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .filter(|argument| argument.starts_with('-'))
+            .collect();
+        assert_eq!(flags, vec!["--config".to_owned(), "-L".to_owned()]);
+        // And the file those arguments name really carries the reviewed fullscreen request.
+        let written = fs::read_to_string(&context.config_path).unwrap();
+        assert!(written.contains("video_fullscreen = \"true\"\n"));
+        assert!(written.contains("video_windowed_fullscreen = \"true\"\n"));
 
         // The child cannot resolve a host RetroArch through PATH.
         assert_eq!(
@@ -844,6 +1038,7 @@ mod tests {
                 core: &core,
                 content_path: &content.path().join("GC/Game.rvz"),
                 bios_files: &[("scph5501.bin".to_owned(), bios_path.clone())],
+                controller_profiles_root: &profiles_root(&runtime),
             })
             .unwrap();
 
@@ -868,6 +1063,7 @@ mod tests {
                 core: &core,
                 content_path: &content.path().join("GC/Game.rvz"),
                 bios_files: &[],
+                controller_profiles_root: &profiles_root(&runtime),
             })
             .unwrap();
         assert!(!system_root.join("scph5501.bin").exists());
@@ -902,6 +1098,7 @@ mod tests {
                 core: &core,
                 content_path: &content_path,
                 bios_files: &[],
+                controller_profiles_root: &profiles_root(&runtime),
             })
         };
 
@@ -954,6 +1151,7 @@ mod tests {
                 core: &core,
                 content_path: &content.path().join("PS1/Game.chd"),
                 bios_files: &[],
+                controller_profiles_root: &profiles_root(&runtime),
             })
             .unwrap();
 

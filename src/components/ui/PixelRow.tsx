@@ -1,5 +1,7 @@
 import type { ButtonHTMLAttributes } from 'react';
 
+import { useFocusNode } from '../../focus/focusContext';
+import type { FocusNodeId } from '../../focus/focusNodes';
 import { PixelArrow } from './PixelIcon';
 
 interface PixelRowProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> {
@@ -8,6 +10,18 @@ interface PixelRowProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'c
   accent: string;
   active?: boolean;
   activeMode?: 'current' | 'pressed';
+  /** The stable identity this row is known by for controller navigation and focus restoration. */
+  focusId?: FocusNodeId;
+  /** Footer copy for `confirm` on this row. */
+  confirmLabel?: string;
+  /**
+   * The *semantic* activation of this row, used by `confirm` from a controller or the keyboard
+   * instead of a synthetic click.
+   *
+   * It is deliberately not merged into `onClick`: a pointer click must do only what the user
+   * clicked, while a semantic confirmation may also hand controller focus on to another zone.
+   */
+  onConfirm?: () => void;
 }
 
 export function PixelRow({
@@ -16,8 +30,16 @@ export function PixelRow({
   accent,
   active = false,
   activeMode = 'current',
+  focusId,
+  confirmLabel = 'OPEN',
+  onConfirm,
   ...props
 }: PixelRowProps) {
+  const focusRef = useFocusNode({
+    id: focusId ?? `row:${label}`,
+    confirm: focusId === undefined ? null : { label: confirmLabel, run: onConfirm },
+  });
+
   return (
     <li className="pixel-row-shell">
       <span className="pixel-row-cursor" aria-hidden="true">
@@ -27,6 +49,7 @@ export function PixelRow({
         className={`pixel-row${active ? ' pixel-row--active' : ''}`}
         aria-current={active && activeMode === 'current' ? 'page' : undefined}
         aria-pressed={activeMode === 'pressed' ? active : undefined}
+        ref={focusId === undefined ? undefined : focusRef}
         {...props}
       >
         <span className="system-swatch" style={{ background: accent }} aria-hidden="true" />

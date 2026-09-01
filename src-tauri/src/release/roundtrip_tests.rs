@@ -102,6 +102,35 @@ fn zipped_support_subtree() -> Vec<u8> {
     output
 }
 
+/// A joypad-autoconfig-shaped zip: a versioned repository root whose driver directories hold
+/// profiles, plus the licence text the real database carries.
+fn zipped_joypad_autoconfig() -> Vec<u8> {
+    let mut output = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(Cursor::new(&mut output));
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in [
+            (
+                "retroarch-joypad-autoconfig-fixture/udev/Sony Interactive Entertainment DualSense Wireless Controller.cfg",
+                &b"input_driver = \"udev\"\ninput_device = \"Sony Interactive Entertainment DualSense Wireless Controller\"\ninput_vendor_id = \"1356\"\ninput_product_id = \"3302\"\ninput_b_btn = \"0\"\n"[..],
+            ),
+            (
+                "retroarch-joypad-autoconfig-fixture/sdl2/Some Other Pad.cfg",
+                &b"input_driver = \"sdl2\"\n"[..],
+            ),
+            (
+                "retroarch-joypad-autoconfig-fixture/COPYING",
+                &b"MIT License\n"[..],
+            ),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    output
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     crate::release::canonical::sha256_hex(bytes)
 }
@@ -128,16 +157,24 @@ fn build_fixture() -> Fixture {
     let appimage = synthetic_appimage(b"#!/bin/sh\nexit 0\n");
     let core = zipped_core("example_libretro.so", b"native core bytes");
     let support = zipped_support_subtree();
+    let profiles = zipped_joypad_autoconfig();
 
     std::fs::write(cache_directory.join("runtime-input"), &appimage).unwrap();
     std::fs::write(cache_directory.join("core-input"), &core).unwrap();
     std::fs::write(cache_directory.join("support-input"), &support).unwrap();
+    std::fs::write(cache_directory.join("joypad-autoconfig-input"), &profiles).unwrap();
 
     // The support component's target artefact is the repackaged tar, so its pin is computed from
     // the same deterministic repackager construction will run.
     let support_tar = crate::release::inventory::repackage_zip_subtree_as_tar(
         &cache_directory.join("support-input"),
         "dolphin-emu/Sys",
+        1024 * 1024,
+    )
+    .unwrap();
+    let profiles_tar = crate::release::inventory::repackage_zip_subtree_as_tar(
+        &cache_directory.join("joypad-autoconfig-input"),
+        "retroarch-joypad-autoconfig-fixture",
         1024 * 1024,
     )
     .unwrap();
@@ -180,6 +217,14 @@ fn build_fixture() -> Fixture {
                 "sha256": sha256_hex(&support),
                 "size_bytes": support.len(),
                 "license": "GPL-2.0-or-later",
+                "provenance": "round-trip fixture"
+            },
+            {
+                "id": "joypad-autoconfig-input",
+                "url": "https://codeload.invalid/retroarch-joypad-autoconfig/zip/fixture",
+                "sha256": sha256_hex(&profiles),
+                "size_bytes": profiles.len(),
+                "license": "MIT",
                 "provenance": "round-trip fixture"
             }
         ],
@@ -232,6 +277,25 @@ fn build_fixture() -> Fixture {
                 },
                 "artifact_sha256": sha256_hex(&support_tar),
                 "artifact_size_bytes": support_tar.len()
+            },
+            {
+                "id": "joypad-autoconfig",
+                "kind": "support_asset",
+                "target_name": "joypad-autoconfig.tar",
+                "archive_format": "tar",
+                "install_path": "runtime/support/joypad-autoconfig",
+                "executable_relative_path": null,
+                "display_version": "fixture",
+                "source_revision": "fixture",
+                "license": "MIT",
+                "systems": [],
+                "derivation": {
+                    "kind": "zip_subtree_tar",
+                    "input": "joypad-autoconfig-input",
+                    "subtree": "retroarch-joypad-autoconfig-fixture"
+                },
+                "artifact_sha256": sha256_hex(&profiles_tar),
+                "artifact_size_bytes": profiles_tar.len()
             }
         ]
     });
@@ -368,12 +432,139 @@ async fn a_constructed_release_installs_and_launches_through_the_real_tuf_path()
         "the support component is re-rooted at the directory the core expects"
     );
 
+    // B2/B5: the managed controller profiles are an authenticated component of the release, they
+    // survive the trusted path intact, and the driver directory RetroArch really scans is present
+    // with a profile whose device identity matches a physical pad. Asserting only that a directory
+    // exists is what let the empty `runtime-user/autoconfig` pass unnoticed for a whole milestone.
+    let profiles_id = crate::domain::runtime::SafeIdentifier::new(
+        crate::services::retroarch::JOYPAD_AUTOCONFIG_COMPONENT,
+    )
+    .unwrap();
+    let profiles = launch
+        .support_assets
+        .get(&profiles_id)
+        .expect("the managed controller-profile component resolves");
+    let dualsense = profiles
+        .join(crate::services::retroarch::MANAGED_JOYPAD_DRIVER)
+        .join("Sony Interactive Entertainment DualSense Wireless Controller.cfg");
+    assert!(
+        dualsense.is_file(),
+        "the udev DualSense profile is installed"
+    );
+    let profile = std::fs::read_to_string(&dualsense).unwrap();
+    for expected in [
+        "input_driver = \"udev\"",
+        "input_device = \"Sony Interactive Entertainment DualSense Wireless Controller\"",
+        "input_vendor_id = \"1356\"",
+        "input_product_id = \"3302\"",
+    ] {
+        assert!(
+            profile.contains(expected),
+            "{expected} must be in the profile"
+        );
+    }
+    assert!(
+        profiles.join("COPYING").is_file(),
+        "the database's own licence text is redistributed with it"
+    );
+
+    // B3: the launch boundary resolves that verified tree, and the generated configuration names it.
+    let resolved =
+        crate::services::retroarch::RetroArchService::resolve_controller_profiles(&launch).unwrap();
+    assert_eq!(&resolved, profiles);
+    let launch_paths = crate::services::retroarch_paths::LaunchPaths::new(app_data.path());
+    let generated = crate::services::retroarch_config::RetroArchConfig::build(
+        &launch_paths,
+        core.core_path.parent().unwrap(),
+        &resolved,
+    );
+    assert_eq!(
+        generated.value("joypad_autoconfig_dir").map(Path::new),
+        Some(resolved.as_path())
+    );
+    // B6: nothing else about the generated contract moved.
+    assert_eq!(generated.value("video_fullscreen"), Some("true"));
+    assert_eq!(generated.value("video_windowed_fullscreen"), Some("true"));
+    assert_eq!(generated.value("config_save_on_exit"), Some("false"));
+    // B7: process identity, runtime entry point, core, and BIOS authority are untouched.
+    assert!(launch.app_run_path.ends_with("runtime/retroarch/AppRun"));
+    assert_eq!(
+        generated.value("system_directory").map(Path::new),
+        Some(launch_paths.system_root().as_path())
+    );
+
     // Nothing outside the authenticated inventory may exist in the installed tree.
     crate::adapters::runtime_installed::verify_tree(
         &paths.version_path(&launch.installation_id),
         &release.manifest,
     )
     .expect("the installed tree matches its authenticated inventory exactly");
+}
+
+/// B1: the defect this pass fixes, stated as a test.
+///
+/// Before this change the generated configuration named a private, always-empty
+/// `runtime-user/autoconfig` directory. RetroArch therefore detected a real pad on `udev` and then
+/// reported it *unconfigured*, because no profile could match — an unconfigured pad has no RetroPad
+/// binds at all, which is exactly the "controller does nothing inside the game" the operator saw.
+/// The launch layer now refuses a runtime that cannot provide the profiles rather than starting a
+/// game whose controller cannot work, and it never composes a writable profile directory again.
+#[tokio::test]
+async fn a_release_without_managed_controller_profiles_cannot_launch() {
+    let fixture = build_fixture();
+    let cache = InputCache::new(fixture.cache_directory.clone(), false);
+    let release = construct_release(&fixture.definition_path, &fixture.output_directory, &cache)
+        .await
+        .unwrap();
+
+    let mut without = crate::application::runtime_manager::VerifiedLaunchRuntime {
+        status: crate::domain::runtime::RuntimeStatus {
+            state: RuntimeState::Ready,
+            installation_id: Some("install-1".to_owned()),
+            release_id: Some("roundtrip-release-001".to_owned()),
+            can_rollback: false,
+            repair_required: false,
+        },
+        installation_id: crate::domain::runtime::SafeIdentifier::new("install-1").unwrap(),
+        release_id: release.manifest.release.release_id.clone(),
+        app_run_path: fixture.output_directory.join("runtime/retroarch/AppRun"),
+        cores: Default::default(),
+        support_assets: Default::default(),
+    };
+
+    assert_eq!(
+        crate::services::retroarch::RetroArchService::resolve_controller_profiles(&without)
+            .unwrap_err()
+            .code,
+        crate::domain::launch::LaunchErrorCode::RuntimeNotReady
+    );
+
+    // The old shape — a writable, empty directory RetroFrontier composed itself — is gone: no
+    // `LaunchPaths` directory is created for controller profiles any more, so nothing can silently
+    // present an empty profile tree to RetroArch again.
+    let app_data = TempDir::new().unwrap();
+    let launch_paths =
+        crate::services::retroarch_paths::LaunchPaths::new(app_data.path().join("RetroFrontier"));
+    launch_paths.prepare().unwrap();
+    assert!(
+        !launch_paths.runtime_user_root().join("autoconfig").exists(),
+        "no writable controller-profile directory may be composed"
+    );
+
+    // A component that is present but empty is refused too, for the same reason.
+    let hollow = app_data.path().join("hollow");
+    std::fs::create_dir_all(&hollow).unwrap();
+    without.support_assets.insert(
+        crate::domain::runtime::SafeIdentifier::new(
+            crate::services::retroarch::JOYPAD_AUTOCONFIG_COMPONENT,
+        )
+        .unwrap(),
+        hollow,
+    );
+    assert!(
+        crate::services::retroarch::RetroArchService::resolve_controller_profiles(&without)
+            .is_err()
+    );
 }
 
 #[tokio::test]

@@ -400,15 +400,63 @@ See [`docs/M7_5_RUNTIME_QUALIFICATION.md`](docs/M7_5_RUNTIME_QUALIFICATION.md) a
 
 **Model:** Luna Max.
 
-- [ ] semantic input actions
-- [ ] keyboard mapping
-- [ ] controller mapping
-- [ ] focus graph
-- [ ] row/action/media focus behavior
-- [ ] confirm/back/context
-- [ ] controller footer
-- [ ] primary settings navigation
-- [ ] regression tests
+See [`docs/CONTROLLER_AND_FOCUS.md`](docs/CONTROLLER_AND_FOCUS.md),
+[ADR-014](docs/adr/ADR-014-input-acquisition-boundary.md), and
+[`docs/M8_IMPLEMENTATION_REPORT.md`](docs/M8_IMPLEMENTATION_REPORT.md), and — for the findings from
+the physical DualSense/Wayland sessions —
+[`docs/M8_HARDWARE_CORRECTIVE_REPORT.md`](docs/M8_HARDWARE_CORRECTIVE_REPORT.md) and
+[`docs/M8_FINAL_HARDWARE_INPUT_REPORT.md`](docs/M8_FINAL_HARDWARE_INPUT_REPORT.md).
+
+- [x] semantic input actions
+- [x] keyboard mapping
+- [x] controller mapping, deadzone, hysteresis, dominant axis, and bounded repeat
+- [x] focus registry keyed by stable semantic identities
+- [x] geometry-derived spatial navigation for the responsive grid
+- [x] row/action/media focus behavior under the accepted A6 V5 language
+- [x] confirm/back/context
+- [x] temporary focus scopes
+- [x] Library → Detail → Library focus restoration without DOM queries or timeouts
+- [x] window-focus gating and RetroArch focus ownership
+- [x] controller footer derived from the focus model
+- [x] primary settings navigation
+- [x] explicit Library controller navigation zones (sidebar / main)
+- [x] direct Library Search controller action (Standard Gamepad button 3 / Triangle / Y)
+- [x] managed RetroArch launches fullscreen
+- [x] managed RetroArch joypad-autoconfig profiles as an authenticated Runtime Release component
+- [x] regression tests
+- [ ] manual Linux controller/RetroArch qualification — the first session's two issues are
+      requalified; a second session found the unreachable Search field and a DualSense that produced
+      no input inside RetroArch. Both are corrected and awaiting requalification, which needs a
+      runtime reinstall because the authenticated release contents changed.
+- [ ] Windows and macOS controller qualification
+- [ ] controller remapping UI and persistence (B10)
+
+### Qualify DualSense Edge and Bluetooth controller mapping on WebKitGTK
+
+Accepted MEDIUM debt from the final M8 source review. Not an M8 merge blocker.
+
+```text
+Current physically qualified controller path:
+Linux + WebKitGTK + USB Sony DualSense
+```
+
+The WebKitGTK/Linux face-button quirk predicate in `src/input/gamepadQuirks.ts` recognizes
+DualSense devices broadly through a `/dualsense/i`-style name match, but only the USB Sony
+DualSense has actually been measured on hardware. Being covered by the predicate is not evidence
+of physical qualification, and this item must not be closed by reasoning about the code alone.
+
+- [ ] physically measure raw `Gamepad.buttons` indices for a DualSense Edge under Linux/WebKitGTK
+- [ ] physically qualify a Bluetooth DualSense under Linux/WebKitGTK
+- [ ] verify whether the existing WebKitGTK/DualSense face-button transposition applies to those
+      variants, or whether either reports canonical Standard Gamepad indices already
+- [ ] review whether the current `/dualsense/i`-style predicate remains appropriate for the
+      measured device set
+- [ ] narrow or expand the predicate only from actual physical evidence, never from device-name
+      inference
+- [ ] keep canonical RetroFrontier Standard Gamepad semantics unchanged — the quirk normalizes a
+      misreporting engine, it does not redefine the project's action mapping
+
+No M8 controller source is changed for this item; it is recorded as debt deliberately.
 
 ## M9 — Saves and Save States
 
