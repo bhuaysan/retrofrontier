@@ -2,17 +2,24 @@
 
 ## Current Priority
 
-M7 RetroArch Launch is merged. M7.5 Real Managed Runtime is implemented on
-`feat/m7.5-production-runtime`: a real Linux x86_64 Runtime Release (RetroArch 1.22.2 plus the four
-reference cores and the managed Dolphin `Sys` component) is reproducibly constructed from pinned
-upstream inputs, published into a TUF 1.0 repository, and installed through the production
-verification path. NES and SNES are fully qualified end to end on one Linux host; GameCube is
-qualified except for confirmed content execution, and PlayStation is blocked on an approved BIOS
-dump and legal test content. See [`docs/M7_5_RUNTIME_QUALIFICATION.md`](docs/M7_5_RUNTIME_QUALIFICATION.md).
+M8 Controller and Focus is merged. Manual hardware qualification passed on
+`Linux + WebKitGTK + USB Sony DualSense`; see
+[`docs/M8_FINAL_HARDWARE_INPUT_REPORT.md`](docs/M8_FINAL_HARDWARE_INPUT_REPORT.md). Runtime Release
+002 (`rf-runtime-1.22.2-linux-x86_64-002`) is the active qualified managed runtime release, and
+Release 001 remains recorded as superseded history.
 
-Production key ceremony, public runtime hosting, immutable upstream mirroring, GPL source-offer
-obligations, and core policy for the remaining seven V1 systems remain explicit release gates. No
-public-distribution claim is made.
+DualSense Edge and Bluetooth DualSense mapping under WebKitGTK is accepted MEDIUM backlog debt: the
+face-button quirk predicate covers those variants by name, but only the USB DualSense has been
+physically measured, and coverage is not qualification.
+
+**M9 — Saves and Save States is the next implementation milestone.**
+
+The previously documented release gates remain open and unchanged: production key ceremony under
+independent custody, public runtime hosting, immutable upstream mirroring, GPL source-offer
+obligations, core policy for the remaining seven V1 systems, and cross-platform and
+cross-distribution qualification (Windows and macOS launch and controller support, the Linux device
+matrix, confirmed GameCube content execution, and PlayStation BIOS/content). No public-distribution
+claim is made.
 
 ## M0 — Planning and Repository Foundation
 
@@ -424,10 +431,13 @@ the physical DualSense/Wayland sessions —
 - [x] managed RetroArch launches fullscreen
 - [x] managed RetroArch joypad-autoconfig profiles as an authenticated Runtime Release component
 - [x] regression tests
-- [ ] manual Linux controller/RetroArch qualification — the first session's two issues are
-      requalified; a second session found the unreachable Search field and a DualSense that produced
-      no input inside RetroArch. Both are corrected and awaiting requalification, which needs a
-      runtime reinstall because the authenticated release contents changed.
+- [x] manual Linux controller/RetroArch qualification — PASS on
+      `Linux + WebKitGTK + USB Sony DualSense`; see
+      [`docs/M8_FINAL_HARDWARE_INPUT_REPORT.md`](docs/M8_FINAL_HARDWARE_INPUT_REPORT.md). Covers
+      Library controller navigation, the Search and Context face-button behaviour, managed RetroArch
+      fullscreen launch, controller operation in the RetroArch menu and in-game, focus and input
+      return after exit, and RetroFrontier ignoring controller input while RetroArch is still
+      running.
 - [ ] Windows and macOS controller qualification
 - [ ] controller remapping UI and persistence (B10)
 
