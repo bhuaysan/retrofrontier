@@ -171,6 +171,19 @@ evidence snapshot, so same-path content replacement marks a match stale instead 
 it trusted. The metadata repository writes to no M4 table. See
 [`docs/METADATA.md`](docs/METADATA.md) for the implementation contract.
 
+M8.5 adds a persistent orchestration layer above that queue, not a second one beside it.
+`MetadataScrapeApplicationService` owns which user-initiated batch operation is in progress, its
+fixed target set, bounded feeding, stop semantics and restart semantics; the M5 queue keeps
+provider requests, quota, deferral, retry, matching and persistence. There is still exactly one
+worker, one scheduler and one provider adapter.
+
+Library discovery is local and does not automatically trigger first-time metadata scraping: a scan
+finds content on this machine and does not decide to spend the user's provider budget on it. First
+contact with the provider for a newly discovered game happens only through a scrape run the user
+starts in Settings. Accepted metadata relationships are still automatically revalidated for evidence
+integrity — that sweep protects relationships the user already has and is a different mechanism from
+going out to fetch new ones.
+
 ### RuntimeManager
 
 - detect managed runtime
