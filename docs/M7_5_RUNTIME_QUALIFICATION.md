@@ -37,7 +37,16 @@ Four things were missing, in this order of severity.
 
 Release id `rf-runtime-1.22.2-linux-x86_64-001`, sequence 1, channel `stable`, platform
 `linux`/`x86_64`. Defined declaratively in
-[`release/linux-x86_64/runtime-release.json`](../release/linux-x86_64/runtime-release.json).
+[`release/linux-x86_64/history/runtime-release-001.json`](../release/linux-x86_64/history/runtime-release-001.json).
+
+> **Superseded.** Release 001 is a historical record. The active generation is
+> `rf-runtime-1.22.2-linux-x86_64-002`, sequence 2, defined in
+> [`release/linux-x86_64/runtime-release.json`](../release/linux-x86_64/runtime-release.json). It adds
+> the managed controller-profile component and derives all four cores from the version-addressed
+> stable core bundle instead of four rolling nightly URLs. The digests below are Release 001's and are
+> deliberately left as they were; Release 002's are recorded in
+> [`M8_FINAL_HARDWARE_INPUT_REPORT.md`](M8_FINAL_HARDWARE_INPUT_REPORT.md). The qualification
+> environment snippet further down selects the **active** manifest.
 
 ### RetroArch
 
@@ -195,7 +204,7 @@ RETROFRONTIER_RUNTIME_SOURCE=qualification
 RETROFRONTIER_RUNTIME_TUF_ROOT=<repo>/metadata/root.json
 RETROFRONTIER_RUNTIME_METADATA_URL=file://<repo>/metadata/
 RETROFRONTIER_RUNTIME_TARGETS_URL=file://<repo>/repository-targets/
-RETROFRONTIER_RUNTIME_MANIFEST_TARGET=rf-runtime-linux-x86_64-001.manifest.json
+RETROFRONTIER_RUNTIME_MANIFEST_TARGET=rf-runtime-linux-x86_64-002.manifest.json
 # RETROFRONTIER_RUNTIME_POLICY_TARGET defaults to runtime-policy.json
 ```
 

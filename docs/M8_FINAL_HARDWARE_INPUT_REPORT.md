@@ -19,7 +19,8 @@ changes are [`CONTROLLER_AND_FOCUS.md`](CONTROLLER_AND_FOCUS.md) and
 | | |
 | --- | --- |
 | Branch | `feat/m8-controller-focus` |
-| Local `HEAD` | `a16e10acb0b5835fb79ef05c6d6659748c09ba6d` |
+| Local `HEAD` at the start of the input pass | `a16e10acb0b5835fb79ef05c6d6659748c09ba6d` |
+| Local `HEAD` at the start of the release-integrity pass (section Q) | `8700a91eaab39516e43c9ffaddd37f2531ccb2a1` |
 | `origin/feat/m8-controller-focus` | `a16e10acb0b5835fb79ef05c6d6659748c09ba6d` |
 | `main` / `origin/main` | `77f5194c76c360bd6eb14e8546a7a4e0998be1aa` |
 | Working tree | Clean except the historical untracked review artefacts, which are preserved |
@@ -300,15 +301,26 @@ unauthenticated path.
 | Published targets | 6 + manifest + policy | 7 + manifest + policy |
 | Added installed bytes | — | 2 336 768 (tar), 1039 files, 1 044 inventory entries |
 
-`release_id`, `release_sequence`, `manifest_id`, `channel`, `minimum_safe_release_sequence`,
-`app_run_path`, and every existing component's pin are unchanged. No release id or sequence semantics
-were mutated. No manifest was hand-edited: every generated artefact in this report came out of
+> **Corrected.** This section originally claimed that `release_id`, `release_sequence`, and
+> `manifest_id` were unchanged and that "no release id or sequence semantics were mutated". Keeping
+> them unchanged *was* the mutation: adding an authenticated component changes what the release
+> ships, and ADR-012 makes an authenticated Runtime Release target immutable. The controller-profile
+> component therefore belongs to a **new generation**, `rf-runtime-1.22.2-linux-x86_64-002`,
+> sequence 2. Release 001 is preserved verbatim as a historical record, and no modified byte is
+> published under any `001` identity. **Section Q is the authoritative account** of the release
+> identity, its inputs, and its construction proof; where this section disagrees with section Q,
+> section Q is correct.
+>
+> `channel`, `minimum_safe_release_sequence`, and `app_run_path` genuinely are unchanged — see
+> section Q.2 for why the anti-rollback floor was deliberately **not** raised.
+
+No manifest was hand-edited: every generated artefact in this report came out of
 `rf-runtime-release` itself.
 
 **Reinstallation is required.** The authenticated contents of the release changed, so the currently
 installed `i-18d0a4fda8be7c01-1-293535` does not contain the profile component and its
 `verified_launch_runtime` will now refuse to launch with `runtimeNotReady`. That refusal is the
-intended behaviour, and the operator steps are in section L.
+intended behaviour, and the operator steps are in section Q.8.
 
 ---
 
@@ -367,22 +379,33 @@ All commands run at the final tree.
 results: frontend `AppShell` + `focus` + `input` + `useControllerInput` — 8 files, 214 tests, three
 times; Rust `retroarch` 40, `release::` 22, `launch` 55, three times. No flakiness.
 
-**Release-construction validation.** `rf-runtime-release build` was run against a reduced definition
-containing the unchanged `retroarch` component plus the new `joypad-autoconfig` component, using the
-verified pinned inputs. The real tool derived the artefact, matched it to its pin, built a 1 258-entry
-inventory, validated the manifest with the client-side validator, and proved it by extracting through
-the production extractor and running `verify_tree` and `validate_app_run`:
+**Re-run after the release-integrity pass (section Q).** The whole table above was re-run at the final
+tree. Frontend results are byte-for-byte unchanged, which is the point: the release-integrity pass
+touched no frontend code and no controller behaviour.
 
-```text
-target        joypad-autoconfig-1.22.0.tar   2336768  d81e3ac266d592b1732a7b16d77563aa513b270d2a5e592bf2040d633d6906cc
-```
+| Command | Result |
+| --- | --- |
+| `pnpm typecheck` | clean |
+| `pnpm lint` | clean |
+| `pnpm format:check` | clean |
+| `pnpm test` | **36 files, 592 tests, 0 failed** — unchanged |
+| `pnpm build` | clean |
+| `cargo fmt -- --check` | clean |
+| `cargo clippy --all-targets -- -D warnings` | clean |
+| `cargo clippy --all-targets --all-features -- -D warnings` | clean |
+| `cargo test` | **418 passed, 0 failed, 1 ignored** — unchanged |
+| `cargo test --all-features` | **448 passed, 0 failed, 7 ignored** — `+8` from section Q.7 |
+| `cargo test --features release-tools --lib release::` | **30 passed, 0 failed, 6 ignored** (was 22 passed) |
+| `cargo build --release` | clean |
+| `git diff --check` | clean |
 
-A build of the **complete** committed definition could not be completed, for a reason that predates
-this pass: the four libretro **nightly** core URLs the definition pins have rolled upstream, so their
-pinned lengths and digests no longer match what the server serves (`nestopia_libretro.so.zip` is now
-724 254 bytes against a pinned 723 373). The RetroArch 7z and the new autoconfig zip both verify
-exactly. Re-pinning the nightly cores would change what the release ships and is out of scope here;
-it is recorded as a risk in section N.
+**Release-construction validation.** At the time this section was first written, `rf-runtime-release
+build` had only been run against a *reduced* definition — the unchanged `retroarch` component plus the
+new `joypad-autoconfig` component — because the four rolling nightly core URLs no longer matched their
+pins. That is no longer the state of the work: the **complete** release now builds and publishes, as
+Release 002. See **section Q.5** for the full proof and **section Q.3** for the immutable core source
+that made it possible. The reduced-fixture result is superseded and is not evidence of anything this
+report still claims.
 
 **Real-hardware proof of the fix.** The managed RetroArch binary, the real generated configuration,
 and the physical DualSense, with `joypad_autoconfig_dir` pointed at the **tar the release tool just
@@ -443,14 +466,9 @@ NOT PERFORMED — HUMAN INTERACTION REQUIRED
 The authenticated release contents changed, so the installed runtime must be replaced before any
 controller test is meaningful. Until it is, launching will correctly refuse with `runtimeNotReady`.
 
-1. Rebuild and republish the qualification Runtime Release from the updated definition:
-   `rf-runtime-release publish --definition release/linux-x86_64/runtime-release.json --output <dir> --keys <keys-dir>`.
-   **This will fail on the four nightly core inputs until they are re-pinned** (section L) — treat
-   that re-pin as a separate reviewed decision.
-2. Install through RetroFrontier's own Settings → managed runtime action, not by hand.
-3. Confirm the new installation reports `Ready`, and that
-   `runtime/versions/<new-installation>/runtime/support/joypad-autoconfig/udev/` contains the
-   DualSense profile.
+The exact procedure now lives in **section Q.8**, because the release the operator installs is
+Release 002 and the qualification environment must select the 002 manifest target. The old
+instruction here — republish and expect the four nightly core inputs to fail — no longer applies.
 
 ```text
 NOT PERFORMED — HUMAN INTERACTION REQUIRED
@@ -493,10 +511,20 @@ the two that matter.
 - **In-game input is not proven.** Detection and profile matching are proven on the real binary with
   the real pad. Whether every button behaves correctly *inside a running game* is a physical result
   only the operator can produce.
-- **The release cannot currently be rebuilt end to end.** Four nightly core inputs have rolled
-  upstream and no longer match their pins. This predates this pass and blocks any full
-  reconstruction, not only this one. It needs a separate reviewed re-pin — and it is an argument for
-  moving the cores to immutable revisions the way the profile database now is.
+- **~~The release cannot currently be rebuilt end to end.~~** Fixed in the release-integrity pass:
+  every core now comes from the version-addressed stable bundle and the complete release builds and
+  publishes (sections Q.3 and Q.5).
+- **One upstream input still has no version-addressed URL.** `assets/system/Dolphin.zip` is
+  regenerated upstream — its bytes changed during this very pass while its length stayed identical.
+  The derived `dolphin-sys` component is unaffected and provably byte-identical, because the
+  deterministic repackager normalises the container metadata that actually changed (section Q.4), but
+  a real change to the Sys data upstream would still break reconstruction from the network. The
+  maintainer input cache is the mitigation; an immutable revision is the proper follow-up.
+- **The four core binaries are new component versions, and in-game play with them is not proven.**
+  The stable 1.22.2 build of each core is not byte-identical to the nightly build Release 001 shipped
+  (section Q.3). All four load and identify themselves correctly through the real installed tree, and
+  the real DualSense is configured by the real RetroArch 002 binary, but nothing about *playing* a
+  game on the new binaries is proven without the operator.
 - **`log_to_file` is set but produces nothing.** RetroArch only initialises file logging when
   verbosity is enabled, so the configured log directory has always stayed empty. Deliberately not
   changed here — this pass is narrow — but the generated configuration currently promises a log it
@@ -518,13 +546,379 @@ the two that matter.
 
 ---
 
+## Q. Runtime Release integrity corrective pass
+
+A separate corrective pass on top of `8700a91eaab39516e43c9ffaddd37f2531ccb2a1`. It changes no
+controller behaviour at all; it fixes two release-engineering defects the controller fix exposed.
+
+### Q.1 Why changing authenticated components requires Release 002
+
+ADR-012 gives a Runtime Release three properties that have to hold together: an **immutable release
+id**, a **monotonically increasing release sequence**, and **immutable authenticated targets**. The
+third is the one the controller fix broke. Adding `joypad-autoconfig` changes the release manifest,
+changes the published target set, and changes the installed inventory a client verifies — while the
+definition still said `rf-runtime-1.22.2-linux-x86_64-001`, `release_sequence = 1`, and
+`rf-runtime-linux-x86_64-001.manifest.json`.
+
+That is not a re-publication of Release 001. It is a *different release wearing Release 001's name*,
+and it defeats the point of pinning an identity:
+
+- a client that has already authenticated Release 001 cannot tell the two apart by identity;
+- an installed `i-18d0a4fda8be7c01-1-293535` claims to be Release 001 and legitimately is — the old
+  Release 001 — so "reinstall Release 001" becomes ambiguous rather than idempotent;
+- the sequence stops being a monotonic record of what was published;
+- any archived Release 001 manifest and any Release 001 TUF target now contradict the "current"
+  Release 001, so provenance can no longer be retraced.
+
+So the fix is a new generation, not an edited one:
+
+| | Release 001 (historical) | Release 002 (active) |
+| --- | --- | --- |
+| `release_id` | `rf-runtime-1.22.2-linux-x86_64-001` | `rf-runtime-1.22.2-linux-x86_64-002` |
+| `release_sequence` | 1 | **2** |
+| `manifest_id` | `rf-runtime-linux-x86_64-001` | `rf-runtime-linux-x86_64-002` |
+| `manifest_target_name` | `rf-runtime-linux-x86_64-001.manifest.json` | `rf-runtime-linux-x86_64-002.manifest.json` |
+| Definition | `release/linux-x86_64/history/runtime-release-001.json` | `release/linux-x86_64/runtime-release.json` |
+| Components | 6 | 7 |
+| Inventory entries | 2 932 | 3 985 |
+
+Release 001 is preserved **verbatim** at
+[`release/linux-x86_64/history/runtime-release-001.json`](../release/linux-x86_64/history/runtime-release-001.json),
+including the four rolling nightly URLs it pinned. Re-pinning a historical definition would destroy
+the record rather than fix anything. No modified byte is published under any `001` identity: the
+Release 002 repository publishes only `002` targets.
+
+**Every place the identity is selected or embedded** was checked:
+
+| Location | Kind | State |
+| --- | --- | --- |
+| `release/linux-x86_64/runtime-release.json` | `manifest_id`, `release_id`, `release_sequence`, `manifest_target_name` | Release 002 |
+| `release/linux-x86_64/history/runtime-release-001.json` | archived definition | Release 001, untouched |
+| `RETROFRONTIER_RUNTIME_MANIFEST_TARGET` | the **only** runtime selector; no default is compiled in | supplied by the environment |
+| `src-tauri/src/release/qualification.rs` | documented qualification environment | selects 002 |
+| `docs/M7_5_RUNTIME_QUALIFICATION.md` | documented qualification environment | selects 002, with a superseded-release note |
+| `docs/CORE_MATRIX.md` | which release ships the four resolved cores | Release 002 |
+| `src/features/settings/*.test.ts(x)` | frontend fixtures | deliberately left as arbitrary ids — these assert the panel renders *whatever* release id it is given, and pinning the active id into them would create false coupling |
+
+`ReleaseDefinition::supersedes` now encodes the rule itself, so it is enforced rather than remembered:
+a successor must advance the sequence, and if the authenticated contents differ it must also change
+the release id, the manifest id, and the manifest target name.
+
+### Q.2 Why `minimum_safe_release_sequence` stays 1
+
+It was **not** raised to 2. That field is the client's anti-rollback floor: it says "refuse to install
+anything at or below this sequence, because it is unsafe". Raising it is a security revocation of
+Release 001, and the finding here is not that Release 001 is unsafe — it is that Release 001 is
+*superseded* and was *unreconstructable*. Those are different claims with different consequences: a
+revocation permanently removes an operator's ability to fall back, and it should be a deliberate
+security decision recorded against a specific vulnerability, not a side effect of shipping a newer
+generation. The committed policy target is therefore:
+
+```json
+{"minimum_safe_release_sequence":1,"revoked_release_ids":[]}
+```
+
+A regression test asserts the floor did not move with the generation.
+
+### Q.3 Why the rolling nightly core URLs were unacceptable, and what replaced them
+
+Release 001 pinned four cores under
+`buildbot.libretro.com/nightly/linux/x86_64/latest/`. `latest` is a moving pointer, so the bytes
+behind those four URLs had already been replaced upstream and the committed release could no longer be
+reconstructed from its own recorded provenance. Re-pinning today's `latest` bytes would restore the
+build for exactly as long as it takes upstream to publish the next nightly, so it was not treated as
+a fix. The original runtime spike had already written this rule down —
+[`RUNTIME_SPIKE.md`](RUNTIME_SPIKE.md): "Core directories such as `nightly/<platform>/latest/` are
+mutable evidence sources, never production release IDs" — so this was a known rule that the committed
+definition violated, not a newly discovered property of the upstream host.
+
+**The immutable source selected for all four cores** is the official *version-addressed* stable core
+bundle that accompanies the RetroArch build this runtime already pins:
+
+| | |
+| --- | --- |
+| Source URL | `https://buildbot.libretro.com/stable/1.22.2/linux/x86_64/RetroArch_cores.7z` |
+| SHA-256 | `4b7ed8dc97d4bf035fce182c64b5658c7662e2e9e5d42129538afbd4b6096307` |
+| Byte length | 274 237 400 |
+| Upstream `Last-Modified` | Thu, 20 Nov 2025 02:50:05 GMT — the RetroArch 1.22.2 publication date |
+| Contents | 199 libretro cores, 5 directories, 1 651 432 240 bytes uncompressed, single solid LZMA2 block |
+| Licence recorded | `GPL-3.0-or-later` as the bundle aggregate; each derived component keeps its own core licence |
+
+The archive was **inspected, not assumed**. Its layout is a portable-home tree, and every core is a
+bare `.so` — there is no per-core archive to redistribute:
+
+```text
+RetroArch-Linux-x86_64/RetroArch-Linux-x86_64.AppImage.home/.config/retroarch/cores/nestopia_libretro.so
+RetroArch-Linux-x86_64/RetroArch-Linux-x86_64.AppImage.home/.config/retroarch/cores/bsnes_mercury_balanced_libretro.so
+RetroArch-Linux-x86_64/RetroArch-Linux-x86_64.AppImage.home/.config/retroarch/cores/mednafen_psx_libretro.so
+RetroArch-Linux-x86_64/RetroArch-Linux-x86_64.AppImage.home/.config/retroarch/cores/dolphin_libretro.so
+```
+
+All four required cores are present, so this bundle is the source. One consequence had to be handled
+rather than papered over: a component's target artefact is an archive whose installed layout the
+manifest declares, and a bare `.so` is not one. A new derivation, `seven_zip_member_tar`, lifts the
+named member out of the bundle and packages it as a **deterministic single-entry tar** under a
+declared flat `entry_name`, executable because it is native code the runtime `dlopen`s. It shares one
+tar builder with the existing `zip_subtree_tar` derivation, so determinism is proven in one place, and
+the resulting artefact is pinned by its own digest exactly as before. Support data still gets mode
+`0644`; only this derivation marks its entry executable.
+
+**The core binaries changed. They are not byte-identical to the M7.5 cores.** The stable 1.22.2 build
+of a core is a different build from the nightly Release 001 happened to capture, and the hashes prove
+it — including `bsnes-mercury-balanced`, whose length is identical and whose content is not, which is
+exactly why identity is never inferred from size:
+
+| Core | Release 001 `.so` (nightly) | Release 002 `.so` (stable 1.22.2) | Identical? |
+| --- | --- | --- | --- |
+| `nestopia_libretro.so` | 5 431 800 · `bde9bbe38da4d0c715320d26c931ba80960c11947b1071fe186a6748182f5300` | 5 360 704 · `3f1b76f6d8e68c149a3269c314b406d15f806597333466b1f6a0af01afab52c7` | **No** |
+| `bsnes_mercury_balanced_libretro.so` | 1 786 872 · `a546d3b04a81325c7397f140231d5b0f6bc700777ba8ca2f4ce836103c5b07de` | 1 786 872 · `06fe34874cf8fdec00801a2d22c497c477721a23a87a6e7b5cae82dc1770c5be` | **No** (same length) |
+| `mednafen_psx_libretro.so` | 12 504 960 · `56163b4d5df810c645973fa1ea792b5a5640b1a235d7cf29c853a5eea085ff0a` | 10 471 424 · `ffc1c18a1fc41bf1f28cccaaa7e30e6677ec2aeda91c39b2d8f72d3bd4e2e641` | **No** |
+| `dolphin_libretro.so` | 16 549 360 · `1f2f21eb032949e903bfde850b71f697bb2288a48c8ba8802a8d76fbcf9858ad` | 20 514 952 · `c28dc9a2207ffed938810abf3e24df23dc39ef58c6a16c036fc2c58c2240ef10` | **No** |
+
+The Release 001 column is taken from that release's own authenticated manifest inventory and confirmed
+against the bytes still installed at `i-18d0a4fda8be7c01-1-293535`; the Release 002 column is the
+bytes extracted from the pinned bundle and confirmed again after installation. No byte identity is
+claimed anywhere, because no hash supports it. All four are therefore **new Release 002 component
+versions**, and Q.6 is the re-run qualification evidence that goes with them.
+
+### Q.4 The other mutable input, and why the component is still safe
+
+Fixing the cores exposed a second instance of the same class, not named in the finding:
+`https://buildbot.libretro.com/assets/system/Dolphin.zip` has no version-addressed form and is
+regenerated upstream. Its bytes changed **during this pass** — pinned
+`a406e5207481806f358b726ccc674f169d6e1a0c0528ae135b76b9e9259ee313`, now
+`5d4b217991187abfc326ccd13849aa0ad0af623c78b26ff25979933843c67c30` — at an identical length of
+3 195 803, which is the signature of a rebuilt zip container rather than changed data.
+
+That reading was tested rather than assumed. Deriving the component from the new zip through the same
+deterministic repackager produces a **byte-identical** artefact:
+
+```text
+dolphin-sys.tar   7959552   591b8df55ad99064824244c33ae9640714dc1701251aa2d2ba65810876fbda90   matches pin
+```
+
+So the authenticated `dolphin-sys` component of Release 002 is exactly the component Release 001
+shipped; only the provenance record of the container needed refreshing, and the derived pin is what
+actually protects the bytes. This is recorded as a residual risk in section O — a genuine change to
+upstream's Sys data would still break network reconstruction, with the maintainer input cache as the
+mitigation and an immutable revision as the follow-up. It is **not** a `/latest/` URL, and no core
+input has a rolling path any more.
+
+### Q.5 Complete Release 002 construction and publication proof
+
+Run against the **complete** committed definition, not a reduced fixture, with the four verified
+pinned inputs in the maintainer cache:
+
+```console
+$ rf-runtime-release build \
+    --definition release/linux-x86_64/runtime-release.json \
+    --output <work>/out --cache <work>/input-cache
+release       rf-runtime-1.22.2-linux-x86_64-002
+sequence      2
+retroarch     1.22.2
+manifest      rf-runtime-linux-x86_64-002.manifest.json
+manifest hash a6205d4fde92753bd10db3a47c48b3b75f65e96cee1781fffdb4d15e447594a5
+inventory     3985 entries
+target        retroarch-1.22.2-linux-x86_64.AppImage                   10390008  794b0f65d4efa918e2ad05cac34b444a4f3207ed6c74834b7c14eb5fb15e1cc4
+target        nestopia_libretro.so.tar                                  5362688  9ef74939752057dbf8aae167984d909a2053e03d76e145c1b5cf993e174fd0d6
+target        bsnes_mercury_balanced_libretro.so.tar                    1788416  3e13256e7f9f0bc73a9011460c2064644ac2f8e2d68461a97b7a2edbc2114f95
+target        mednafen_psx_libretro.so.tar                             10472960  8112f600f7f69c861edb2c09e1389cdfaff9a3925bd86d06888147cfc1360251
+target        dolphin_libretro.so.tar                                  20516864  42fab8f87403f32d71eeeeb29bb13f1eccffc347082dfb377b901a5c6144d3df
+target        dolphin-sys.tar                                           7959552  591b8df55ad99064824244c33ae9640714dc1701251aa2d2ba65810876fbda90
+target        joypad-autoconfig-1.22.0.tar                              2336768  d81e3ac266d592b1732a7b16d77563aa513b270d2a5e592bf2040d633d6906cc
+target        rf-runtime-linux-x86_64-002.manifest.json                  870739  a6205d4fde92753bd10db3a47c48b3b75f65e96cee1781fffdb4d15e447594a5
+target        runtime-policy.json                                            60  ecc7471609ac23b88c6dae65323ea4420c335ea597c8201dd95c8be9fc980877
+```
+
+Every stage completed, in order: all four pinned inputs verified against length and digest → every one
+of the seven derived component artefacts matched its own pin → the 3 985-entry inventory was generated
+from the artefacts → `RuntimeManifest::validate_for_linux_x86_64` (the *client's* validator) accepted
+the manifest → every component was extracted through the production `LinuxRuntimeArchiveExtractor` →
+`verify_tree` accepted the extracted tree against the inventory → `validate_app_run` accepted the entry
+point. A failure at any stage is a non-zero exit and no output, so the printed target table *is* the
+proof that all of them passed.
+
+Then the qualification TUF publication path, same tool, same complete definition, existing
+qualification keys at `~/.retrofrontier-qualification-keys`:
+
+```console
+$ rf-runtime-release publish --definition release/linux-x86_64/runtime-release.json \
+    --output <work>/out --cache <work>/input-cache --keys ~/.retrofrontier-qualification-keys
+metadata      <work>/out/metadata
+targets       <work>/out/repository-targets
+trusted root  <work>/out/metadata/root.json
+```
+
+Published repository: `1.root.json`, `1.targets.json`, `1.snapshot.json`, `timestamp.json`, and **9
+consistent-snapshot targets** (`<sha256>.<name>`). Ed25519 only, 2-of-3 thresholds on root and targets,
+separately scoped snapshot and timestamp keys. Nothing was hand-edited — no manifest, no TUF metadata.
+
+**Release 002 exact figures**
+
+| | |
+| --- | --- |
+| Manifest size | **870 739 bytes** (Release 001: 626 988) |
+| Manifest SHA-256 | `a6205d4fde92753bd10db3a47c48b3b75f65e96cee1781fffdb4d15e447594a5` |
+| Inventory entries | **3 985** (Release 001: 2 932) |
+| Components | **7** |
+| Published targets | **9** (7 components + manifest + policy) |
+| Pinned inputs | **4** (Release 001: 6) |
+
+**All seven component identities**
+
+| Component | Kind | Target | Format | Artefact SHA-256 · bytes | Installed at | Executable |
+| --- | --- | --- | --- | --- | --- | --- |
+| `retroarch` | `runtime` | `retroarch-1.22.2-linux-x86_64.AppImage` | `app_image` | `794b0f65d4efa918e2ad05cac34b444a4f3207ed6c74834b7c14eb5fb15e1cc4` · 10 390 008 | `runtime/retroarch` | `usr/bin/retroarch` |
+| `nestopia` | `core` | `nestopia_libretro.so.tar` | `tar` | `9ef74939752057dbf8aae167984d909a2053e03d76e145c1b5cf993e174fd0d6` · 5 362 688 | `cores/nestopia` | `nestopia_libretro.so` |
+| `bsnes-mercury-balanced` | `core` | `bsnes_mercury_balanced_libretro.so.tar` | `tar` | `3e13256e7f9f0bc73a9011460c2064644ac2f8e2d68461a97b7a2edbc2114f95` · 1 788 416 | `cores/bsnes-mercury-balanced` | `bsnes_mercury_balanced_libretro.so` |
+| `beetle-psx` | `core` | `mednafen_psx_libretro.so.tar` | `tar` | `8112f600f7f69c861edb2c09e1389cdfaff9a3925bd86d06888147cfc1360251` · 10 472 960 | `cores/beetle-psx` | `mednafen_psx_libretro.so` |
+| `dolphin` | `core` | `dolphin_libretro.so.tar` | `tar` | `42fab8f87403f32d71eeeeb29bb13f1eccffc347082dfb377b901a5c6144d3df` · 20 516 864 | `cores/dolphin` | `dolphin_libretro.so` |
+| `dolphin-sys` | `support_asset` | `dolphin-sys.tar` | `tar` | `591b8df55ad99064824244c33ae9640714dc1701251aa2d2ba65810876fbda90` · 7 959 552 | `runtime/support/dolphin-sys` | — |
+| `joypad-autoconfig` | `support_asset` | `joypad-autoconfig-1.22.0.tar` | `tar` | `d81e3ac266d592b1732a7b16d77563aa513b270d2a5e592bf2040d633d6906cc` · 2 336 768 | `runtime/support/joypad-autoconfig` | — |
+
+**Is every source reconstructable from immutable or pinned provenance?**
+
+| Input | Addressing | Reconstructable |
+| --- | --- | --- |
+| `retroarch-1.22.2-linux-x86_64-7z` | `/stable/1.22.2/` — version-addressed | Yes |
+| `retroarch-cores-1.22.2-linux-x86_64-7z` | `/stable/1.22.2/` — version-addressed | Yes |
+| `retroarch-joypad-autoconfig-1.22.0-zip` | `codeload…/zip/38cf938b…` — immutable commit | Yes |
+| `dolphin-system-assets-zip` | no version-addressed form upstream; container regenerated | **Component yes, container no** — the derived artefact is provably stable (Q.4); the container digest is pinned and cached, but a real upstream data change would break network reconstruction |
+
+Six of seven components are reconstructable from an immutable, version-addressed or commit-addressed
+upstream URL. The seventh (`dolphin-sys`) is reconstructable from its pinned derived digest and the
+maintainer input cache, and its bytes are unchanged since Release 001. **No core input has a rolling
+`/latest/` or `/nightly/` path.**
+
+### Q.6 Re-run real qualification evidence for the new component versions
+
+Because all four core binaries changed, the real-runtime evidence was re-run rather than inherited.
+Everything below is a real result on this machine, against the **published Release 002 qualification
+repository**, in an isolated app-data root so the operator's own installation was not disturbed.
+
+**Install through the production TUF path** — the same `ToughTrustedReleaseSource`, `RuntimeManager`,
+extractor, inventory verification, and activation protocol the application composes:
+
+```console
+$ RETROFRONTIER_RUNTIME_SOURCE=qualification \
+  RETROFRONTIER_RUNTIME_MANIFEST_TARGET=rf-runtime-linux-x86_64-002.manifest.json \
+  … cargo test --features release-tools --lib qualification -- --ignored
+install_the_real_managed_runtime  ... ok
+report_the_verified_managed_runtime ... ok
+
+state=Ready source=Some(Qualification) release=Some("rf-runtime-1.22.2-linux-x86_64-002")
+             installation=Some("i-18d144307a8e023a-1-26661")
+verified cores: ["beetle-psx", "bsnes-mercury-balanced", "dolphin", "nestopia"]
+support: dolphin-sys       -> … present=true
+support: joypad-autoconfig -> … present=true
+```
+
+The four content-dependent qualification tests (`launch_a_real_game_through_the_m7_path`,
+`rescan_the_managed_library`, `report_bios_and_system_readiness`, `reconcile_after_a_crash`) were not
+run: they require `RETROFRONTIER_QUALIFICATION_LIBRARY` and the operator's own legally owned content.
+They are part of section N, not of this pass.
+
+**Every new core binary really loads.** Each installed core was `dlopen`ed from the verified Release
+002 tree and asked to identify itself through the libretro API:
+
+| Component | `retro_api_version` | `library_name` | `library_version` | Installed mode · bytes |
+| --- | --- | --- | --- | --- |
+| `nestopia` | 1 | Nestopia | `1.53.2 5deada5` | `0755` · 5 360 704 |
+| `bsnes-mercury-balanced` | 1 | bsnes-mercury | `v094 (Balanced) 0f35d04` | `0755` · 1 786 872 |
+| `beetle-psx` | 1 | Beetle PSX | `0.9.44.1 d6383bf` | `0755` · 10 471 424 |
+| `dolphin` | 1 | dolphin-emu | `fd1aca3a` | `0755` · 20 514 952 |
+
+Every installed digest equals the bundle-extracted digest in Q.3, and `retro_api_version = 1` matches
+the release's declared `retroarch_core_api`. The executable bit the new derivation sets survives all
+the way to the installed tree, which is what `validate_for_linux_x86_64` requires of a component's
+declared executable.
+
+**The controller fix still works on Release 002.** The Release 002 RetroArch binary, the Release 002
+profile component (420 `udev` profiles, DualSense and DualSense Edge present), and the same physical
+DualSense over USB:
+
+```text
+[INFO] RetroArch 1.22.2 (Git 69a4f0e)
+[INFO] [udev] Pad #0 (/dev/input/event4) supports force feedback.
+[INFO] [Input] Found joypad driver: "udev".
+[INFO] [Autoconf] Sony DualSense konfiguriert in Port 1.
+```
+
+`konfiguriert in Port 1` — configured, on the new release. As before, this proves detection and
+profile matching, **not** in-game play, which stays section N.2's operator step.
+
+### Q.7 Regression coverage added
+
+| Id | What it prevents | Where |
+| --- | --- | --- |
+| R1 | Changing component contents while keeping a published release identity. Asserts the committed 002 definition legitimately supersedes 001, and refuses a synthetic definition with changed contents under 001's id, manifest id, or manifest target — down to a single re-pinned component. Republishing byte-identical contents is deliberately still allowed. | `definition.rs` |
+| R2 | A new generation that does not advance the release sequence, and a generation that silently raises the anti-rollback floor. | `definition.rs` |
+| R3 | Any `/latest/` or `/nightly/` URL in the active definition, and any core not derived from the version-addressed stable bundle by a named member. | `definition.rs` |
+| R4 | A complete Release 002 that omits `joypad-autoconfig` — asserts the exact seven-component set. | `definition.rs` |
+| R5 | Qualification selection continuing to request the 001 manifest: every documented `RETROFRONTIER_RUNTIME_MANIFEST_TARGET` must equal the active manifest target and must not be a superseded one. | `definition.rs` |
+| — | The new core derivation: reproducible bytes, the entry at the component's `executable_relative_path`, executable, and nested/escaping/empty entry names refused. | `inventory.rs` |
+| — | Read-only support data never becoming executable now that both derivations share one tar builder. | `inventory.rs` |
+
+### Q.8 Exact reinstall procedure
+
+`rf-runtime-release` never vendors runtime binaries into the repository, so the maintainer cache and
+the published repository live outside it. Substitute your own working directory for `<work>`.
+
+```bash
+# 1. Construct and publish the complete Release 002 qualification repository.
+#    Inputs are downloaded once and verified against their pins; nothing is trusted for
+#    having downloaded successfully.
+cd src-tauri
+cargo run --features release-tools --bin rf-runtime-release -- publish \
+  --definition ../release/linux-x86_64/runtime-release.json \
+  --output <work>/out \
+  --cache <work>/input-cache \
+  --keys ~/.retrofrontier-qualification-keys
+
+# 2. Point the application at that repository. The manifest target MUST be the 002 one:
+#    there is no compiled-in default, so this environment is the release selection.
+export RETROFRONTIER_RUNTIME_SOURCE=qualification
+export RETROFRONTIER_RUNTIME_TUF_ROOT=<work>/out/metadata/root.json
+export RETROFRONTIER_RUNTIME_METADATA_URL=file://<work>/out/metadata/
+export RETROFRONTIER_RUNTIME_TARGETS_URL=file://<work>/out/repository-targets/
+export RETROFRONTIER_RUNTIME_MANIFEST_TARGET=rf-runtime-linux-x86_64-002.manifest.json
+
+# 3. Launch RetroFrontier and install through Settings → managed runtime. Never by hand:
+#    installation is what authenticates, extracts, verifies, and activates.
+pnpm tauri:dev
+```
+
+Then confirm, before touching the controller:
+
+1. Settings reports the runtime `Ready`, release `rf-runtime-1.22.2-linux-x86_64-002`, and a **new**
+   installation id (not `i-18d0a4fda8be7c01-1-293535`).
+2. `runtime/versions/<new-installation>/runtime/support/joypad-autoconfig/udev/` contains
+   `Sony Interactive Entertainment DualSense Wireless Controller.cfg`.
+3. All four cores report as available in readiness.
+
+The previous Release 001 installation is retained by the ordinary retention policy and is not deleted
+by this pass; activation moves to the new installation. Only then is section N.2 meaningful.
+
+```text
+NOT PERFORMED — HUMAN INTERACTION REQUIRED
+```
+
+---
+
 ## P. Verdict
 
 ```text
 M8 FINAL HARDWARE INPUT PASS — READY FOR OPERATOR REQUALIFICATION
 ```
 
-Both findings are fixed, both fixes are covered by regression tests, and the RetroArch fix is
+Both input findings are fixed, both fixes are covered by regression tests, and the RetroArch fix is
 demonstrated on the real managed binary with the real physical DualSense: `not configured` before,
-`configured in Port 1` after. The physical controller must not be called fixed until the operator
-runs the real in-game test in section N.2.
+`configured in Port 1` after.
+
+Both release-engineering findings are fixed as well, and the verdict stands on the condition it was
+given: the **complete** Release 002 definition builds through every stage and publishes to a
+qualification TUF repository (section Q.5), with no rolling core URL left anywhere in the active
+definition.
+
+The physical controller must not be called fixed until the operator reinstalls Release 002 per
+section Q.8 and runs the real in-game test in section N.2.
