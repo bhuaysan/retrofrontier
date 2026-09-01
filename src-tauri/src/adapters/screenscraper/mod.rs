@@ -132,15 +132,43 @@ impl ScreenScraperProvider {
     fn parse_game_response(
         body: &[u8],
     ) -> Result<(ProviderGameRecord, Option<ProviderQuotaSnapshot>), ProviderFailureClass> {
-        let response = parse::response_object(body).map_err(malformed)?;
+        let response = parse::response_object(body)
+            .inspect_err(|_| log_malformed_body("response envelope", body))
+            .map_err(malformed)?;
         let quota = parse::parse_quota(&response);
-        let record = parse::parse_game(&response).map_err(malformed)?;
+        let record = parse::parse_game(&response)
+            .inspect_err(|_| log_malformed_body("game record", body))
+            .map_err(malformed)?;
         Ok((record, quota))
     }
 }
 
+/// Longest excerpt of an unparseable body that is ever logged.
+///
+/// Long enough to carry a provider error sentence, short enough that a large HTML or JSON payload
+/// cannot flood the log.
+const MALFORMED_BODY_LOG_CHARS: usize = 240;
+
 fn malformed(_: MalformedResponse) -> ProviderFailureClass {
     ProviderFailureClass::MalformedResponse
+}
+
+/// Records why a 2xx body could not be understood.
+///
+/// The provider answers some conditions — a blocked application, a closed API, an exhausted budget —
+/// with HTTP 200 and a plain sentence instead of its JSON envelope. Without the body those all
+/// collapse into an indistinguishable `malformed_response` that no operator can act on. The excerpt
+/// is bounded and passed through the same redaction the free-text path already uses, so a
+/// credential echoed back inside an error message cannot reach the log.
+fn log_malformed_body(context: &'static str, body: &[u8]) {
+    let text = String::from_utf8_lossy(body);
+    let excerpt: String = text.trim().chars().take(MALFORMED_BODY_LOG_CHARS).collect();
+    tracing::warn!(
+        context,
+        bytes = body.len(),
+        excerpt = %redact_text(&excerpt),
+        "metadata provider returned a body that could not be understood"
+    );
 }
 
 /// Maps transport failures onto the provider-neutral taxonomy.
@@ -255,9 +283,13 @@ impl MetadataProvider for ScreenScraperProvider {
         let response = self
             .call(url, user_credentials_sent, MAX_METADATA_RESPONSE_BYTES)
             .await?;
-        let parsed = parse::response_object(&response.body).map_err(malformed)?;
+        let parsed = parse::response_object(&response.body)
+            .inspect_err(|_| log_malformed_body("search envelope", &response.body))
+            .map_err(malformed)?;
         let quota = parse::parse_quota(&parsed);
-        let mut candidates = parse::parse_candidates(&parsed).map_err(malformed)?;
+        let mut candidates = parse::parse_candidates(&parsed)
+            .inspect_err(|_| log_malformed_body("search results", &response.body))
+            .map_err(malformed)?;
         candidates.truncate(MAX_SEARCH_CANDIDATES);
         Ok(ProviderResponse::new(candidates, quota))
     }
@@ -594,6 +626,38 @@ mod tests {
         assert_eq!(http.call_count(), 0);
     }
 
+    #[test]
+    fn a_malformed_body_excerpt_is_bounded_and_redacted() {
+        // The provider answers some conditions with HTTP 200 and a sentence rather than JSON, and
+        // that sentence is the only thing that tells an operator what is wrong. It must be
+        // loggable without carrying a credential or flooding the log.
+        let hostile = format!(
+            "Erreur: devid=real-developer-id&devpassword=real-developer-password {}",
+            "x".repeat(4_096)
+        );
+        let excerpt: String = hostile
+            .trim()
+            .chars()
+            .take(MALFORMED_BODY_LOG_CHARS)
+            .collect();
+        let logged = redact_text(&excerpt);
+
+        assert!(logged.chars().count() <= MALFORMED_BODY_LOG_CHARS);
+        assert!(!logged.contains("real-developer-id"));
+        assert!(!logged.contains("real-developer-password"));
+        assert!(
+            logged.contains("Erreur"),
+            "the diagnostic text must survive"
+        );
+    }
+
+    #[test]
+    fn a_body_that_is_not_json_is_reported_as_malformed_rather_than_retried_blindly() {
+        // ScreenScraper's plain-text refusals arrive with HTTP 200.
+        let body = b"API totalement fermee pour le moment";
+        assert_eq!(parse::response_object(body), Err(MalformedResponse));
+        log_malformed_body("test", body);
+    }
     #[tokio::test]
     async fn every_logged_request_url_is_redacted() {
         let http = RecordingHttpClient::ok(MINIMAL_GAME);

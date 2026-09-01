@@ -38,6 +38,7 @@ const MISSING_ELIGIBILITY_COUNT: &str = "SELECT COUNT(*) FROM games g \
          OR (pm.status = 'failed' AND pm.last_failure IN ('invalid_request', \
              'developer_authentication_failed', 'user_authentication_failed', \
              'client_rejected', 'credentials_unavailable')) \
+         OR (pm.status IN ('pending', 'deferred') AND pm.unsupported_reason IS NULL) \
      ) AND NOT EXISTS (SELECT 1 FROM metadata_jobs j \
          WHERE j.game_id = g.id AND j.provider_id = ? \
          AND j.state IN ('pending', 'running', 'deferred'))";
@@ -54,6 +55,7 @@ const MISSING_ELIGIBILITY_SNAPSHOT: &str = "INSERT INTO metadata_scrape_run_item
          OR (pm.status = 'failed' AND pm.last_failure IN ('invalid_request', \
              'developer_authentication_failed', 'user_authentication_failed', \
              'client_rejected', 'credentials_unavailable')) \
+         OR (pm.status IN ('pending', 'deferred') AND pm.unsupported_reason IS NULL) \
      ) AND NOT EXISTS (SELECT 1 FROM metadata_jobs j \
          WHERE j.game_id = g.id AND j.provider_id = ? \
          AND j.state IN ('pending', 'running', 'deferred'))";
@@ -74,13 +76,21 @@ impl MetadataScrapeRepository {
     ///
     /// The two predicates are deliberately narrow.
     ///
-    /// *Missing* means the provider has never answered about this game. That is usually "untouched"
-    /// — no provider relationship and no metadata job — but it also covers a game whose only
-    /// recorded outcome is a failure about RetroFrontier's own configuration. A build with no
-    /// ScreenScraper credentials parks every identification with `credentials_unavailable`, and
-    /// treating that as an answer would hide those games from every future run even after the
-    /// configuration is fixed. A no-match, an ambiguous candidate set, an unsupported shape and a
-    /// genuinely exhausted retry budget *are* answers, and a repeated run does not re-ask them.
+    /// *Missing* means the provider has never answered about this game. Three shapes qualify.
+    ///
+    /// 1. Untouched: no provider relationship and no metadata job.
+    /// 2. A relationship whose only recorded outcome is a failure about RetroFrontier's own
+    ///    configuration. A build with no ScreenScraper credentials parks every identification with
+    ///    `credentials_unavailable`, and treating that as an answer would hide those games from
+    ///    every future run even after the configuration is fixed.
+    /// 3. A provisional relationship — `pending`, or a `deferred` carrying no unsupported reason —
+    ///    that no longer has work behind it. M5 writes those while an attempt is still in flight,
+    ///    so they record waiting rather than an answer. Stopping a run deletes the jobs it owned,
+    ///    and without this clause every game mid-retry at that moment would be stranded: excluded
+    ///    by the first branch for having a row, and by the second for not being `failed`.
+    ///
+    /// A no-match, an ambiguous candidate set, an unsupported shape and a genuinely exhausted retry
+    /// budget *are* answers, and a repeated run does not re-ask them.
     ///
     /// A game with live work is never eligible either way: whatever is queued will answer it.
     ///
@@ -1077,6 +1087,115 @@ mod tests {
         fixture
             .insert_job(games[0], MetadataJobKind::Identify, "pending")
             .await;
+
+        assert_eq!(
+            fixture
+                .repository
+                .count_eligible_games(PROVIDER, MetadataScrapeMode::MissingMetadata)
+                .await
+                .expect("preview should count"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_a_run_mid_retry_does_not_strand_those_games() {
+        // The state a stop leaves behind while identification is still retrying: M5 has written a
+        // provisional `deferred` relationship, and the stop deletes the job that was driving it.
+        // Neither is an answer, so a later run has to be able to reach the game again.
+        let fixture = Fixture::new().await;
+        let games = fixture.insert_games(3).await;
+        let run_id = fixture
+            .repository
+            .create_run(PROVIDER, MetadataScrapeMode::MissingMetadata, NOW)
+            .await
+            .expect("run should be created")
+            .expect("a run should exist");
+        fixture
+            .repository
+            .feed_pending_items(
+                run_id,
+                PROVIDER,
+                MetadataScrapeMode::MissingMetadata,
+                10,
+                NOW,
+            )
+            .await
+            .expect("feeding should succeed");
+
+        // Two transient failures put their relationships into a provisional deferral; the third
+        // exhausts its budget and is parked with a real verdict.
+        for game_id in &games[..2] {
+            fixture.insert_match(*game_id, "deferred", None).await;
+            sqlx::query(
+                "UPDATE metadata_jobs SET state = 'deferred', attempts = 2, \
+                 last_failure = 'malformed_response' WHERE game_id = ?",
+            )
+            .bind(game_id.0)
+            .execute(&fixture.pool)
+            .await
+            .expect("retry state");
+        }
+        fixture
+            .insert_failed_match(games[2], "malformed_response")
+            .await;
+        sqlx::query(
+            "UPDATE metadata_jobs SET state = 'failed', attempts = 5, \
+             last_failure = 'malformed_response' WHERE game_id = ?",
+        )
+        .bind(games[2].0)
+        .execute(&fixture.pool)
+        .await
+        .expect("parked state");
+
+        fixture
+            .repository
+            .begin_stop(run_id, PROVIDER, NOW)
+            .await
+            .expect("stop should begin");
+        fixture
+            .repository
+            .stop_if_settled(run_id, NOW)
+            .await
+            .expect("stop should settle");
+
+        assert_eq!(
+            fixture
+                .repository
+                .count_eligible_games(PROVIDER, MetadataScrapeMode::MissingMetadata)
+                .await
+                .expect("preview should count"),
+            2,
+            "a provisional deferral with no work behind it is not an answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provisional_relationship_with_live_work_is_left_to_that_work() {
+        let fixture = Fixture::new().await;
+        let games = fixture.insert_games(1).await;
+        fixture.insert_match(games[0], "deferred", None).await;
+        fixture
+            .insert_job(games[0], MetadataJobKind::Identify, "deferred")
+            .await;
+
+        assert_eq!(
+            fixture
+                .repository
+                .count_eligible_games(PROVIDER, MetadataScrapeMode::MissingMetadata)
+                .await
+                .expect("preview should count"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_shape_is_not_mistaken_for_a_provisional_deferral() {
+        // M5 records "this content shape has no documented provider representation" as a deferred
+        // relationship carrying a reason. That is an answer, and the reason is what distinguishes it.
+        let fixture = Fixture::new().await;
+        let games = fixture.insert_games(1).await;
+        fixture.insert_unsupported(games[0]).await;
 
         assert_eq!(
             fixture
