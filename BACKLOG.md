@@ -402,9 +402,10 @@ See [`docs/M7_5_RUNTIME_QUALIFICATION.md`](docs/M7_5_RUNTIME_QUALIFICATION.md) a
 
 See [`docs/CONTROLLER_AND_FOCUS.md`](docs/CONTROLLER_AND_FOCUS.md),
 [ADR-014](docs/adr/ADR-014-input-acquisition-boundary.md), and
-[`docs/M8_IMPLEMENTATION_REPORT.md`](docs/M8_IMPLEMENTATION_REPORT.md), and — for the two findings
-from the first physical DualSense/Wayland session —
-[`docs/M8_HARDWARE_CORRECTIVE_REPORT.md`](docs/M8_HARDWARE_CORRECTIVE_REPORT.md).
+[`docs/M8_IMPLEMENTATION_REPORT.md`](docs/M8_IMPLEMENTATION_REPORT.md), and — for the findings from
+the physical DualSense/Wayland sessions —
+[`docs/M8_HARDWARE_CORRECTIVE_REPORT.md`](docs/M8_HARDWARE_CORRECTIVE_REPORT.md) and
+[`docs/M8_FINAL_HARDWARE_INPUT_REPORT.md`](docs/M8_FINAL_HARDWARE_INPUT_REPORT.md).
 
 - [x] semantic input actions
 - [x] keyboard mapping
@@ -419,10 +420,14 @@ from the first physical DualSense/Wayland session —
 - [x] controller footer derived from the focus model
 - [x] primary settings navigation
 - [x] explicit Library controller navigation zones (sidebar / main)
+- [x] direct Library Search controller action (Standard Gamepad button 3 / Triangle / Y)
 - [x] managed RetroArch launches fullscreen
+- [x] managed RetroArch joypad-autoconfig profiles as an authenticated Runtime Release component
 - [x] regression tests
-- [ ] manual Linux controller/RetroArch qualification — first session found two issues, both
-      corrected and awaiting requalification
+- [ ] manual Linux controller/RetroArch qualification — the first session's two issues are
+      requalified; a second session found the unreachable Search field and a DualSense that produced
+      no input inside RetroArch. Both are corrected and awaiting requalification, which needs a
+      runtime reinstall because the authenticated release contents changed.
 - [ ] Windows and macOS controller qualification
 - [ ] controller remapping UI and persistence (B10)
 

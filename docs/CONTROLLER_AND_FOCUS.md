@@ -46,7 +46,7 @@ window keydown ────┘                        │
 ```ts
 type InputAction =
   | 'moveUp' | 'moveDown' | 'moveLeft' | 'moveRight'
-  | 'confirm' | 'back' | 'context';
+  | 'confirm' | 'back' | 'context' | 'search';
 ```
 
 No component, hook, or focus module refers to a key name or a gamepad button index. Physical
@@ -102,6 +102,7 @@ entirely. Remapping is out of M8 scope (B10); see [ADR-014](adr/ADR-014-input-ac
 | Button 0 (A / cross) | `confirm` |
 | Button 1 (B / circle) | `back` |
 | Button 2 (X / square) | `context` |
+| Button 3 (Y / triangle) | `search`, the direct Library Search transition |
 | Buttons 12–15 (D-pad) | `moveUp` / `moveDown` / `moveLeft` / `moveRight` |
 | Axes 0/1 (left stick) | directional, see below |
 
@@ -128,8 +129,10 @@ entirely. Remapping is out of M8 scope (B10); see [ADR-014](adr/ADR-014-input-ac
 - **Repeat is UI-paced, not frame-paced.** One action on press, then a pause, then a bounded
   interval, and never more than one directional action per polled frame — a stalled frame cannot
   emit a burst. Changing direction and releasing both reset the repeat state.
-- **Activation buttons are edge-triggered.** `confirm`, `back`, and `context` fire once per press,
-  never once per frame while held.
+- **Activation buttons are edge-triggered.** `confirm`, `back`, `context`, and `search` fire once
+  per press, never once per frame while held, and all four adopt and release with the same ownership
+  discipline: a button held across a loss and return of ownership produces nothing until it is
+  released and pressed again.
 
 **Controller selection** is deterministic: the active controller keeps ownership while it stays
 connected, so plugging in a second pad neither moves control nor duplicates actions; otherwise the
@@ -152,6 +155,7 @@ Focus restoration keys off stable semantic identities, never DOM selectors and n
 | --- | --- |
 | `library:game:<GameId>` | A Library game's Game Detail target |
 | `library:heading` | The Library heading, the deterministic Library fallback |
+| `library:search` | The top bar's Library Search field |
 | `sidebar:system:<id\|all>` | A sidebar system filter |
 | `sidebar:route:<route>` | A sidebar menu destination |
 | `detail:<action>` | Game Detail actions: back, play, favorite, metadata, cancel |
@@ -301,6 +305,42 @@ the header, which is in no zone, movement behaves exactly as before and can ente
 Only the Library declares zones. Game Detail and Settings keep the reviewed M8 behaviour, where the
 sidebar is a legitimate geometric neighbour of the screen's own controls, and the launch scopes on
 Game Detail keep owning `back` unconditionally.
+
+#### Reaching Search: an explicit exit, not a leak
+
+The asymmetry above is deliberate, and operator qualification confirmed the zones feel right — but
+it also found the practical consequence: with a controller alone there was no way to reach the search
+field at all. The answer is an explicit semantic transition, because the alternative — letting one
+direction leak out of a zone at one edge — would make the zone stop being a zone.
+
+| | Behaviour |
+| --- | --- |
+| Physical | Standard Gamepad button 3 — DualSense Triangle, Xbox-style Y |
+| Action | `search` |
+| Reachable from | The sidebar zone, the main zone, the Library heading, another header control |
+| Availability | Only where a Search field is really rendered, only while RetroFrontier owns application input, and never through an owning temporary scope |
+| Footer | `Y SEARCH`, derived like every other hint |
+
+`useFocusSearch({ label, run })` declares it, mirroring `useFocusBack`. Entries are scope-tagged, so
+a temporary scope that declares none simply has none: the action does nothing there and the footer
+stays silent, exactly as `confirm` and `context` are refused through an open scope. Unlike a zone
+`back`, a zone never answers `search` — it is an exit, so it is the same entry wherever inside the
+screen focus sits. When the Library renders no Search field — an empty library, a scan in progress —
+nothing is registered at all, so the button is inert rather than silently failing.
+
+**Returning from Search.** When the transition is taken, the semantic identity focus came *from* is
+captured. While the field owns focus, `back` returns to it:
+
+1. the captured origin, if it is still focusable;
+2. the selected Library sidebar entry;
+3. the all-systems sidebar entry;
+4. the Library heading.
+
+It never navigates: the Library is the root route. The `back` entry exists **only while the field
+really has focus**, and the captured origin is dropped the moment focus leaves, so this is not a
+trap and a pointer or `Tab` departure can never arm a later forced restoration. Typing, caret keys,
+`Escape`, `Tab`, `Shift+Tab`, and pointer interaction inside the field are untouched — the keyboard
+adapter already suppresses every mapped key inside a text-editing control.
 
 ### Scopes
 
@@ -611,8 +651,8 @@ gained exactly one permission, `core:window:allow-set-focus`, and nothing else w
 ## Controller footer
 
 Hints are derived from the focus model, never hard-coded per page: the focused node's declared
-`confirm`/`context` labels and the active scope's `back` label. They follow the *state* behind those
-actions, not only the focused identity. A `FocusProvider`-owned revision is bumped whenever that
+`confirm`/`context` labels, the active scope's `back` label, and the screen's `search` label. They
+follow the *state* behind those actions, not only the focused identity. A `FocusProvider`-owned revision is bumped whenever that
 state can have changed, and the footer subscribes to it; only the footer re-renders, and nothing else
 is invalidated.
 
@@ -623,6 +663,7 @@ The revision is bumped when:
 | A focused node's declared labels change | A Library card switching `SELECT` → `DESELECT`, Play losing `confirm` as it becomes disabled |
 | A scope opens or closes | It owns `back`, and it changes whether `confirm`/`context` may act at all |
 | A back handler appears or disappears | It changes what `B` may claim |
+| A search entry appears or disappears | It changes what `Y` may claim — an empty Library renders no Search field, so `SEARCH` must not be offered |
 | The focused **element** changes | Two unregistered controls both have a `null` identity and need not support the same actions, so an identity-keyed signal alone would never re-derive |
 | The focused element's own activation attributes change | A generic native control going disabled from local state, with nothing near the footer rerendering |
 

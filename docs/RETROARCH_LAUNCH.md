@@ -87,14 +87,15 @@ runtime version tree):
 
 ```text
 runtime-user/{config,system,core-info,core-options,assets,core-assets,shaders,filters/{video,audio},
-             playlists,history,remaps,autoconfig,cache,thumbnails,wallpapers,overlays,database,
+             playlists,history,remaps,cache,thumbnails,wallpapers,overlays,database,
              recordings/{output,config},menu/{browser,config},xdg/{config,data,cache,state}}
 saves/  states/  screenshots/  logs/retroarch/
 ```
 
 The generated `runtime-user/config/retroarch.cfg` sets every stateful RetroArch directory to one of
-these paths. `libretro_directory` is the only value pointing into the verified immutable version
-tree, because RetroArch only reads it. `config_save_on_exit` is `false` so RetroArch never rewrites
+these paths. `libretro_directory` and `joypad_autoconfig_dir` are the only values pointing into the
+verified immutable version tree, because RetroArch only reads both — see
+[Controller profiles](#controller-profiles). `config_save_on_exit` is `false` so RetroArch never rewrites
 the generated file, and `savefiles_in_content_dir`, `savestates_in_content_dir`,
 `systemfiles_in_content_dir`, and `screenshots_in_content_dir` are all `false` so nothing is written
 beside user ROMs.
@@ -102,6 +103,34 @@ beside user ROMs.
 There is exactly one configuration file. It is deterministic and rewritten atomically (unique
 same-directory temporary file, flush, rename, parent fsync, mode `0600`) before every launch, so no
 per-game configuration files exist and a crash cannot leave an ambiguous half-written file.
+
+### Controller profiles
+
+`joypad_autoconfig_dir` names the **verified immutable managed joypad-autoconfig database** in the
+active runtime version, at `runtime/support/joypad-autoconfig`.
+
+It used to name a private `runtime-user/autoconfig` directory that RetroFrontier created and never
+filled. Real hardware qualification showed what that costs: the managed RetroArch found the pad on
+`udev` and then reported it *unconfigured*, and an unconfigured pad has no RetroPad binds at all, so
+a physically working DualSense did nothing inside the game. The evidence, from the managed
+RetroArch 1.22.2 binary and the real controller, is in
+[`M8_FINAL_HARDWARE_INPUT_REPORT.md`](M8_FINAL_HARDWARE_INPUT_REPORT.md).
+
+- The profiles are an authenticated Runtime Release **support component**, pinned to an immutable
+  upstream revision of the official libretro `retroarch-joypad-autoconfig` database, and installed
+  into the immutable version tree by the same trusted machinery as the cores and Dolphin's `Sys`.
+- They are read-only support data, so RetroArch is pointed straight at the verified tree. No
+  writable directory is composed for them, which is the smallest shape that can be honest: a
+  directory RetroFrontier composes is a directory RetroFrontier can leave empty.
+- RetroArch resolves a profile at `joypad_autoconfig_dir/<joypad driver>/<device>.cfg` and selects
+  `udev` on Linux by its own default, which the real log confirms. RetroFrontier therefore sets
+  neither `input_joypad_driver` nor `input_autodetect_enable`: the managed defaults are already
+  correct, and a redundant authority is one more thing that can drift.
+- `resolve_controller_profiles` refuses to launch a runtime that does not carry the component, or
+  whose component lacks the `udev` directory, or whose component is a symbolic link. A game whose
+  controller cannot work is not started.
+- No host RetroArch location is ever consulted — not `~/.config/retroarch/autoconfig`, not
+  `/usr/share/libretro/autoconfig` — and nothing is downloaded at launch time.
 
 ### Fullscreen launch presentation
 

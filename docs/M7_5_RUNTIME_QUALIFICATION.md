@@ -95,6 +95,32 @@ deliberately never rewrites archive paths, and the core needs the `Sys` director
 `<system_directory>/dolphin-emu/Sys`. The repackager fixes mode, ownership, modification time, and
 entry order, so the produced bytes are reproducible and pinned by digest.
 
+### Controller-profile support component
+
+Added by the M8 final hardware-input pass, after real qualification showed the managed RetroArch
+detecting a physical DualSense and then reporting it *unconfigured* because RetroFrontier pointed
+`joypad_autoconfig_dir` at a private, always-empty directory. See
+[`M8_FINAL_HARDWARE_INPUT_REPORT.md`](M8_FINAL_HARDWARE_INPUT_REPORT.md).
+
+| | |
+| --- | --- |
+| Upstream | Official libretro joypad autoconfig database, `github.com/libretro/retroarch-joypad-autoconfig` |
+| Revision | Tag `v1.22.0`, commit `38cf938bba0adbde375972053068f10d955a9d14` |
+| Source | `https://codeload.github.com/libretro/retroarch-joypad-autoconfig/zip/38cf938bba0adbde375972053068f10d955a9d14` |
+| Upstream SHA-256 | `45e2c28e4691073a7bc45b0fb86bc91f2aa9d2c0de9773e4dab0fb1341abe744` (870 555 bytes) |
+| Licence | MIT (the database ships its own `COPYING`, which is redistributed with it) |
+| Artefact | `joypad-autoconfig-1.22.0.tar`, a deterministic repackaging of the repository tree |
+| Artefact SHA-256 | `d81e3ac266d592b1732a7b16d77563aa513b270d2a5e592bf2040d633d6906cc` (2 336 768 bytes) |
+| Install path | `runtime/support/joypad-autoconfig` |
+
+An immutable tagged commit is pinned rather than the rolling
+`buildbot.libretro.com/assets/frontend/autoconfig.zip` the RetroArch updater fetches, so the release
+stays reconstructable. The database is shipped verbatim rather than as a hand-picked driver subset:
+provenance stays trivial to audit, the licence text travels with the data, and every joypad driver is
+covered rather than only the one the current build selects. RetroArch reads it read-only, straight
+from the verified immutable tree — no writable copy is composed and no host RetroArch location is
+consulted.
+
 ## Release construction
 
 `rf-runtime-release` (`src-tauri/src/bin/rf_runtime_release.rs`, behind the non-default
