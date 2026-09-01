@@ -101,18 +101,29 @@ export function gamepadLayoutQuirk(
  * id, mapping, connected, and axes are always preserved exactly: this corrects a layout, it does not
  * disguise a device. A pad reporting fewer buttons than the transposition names keeps its own button
  * at that position rather than losing it.
+ *
+ * Every field is read and assigned **explicitly**, never spread from the source. A browser `Gamepad`
+ * exposes its properties as prototype getters rather than own properties, so `{ ...gamepad }` copies
+ * *nothing*: it would hand back a snapshot whose `mapping` and `connected` are `undefined`, which the
+ * adapter would correctly reject as uninterpretable, and the pad would stop working altogether
+ * instead of being corrected. Reading through the getters is the whole point of doing it this way.
  */
 export function normalizeGamepadSnapshot(
   snapshot: GamepadSnapshot,
   runtime: InputRuntime,
 ): GamepadSnapshot {
   if (gamepadLayoutQuirk(snapshot, runtime) === null) return snapshot;
+  const buttons = snapshot.buttons;
   return {
-    ...snapshot,
-    buttons: snapshot.buttons.map((button, index) => {
+    index: snapshot.index,
+    id: snapshot.id,
+    mapping: snapshot.mapping,
+    connected: snapshot.connected,
+    axes: snapshot.axes,
+    buttons: Array.from(buttons, (button, index) => {
       const source = TRANSPOSED_FACE_BUTTONS.get(index);
       if (source === undefined) return button;
-      return snapshot.buttons[source] ?? button;
+      return buttons[source] ?? button;
     }),
   };
 }

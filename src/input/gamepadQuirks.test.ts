@@ -195,6 +195,70 @@ describe('the qualified WebKitGTK DualSense quirk', () => {
   });
 });
 
+/**
+ * A pad shaped like a **real** browser `Gamepad`, not like a test literal.
+ *
+ * This is the shape that matters: `Gamepad` exposes `index`, `id`, `mapping`, `connected`, `buttons`,
+ * and `axes` as prototype getters, so it has no own enumerable properties at all. A normalization
+ * that copied the snapshot by spreading it would produce `mapping: undefined` and
+ * `connected: undefined` here, the adapter would reject the pad as uninterpretable, and the
+ * controller would stop working entirely rather than being corrected — which is exactly what
+ * happened on the qualification hardware while every plain-object test kept passing.
+ */
+class BrowserLikeGamepad {
+  constructor(
+    private readonly source: GamepadSnapshot,
+    private readonly rawPressed: number,
+  ) {}
+
+  get index(): number {
+    return this.source.index;
+  }
+  get id(): string {
+    return this.source.id;
+  }
+  get mapping(): string {
+    return this.source.mapping;
+  }
+  get connected(): boolean {
+    return this.source.connected;
+  }
+  get axes(): readonly number[] {
+    return this.source.axes;
+  }
+  get buttons(): readonly { pressed: boolean }[] {
+    return this.source.buttons.map((_button, index) => ({ pressed: index === this.rawPressed }));
+  }
+}
+
+describe('a pad shaped like a real browser Gamepad', () => {
+  function browserLikePad(rawPressed: number): GamepadSnapshot {
+    return new BrowserLikeGamepad(pad(), rawPressed) as unknown as GamepadSnapshot;
+  }
+
+  it('has no own enumerable properties, so it cannot be copied by spreading', () => {
+    expect(Object.keys({ ...browserLikePad(2) })).not.toContain('mapping');
+  });
+
+  it('keeps the identity the adapter gates on, so the pad stays interpretable', () => {
+    const normalized = normalizeGamepadSnapshot(browserLikePad(2), 'webkitgtk-linux');
+    expect(normalized.mapping).toBe('standard');
+    expect(normalized.connected).toBe(true);
+    expect(normalized.id).toBe(DUALSENSE_USB_ID);
+    expect(normalized.index).toBe(0);
+    expect(normalized.axes).toEqual([0, 0, 0, 0]);
+  });
+
+  it('still transposes the two face buttons', () => {
+    expect(
+      pressedCanonicalIndices(normalizeGamepadSnapshot(browserLikePad(2), 'webkitgtk-linux')),
+    ).toEqual([GAMEPAD_BUTTON_INDEX.search]);
+    expect(
+      pressedCanonicalIndices(normalizeGamepadSnapshot(browserLikePad(3), 'webkitgtk-linux')),
+    ).toEqual([GAMEPAD_BUTTON_INDEX.context]);
+  });
+});
+
 describe('normalizeGamepads', () => {
   it('preserves slots and empty entries', () => {
     const pads = [null, withRawButton(2, { index: 1 }), null];

@@ -1085,7 +1085,7 @@ Triangle  -> Search
 
 ### R.7 Regression coverage added
 
-`src/input/gamepadQuirks.test.ts` (18 tests):
+`src/input/gamepadQuirks.test.ts` (24 tests):
 
 - runtime detection: WebKitGTK/Linux recognized; Chromium on Linux, WebKit on macOS, Firefox on
   Linux, and a missing or empty user agent all unaffected;
@@ -1096,7 +1096,9 @@ Triangle  -> Search
   3 → canonical context, raw Triangle 2 → canonical search;
 - the D-pad, shoulders, guide, and all axes are untouched; `index`/`id`/`mapping`/`connected` are
   preserved; a pad reporting fewer buttons than the permutation names keeps its own button;
-- slots and empty entries survive, and only the affected pad in a mixed pair is normalized.
+- slots and empty entries survive, and only the affected pad in a mixed pair is normalized;
+- **a pad shaped like a real browser `Gamepad`**, whose fields are prototype getters rather than own
+  properties, keeps the identity the adapter gates on and is still transposed. See R.10.
 
 `src/hooks/useControllerInput.test.tsx` (10 new tests) presses **raw** indices through the real
 acquisition path and asserts the semantic actions delivered — a canonical-index test could not prove
@@ -1164,7 +1166,33 @@ If the mapping still behaves as before, the first thing to read is
 matched and the cause is elsewhere; absent means the predicate did not match, and the actual
 `Gamepad.id` and `navigator.userAgent` strings are then the two values to capture.
 
-### R.10 Verdict for this pass
+### R.10 Corrective fix within this pass: the pad stopped working entirely
+
+The first implementation of R.5 built the corrected snapshot with `{ ...snapshot }`. The operator
+reported the controller not working in the frontend at all, and that spread was the cause.
+
+A browser `Gamepad` exposes `index`, `id`, `mapping`, `connected`, `buttons`, and `axes` as
+**prototype getters**, so it has no own enumerable properties: `{ ...gamepad }` copies *nothing*. The
+affected DualSense — and only the affected pad, because unaffected pads are returned by identity —
+came out of normalization with `mapping` and `connected` `undefined`. `isSupportedGamepad` then
+correctly refused to interpret it, `selectActiveGamepad` never selected it, and the pad was treated as
+absent: no actions at all, and the footer reporting no controller rather than an unsupported one. The
+gate behaved exactly as designed; it was handed a snapshot that had lost its identity.
+
+Every field is now read and assigned explicitly, and the buttons array is built with `Array.from` so
+an array-like `FrozenArray` is handled too.
+
+Why the original test suite missed it: every fake pad in the suite is a plain object literal whose
+properties *are* own properties, so a spread copied them faithfully. The suite proved the
+transposition arithmetic and never touched the shape the real API actually has.
+
+`src/input/gamepadQuirks.test.ts` therefore gains a pad shaped like a real `Gamepad` — a class whose
+six fields are prototype getters — asserting that it has no own enumerable properties, that
+normalization preserves the `mapping`/`connected`/`id`/`index`/`axes` identity the adapter gates on,
+and that the face-button transposition still happens. Reverting the fix fails that test with
+`expected undefined to be 'standard'`, so it is a real guard rather than a restatement.
+
+### R.11 Verdict for this pass
 
 ```text
 M8 DUALSENSE NORMALIZATION PASS — READY FOR OPERATOR REQUALIFICATION
