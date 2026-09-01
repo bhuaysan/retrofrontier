@@ -379,6 +379,62 @@ mod tests {
         assert!(ReleaseDefinition::parse(&regressed).is_err());
     }
 
+    /// The committed Linux release definition is a reviewed artefact, so its shape is asserted
+    /// here rather than only being exercised by a maintainer running the construction tool.
+    ///
+    /// B2/B4: the managed controller-profile database is a pinned, authenticated component of the
+    /// release, taken from an immutable upstream revision, and no host RetroArch location appears
+    /// anywhere in the definition.
+    #[test]
+    fn the_committed_linux_definition_pins_the_managed_controller_profiles() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../release/linux-x86_64/runtime-release.json");
+        let definition = ReleaseDefinition::parse(&std::fs::read(&path).unwrap()).unwrap();
+
+        let component = definition
+            .components
+            .iter()
+            .find(|component| component.id.as_str() == "joypad-autoconfig")
+            .expect("the release ships managed controller profiles");
+        assert_eq!(
+            component.kind,
+            crate::domain::runtime::ComponentKind::SupportAsset
+        );
+        assert_eq!(
+            component.install_path.as_str(),
+            "runtime/support/joypad-autoconfig"
+        );
+        assert!(component.executable_relative_path.is_none());
+        // An immutable upstream revision, not a rolling "latest" asset.
+        assert_eq!(
+            component.source_revision.as_deref(),
+            Some("38cf938bba0adbde375972053068f10d955a9d14")
+        );
+        assert_eq!(component.license, "MIT");
+        // The derived artefact is pinned by its own digest and length, not only the upstream input's.
+        assert!(component.artifact_size_bytes > 0);
+
+        let input = definition.input(component.derivation.input()).unwrap();
+        assert!(input
+            .url
+            .starts_with("https://codeload.github.com/libretro/retroarch-joypad-autoconfig/zip/"));
+        assert!(input
+            .url
+            .ends_with("38cf938bba0adbde375972053068f10d955a9d14"));
+        assert!(input.provenance.contains("libretro"));
+
+        // B4: no host RetroArch autoconfig location is a source for anything in this release.
+        for input in &definition.inputs {
+            for forbidden in [
+                "/usr/share/libretro/autoconfig",
+                "/.config/retroarch",
+                "/.local/share/retroarch",
+            ] {
+                assert!(!input.url.contains(forbidden), "{forbidden}");
+            }
+        }
+    }
+
     #[test]
     fn unknown_fields_are_rejected() {
         let extra = definition_json(|value| {

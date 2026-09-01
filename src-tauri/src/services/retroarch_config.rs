@@ -22,12 +22,35 @@ impl RetroArchConfig {
     ///
     /// `core_directory` is the managed cores directory inside the verified immutable version tree.
     /// RetroArch only reads it; every writable path points into RetroFrontier's own data.
-    pub fn build(paths: &LaunchPaths, core_directory: &Path) -> Self {
+    ///
+    /// `controller_profiles_root` is the verified managed joypad-autoconfig tree, likewise inside
+    /// the immutable version tree and likewise read-only. Both are passed in rather than derived
+    /// here, because only the runtime layer can say which installation is currently verified.
+    pub fn build(
+        paths: &LaunchPaths,
+        core_directory: &Path,
+        controller_profiles_root: &Path,
+    ) -> Self {
         let mut entries: Vec<(String, String)> = Vec::new();
         let mut set = |key: &str, value: String| entries.push((key.to_owned(), value));
 
         // Where RetroArch may read code and metadata from.
         set("libretro_directory", path_value(core_directory));
+        // Controller profiles are read-only managed support data, so RetroArch is pointed straight
+        // at the verified immutable tree rather than at a directory RetroFrontier composes.
+        //
+        // Real hardware qualification found this to be the whole DualSense defect: the directory
+        // named here used to be a private, empty `runtime-user/autoconfig`, so the managed
+        // RetroArch detected the pad on `udev` and then logged
+        // `[Autoconf] Sony Interactive Entertainment DualSense Wireless Controller (1356/3302)
+        // not configured` — an unconfigured pad has no RetroPad binds at all, which is exactly the
+        // "controller does nothing in the game" the operator saw. RetroArch resolves profiles at
+        // `joypad_autoconfig_dir/<joypad driver>/`, so this value is the *parent* of the managed
+        // driver directory. No host RetroArch location is ever consulted.
+        set(
+            "joypad_autoconfig_dir",
+            path_value(controller_profiles_root),
+        );
         set("libretro_info_path", path_value(&paths.core_info_root()));
         set("core_options_path", path_value(&paths.core_options_file()));
         set("system_directory", path_value(&paths.system_root()));
@@ -66,10 +89,6 @@ impl RetroArchConfig {
         set(
             "input_remapping_directory",
             path_value(&paths.remaps_root()),
-        );
-        set(
-            "joypad_autoconfig_dir",
-            path_value(&paths.autoconfig_root()),
         );
         set(
             "recording_output_directory",
@@ -226,6 +245,11 @@ mod tests {
     use std::path::Path;
     use tempfile::tempdir;
 
+    /// The managed cores directory and the managed controller-profile tree: verified, immutable,
+    /// and read-only. Everything else RetroFrontier controls is writable and lives outside every
+    /// runtime version tree.
+    const READ_ONLY_MANAGED_KEYS: &[&str] = &["libretro_directory", "joypad_autoconfig_dir"];
+
     const CONTROLLED_KEYS: &[&str] = &[
         "libretro_directory",
         "libretro_info_path",
@@ -262,11 +286,14 @@ mod tests {
         "log_dir",
     ];
 
+    const SYNTHETIC_PROFILES: &str =
+        "/synthetic/app-data/runtime/versions/install-1/runtime/support/joypad-autoconfig";
+
     fn synthetic_config() -> (LaunchPaths, RetroArchConfig) {
         let paths = LaunchPaths::new("/synthetic/app-data");
         let core_directory =
             Path::new("/synthetic/app-data/runtime/versions/install-1/cores/nestopia");
-        let config = RetroArchConfig::build(&paths, core_directory);
+        let config = RetroArchConfig::build(&paths, core_directory, Path::new(SYNTHETIC_PROFILES));
         (paths, config)
     }
 
@@ -282,9 +309,6 @@ mod tests {
                 Path::new(value).is_absolute(),
                 "{key} must be an absolute path"
             );
-            if *key == "libretro_directory" {
-                continue;
-            }
             assert!(
                 Path::new(value).starts_with(paths.app_data_root()),
                 "{key} must stay inside RetroFrontier application data"
@@ -304,7 +328,7 @@ mod tests {
             ))
         );
         for key in CONTROLLED_KEYS {
-            if *key == "libretro_directory" {
+            if READ_ONLY_MANAGED_KEYS.contains(key) {
                 continue;
             }
             let value = config.value(key).unwrap();
@@ -313,6 +337,37 @@ mod tests {
                 "{key} must not write into an immutable runtime version"
             );
         }
+        // B3: the profile tree is the verified immutable one, and it is the only thing RetroArch is
+        // told about controller profiles.
+        assert_eq!(
+            config.value("joypad_autoconfig_dir").map(Path::new),
+            Some(Path::new(SYNTHETIC_PROFILES))
+        );
+        assert!(
+            Path::new(config.value("joypad_autoconfig_dir").unwrap()).starts_with(&versions_root)
+        );
+        assert!(config.value("input_autodetect_enable").is_none());
+        assert!(config.value("input_joypad_driver").is_none());
+    }
+
+    /// B3: `joypad_autoconfig_dir` follows the installation it was built for and nothing else.
+    #[test]
+    fn the_controller_profile_directory_is_the_verified_tree_it_was_given() {
+        let config = RetroArchConfig::build(
+            &LaunchPaths::new("/other/root"),
+            Path::new("/other/root/runtime/versions/install-9/cores/dolphin"),
+            Path::new("/other/root/runtime/versions/install-9/runtime/support/joypad-autoconfig"),
+        );
+
+        assert_eq!(
+            config.value("joypad_autoconfig_dir"),
+            Some("/other/root/runtime/versions/install-9/runtime/support/joypad-autoconfig")
+        );
+        // Never the old private writable directory, which is exactly what shipped nothing.
+        assert!(!config
+            .value("joypad_autoconfig_dir")
+            .unwrap()
+            .contains("runtime-user/autoconfig"));
     }
 
     #[test]
@@ -326,6 +381,10 @@ mod tests {
                 "/usr/share/libretro",
                 "/etc/retroarch",
                 "/.local/share/retroarch",
+                // B4: the host autoconfig locations RetroArch would otherwise be pointed at.
+                "/usr/share/libretro/autoconfig",
+                "/usr/local/share/libretro/autoconfig",
+                "/.config/retroarch/autoconfig",
             ] {
                 assert!(
                     !value.contains(forbidden),
@@ -354,6 +413,28 @@ mod tests {
             assert_eq!(config.value(key), Some("false"), "{key}");
         }
         assert_eq!(config.value("log_to_file"), Some("true"));
+    }
+
+    /// B6: the controller fix changes the profile directory and nothing else about the contract.
+    #[test]
+    fn the_existing_configuration_contract_is_unchanged_by_the_controller_profile_directory() {
+        let (paths, config) = synthetic_config();
+
+        assert_eq!(config.value("video_fullscreen"), Some("true"));
+        assert_eq!(config.value("video_windowed_fullscreen"), Some("true"));
+        assert_eq!(config.value("config_save_on_exit"), Some("false"));
+        assert_eq!(
+            config.value("system_directory").map(Path::new),
+            Some(paths.system_root().as_path())
+        );
+        assert_eq!(
+            config.value("savefile_directory").map(Path::new),
+            Some(paths.saves_root())
+        );
+        assert_eq!(
+            config.value("log_dir").map(Path::new),
+            Some(paths.log_root())
+        );
     }
 
     /// B1: fullscreen presentation is a RetroFrontier-owned decision, not an inherited default.
@@ -410,11 +491,13 @@ mod tests {
         let first = RetroArchConfig::build(
             &LaunchPaths::new("/synthetic/app-data"),
             Path::new("/synthetic/app-data/runtime/versions/install-1/cores/nestopia"),
+            Path::new(SYNTHETIC_PROFILES),
         );
         // A completely different application-data root and installation: only paths may differ.
         let second = RetroArchConfig::build(
             &LaunchPaths::new("/other/root"),
             Path::new("/other/root/runtime/versions/install-9/cores/beetle-psx"),
+            Path::new("/other/root/runtime/versions/install-9/runtime/support/joypad-autoconfig"),
         );
 
         for key in ["video_fullscreen", "video_windowed_fullscreen"] {
@@ -452,7 +535,11 @@ mod tests {
     #[test]
     fn a_quote_in_an_application_data_path_cannot_break_out_of_a_configuration_value() {
         let paths = LaunchPaths::new("/synthetic/we\"ird\\path");
-        let config = RetroArchConfig::build(&paths, Path::new("/synthetic/cores"));
+        let config = RetroArchConfig::build(
+            &paths,
+            Path::new("/synthetic/cores"),
+            Path::new("/synthetic/profiles"),
+        );
 
         let rendered = config.render();
         for line in rendered.lines().filter(|line| !line.starts_with('#')) {
@@ -469,7 +556,11 @@ mod tests {
         let directory = tempdir().unwrap();
         let paths = LaunchPaths::new(directory.path().join("RetroFrontier"));
         paths.prepare().unwrap();
-        let config = RetroArchConfig::build(&paths, Path::new("/synthetic/cores"));
+        let config = RetroArchConfig::build(
+            &paths,
+            Path::new("/synthetic/cores"),
+            Path::new("/synthetic/profiles"),
+        );
 
         config.write(&paths.config_file()).unwrap();
         let first = std::fs::read_to_string(paths.config_file()).unwrap();

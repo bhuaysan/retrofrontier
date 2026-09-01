@@ -382,11 +382,16 @@ impl LaunchApplicationService {
         )?;
 
         let bios_files = self.validate_bios(game.system_id)?;
+        // The managed controller profiles come from the same verified runtime as the core, so a
+        // release that does not carry them cannot start a game with an unusable controller.
+        let controller_profiles_root =
+            RetroArchService::resolve_controller_profiles(&launch_runtime)?;
         let context = self.retroarch.prepare(LaunchPreparation {
             app_run_path: &launch_runtime.app_run_path,
             core: &core,
             content_path: &content_path,
             bios_files: &bios_files,
+            controller_profiles_root: &controller_profiles_root,
         })?;
 
         let session = self
@@ -1178,6 +1183,14 @@ mod tests {
         fs::write(&core_path, b"synthetic core").unwrap();
 
         let mut support_assets = BTreeMap::new();
+        // The managed controller profiles are part of every real release, so a synthetic launchable
+        // runtime carries them too.
+        let profiles = installation.join("runtime/support/joypad-autoconfig");
+        fs::create_dir_all(profiles.join("udev")).unwrap();
+        support_assets.insert(
+            SafeIdentifier::new(crate::services::retroarch::JOYPAD_AUTOCONFIG_COMPONENT).unwrap(),
+            profiles,
+        );
         if with_support {
             let sys = installation.join("runtime/support/dolphin/Sys");
             fs::create_dir_all(&sys).unwrap();

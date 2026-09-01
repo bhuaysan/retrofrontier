@@ -56,6 +56,14 @@
       "provenance": "Official libretro core buildbot, Linux x86_64, retrieved 2026-08-30. Upstream project github.com/libretro/dolphin."
     },
     {
+      "id": "retroarch-joypad-autoconfig-1.22.0-zip",
+      "url": "https://codeload.github.com/libretro/retroarch-joypad-autoconfig/zip/38cf938bba0adbde375972053068f10d955a9d14",
+      "sha256": "45e2c28e4691073a7bc45b0fb86bc91f2aa9d2c0de9773e4dab0fb1341abe744",
+      "size_bytes": 870555,
+      "license": "MIT",
+      "provenance": "Official libretro joypad-autoconfig profile database, github.com/libretro/retroarch-joypad-autoconfig, immutable tag v1.22.0 at commit 38cf938bba0adbde375972053068f10d955a9d14 \u2014 the profile release that accompanies the RetroArch 1.22 line this runtime pins. Retrieved 2026-08-31. The upstream repository is the same source RetroArch's own updater package is built from; a tagged commit is used instead of the rolling buildbot asset so the release stays reconstructable."
+    },
+    {
       "id": "dolphin-system-assets-zip",
       "url": "https://buildbot.libretro.com/assets/system/Dolphin.zip",
       "sha256": "a406e5207481806f358b726ccc674f169d6e1a0c0528ae135b76b9e9259ee313",
@@ -175,6 +183,25 @@
       },
       "artifact_sha256": "591b8df55ad99064824244c33ae9640714dc1701251aa2d2ba65810876fbda90",
       "artifact_size_bytes": 7959552
+    },
+    {
+      "id": "joypad-autoconfig",
+      "kind": "support_asset",
+      "target_name": "joypad-autoconfig-1.22.0.tar",
+      "archive_format": "tar",
+      "install_path": "runtime/support/joypad-autoconfig",
+      "executable_relative_path": null,
+      "display_version": "1.22.0",
+      "source_revision": "38cf938bba0adbde375972053068f10d955a9d14",
+      "license": "MIT",
+      "systems": [],
+      "derivation": {
+        "kind": "zip_subtree_tar",
+        "input": "retroarch-joypad-autoconfig-1.22.0-zip",
+        "subtree": "retroarch-joypad-autoconfig-38cf938bba0adbde375972053068f10d955a9d14"
+      },
+      "artifact_sha256": "d81e3ac266d592b1732a7b16d77563aa513b270d2a5e592bf2040d633d6906cc",
+      "artifact_size_bytes": 2336768
     }
   ]
 }
