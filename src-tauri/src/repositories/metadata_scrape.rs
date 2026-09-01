@@ -174,6 +174,8 @@ impl MetadataScrapeRepository {
         .await
     }
 
+    /// Test-only: the service reads runs through `active_run` and `latest_run`.
+    #[cfg(test)]
     pub async fn load_run(
         &self,
         run_id: MetadataScrapeRunId,
@@ -255,7 +257,8 @@ impl MetadataScrapeRepository {
         Ok(progress)
     }
 
-    /// Item state for one game, for tests and diagnostics.
+    /// Item state for one game.
+    #[cfg(test)]
     pub async fn item_state(
         &self,
         run_id: MetadataScrapeRunId,

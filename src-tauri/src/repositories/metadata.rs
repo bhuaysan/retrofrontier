@@ -829,28 +829,6 @@ impl MetadataRepository {
         })
     }
 
-    /// Games that have no provider relationship yet, in a bounded batch.
-    pub async fn games_needing_metadata(
-        &self,
-        provider_id: MetadataProviderId,
-        limit: usize,
-    ) -> Result<Vec<GameId>, AppError> {
-        let rows = sqlx::query(
-            "SELECT g.id FROM games g \
-             LEFT JOIN provider_matches pm ON pm.game_id = g.id AND pm.provider_id = ? \
-             LEFT JOIN metadata_jobs mj ON mj.game_id = g.id AND mj.provider_id = ? \
-             WHERE pm.id IS NULL AND mj.id IS NULL ORDER BY g.id ASC LIMIT ?",
-        )
-        .bind(provider_id.as_db())
-        .bind(provider_id.as_db())
-        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(AppError::Database)?;
-
-        Ok(rows.into_iter().map(|row| GameId(row.get("id"))).collect())
-    }
-
     /// Games whose accepted match should be revalidated, in a bounded batch.
     ///
     /// `after_game_id` lets the caller walk the whole set one batch at a time instead of

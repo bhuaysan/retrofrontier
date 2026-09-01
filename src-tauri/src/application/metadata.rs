@@ -1818,7 +1818,9 @@ mod tests {
         cached_cover_reference, ContentUnitKind, LibraryMetadataMatchState, LibraryQuery,
     };
     use crate::domain::metadata::{MetadataJobState, NormalizedMetadata};
-    use crate::domain::metadata_scrape::{MetadataJobBand, MetadataScrapeMode};
+    use crate::domain::metadata_scrape::{
+        MetadataJobBand, MetadataScrapeMode, MetadataScrapeRunStatus,
+    };
     use crate::domain::system::{SystemCatalog, SystemId};
     use crate::services::library_scanner::NoopScanEventSink;
     use crate::services::metadata_provider::{
@@ -4333,6 +4335,376 @@ mod tests {
                 .await
                 .is_some(),
             "the integrity sweep still schedules its own re-identification"
+        );
+    }
+
+    // ------------------------------------------------------------------- scrape run orchestration
+
+    #[tokio::test]
+    async fn a_scrape_run_drives_games_to_their_real_provider_answers() {
+        let harness = Harness::new().await;
+        let matched = insert_single_file_game(&harness.pool).await;
+        let ambiguous = insert_game(
+            &harness.pool,
+            SystemId::Snes,
+            ContentUnitKind::SingleFile,
+            "SNES/Other Quest (USA).sfc",
+            Some("2222222222222222222222222222222222222222"),
+            Some("22222222222222222222222222222222"),
+            Some("22222222"),
+            "fingerprint-ambiguous",
+        )
+        .await;
+        let unsupported = insert_game(
+            &harness.pool,
+            SystemId::PlayStation,
+            ContentUnitKind::Chd,
+            "PSX/Disc Quest.chd",
+            Some("3333333333333333333333333333333333333333"),
+            None,
+            None,
+            "fingerprint-chd",
+        )
+        .await;
+
+        // The matched game agrees. The second gets no comparable content evidence back, so M5 falls
+        // through to a name search and offers suggestions without attaching any of them.
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "The Example Quest"),
+            None,
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("a"), None)));
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(None, "A Different Quest"),
+            None,
+        )));
+        harness.provider.queue_search(Ok(ProviderResponse::new(
+            vec![
+                ProviderCandidate {
+                    provider_game_id: "5001".to_owned(),
+                    title: "Other Quest".to_owned(),
+                    release_date: None,
+                },
+                ProviderCandidate {
+                    provider_game_id: "5002".to_owned(),
+                    title: "Other Quest 2".to_owned(),
+                    release_date: None,
+                },
+            ],
+            None,
+        )));
+
+        harness
+            .scrape
+            .start(MetadataScrapeMode::MissingMetadata)
+            .await
+            .unwrap();
+        harness.drain_scrape(24).await;
+
+        let status = harness.scrape_status().await;
+        let run = status.run.expect("a run should exist");
+        assert_eq!(run.status, MetadataScrapeRunStatus::Completed);
+        assert_eq!(run.progress.total_games, 3);
+        assert_eq!(run.progress.matched, 1);
+        assert_eq!(run.progress.needs_review, 1);
+        assert_eq!(run.progress.unsupported, 1);
+        assert_eq!(run.progress.processed(), 3);
+        assert_eq!(run.progress.waiting, 0);
+        assert!(!status.active);
+
+        // The run reports what M5 decided; it never decides anything itself.
+        assert_eq!(
+            harness.state(matched).await.status,
+            ProviderMatchStatus::Matched
+        );
+        let review = harness.state(ambiguous).await;
+        assert_eq!(review.status, ProviderMatchStatus::Ambiguous);
+        assert_eq!(
+            review.candidates.len(),
+            2,
+            "an ambiguous answer stays a manual choice"
+        );
+        assert!(review.provider_game_id.is_none());
+        assert_eq!(
+            harness.state(unsupported).await.unsupported_reason,
+            Some(UnsupportedContentReason::ChdRepresentationUndefined)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_deferral_leaves_the_run_unfinished_rather_than_falsely_complete() {
+        let harness = Harness::new().await;
+        insert_single_file_game(&harness.pool).await;
+        harness
+            .provider
+            .queue_identify(Err(ProviderFailureClass::DailyQuotaExceeded));
+
+        harness
+            .scrape
+            .start(MetadataScrapeMode::MissingMetadata)
+            .await
+            .unwrap();
+        harness.drain_scrape(8).await;
+
+        let run = harness
+            .scrape_status()
+            .await
+            .run
+            .expect("a run should exist");
+        assert_eq!(run.status, MetadataScrapeRunStatus::Running);
+        assert_eq!(
+            run.progress.processed(),
+            0,
+            "a game waiting for provider capacity has not been processed"
+        );
+        assert_eq!(run.progress.waiting, 1);
+    }
+
+    #[tokio::test]
+    async fn an_explicit_request_overtakes_bulk_work_without_duplicating_it() {
+        let harness = Harness::new().await;
+        let first = insert_single_file_game(&harness.pool).await;
+        let second = insert_game(
+            &harness.pool,
+            SystemId::Snes,
+            ContentUnitKind::SingleFile,
+            "SNES/Second Quest (USA).sfc",
+            Some("4444444444444444444444444444444444444444"),
+            Some("44444444444444444444444444444444"),
+            Some("44444444"),
+            "fingerprint-second",
+        )
+        .await;
+
+        harness
+            .scrape
+            .start(MetadataScrapeMode::MissingMetadata)
+            .await
+            .unwrap();
+        // The user opens the second game and asks for its metadata by hand.
+        harness.service.request_enrichment(second).await.unwrap();
+
+        let jobs: Vec<(i64, i64)> =
+            sqlx::query_as("SELECT game_id, priority FROM metadata_jobs ORDER BY priority ASC")
+                .fetch_all(&harness.pool)
+                .await
+                .unwrap();
+        assert_eq!(jobs.len(), 2, "promotion must not add a second job");
+        assert_eq!(
+            jobs[0],
+            (
+                second.0,
+                MetadataJobBand::Interactive.priority(MetadataJobKind::Identify)
+            ),
+            "the explicitly requested game runs first"
+        );
+        assert_eq!(
+            jobs[1],
+            (
+                first.0,
+                MetadataJobBand::Bulk.priority(MetadataJobKind::Identify)
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_a_run_keeps_written_metadata_and_promoted_work() {
+        let harness = Harness::new().await;
+        let finished = insert_single_file_game(&harness.pool).await;
+        let promoted = insert_game(
+            &harness.pool,
+            SystemId::Snes,
+            ContentUnitKind::SingleFile,
+            "SNES/Promoted Quest (USA).sfc",
+            Some("5555555555555555555555555555555555555555"),
+            Some("55555555555555555555555555555555"),
+            Some("55555555"),
+            "fingerprint-promoted",
+        )
+        .await;
+        let untouched = insert_game(
+            &harness.pool,
+            SystemId::Snes,
+            ContentUnitKind::SingleFile,
+            "SNES/Untouched Quest (USA).sfc",
+            Some("6666666666666666666666666666666666666666"),
+            Some("66666666666666666666666666666666"),
+            Some("66666666"),
+            "fingerprint-untouched",
+        )
+        .await;
+
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "The Example Quest"),
+            None,
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("a"), None)));
+
+        harness
+            .scrape
+            .start(MetadataScrapeMode::MissingMetadata)
+            .await
+            .unwrap();
+        // One game is answered before the stop.
+        harness.service.process_ready_jobs(1).await.unwrap();
+        harness.service.request_enrichment(promoted).await.unwrap();
+
+        harness.scrape.stop().await.unwrap();
+
+        assert!(
+            harness
+                .job(promoted, MetadataJobKind::Identify)
+                .await
+                .is_some(),
+            "work the user claimed by hand survives the stop"
+        );
+        assert!(
+            harness
+                .job(untouched, MetadataJobKind::Identify)
+                .await
+                .is_none(),
+            "queued bulk-only work is detached"
+        );
+        assert_eq!(
+            harness.state(finished).await.status,
+            ProviderMatchStatus::Matched,
+            "metadata already written is preserved"
+        );
+
+        // The stopped run releases the provider, and the games it never reached are eligible again.
+        harness.drain_scrape(8).await;
+        let status = harness.scrape_status().await;
+        assert_eq!(
+            status.run.expect("a run should exist").status,
+            MetadataScrapeRunStatus::Stopped
+        );
+        assert!(!status.active);
+        assert_eq!(
+            harness
+                .scrape
+                .preview(MetadataScrapeMode::MissingMetadata)
+                .await
+                .unwrap()
+                .eligible_games,
+            1,
+            "only the game the run never reached is untouched again"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_active_run_resumes_after_a_restart() {
+        let mut harness = Harness::new().await;
+        for index in 0..6 {
+            insert_game(
+                &harness.pool,
+                SystemId::Snes,
+                ContentUnitKind::SingleFile,
+                &format!("SNES/Quest {index} (USA).sfc"),
+                Some(&format!("{index}{}", "0".repeat(39))),
+                None,
+                None,
+                &format!("fingerprint-{index}"),
+            )
+            .await;
+        }
+
+        harness
+            .scrape
+            .start(MetadataScrapeMode::MissingMetadata)
+            .await
+            .unwrap();
+        let before = harness
+            .scrape_status()
+            .await
+            .run
+            .expect("a run should exist");
+        assert_eq!(before.progress.total_games, 6);
+
+        // A claim leaks because the process dies mid-request.
+        sqlx::query("UPDATE metadata_jobs SET state = 'running', claimed_at = ? WHERE game_id = 1")
+            .bind(harness.clock.now_ms())
+            .execute(&harness.pool)
+            .await
+            .unwrap();
+
+        harness.restart().await;
+
+        let after = harness
+            .scrape_status()
+            .await
+            .run
+            .expect("a run should exist");
+        assert_eq!(after.id, before.id, "the same run continues");
+        assert_eq!(after.status, MetadataScrapeRunStatus::Running);
+        assert_eq!(after.progress.total_games, 6);
+
+        // Startup recovery re-arms the leaked claim, and no work is duplicated.
+        let claimed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM metadata_jobs WHERE state = 'running'")
+                .fetch_one(&harness.pool)
+                .await
+                .unwrap();
+        assert_eq!(claimed, 0);
+        harness.scrape.advance().await.unwrap();
+        let jobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM metadata_jobs")
+            .fetch_one(&harness.pool)
+            .await
+            .unwrap();
+        assert_eq!(jobs, 6, "resuming must not enqueue a game twice");
+    }
+
+    #[tokio::test]
+    async fn a_second_run_cannot_start_while_one_is_active() {
+        let harness = Harness::new().await;
+        insert_single_file_game(&harness.pool).await;
+
+        let started = harness
+            .scrape
+            .start(MetadataScrapeMode::MissingMetadata)
+            .await
+            .unwrap();
+        let run_id = started.run.expect("a run should exist").id;
+
+        let second = harness
+            .scrape
+            .start(MetadataScrapeMode::RefreshMatched)
+            .await
+            .unwrap();
+        assert_eq!(
+            second.run.expect("a run should exist").id,
+            run_id,
+            "a second start shows the run already in progress rather than failing"
+        );
+    }
+
+    #[tokio::test]
+    async fn waking_the_worker_does_not_bypass_a_persisted_provider_deferral() {
+        let harness = Harness::new().await;
+        insert_single_file_game(&harness.pool).await;
+        harness
+            .provider
+            .queue_identify(Err(ProviderFailureClass::ProviderUnavailable));
+
+        harness
+            .scrape
+            .start(MetadataScrapeMode::MissingMetadata)
+            .await
+            .unwrap();
+        harness.service.process_ready_jobs(8).await.unwrap();
+        assert!(harness.scheduler_state().await.deferred_until.is_some());
+
+        // A wake-up shortens the worker's sleep; it does not shorten the provider's deferral.
+        harness.provider.reset_calls();
+        harness.service.work_signal().notify();
+        harness.worker_round().await;
+
+        assert!(
+            harness.provider.calls().is_empty(),
+            "no provider request may be issued while the provider is deferred"
         );
     }
 
