@@ -265,10 +265,16 @@ impl MetadataScrapeApplicationService {
         mode: MetadataScrapeMode,
     ) -> Result<usize, AppError> {
         let live = self.repository.live_owned_jobs(run_id).await?;
+        // The window counts jobs, so the headroom has to be converted into games before it is
+        // spent: a refresh needs two jobs per game, and feeding it a job-shaped number would
+        // overshoot the very bound this exists to hold.
+        let jobs_per_game = mode.required_job_kinds().len().max(1);
         let headroom = self
             .config
             .feed_window
             .saturating_sub(usize::try_from(live.max(0)).unwrap_or(usize::MAX))
+            .checked_div(jobs_per_game)
+            .unwrap_or(0)
             .min(self.config.feed_batch);
         if headroom == 0 {
             return Ok(0);

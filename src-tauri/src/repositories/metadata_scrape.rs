@@ -1869,6 +1869,100 @@ mod tests {
         assert_eq!(progress.waiting, 0);
     }
 
+    /// Drives a refresh run the way the application service feeds it, converting the job-shaped
+    /// window into games. A refresh needs two jobs per game, so spending the headroom as if it were
+    /// a game count would overshoot the window by a whole batch.
+    async fn refresh_scale_run(games: usize, window: usize, batch: usize) {
+        let fixture = Fixture::new().await;
+        let ids = fixture.insert_games(games).await;
+        for (index, game_id) in ids.iter().enumerate() {
+            fixture
+                .insert_match(*game_id, "matched", Some(&format!("p{index}")))
+                .await;
+        }
+
+        let run_id = fixture
+            .repository
+            .create_run(PROVIDER, MetadataScrapeMode::RefreshMatched, NOW)
+            .await
+            .expect("run should be created")
+            .expect("a run should exist");
+
+        let mut processed = 0usize;
+        let mut rounds = 0usize;
+        while processed < games {
+            rounds += 1;
+            assert!(
+                rounds < games + 8,
+                "the feeder must make progress every round"
+            );
+
+            let live = fixture
+                .repository
+                .live_owned_jobs(run_id)
+                .await
+                .expect("live job count");
+            assert!(
+                live <= window as i64,
+                "the active provider queue must stay bounded: {live} > {window}"
+            );
+            let headroom = (window.saturating_sub(live as usize) / 2).min(batch);
+            fixture
+                .repository
+                .feed_pending_items(
+                    run_id,
+                    PROVIDER,
+                    MetadataScrapeMode::RefreshMatched,
+                    headroom,
+                    NOW,
+                )
+                .await
+                .expect("feeding should succeed");
+
+            assert!(
+                fixture.live_job_total().await <= window as i64,
+                "no more than one window of jobs may be live at once"
+            );
+
+            sqlx::query(
+                "UPDATE metadata_jobs SET state = 'completed' \
+                 WHERE bulk_run_id = ? AND state = 'pending'",
+            )
+            .bind(run_id.0)
+            .execute(&fixture.pool)
+            .await
+            .expect("worker round");
+
+            fixture.reconcile(run_id).await;
+            processed = fixture
+                .repository
+                .progress(run_id)
+                .await
+                .expect("progress")
+                .processed() as usize;
+        }
+
+        assert!(fixture
+            .repository
+            .complete_if_finished(run_id, NOW)
+            .await
+            .expect("completion check"));
+        assert_eq!(
+            fixture
+                .repository
+                .progress(run_id)
+                .await
+                .expect("progress")
+                .matched,
+            games as i64
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_run_of_five_thousand_games_stays_within_one_window() {
+        refresh_scale_run(5_000, 200, 50).await;
+    }
+
     #[tokio::test]
     async fn a_five_thousand_game_run_stays_bounded() {
         scale_run(5_000, 200).await;
