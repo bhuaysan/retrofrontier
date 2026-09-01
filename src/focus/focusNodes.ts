@@ -42,6 +42,8 @@ export const focusNodes = {
   settingsRuntime: (action: string): FocusNodeId => `settings:runtime:${action}`,
   settingsRoot: (rootId: number, action: string): FocusNodeId =>
     `settings:root:${rootId}:${action}`,
+  /** A Library Scraper control. Its identity is the action, not the run it happens to describe. */
+  settingsScrape: (action: string): FocusNodeId => `settings:scrape:${action}`,
 } as const;
 
 export const focusScopes = {
@@ -50,6 +52,8 @@ export const focusScopes = {
   launchFailure: 'scope:launch-failure' as FocusScopeId,
   rootRemoval: (rootId: number): FocusScopeId => `scope:settings-root-removal:${rootId}`,
   metadataAccountClear: 'scope:settings-metadata-clear' as FocusScopeId,
+  /** Confirming a scraper stop. Temporary, and it owns `back` while it is open. */
+  metadataScrapeStop: 'scope:settings-scrape-stop' as FocusScopeId,
 } as const;
 
 export const focusZones = {

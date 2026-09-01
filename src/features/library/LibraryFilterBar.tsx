@@ -10,7 +10,10 @@ interface LibraryFilterBarProps {
 
 export function LibraryFilterBar({ library, systems }: LibraryFilterBarProps) {
   const hasActiveQuery =
-    library.searchInput !== '' || library.systemId !== null || library.favoritesOnly;
+    library.searchInput !== '' ||
+    library.systemId !== null ||
+    library.favoritesOnly ||
+    library.needsMetadataReview;
   const page = library.page;
   const firstVisible = page && page.total > 0 ? page.offset + 1 : 0;
   const lastVisible = page ? Math.min(page.total, page.offset + page.items.length) : 0;
@@ -30,6 +33,14 @@ export function LibraryFilterBar({ library, systems }: LibraryFilterBarProps) {
         type="button"
       >
         <PixelStar filled /> FAVORITES ONLY
+      </button>
+      <button
+        aria-pressed={library.needsMetadataReview}
+        className={`library-filter${library.needsMetadataReview ? ' library-filter--active' : ''}`}
+        onClick={() => library.setNeedsMetadataReview(!library.needsMetadataReview)}
+        type="button"
+      >
+        NEEDS REVIEW
       </button>
       <span aria-hidden="true" className="library-filter-spacer" />
       {library.refreshing ? (

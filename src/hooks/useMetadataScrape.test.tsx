@@ -109,6 +109,13 @@ describe('useMetadataScrape', () => {
     }));
 
     const { result } = renderHook(() => useMetadataScrape());
+    // Let the first count genuinely start before switching, so both requests are really in flight.
+    // Without this the mode change simply cancels the first one and the ordering guard is untested.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.previewMetadataScrape).toHaveBeenCalledTimes(1);
+
     act(() => result.current.setMode('refreshMatched'));
     await waitFor(() => expect(result.current.eligibleGames).toBe(7));
 

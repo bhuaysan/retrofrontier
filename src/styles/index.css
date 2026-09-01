@@ -1261,6 +1261,184 @@ a:focus-visible,
   border-top: 2px solid var(--border);
 }
 
+/* -------------------------------------------------------------------- library scraper */
+
+.metadata-scrape-section {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border-top: 2px solid var(--border);
+}
+
+.scrape-idle,
+.scrape-active,
+.scrape-summary {
+  display: grid;
+  gap: 12px;
+}
+
+.scrape-modes {
+  display: grid;
+  gap: 8px;
+}
+
+.scrape-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 11px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: var(--surface-2);
+  border: 2px solid var(--border);
+  cursor: pointer;
+}
+
+.scrape-mode:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.scrape-mode--selected {
+  border-color: var(--accent);
+}
+
+/* A hard-edged square that fills when chosen: a round radio would be the only circle on the
+   screen, and the pixel language has no anti-aliased curves in it. */
+.scrape-mode-marker {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin-top: 3px;
+  background: transparent;
+  border: 2px solid var(--border);
+}
+
+.scrape-mode--selected .scrape-mode-marker {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.scrape-mode-text {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.scrape-mode-text strong {
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.scrape-mode-text span {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.scrape-eligible {
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.scrape-run-state {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.scrape-run-state strong {
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.scrape-run-state span {
+  max-width: 68ch;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.scrape-progress {
+  display: grid;
+  gap: 10px;
+}
+
+.scrape-progress-count {
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.scrape-progress-count strong {
+  font-family: var(--font-meta);
+  font-size: 21px;
+  letter-spacing: normal;
+}
+
+.scrape-progress-results,
+.scrape-progress-pending {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 14px;
+  margin: 0;
+}
+
+.scrape-progress-pending {
+  padding-top: 8px;
+  border-top: 2px solid var(--border);
+}
+
+.scrape-progress-results > div,
+.scrape-progress-pending > div {
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+}
+
+.scrape-progress-results dt,
+.scrape-progress-pending dt {
+  margin: 0;
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+}
+
+.scrape-progress-results dd,
+.scrape-progress-pending dd {
+  margin: 0;
+  font-family: var(--font-meta);
+  font-size: 17px;
+}
+
+.scrape-actions,
+.scrape-confirmation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.scrape-confirmation {
+  padding: 10px 11px;
+  background: var(--surface-2);
+  border: 2px solid var(--accent);
+}
+
+.scrape-confirmation > span {
+  flex: 1 1 24ch;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .metadata-row-heading {
   display: flex;
   align-items: baseline;

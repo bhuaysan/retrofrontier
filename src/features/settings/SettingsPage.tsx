@@ -7,6 +7,7 @@ import { PixelButton } from '../../components/ui/PixelButton';
 import { ExternalLinkIcon, FolderIcon, PixelArrow } from '../../components/ui/PixelIcon';
 import { useManagedRuntime } from '../../hooks/useManagedRuntime';
 import { useMetadataProvider, type MetadataProviderModel } from '../../hooks/useMetadataProvider';
+import { useMetadataScrape, type MetadataScrapeModel } from '../../hooks/useMetadataScrape';
 import {
   normalizeIpcError,
   type ContentRoot,
@@ -15,6 +16,7 @@ import {
   type ScanSummary,
 } from '../../platform/ipc';
 import type { SystemLabel } from '../../hooks/useSystemCatalog';
+import { LibraryScraperPanel } from './LibraryScraperPanel';
 import { RootActionError } from './RootActionError';
 import { RuntimePanel } from './RuntimePanel';
 import {
@@ -44,6 +46,8 @@ interface SettingsPageProps {
   onAddExternalFolder: () => Promise<boolean>;
   onOpenManagedFolder: () => Promise<void>;
   onBackToLibrary: () => void;
+  /** Leaves Settings for the Library, filtered to the games awaiting a candidate decision. */
+  onReviewMetadataMatches: () => void;
 }
 
 type RootOperation =
@@ -177,7 +181,15 @@ function RootCard({
   );
 }
 
-function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }) {
+function MetadataProviderPanel({
+  provider,
+  scrape,
+  onReviewMatches,
+}: {
+  provider: MetadataProviderModel;
+  scrape: MetadataScrapeModel;
+  onReviewMatches: () => void;
+}) {
   const [confirmingClear, setConfirmingClear] = useState(false);
   const clearTrigger = useRef<HTMLButtonElement>(null);
   const clearConfirmation = useRef<HTMLButtonElement>(null);
@@ -314,6 +326,12 @@ function MetadataProviderPanel({ provider }: { provider: MetadataProviderModel }
           </div>
         ) : null}
       </section>
+
+      <LibraryScraperPanel
+        onReviewMatches={onReviewMatches}
+        providerWaiting={status !== null && hasActiveProviderDeferral(status, now)}
+        scrape={scrape}
+      />
 
       <section aria-labelledby="metadata-account-heading" className="metadata-account-section">
         <div className="metadata-account-heading">
@@ -491,8 +509,10 @@ export function SettingsPage({
   onAddExternalFolder,
   onOpenManagedFolder,
   onBackToLibrary,
+  onReviewMetadataMatches,
 }: SettingsPageProps) {
   const metadataProvider = useMetadataProvider();
+  const metadataScrape = useMetadataScrape();
   const managedRuntime = useManagedRuntime();
   const [pendingOperation, setPendingOperation] = useState<RootOperation | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<number | null>(null);
@@ -700,7 +720,11 @@ export function SettingsPage({
           </div>
         </section>
         <RuntimePanel runtime={managedRuntime} />
-        <MetadataProviderPanel provider={metadataProvider} />
+        <MetadataProviderPanel
+          onReviewMatches={onReviewMetadataMatches}
+          provider={metadataProvider}
+          scrape={metadataScrape}
+        />
       </div>
     </main>
   );

@@ -27,6 +27,9 @@ export interface LibraryQueryModel {
   setSystemId: (systemId: SystemId | null) => void;
   favoritesOnly: boolean;
   setFavoritesOnly: (favoritesOnly: boolean) => void;
+  /** Restricts the grid to games whose provider match needs a human decision. */
+  needsMetadataReview: boolean;
+  setNeedsMetadataReview: (needsMetadataReview: boolean) => void;
   page: LibraryPage | null;
   initialLoading: boolean;
   refreshing: boolean;
@@ -70,6 +73,7 @@ export function useLibraryQuery({
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [systemId, setSystemIdState] = useState<SystemId | null>(null);
   const [favoritesOnly, setFavoritesOnlyState] = useState(false);
+  const [needsMetadataReview, setNeedsMetadataReviewState] = useState(false);
   const [page, setPage] = useState<LibraryPage | null>(null);
   // The browser is only mounted for a populated summary, but `enabled` can turn
   // true after that summary resolves. Start owned by the initial-load channel so
@@ -121,6 +125,7 @@ export function useLibraryQuery({
       if (debouncedSearch !== '') request.search = debouncedSearch;
       if (systemId !== null) request.systemId = systemId;
       if (favoritesOnly) request.favoritesOnly = true;
+      if (needsMetadataReview) request.needsMetadataReview = true;
 
       try {
         const nextPage = await queryLibrary(request);
@@ -156,19 +161,21 @@ export function useLibraryQuery({
         if (mounted.current && ownsLoading) setChannelLoading(channel, false);
       }
     },
-    [debouncedSearch, enabled, favoritesOnly, setChannelLoading, systemId],
+    [debouncedSearch, enabled, favoritesOnly, needsMetadataReview, setChannelLoading, systemId],
   );
 
   useLayoutEffect(() => {
     latestRunQuery.current = runQuery;
-    const queryIdentity = `${debouncedSearch}\u0000${systemId ?? ''}\u0000${favoritesOnly}`;
+    const queryIdentity =
+      `${debouncedSearch}\u0000${systemId ?? ''}\u0000${favoritesOnly}` +
+      `\u0000${needsMetadataReview}`;
     if (queryIdentityRef.current !== queryIdentity) {
       queryIdentityRef.current = queryIdentity;
       latestQueryState.current = { favoritesOnly, targetOffset: 0 };
     } else {
       latestQueryState.current.favoritesOnly = favoritesOnly;
     }
-  }, [debouncedSearch, favoritesOnly, runQuery, systemId]);
+  }, [debouncedSearch, favoritesOnly, needsMetadataReview, runQuery, systemId]);
 
   useEffect(() => {
     mounted.current = true;
@@ -201,11 +208,16 @@ export function useLibraryQuery({
     setFavoritesOnlyState(value);
     latestQueryState.current.targetOffset = 0;
   }, []);
+  const setNeedsMetadataReview = useCallback((value: boolean) => {
+    setNeedsMetadataReviewState(value);
+    latestQueryState.current.targetOffset = 0;
+  }, []);
   const resetQuery = useCallback(() => {
     setSearchInputState('');
     setDebouncedSearch('');
     setSystemIdState(null);
     setFavoritesOnlyState(false);
+    setNeedsMetadataReviewState(false);
     latestQueryState.current.targetOffset = 0;
   }, []);
 
@@ -303,6 +315,8 @@ export function useLibraryQuery({
     setSystemId,
     favoritesOnly,
     setFavoritesOnly,
+    needsMetadataReview,
+    setNeedsMetadataReview,
     page,
     initialLoading,
     refreshing,

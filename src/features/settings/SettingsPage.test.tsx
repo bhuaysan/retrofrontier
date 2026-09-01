@@ -16,6 +16,10 @@ const mocks = vi.hoisted(() => ({
   setMetadataProviderCredentials: vi.fn(),
   clearMetadataProviderCredentials: vi.fn(),
   getRuntimeInstallState: vi.fn(),
+  getMetadataScrapeStatus: vi.fn(),
+  previewMetadataScrape: vi.fn(),
+  startMetadataScrape: vi.fn(),
+  stopMetadataScrape: vi.fn(),
   installRuntime: vi.fn(),
   repairRuntime: vi.fn(),
 }));
@@ -29,6 +33,10 @@ vi.mock('../../platform/ipc', async (importOriginal) => {
     setMetadataProviderCredentials: mocks.setMetadataProviderCredentials,
     clearMetadataProviderCredentials: mocks.clearMetadataProviderCredentials,
     getRuntimeInstallState: mocks.getRuntimeInstallState,
+    getMetadataScrapeStatus: mocks.getMetadataScrapeStatus,
+    previewMetadataScrape: mocks.previewMetadataScrape,
+    startMetadataScrape: mocks.startMetadataScrape,
+    stopMetadataScrape: mocks.stopMetadataScrape,
     installRuntime: mocks.installRuntime,
     repairRuntime: mocks.repairRuntime,
   };
@@ -143,6 +151,7 @@ function renderPage() {
       onAddExternalFolder={vi.fn().mockResolvedValue(true)}
       onOpenManagedFolder={vi.fn().mockResolvedValue(undefined)}
       onBackToLibrary={vi.fn()}
+      onReviewMetadataMatches={vi.fn()}
     />,
   );
 }

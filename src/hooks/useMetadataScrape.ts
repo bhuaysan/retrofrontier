@@ -133,16 +133,28 @@ export function useMetadataScrape(): MetadataScrapeModel {
 
   const stop = useCallback(() => runAction(() => stopMetadataScrape(), mode), [mode, runAction]);
 
+  // Both reads flip loading state as their first act. Deferring them off the effect body keeps that
+  // out of the render pass that scheduled them, matching how the other metadata hooks start work.
   useEffect(() => {
+    let disposed = false;
     mounted.current = true;
-    void readStatus();
+    void Promise.resolve().then(() => {
+      if (!disposed && mounted.current) void readStatus();
+    });
     return () => {
+      disposed = true;
       mounted.current = false;
     };
   }, [readStatus]);
 
   useEffect(() => {
-    void readPreview(mode);
+    let disposed = false;
+    void Promise.resolve().then(() => {
+      if (!disposed && mounted.current) void readPreview(mode);
+    });
+    return () => {
+      disposed = true;
+    };
   }, [mode, readPreview]);
 
   // Poll only while a run actually owns the provider. A completed or stopped run is a static

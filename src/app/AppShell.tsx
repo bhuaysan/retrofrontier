@@ -262,6 +262,20 @@ function AppShellBody() {
     [navigate],
   );
 
+  /**
+   * Leaves Settings for the games a scrape run could not decide on its own.
+   *
+   * Every other filter is cleared first: arriving at "14 need review" and seeing four of them,
+   * because a system filter was still set from an earlier visit, would be worse than not offering
+   * the route at all. The filter itself stays visible and clearable in the Library filter bar, so
+   * this is a starting point rather than a mode the user has to escape.
+   */
+  const onReviewMetadataMatches = useCallback(() => {
+    library.resetQuery();
+    library.setNeedsMetadataReview(true);
+    navigate('library');
+  }, [library, navigate]);
+
   const onBackToLibrary = useCallback(() => {
     navigate('library');
   }, [navigate]);
@@ -741,6 +755,7 @@ function AppShellBody() {
           onAddExternalFolder={onAddExternalFolder}
           onOpenManagedFolder={onOpenManagedFolder}
           onBackToLibrary={() => navigateFromShell('library')}
+          onReviewMetadataMatches={onReviewMetadataMatches}
         />
       )}
 
