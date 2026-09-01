@@ -25,6 +25,7 @@ window keydown ────┘                        │
 | --- | --- |
 | `src/input/actions.ts` | The semantic vocabulary. |
 | `src/input/keyboardAdapter.ts` | Keyboard event → action. Pure. |
+| `src/input/gamepadQuirks.ts` | Raw browser pad → canonical Standard Gamepad layout. Pure. |
 | `src/input/gamepadAdapter.ts` | Polled gamepad frame → actions. Pure state machine. |
 | `src/input/inputOwnership.ts` | The one application-input ownership predicate. |
 | `src/hooks/useKeyboardInput.ts` | Window listener for the keyboard adapter. |
@@ -51,7 +52,9 @@ type InputAction =
 
 No component, hook, or focus module refers to a key name or a gamepad button index. Physical
 mappings exist in exactly two places: `keyboardAdapter.ts` and `GAMEPAD_BUTTON_INDEX` in
-`gamepadAdapter.ts`.
+`gamepadAdapter.ts`. A third module, `gamepadQuirks.ts`, holds no mapping of its own — it corrects a
+physical layout *into* the canonical one before the adapter reads it, and it is the only place any
+browser or device identity exists. See [Layout quirk normalization](#layout-quirk-normalization).
 
 ## Acquisition adapters
 
@@ -133,6 +136,57 @@ entirely. Remapping is out of M8 scope (B10); see [ADR-014](adr/ADR-014-input-ac
   per press, never once per frame while held, and all four adopt and release with the same ownership
   discipline: a button held across a loss and return of ownership produces nothing until it is
   released and pressed again.
+
+#### Layout quirk normalization
+
+`mapping === 'standard'` is a promise, and one engine has been measured breaking it. Where that
+happens the layout is corrected *before* the adapter reads it, so the adapter and everything above it
+keep reasoning in canonical Standard Gamepad indices only:
+
+```text
+navigator.getGamepads()
+        ↓
+gamepadQuirks: quirk normalization    ← the only place a non-canonical physical layout exists
+        ↓
+canonical W3C Standard Gamepad layout
+        ↓
+gamepadAdapter (GAMEPAD_BUTTON_INDEX)
+        ↓
+confirm / back / context / search
+```
+
+Normalization is applied in `readGamepads()` in `useControllerInput`, the acquisition boundary, so
+ownership selection and the state machine see the same canonical layout on the poll path and on the
+ownership layout effect alike. Device and browser identity exist here and nowhere else: not in
+`gamepadAdapter`, and not in any focus, Library, footer, Search, Context, or `AppShell` code.
+
+**The one qualified quirk.** WebKitGTK on Linux with a Sony DualSense delivers the two upper/left face
+buttons transposed — measured on the qualification hardware as Cross 0, Circle 1, **Triangle 2, Square
+3** — while still reporting `mapping === 'standard'`. The cause is a name collision: on Linux
+`BTN_X == BTN_NORTH == 0x133` and `BTN_Y == BTN_WEST == 0x134`, WebKitGTK's evdev→Standard translation
+reads those two codes under their *letter* meaning (`BTN_X → 2`, `BTN_Y → 3`), and the DualSense's
+kernel driver emits them under their *positional* meaning. Normalization transposes canonical 2 and 3
+back, and nothing else: `confirm`, `back`, the shoulders, the sticks, the D-pad, the guide button,
+every axis, and `index`/`id`/`mapping`/`connected` all pass through untouched.
+
+**The predicate is a conjunction, so it fails safe.** The engine half requires `AppleWebKit/` and a
+`Linux` platform token with `Chrome|Chromium|CriOS|Edg/` absent — it matches the engine, where the
+defect lives, so Chromium on the same machine and WebKit on macOS are excluded. The device half
+matches `/dualsense/i` against `Gamepad.id`, because WebKitGTK fills that id from
+`manette_device_get_name()` alone and exposes no vendor or product id to match on; the one token covers
+both the USB and the Bluetooth kernel naming. Anything not recognized by *both* halves takes the
+canonical path unchanged.
+
+**What is deliberately not done.** No `Linux ⇒ swap` and no `all PlayStation pads ⇒ swap`: the defect
+needs the driver's positional convention as well as the engine, and an Xbox-style pad via `xpad` comes
+through the same table correctly. The canonical semantics are never changed to match a broken layout —
+`context` stays left-face (2) and `search` stays upper-face (3) — and the footer keeps expressing
+semantic layout rather than raw browser indices. A device whose layout cannot be recognized is never
+guessed at.
+
+While an affected pad is active the document element carries
+`data-controller-layout="transposed-face-buttons"`. That is a requalification diagnostic only, so a
+physical mapping check needs no debugger attached to the WebView; nothing behavioural reads it.
 
 **Controller selection** is deterministic: the active controller keeps ownership while it stays
 connected, so plugging in a second pad neither moves control nor duplicates actions; otherwise the

@@ -922,3 +922,255 @@ definition.
 
 The physical controller must not be called fixed until the operator reinstalls Release 002 per
 section Q.8 and runs the real in-game test in section N.2.
+
+---
+
+## R. Final physical face-button mapping correction
+
+This section records one further corrective pass, opened by a newly proven physical mapping defect.
+Nothing in sections A–Q was re-tested or rewritten by it, and no Runtime Release file was touched.
+
+### R.1 The ownership result, now recorded as passed
+
+The operator physically performed the application-input ownership test — launch a game in RetroArch,
+leave RetroArch running, Alt-Tab back to RetroFrontier, use the controller:
+
+```text
+RetroArch running + Alt-Tab to RetroFrontier:
+RetroFrontier ignores controller input — PASS
+```
+
+The `ownsApplicationInput` contract therefore passed real hardware qualification. It was not
+redesigned, weakened, or otherwise touched by this pass: `pendingGameId`, `running`, native
+window-focus handling, ownership release/adoption, stale held-button protection, and the RetroArch/
+RetroFrontier handoff are unchanged.
+
+### R.2 The raw hardware probe
+
+The operator probed the real browser `Gamepad.buttons` array on the qualification hardware — Linux /
+WebKitGTK application frontend, physical Sony DualSense, `mapping === 'standard'`:
+
+```text
+Cross     = 0
+Circle    = 1
+Square    = 3
+Triangle  = 2
+```
+
+Observed UI behaviour agreed with the probe: Square invoked Search, Triangle invoked the focused
+game's Context action, Circle correctly performed Back.
+
+The canonical W3C Standard Gamepad layout — which RetroFrontier is written against, and which
+`mapping === 'standard'` is a promise of — puts the **left** face button at index 2 and the **upper**
+face button at index 3. The probe shows the opposite: index 2 is the upper button (Triangle) and index
+3 is the left button (Square). The two upper/left face buttons arrive transposed while the browser
+still claims the Standard mapping.
+
+### R.3 Why the canonical adapter produced swapped Search/Context
+
+`GAMEPAD_BUTTON_INDEX` reads canonical index 2 as `context` and canonical index 3 as `search`, which
+is correct. It was reading a transposed array, so the two actions arrived on the wrong physical
+buttons. Nothing in the adapter, the focus layer, or the UI was wrong; the input was.
+
+The transposition was traced to the engine on the qualification machine, not inferred:
+
+| Fact | How it was established |
+| --- | --- |
+| The attached pad is `054c:0ce6`, version `0x8111`, kernel name `Sony Interactive Entertainment DualSense Wireless Controller` | `/sys/class/input/js1/device/{name,id/*}`, `lsusb` |
+| The engine is WebKitGTK 2.52.5 over libmanette 0.2.13 | `pkg-config --modversion webkit2gtk-4.1`, `rpm -q libmanette` |
+| WebKitGTK's `Gamepad.id` is **only** the kernel device name | Its Gamepad backend imports `manette_device_get_name` and no libmanette vendor/product accessor at all (`nm -D libwebkit2gtk-4.1.so.0` → `manette_device_get_name`, `manette_event_get_button`, `manette_event_get_absolute`, `manette_monitor_*`) |
+| WebKitGTK translates evdev button codes to Standard Gamepad indices with `BTN_X (0x133) → 2` and `BTN_Y (0x134) → 3` | Disassembly of its `manette_event_get_button` call site: a jump table over `code - 0x130` whose entries 3 and 4 land on the `2` and `3` cases |
+| On Linux `BTN_X == BTN_NORTH == 0x133` and `BTN_Y == BTN_WEST == 0x134` | `linux/input-event-codes.h` |
+
+So WebKitGTK reads those two codes under their **letter** meaning (X is the left button, Y the upper
+one) while the DualSense's kernel driver emits them under their **positional** meaning — north
+(Triangle) as `0x133`, west (Square) as `0x134`. The upper and left face buttons therefore change
+places on the way into the Standard Gamepad array, and `mapping` still says `standard`.
+
+This also explains why the defect is device-scoped rather than engine-wide: a pad whose driver uses
+the letter convention — an Xbox-style pad via `xpad`, where the X button is `BTN_X` — comes through
+that same table correctly.
+
+### R.4 The quirk detection rule
+
+```text
+runtime is WebKitGTK on Linux   AND   Gamepad.id matches /dualsense/i
+```
+
+Both halves are required, and each is narrow for a reason:
+
+- **The engine half** matches the engine, not the packaging, because the defective translation lives
+  in the engine: `AppleWebKit/` present, a `Linux` platform token present, and `Chrome|Chromium|
+  CriOS|Edg/` absent. Chromium advertises `AppleWebKit/` too and is excluded explicitly, so a
+  Chrome/Chromium development browser on the same machine keeps the canonical path, as does WebKit on
+  macOS, which has a different Gamepad backend entirely.
+- **The device half** matches the kernel device name because that string is the *whole* of what
+  WebKitGTK puts in `Gamepad.id` (R.3) — no vendor or product id is available to match on. One token
+  covers both connection namings: `Sony Interactive Entertainment DualSense Wireless Controller` over
+  USB, `DualSense Wireless Controller` over Bluetooth.
+
+Deliberately **not** implemented:
+
+- `Linux ⇒ swap 2 and 3` — the defect needs the driver's positional convention as well as the engine,
+  and Xbox-style pads on the same engine are correct.
+- `all PlayStation controllers ⇒ swap 2 and 3` — only the DualSense has been physically measured.
+  Other pads using the positional convention (a DualShock 4, for instance) are plausible candidates
+  and are left alone until someone measures one.
+- Any change to the canonical semantics themselves. See R.6.
+
+Because the predicate is a conjunction of two positive matches, everything it does not recognize
+takes the canonical path unchanged. It fails safe.
+
+### R.5 Where normalization happens
+
+A new module, `src/input/gamepadQuirks.ts`, sits between the browser and the existing adapter:
+
+```text
+navigator.getGamepads()
+        ↓
+gamepadQuirks: quirk normalization      ← the only place a non-canonical physical layout exists
+        ↓
+canonical W3C Standard Gamepad layout
+        ↓
+gamepadAdapter (GAMEPAD_BUTTON_INDEX)   ← unchanged
+        ↓
+confirm / back / context / search
+        ↓
+FocusProvider, Library, footer          ← unchanged
+```
+
+It is applied in `readGamepads()` in `src/hooks/useControllerInput.ts`, the acquisition boundary, so
+every reader — ownership selection *and* the state machine, on the poll path *and* on the ownership
+layout effect — sees the same canonical layout. `gamepadAdapter.ts` carries no browser or device
+identity, and neither does any focus, Library, footer, Search, Context, or `AppShell` code.
+
+The normalization is a two-entry permutation of canonical indices 2 and 3 and nothing else.
+`confirm` (0), `back` (1), the shoulders, the sticks, the D-pad, the guide button, and every axis are
+already canonical on the affected pad and are passed through untouched, as are `index`, `id`,
+`mapping`, and `connected` — this corrects a layout, it does not disguise a device. An unaffected
+snapshot is returned as the very same object, so the canonical path allocates nothing per frame.
+
+For requalification only, the hook also publishes `data-controller-layout="transposed-face-buttons"`
+on the document element while an affected pad is active, so the operator can confirm the predicate
+actually matched the pad in their hand without attaching a debugger to the WebView. Nothing
+behavioural reads it.
+
+### R.6 Why the canonical semantic mapping is unchanged
+
+```text
+canonical button 0 = confirm
+canonical button 1 = back
+canonical button 2 = context   (X / Square, the left face button)
+canonical button 3 = search    (Y / Triangle, the upper face button)
+```
+
+Unchanged, and deliberately so. A global swap of 2 and 3 would have fixed this one pad by breaking
+every correctly mapped one — Xbox-style pads, browsers that implement the canonical mapping, other
+Linux/browser combinations, and any future platform. The semantic actions were not renamed to match
+the broken raw indices either: `search` remains upper-face semantics and `context` remains left-face
+semantics, which is what normalization restores.
+
+The footer likewise still expresses semantic layout, not raw browser indices — `A/Cross` confirm,
+`B/Circle` back, `X/Square` context, `Y/Triangle` search — and the internally Xbox-oriented glyph
+naming is preserved.
+
+After normalization the physical behaviour on the affected pad is:
+
+```text
+Cross     -> Confirm
+Circle    -> Back
+Square    -> Context
+Triangle  -> Search
+```
+
+### R.7 Regression coverage added
+
+`src/input/gamepadQuirks.test.ts` (18 tests):
+
+- runtime detection: WebKitGTK/Linux recognized; Chromium on Linux, WebKit on macOS, Firefox on
+  Linux, and a missing or empty user agent all unaffected;
+- the predicate requires both halves, and covers both DualSense connection namings;
+- **a correctly mapped Standard Gamepad keeps `0 → confirm`, `1 → back`, `2 → context`, `3 → search`**
+  on the affected engine, and is returned as the identical object;
+- **the qualified quirk**: raw Cross 0 → canonical confirm, raw Circle 1 → canonical back, raw Square
+  3 → canonical context, raw Triangle 2 → canonical search;
+- the D-pad, shoulders, guide, and all axes are untouched; `index`/`id`/`mapping`/`connected` are
+  preserved; a pad reporting fewer buttons than the permutation names keeps its own button;
+- slots and empty entries survive, and only the affected pad in a mixed pair is normalized.
+
+`src/hooks/useControllerInput.test.tsx` (10 new tests) presses **raw** indices through the real
+acquisition path and asserts the semantic actions delivered — a canonical-index test could not prove
+the boundary is in the path:
+
+- all four raw face buttons produce the correct canonical actions;
+- an Xbox-style pad on the same engine, and the same DualSense on Chromium, stay canonical;
+- the diagnostic attribute appears and disappears with the affected pad;
+- **ownership is unaffected**: a raw Triangle held across a loss and return of ownership is adopted
+  silently and only fires when released and pressed again; the active pad keeps ownership when a
+  second pad is plugged in; a disconnect releases and the replacement adopts rather than replaying.
+
+`src/app/AppShell.test.tsx` (5 new tests) drive the whole application with raw physical indices:
+
+- physical Triangle reaches Search from `zone:library-sidebar`, and Back restores the original
+  sidebar entry;
+- physical Triangle reaches Search from `zone:library-main`, and Back restores the original game card;
+- physical Square selects the focused card without opening it;
+- physical Cross opens the focused card;
+- the footer still shows `X` for `SELECT` and `Y` for `SEARCH`.
+
+Library zone containment was not weakened to achieve any of this: Search remains the same explicit
+semantic zone exit it already was. The existing canonical-index controller, focus, zone,
+accessibility, and Search tests are unchanged and still pass, which is what proves pointer, Tab,
+Shift+Tab, typing, caret keys, and native focus behaviour did not regress.
+
+### R.8 Runtime Release
+
+No Runtime Release file changed in this pass. `release/linux-x86_64/runtime-release.json` and every
+Release 001 and Release 002 artefact are byte-identical to the starting commit; the defect was in
+browser input acquisition, which the managed runtime has no part in. The RetroArch controller profile
+shipped in Release 002 is unrelated to this fix and is untouched — the controller already worked
+correctly inside managed RetroArch.
+
+### R.9 Remaining physical requalification — HUMAN REQUIRED
+
+Automated tests cannot press a physical button. Every item below stays not performed until the
+operator runs it on the qualification hardware after this patch.
+
+```text
+Sidebar:
+  Triangle -> Search                              NOT PERFORMED — HUMAN INTERACTION REQUIRED
+  B        -> original sidebar entry restored      NOT PERFORMED — HUMAN INTERACTION REQUIRED
+
+Main Library:
+  Triangle -> Search                              NOT PERFORMED — HUMAN INTERACTION REQUIRED
+  B        -> original game card restored          NOT PERFORMED — HUMAN INTERACTION REQUIRED
+
+Game card:
+  Square   -> Context / checkbox selection         NOT PERFORMED — HUMAN INTERACTION REQUIRED
+
+Regression:
+  Cross    -> Confirm                              NOT PERFORMED — HUMAN INTERACTION REQUIRED
+  Circle   -> Back                                 NOT PERFORMED — HUMAN INTERACTION REQUIRED
+
+RetroArch:
+  launch a game                                    NOT PERFORMED — HUMAN INTERACTION REQUIRED
+  controller still works in-game                   NOT PERFORMED — HUMAN INTERACTION REQUIRED
+  exit RetroArch                                   NOT PERFORMED — HUMAN INTERACTION REQUIRED
+  RetroFrontier controller works again             NOT PERFORMED — HUMAN INTERACTION REQUIRED
+```
+
+If the mapping still behaves as before, the first thing to read is
+`document.documentElement.dataset.controllerLayout`: `transposed-face-buttons` means the predicate
+matched and the cause is elsewhere; absent means the predicate did not match, and the actual
+`Gamepad.id` and `navigator.userAgent` strings are then the two values to capture.
+
+### R.10 Verdict for this pass
+
+```text
+M8 DUALSENSE NORMALIZATION PASS — READY FOR OPERATOR REQUALIFICATION
+```
+
+The defect is narrowly identified at the engine level, normalized at the acquisition boundary only,
+regression-tested from the raw physical indices upward, and the canonical controller architecture —
+semantics, adapter, footer, zones, and input ownership — is intact. M8 is **not** hardware-qualified
+until the operator performs the Square/Triangle physical test in R.9.
