@@ -40,6 +40,11 @@ macro_rules! bind_library_query {
             } else {
                 0_i64
             })
+            .bind(if $request.needs_metadata_review {
+                1_i64
+            } else {
+                0_i64
+            })
             .bind($genre)
             .bind($genre)
             .bind($region)
@@ -876,6 +881,7 @@ impl LibraryRepository {
                      AND ma.provider_id = ? AND ma.kind = 'cover' \
                  WHERE (? IS NULL OR g.system_id = ?) \
                    AND (? = 0 OR COALESCE(us.favorite, 0) = 1) \
+                   AND (? = 0 OR pm.status = 'ambiguous') \
                    AND (? IS NULL OR lower(COALESCE(md.genre, '')) = lower(?)) \
                    AND (? IS NULL OR lower(COALESCE(md.region, '')) = lower(?)) \
                    AND (? IS NULL OR g.availability = ?) \
@@ -914,6 +920,7 @@ impl LibraryRepository {
                      AND ma.provider_id = ? AND ma.kind = 'cover' \
                  WHERE (? IS NULL OR g.system_id = ?) \
                    AND (? = 0 OR COALESCE(us.favorite, 0) = 1) \
+                   AND (? = 0 OR pm.status = 'ambiguous') \
                    AND (? IS NULL OR lower(COALESCE(md.genre, '')) = lower(?)) \
                    AND (? IS NULL OR lower(COALESCE(md.region, '')) = lower(?)) \
                    AND (? IS NULL OR g.availability = ?) \
@@ -2147,6 +2154,73 @@ mod tests {
         assert_eq!(issues.scan_run_id, None);
         assert_eq!(issues.total, 0);
         assert!(issues.issues.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_review_filter_returns_only_games_with_a_candidate_choice_to_make() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        for (game_id, title, status) in [
+            (1, "Alpha", "matched"),
+            (2, "Beta", "ambiguous"),
+            (3, "Gamma", "no_match"),
+            (4, "Delta", "failed"),
+            (5, "Epsilon", "stale"),
+            (6, "Zeta", "ambiguous"),
+        ] {
+            insert_game(
+                &pool,
+                game_id,
+                SystemId::Snes,
+                title,
+                GameAvailability::Available,
+            )
+            .await;
+            insert_match(&pool, game_id, status).await;
+        }
+        // A game with no provider relationship at all is not awaiting review either.
+        insert_game(&pool, 7, SystemId::Snes, "Eta", GameAvailability::Available).await;
+
+        let review = repository
+            .query_library(
+                &LibraryQuery {
+                    needs_metadata_review: true,
+                    ..LibraryQuery::default()
+                },
+                MetadataProviderId::ScreenScraper,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(ids(&review), vec![2, 6]);
+        assert_eq!(review.total, 2, "the bounded total must respect the filter");
+        for item in &review.items {
+            assert_eq!(
+                item.metadata_match_state,
+                LibraryMetadataMatchState::Ambiguous
+            );
+        }
+
+        // The filter composes with the existing ones rather than replacing them.
+        let narrowed = repository
+            .query_library(
+                &LibraryQuery {
+                    needs_metadata_review: true,
+                    search: Some("Zeta".to_owned()),
+                    ..LibraryQuery::default()
+                },
+                MetadataProviderId::ScreenScraper,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ids(&narrowed), vec![6]);
+
+        // Off by default: an ordinary library read is unchanged.
+        let everything = repository
+            .query_library(&LibraryQuery::default(), MetadataProviderId::ScreenScraper)
+            .await
+            .unwrap();
+        assert_eq!(everything.total, 7);
     }
 
     #[tokio::test]

@@ -373,6 +373,13 @@ pub struct LibraryQuery {
     pub genre: Option<String>,
     pub region: Option<String>,
     pub availability: Option<GameAvailability>,
+    /// Restricts the page to games whose provider match needs a human decision.
+    ///
+    /// One narrow flag rather than a general match-state filter: the only state a user can act on
+    /// from Game Detail is an ambiguous candidate set. A no-match, an unsupported shape or a parked
+    /// failure has no candidate list to choose from, so listing them under "review" would be an
+    /// invitation to do something the UI cannot offer.
+    pub needs_metadata_review: bool,
     pub sort: LibrarySort,
     /// Zero means the bounded default. Values above the backend maximum are capped.
     pub limit: u32,
