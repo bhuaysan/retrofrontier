@@ -250,10 +250,16 @@ no matching policy and no scheduler of its own.
 
 Two whole-library modes:
 
-- **Missing Metadata** — games that have never had a meaningful provider attempt: no provider
-  relationship and no metadata job of any kind. A no-match, an ambiguous candidate set, an
-  unsupported content shape and a parked failure are all answers, so repeated runs do not re-ask the
-  provider about them. It is deliberately not "games without a cover".
+- **Missing Metadata** — games the provider has never answered about. Usually that means untouched:
+  no provider relationship and no metadata job. It also covers a game whose only recorded outcome is
+  a failure about RetroFrontier's own configuration, because the provider was never actually asked.
+  A build with no ScreenScraper credentials parks every identification with `credentials_unavailable`,
+  and treating that as an answer would hide those games from every future run even after the
+  configuration is fixed. The line is M5's own taxonomy: every `Permanent` failure class is a
+  configuration failure, and `Permanent` already means "do not retry until configuration or content
+  changes". A no-match, an ambiguous candidate set, an unsupported content shape and a genuinely
+  exhausted retry budget *are* answers, so repeated runs do not re-ask them. A game with live work is
+  never eligible either way. It is deliberately not "games without a cover".
 - **Refresh Matched Games** — accepted matches that still name a provider game, the same condition
   the per-game refresh action requires before it refreshes rather than re-identifies. Ambiguous,
   no-match and unsupported entries are never refreshed as if they were trusted matches.
