@@ -431,6 +431,33 @@ the physical DualSense/Wayland sessions —
 - [ ] Windows and macOS controller qualification
 - [ ] controller remapping UI and persistence (B10)
 
+### Qualify DualSense Edge and Bluetooth controller mapping on WebKitGTK
+
+Accepted MEDIUM debt from the final M8 source review. Not an M8 merge blocker.
+
+```text
+Current physically qualified controller path:
+Linux + WebKitGTK + USB Sony DualSense
+```
+
+The WebKitGTK/Linux face-button quirk predicate in `src/input/gamepadQuirks.ts` recognizes
+DualSense devices broadly through a `/dualsense/i`-style name match, but only the USB Sony
+DualSense has actually been measured on hardware. Being covered by the predicate is not evidence
+of physical qualification, and this item must not be closed by reasoning about the code alone.
+
+- [ ] physically measure raw `Gamepad.buttons` indices for a DualSense Edge under Linux/WebKitGTK
+- [ ] physically qualify a Bluetooth DualSense under Linux/WebKitGTK
+- [ ] verify whether the existing WebKitGTK/DualSense face-button transposition applies to those
+      variants, or whether either reports canonical Standard Gamepad indices already
+- [ ] review whether the current `/dualsense/i`-style predicate remains appropriate for the
+      measured device set
+- [ ] narrow or expand the predicate only from actual physical evidence, never from device-name
+      inference
+- [ ] keep canonical RetroFrontier Standard Gamepad semantics unchanged — the quirk normalizes a
+      misreporting engine, it does not redefine the project's action mapping
+
+No M8 controller source is changed for this item; it is recorded as debt deliberately.
+
 ## M9 — Saves and Save States
 
 **Model:** Luna Max; Sol only for risky compatibility/migration design.
