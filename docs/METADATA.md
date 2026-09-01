@@ -605,7 +605,13 @@ There is no opt-in live provider test in M5. Adding one later would require sepa
 - Library title search escapes `\`, `%`, and `_` as literal text, but its SQLite `lower()` matching
   remains ASCII-oriented in the current configuration. Full Unicode case folding is deferred; the
   M6.1 corrective pass adds no folded-search column or replacement search subsystem.
-- ScreenScraper Web API v2 is documented as beta and may change without notice.
+- ScreenScraper Web API v2 is documented as beta and may change without notice. One observed defect
+  shapes the client: the provider embeds the `softname` in the media URLs inside its JSON response
+  and escapes an underscore as `\_`, which is not a JSON escape sequence, so a softname containing
+  one makes every response unparseable. The application identity is therefore restricted to an
+  allowlist of characters the provider echoes back safely. Emitting invalid JSON is the provider's
+  defect; avoiding it is the only repair available from the receiving end, and the parser is not
+  loosened to accept it.
 - Application developer credentials are recoverable from a distributed binary.
 - The provider publishes no authoritative quota reset instant, so re-probing is conservative rather
   than precisely timed. Nothing in the UI predicts one.

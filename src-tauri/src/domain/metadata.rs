@@ -795,12 +795,33 @@ pub struct MetadataProviderStatus {
 /// It carries product, version, and platform information, which is what makes HTTP 426-style
 /// client-lifecycle signals actionable, and deliberately carries nothing about the user.
 pub fn application_softname() -> String {
-    format!(
+    provider_safe_identity(&format!(
         "RetroFrontier/{} ({}-{})",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         std::env::consts::ARCH
-    )
+    ))
+}
+
+/// Characters a provider may echo back into its own payload without corrupting it.
+///
+/// The softname is not merely sent; ScreenScraper embeds it in the media URLs inside its JSON
+/// response. Its encoder escapes an underscore as `\_`, which is not one of JSON's escape
+/// sequences, so the whole response becomes unparseable — and `x86_64` put an underscore in every
+/// request this application made. Restricting the identity to an allowlist keeps it from tripping
+/// that, and keeps a future target triple or version suffix from finding the next such character.
+///
+/// This is a conservative outbound choice, not a claim that the provider is right: emitting invalid
+/// JSON is their defect. It is simply not one this application can repair from the receiving end,
+/// and the identity loses nothing legible by avoiding it.
+fn provider_safe_identity(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '/' | '-' | ' ' | '(' | ')' => character,
+            _ => '-',
+        })
+        .collect()
 }
 
 /// HTTP user agent for provider requests. Same identity, HTTP-conventional shape.
@@ -1081,6 +1102,36 @@ mod tests {
     }
 
     #[test]
+    fn the_softname_carries_nothing_a_provider_can_mangle() {
+        let softname = application_softname();
+
+        // The concrete defect this exists for: ScreenScraper escapes an underscore as an invalid
+        // JSON escape when it echoes the softname into media URLs, breaking the whole response.
+        assert!(!softname.contains('_'), "{softname}");
+        assert!(!softname.contains('\\'), "{softname}");
+        assert!(!softname.contains('"'), "{softname}");
+        assert!(
+            softname
+                .chars()
+                .all(|character| character.is_ascii_graphic() || character == ' '),
+            "{softname}"
+        );
+    }
+
+    #[test]
+    fn the_identity_allowlist_preserves_meaning_and_replaces_the_rest() {
+        // Everything a version and target triple legitimately needs survives unchanged.
+        assert_eq!(
+            provider_safe_identity("RetroFrontier/1.2.3-rc.4 (linux-aarch64)"),
+            "RetroFrontier/1.2.3-rc.4 (linux-aarch64)"
+        );
+        // The observed offender, and the two characters that would break a JSON string outright.
+        assert_eq!(provider_safe_identity("x86_64"), "x86-64");
+        assert_eq!(provider_safe_identity("a\"b\\c"), "a-b-c");
+        // A non-ASCII byte cannot reach the provider either.
+        assert_eq!(provider_safe_identity("café"), "caf-");
+    }
+    #[test]
     fn failure_dispositions_separate_permanent_quota_and_transient_classes() {
         assert_eq!(
             ProviderFailureClass::InvalidRequest.disposition(),
@@ -1112,8 +1163,10 @@ mod tests {
 
         assert!(softname.starts_with("RetroFrontier/"));
         assert!(softname.contains(env!("CARGO_PKG_VERSION")));
-        assert!(softname.contains(std::env::consts::OS));
-        assert!(softname.contains(std::env::consts::ARCH));
+        assert!(softname.contains(&provider_safe_identity(std::env::consts::OS)));
+        // The platform is still identified; only characters the provider mangles are replaced, so
+        // this is the sanitized spelling rather than the raw target triple.
+        assert!(softname.contains(&provider_safe_identity(std::env::consts::ARCH)));
         assert_eq!(softname, application_softname());
         assert!(application_user_agent().starts_with("RetroFrontier/"));
     }
