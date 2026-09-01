@@ -177,6 +177,19 @@ matches `/dualsense/i` against `Gamepad.id`, because WebKitGTK fills that id fro
 both the USB and the Bluetooth kernel naming. Anything not recognized by *both* halves takes the
 canonical path unchanged.
 
+**Covered is not the same as qualified.** The predicate matches the DualSense over Bluetooth and
+naming variants such as the DualSense Edge, on the reasoning that the transposition originates in the
+engine's evdev translation rather than in the transport. Only **USB DualSense on WebKitGTK/Linux** has
+actually been measured and physically qualified. Treat the rest as covered by the predicate, not as
+tested hardware.
+
+**Normalization must never copy the snapshot by spreading it.** A browser `Gamepad` exposes its
+fields as prototype getters and has no own enumerable properties, so `{ ...gamepad }` yields a
+snapshot whose `mapping` and `connected` are `undefined`; the Standard-mapping gate then correctly
+rejects the pad and the controller stops working altogether instead of being corrected. Every field is
+read and assigned explicitly, and the buttons array is built with `Array.from` so an array-like
+`FrozenArray` is handled too.
+
 **What is deliberately not done.** No `Linux ⇒ swap` and no `all PlayStation pads ⇒ swap`: the defect
 needs the driver's positional convention as well as the engine, and an Xbox-style pad via `xpad` comes
 through the same table correctly. The canonical semantics are never changed to match a broken layout —
@@ -756,8 +769,11 @@ where the static note was.
 
 ### Cross-platform
 
-- Only Linux x86_64 is in scope for M8. Windows and macOS controller behaviour, window activation
-  semantics, and focus-visible behaviour are **unqualified**.
+- Only Linux x86_64 is in scope for M8, and it is **hardware-qualified**: the physically qualified
+  configuration is Linux + WebKitGTK + USB Sony DualSense. See
+  [`M8_FINAL_HARDWARE_INPUT_REPORT.md`](M8_FINAL_HARDWARE_INPUT_REPORT.md) section S.
+- Windows and macOS controller behaviour, window activation semantics, and focus-visible behaviour
+  are **unqualified**.
 - The WebView's device support is a dependency: a pad the engine does not expose is invisible to
   frontend navigation even though RetroArch may drive it perfectly, because RetroArch reads the
   device directly. See ADR-014.

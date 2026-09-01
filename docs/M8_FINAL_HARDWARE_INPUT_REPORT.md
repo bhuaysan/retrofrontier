@@ -12,6 +12,18 @@ Its predecessors are [`M8_HARDWARE_CORRECTIVE_REPORT.md`](M8_HARDWARE_CORRECTIVE
 changes are [`CONTROLLER_AND_FOCUS.md`](CONTROLLER_AND_FOCUS.md) and
 [`RETROARCH_LAUNCH.md`](RETROARCH_LAUNCH.md).
 
+Two further corrective passes were opened after the sections below were first written — the face-button
+mapping correction in **section R**, and the release-integrity pass in **section Q** — and the operator
+has since requalified the result on physical hardware.
+
+```text
+M8 HARDWARE QUALIFICATION — PASS
+```
+
+The closeout evidence, the qualification scope, and that verdict are in **[section S](#s-final-operator-hardware-qualification)**.
+Read it first; sections A–R are the working record that led there, and their intermediate
+"not performed" annotations are historical.
+
 ---
 
 ## A. Starting state
@@ -455,11 +467,18 @@ though this qualification ran over USB.
 
 ## N. Operator requalification checklist
 
-Every physical step below is:
-
-```text
-NOT PERFORMED — HUMAN INTERACTION REQUIRED
-```
+> **Status: subsequently PERFORMED and PASSED.** This checklist was issued by this pass as work for
+> the operator, and the `NOT PERFORMED — HUMAN INTERACTION REQUIRED` annotations below record its
+> state *when it was issued*. The operator has since run it on the qualification hardware, against
+> the final branch. The results are recorded in **R.9**, and the consolidated closeout with the
+> qualification scope and final verdict is **section S**. The checklist text is left as written so
+> the procedure that was actually followed stays readable.
+>
+> R.9 and S.3 are the authoritative record of *which* items were reported back. A few incidental
+> spot-checks listed below — the Start/Select buttons, the optional L1/R1 and L2/R2 check, and the
+> explicit held-button-on-return check — were not itemized in the operator's report, so they are not
+> claimed as separately confirmed here. The face buttons, the D-pad and stick in-game, the fullscreen
+> launch, and the focus handoff all were.
 
 ### N.0 Reinstall the managed runtime first
 
@@ -471,7 +490,7 @@ Release 002 and the qualification environment must select the 002 manifest targe
 instruction here — republish and expect the four nightly core inputs to fail — no longer applies.
 
 ```text
-NOT PERFORMED — HUMAN INTERACTION REQUIRED
+PERFORMED — PASS (Release 002 installed and Ready; see S.3)
 ```
 
 ### N.1 Search
@@ -900,7 +919,7 @@ The previous Release 001 installation is retained by the ordinary retention poli
 by this pass; activation moves to the new installation. Only then is section N.2 meaningful.
 
 ```text
-NOT PERFORMED — HUMAN INTERACTION REQUIRED
+PERFORMED — PASS (see S.3)
 ```
 
 ---
@@ -920,8 +939,8 @@ given: the **complete** Release 002 definition builds through every stage and pu
 qualification TUF repository (section Q.5), with no rolling core URL left anywhere in the active
 definition.
 
-The physical controller must not be called fixed until the operator reinstalls Release 002 per
-section Q.8 and runs the real in-game test in section N.2.
+That condition has since been discharged: the operator reinstalled Release 002 per section Q.8 and
+ran the real in-game test in section N.2, both of which passed. See **section S**.
 
 ---
 
@@ -1133,35 +1152,40 @@ browser input acquisition, which the managed runtime has no part in. The RetroAr
 shipped in Release 002 is unrelated to this fix and is untouched — the controller already worked
 correctly inside managed RetroArch.
 
-### R.9 Remaining physical requalification — HUMAN REQUIRED
+### R.9 Physical requalification — PERFORMED, PASS
 
-Automated tests cannot press a physical button. Every item below stays not performed until the
-operator runs it on the qualification hardware after this patch.
+Automated tests cannot press a physical button, so every item below stayed open until the operator
+ran it on the qualification hardware. The operator has now done so, on the final branch — that is,
+including the R.10 identity fix, without which the pad is inert and none of these results would have
+been obtainable. Every item passed. The consolidated closeout, with the qualification scope and the
+final verdict, is section S.
 
 ```text
 Sidebar:
-  Triangle -> Search                              NOT PERFORMED — HUMAN INTERACTION REQUIRED
-  B        -> original sidebar entry restored      NOT PERFORMED — HUMAN INTERACTION REQUIRED
+  Triangle    -> Search                             PASS
+  B / Circle  -> original sidebar entry restored    PASS
 
-Main Library:
-  Triangle -> Search                              NOT PERFORMED — HUMAN INTERACTION REQUIRED
-  B        -> original game card restored          NOT PERFORMED — HUMAN INTERACTION REQUIRED
+Main Library grid:
+  Triangle    -> Search                             PASS
+  B / Circle  -> original game card restored        PASS
 
 Game card:
-  Square   -> Context / checkbox selection         NOT PERFORMED — HUMAN INTERACTION REQUIRED
+  Square      -> Context / checkbox selection       PASS
 
 Regression:
-  Cross    -> Confirm                              NOT PERFORMED — HUMAN INTERACTION REQUIRED
-  Circle   -> Back                                 NOT PERFORMED — HUMAN INTERACTION REQUIRED
+  Cross       -> Confirm                            PASS
+  Circle      -> Back                               PASS
 
 RetroArch:
-  launch a game                                    NOT PERFORMED — HUMAN INTERACTION REQUIRED
-  controller still works in-game                   NOT PERFORMED — HUMAN INTERACTION REQUIRED
-  exit RetroArch                                   NOT PERFORMED — HUMAN INTERACTION REQUIRED
-  RetroFrontier controller works again             NOT PERFORMED — HUMAN INTERACTION REQUIRED
+  Runtime Release 002 installed and Ready           PASS
+  RetroArch launches fullscreen                     PASS
+  DualSense works in the RetroArch menu             PASS
+  DualSense works in-game                           PASS
+  exit RetroArch -> RetroFrontier regains focus     PASS
+  controller works again in RetroFrontier           PASS
 ```
 
-If the mapping still behaves as before, the first thing to read is
+Should the mapping ever behave as before on other hardware, the first thing to read is
 `document.documentElement.dataset.controllerLayout`: `transposed-face-buttons` means the predicate
 matched and the cause is elsewhere; absent means the predicate did not match, and the actual
 `Gamepad.id` and `navigator.userAgent` strings are then the two values to capture.
@@ -1195,10 +1219,185 @@ and that the face-button transposition still happens. Reverting the fix fails th
 ### R.11 Verdict for this pass
 
 ```text
-M8 DUALSENSE NORMALIZATION PASS — READY FOR OPERATOR REQUALIFICATION
+M8 DUALSENSE NORMALIZATION PASS — REQUALIFIED, PASS
 ```
 
 The defect is narrowly identified at the engine level, normalized at the acquisition boundary only,
 regression-tested from the raw physical indices upward, and the canonical controller architecture —
-semantics, adapter, footer, zones, and input ownership — is intact. M8 is **not** hardware-qualified
-until the operator performs the Square/Triangle physical test in R.9.
+semantics, adapter, footer, zones, and input ownership — is intact. The Square/Triangle physical test
+this pass was waiting on has since been performed by the operator and passed (R.9); the overall
+hardware verdict is in section S.
+---
+
+## S. Final operator hardware qualification
+
+The closeout of M8. Nothing in sections A–R was re-tested, redesigned, or rewritten by it, and no
+Runtime Release file was touched. This section only records evidence and states the verdict.
+
+Each class of evidence below is kept separate on purpose, because they carry different weight: an
+automated gate proves an invariant about the code, a physical result proves the product works on real
+hardware, and neither substitutes for the other.
+
+### S.1 Automated verification
+
+Run against the final branch head, the commit carrying the R.10 identity fix.
+
+| Gate | Result |
+| --- | --- |
+| `pnpm typecheck` | pass |
+| `pnpm lint` | pass |
+| `pnpm format:check` | pass |
+| `pnpm test` | pass — 631 tests, 37 files |
+| `pnpm build` | pass |
+| `cargo fmt -- --check` | pass |
+| `cargo clippy --all-targets -- -D warnings` | pass |
+| `cargo test` | pass — 418 passed, 1 ignored |
+| `cargo clippy --all-targets --all-features -- -D warnings` | pass |
+| `cargo test --all-features` | pass — 448 passed, 7 ignored |
+| `git diff --check` | clean |
+
+Focused controller and focus suites: 139 tests across 8 files, all passing, of which
+`src/input/gamepadQuirks.test.ts` contributes 24.
+
+These prove the transposition arithmetic, the predicate's narrowness, and the snapshot-identity
+guard. They cannot press a button, which is what the rest of this section is for.
+
+### S.2 Physical browser button probe
+
+The raw `Gamepad.buttons` indices measured on the qualification hardware, unchanged from R.2 and
+preserved here as the physical basis of the normalization:
+
+```text
+Cross     = raw button 0
+Circle    = raw button 1
+Square    = raw button 3
+Triangle  = raw button 2
+```
+
+Qualified environment:
+
+```text
+Sony Interactive Entertainment DualSense Wireless Controller
+VID 054c
+PID 0ce6
+
+Linux
+WebKitGTK 2.52.5
+libmanette 0.2.13
+
+Gamepad.mapping = "standard"
+```
+
+The correction chain is unchanged:
+
+```text
+raw WebKitGTK/DualSense layout
+        ↓
+gamepad quirk normalization
+        ↓
+canonical RetroFrontier Standard Gamepad layout
+        ↓
+semantic actions
+```
+
+Canonical semantics are unchanged, and were not touched by any of this:
+
+```text
+0 = confirm
+1 = back
+2 = context
+3 = search
+```
+
+### S.3 Physical results — all PASS
+
+Performed by the operator on the qualification hardware, on the final branch. These are physically
+performed results, not automated assumptions and not inferences from a passing test.
+
+**RetroFrontier controller behaviour**
+
+```text
+Sidebar   Triangle    -> Search                             PASS
+Sidebar   B / Circle  -> original sidebar entry restored    PASS
+
+Game grid Triangle    -> Search                             PASS
+Game grid B / Circle  -> original game card restored        PASS
+
+          Square      -> Context / checkbox selection       PASS
+          Cross       -> Confirm                            PASS
+          Circle      -> Back                               PASS
+```
+
+**Managed RetroArch behaviour**
+
+```text
+Runtime Release 002 installed and Ready                     PASS
+RetroArch launches in fullscreen                            PASS
+DualSense works in the RetroArch menu                       PASS
+DualSense works in-game                                     PASS
+RetroArch exit returns focus to RetroFrontier               PASS
+Controller works again in RetroFrontier after exit          PASS
+```
+
+**Input ownership behaviour**
+
+The operator launched RetroArch, left the game running, Alt-Tabbed back to RetroFrontier, and used
+the controller:
+
+```text
+RetroFrontier ignores controller input while RetroArch runs PASS
+```
+
+This qualifies the existing `ownsApplicationInput` contract on physical hardware. The implementation
+was not modified by this closeout.
+
+### S.4 Qualification scope — what was physically tested, and what was not
+
+```text
+Physically qualified:
+Linux + WebKitGTK + USB Sony DualSense
+```
+
+The quirk predicate is deliberately broader than the hardware that has been measured, and the two
+must not be confused:
+
+| Device / connection | Covered by predicate | Physically qualified |
+| --- | --- | --- |
+| DualSense over USB (`Sony Interactive Entertainment DualSense Wireless Controller`) | yes | **yes** |
+| DualSense over Bluetooth (`DualSense Wireless Controller`) | yes | no |
+| DualSense Edge and other `/dualsense/i` naming variants | yes | no |
+| DualShock 4 and other PlayStation pads | no | no |
+| Xbox-style pads on the same engine | no | no — canonical path, unaffected |
+| Chromium, Firefox, or WebKit on macOS | no | no — canonical path, unaffected |
+
+Bluetooth DualSense and DualSense Edge are matched by the predicate on the reasoning in R.4, not on a
+measurement. They are expected to behave identically because the transposition originates in the
+engine's evdev translation rather than in the transport, but no one has put one on the bench. Treat
+them as covered, not as qualified, until someone does.
+
+USB DualSense is the physically qualified path.
+
+### S.5 Release integrity
+
+No file under `release/` changed in this closeout, and none changed in the two input commits that
+preceded it. Runtime Release 002 is the release that was constructed, published, installed, and
+physically qualified; it is byte-identical to its published form. Release 001 history is unchanged.
+No Release 003 was created, nothing was repinned, and the release definition was not rebuilt merely
+because documentation changed. No RetroArch binary, core, BIOS, ROM, runtime installation,
+qualification repository output, cached release input, TUF private key, or user data is vendored into
+this repository.
+
+### S.6 Verdict
+
+```text
+M8 HARDWARE QUALIFICATION — PASS
+M8 BRANCH — READY FOR FINAL REMOTE REVIEW
+```
+
+Every M8 acceptance concern that required real hardware has been physically exercised and passed:
+the Library face-button semantics, the Search and Context actions, the focus-return behaviour, the
+managed RetroArch session, the handoff back to RetroFrontier, and the input-ownership contract while
+RetroArch remains alive.
+
+This is a qualification verdict, not a release one. M8 is **not** merged and **not** released. The
+next step is independent remote review of this branch, and only then PR and merge approval.
