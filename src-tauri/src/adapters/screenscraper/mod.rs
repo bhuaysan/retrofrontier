@@ -168,6 +168,12 @@ fn log_malformed_body(context: &'static str, body: &[u8]) {
         bytes = body.len(),
         // Structure only: which check failed, and where. Never a value from the body.
         reason = %parse::describe_envelope_failure(body),
+        // Bounded to one line around the rejected character, and redacted: the provider echoes the
+        // request URL, credentials included, inside its own payload.
+        at = parse::envelope_syntax_position(body)
+            .and_then(|(line, column)| parse::envelope_failure_window(body, line, column))
+            .map(|window| redact_text(&window))
+            .unwrap_or_default(),
         excerpt = %redact_text(&excerpt),
         "metadata provider returned a body that could not be understood"
     );

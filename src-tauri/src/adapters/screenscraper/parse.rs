@@ -52,6 +52,14 @@ pub fn response_object(body: &[u8]) -> Result<Value, MalformedResponse> {
         .ok_or(MalformedResponse)
 }
 
+/// Where the JSON parser stopped, when the body is not valid JSON at all.
+pub fn envelope_syntax_position(body: &[u8]) -> Option<(usize, usize)> {
+    match serde_json::from_slice::<Value>(body) {
+        Ok(_) => None,
+        Err(error) => Some((error.line(), error.column())),
+    }
+}
+
 /// Names why a body could not be read as a provider envelope.
 ///
 /// Diagnostic only — it never widens what is accepted. `MalformedResponse` deliberately carries no
@@ -86,6 +94,42 @@ pub fn describe_envelope_failure(body: &[u8]) -> String {
             json_type_name(response)
         ),
     }
+}
+
+/// Characters of the failing line shown either side of the reported column.
+const FAILURE_WINDOW_RADIUS: usize = 90;
+
+/// A bounded window of the failing line, centred on the position the parser stopped at.
+///
+/// Unlike `describe_envelope_failure`, this *does* carry text from the body — that is the point,
+/// because a syntax error is only actionable if you can see the bytes that caused it. It is
+/// therefore bounded to one line and a fixed radius, and the caller must pass it through
+/// `redact_text`: the provider echoes the request URL, credentials included, inside its own
+/// payload, so an arbitrary window can contain one.
+pub fn envelope_failure_window(body: &[u8], line: usize, column: usize) -> Option<String> {
+    if line == 0 {
+        return None;
+    }
+    let text = String::from_utf8_lossy(body);
+    let failing = text.lines().nth(line - 1)?;
+    let characters: Vec<char> = failing.chars().collect();
+    // serde reports a 1-based column, and points just past the offending character.
+    let centre = column.saturating_sub(1).min(characters.len());
+    let start = centre.saturating_sub(FAILURE_WINDOW_RADIUS);
+    let end = (centre + FAILURE_WINDOW_RADIUS).min(characters.len());
+
+    let mut window = String::new();
+    if start > 0 {
+        window.push('…');
+    }
+    window.extend(&characters[start..centre]);
+    // Marks the position the parser rejected, so the exact character is unambiguous in the log.
+    window.push_str("⟪HERE⟫");
+    window.extend(&characters[centre..end]);
+    if end < characters.len() {
+        window.push('…');
+    }
+    Some(window)
 }
 
 fn json_type_name(value: &Value) -> &'static str {
@@ -630,6 +674,36 @@ mod tests {
 
         assert_eq!(record.provider_game_id, "42");
         assert_eq!(record.matched_rom.unwrap().size_bytes, Some(10));
+    }
+
+    #[test]
+    fn the_failure_window_is_bounded_and_marks_the_rejected_character() {
+        let mut body = String::from("{\n  \"header\": {},\n");
+        body.push_str(&format!("  \"a\": \"{}\", \n", "p".repeat(400)));
+        // An unescaped quote inside a string is the shape that breaks provider payloads.
+        body.push_str("  \"url\": \"https://x/?devpassword=SECRET\"broken\"\n}\n");
+
+        let (line, column) =
+            envelope_syntax_position(body.as_bytes()).expect("the body must not parse");
+        let window = envelope_failure_window(body.as_bytes(), line, column)
+            .expect("a failing line should yield a window");
+
+        assert!(window.contains("⟪HERE⟫"), "{window}");
+        // One line, bounded either side of the position.
+        assert!(!window.contains('\n'));
+        assert!(
+            window.chars().count() <= FAILURE_WINDOW_RADIUS * 2 + 8,
+            "{window}"
+        );
+
+        // The caller redacts, and the credential the provider echoed back must not survive it.
+        let logged = crate::adapters::screenscraper::redact_text(&window);
+        assert!(!logged.contains("SECRET"), "{logged}");
+    }
+
+    #[test]
+    fn a_body_that_parses_reports_no_syntax_position() {
+        assert_eq!(envelope_syntax_position(br#"{"response":{}}"#), None);
     }
 
     #[test]
