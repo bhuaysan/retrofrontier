@@ -10,6 +10,12 @@ import {
   type GamepadSnapshot,
   type GamepadState,
 } from '../input/gamepadAdapter';
+import {
+  currentInputRuntime,
+  gamepadLayoutQuirk,
+  normalizeGamepads,
+  type GamepadLayoutQuirk,
+} from '../input/gamepadQuirks';
 
 interface UseControllerInputOptions {
   /**
@@ -20,10 +26,18 @@ interface UseControllerInputOptions {
   onAction: (action: InputAction) => void;
 }
 
+/**
+ * The physical acquisition boundary: raw browser pads in, canonical Standard Gamepad pads out.
+ *
+ * Quirk normalization happens here rather than inside the adapter so that every reader — ownership
+ * selection and the state machine alike — sees the same canonical layout, and so the adapter stays
+ * free of any browser or device identity. Every caller in this hook goes through it.
+ */
 function readGamepads(): (GamepadSnapshot | null)[] {
   const source = navigator.getGamepads?.bind(navigator);
   if (source === undefined) return [];
-  return Array.from(source()) as (GamepadSnapshot | null)[];
+  const pads = Array.from(source()) as (GamepadSnapshot | null)[];
+  return normalizeGamepads(pads, currentInputRuntime());
 }
 
 /**
@@ -45,6 +59,10 @@ export function useControllerInput({ enabled, onAction }: UseControllerInputOpti
   // A pad the browser could not normalize to the Standard Gamepad mapping is attached but unusable.
   // The UI says that honestly rather than claiming a working controller or claiming none at all.
   const [unsupported, setUnsupported] = useState(false);
+  // Which layout quirk, if any, the active pad is being normalized through. Reported purely as a
+  // diagnostic so a physical requalification can confirm the quirk predicate actually matched the
+  // pad in the hand, without attaching a debugger to the WebView. Nothing behavioural reads it.
+  const [layoutQuirk, setLayoutQuirk] = useState<GamepadLayoutQuirk>(null);
   const stateRef = useRef<GamepadState>(createGamepadState());
   const enabledRef = useRef(enabled);
   const actionRef = useRef(onAction);
@@ -86,6 +104,7 @@ export function useControllerInput({ enabled, onAction }: UseControllerInputOpti
       const active = selectActiveGamepad(pads, stateRef.current.activeIndex);
       setConnected(active !== null);
       setUnsupported(active === null && hasUnsupportedGamepad(pads));
+      setLayoutQuirk(active === null ? null : gamepadLayoutQuirk(active, currentInputRuntime()));
 
       if (!enabledRef.current) {
         // Ownership belongs elsewhere: track the controller, deliver nothing, and stay ready to
@@ -117,6 +136,11 @@ export function useControllerInput({ enabled, onAction }: UseControllerInputOpti
         ? 'unsupported'
         : 'disconnected';
   }, [connected, unsupported]);
+
+  useEffect(() => {
+    if (layoutQuirk === null) delete document.documentElement.dataset.controllerLayout;
+    else document.documentElement.dataset.controllerLayout = layoutQuirk;
+  }, [layoutQuirk]);
 
   return { connected, unsupported };
 }

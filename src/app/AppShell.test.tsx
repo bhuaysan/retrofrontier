@@ -3608,4 +3608,114 @@ describe('AppShell M8 controller navigation and focus', () => {
     expect(within(footerHints()).getByText('LIBRARY')).toBeInTheDocument();
     expect(within(footerHints()).queryByText('CANCEL')).not.toBeInTheDocument();
   });
+
+  /**
+   * The qualified WebKitGTK/DualSense physical layout, driven end to end.
+   *
+   * Every other controller test in this file presses **canonical** Standard Gamepad indices, which
+   * proves the semantic layer but cannot prove which physical button reaches it. On the qualification
+   * hardware the operator measured `Gamepad.buttons` directly: Cross 0, Circle 1, Triangle 2, Square
+   * 3 — the two upper/left face buttons transposed relative to the canonical layout, with
+   * `mapping === 'standard'` all the same. These tests press those raw indices and assert the
+   * behaviour the operator will physically re-test, so the mapping can no longer obscure which action
+   * was really sent.
+   */
+  describe('qualified WebKitGTK DualSense physical layout', () => {
+    /** WebKitGTK 2.52.5 in the Linux Tauri WebView. */
+    const WEBKITGTK_LINUX_UA =
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15';
+    /** WebKitGTK reports the Linux kernel device name verbatim as `Gamepad.id`. */
+    const DUALSENSE_ID = 'Sony Interactive Entertainment DualSense Wireless Controller';
+    /** Raw physical indices as measured on the qualification hardware. */
+    const RAW = { cross: 0, circle: 1, triangle: 2, square: 3 } as const;
+
+    function dualsense(pressedIndex: number | null = null): FakeGamepad {
+      return { ...fakePad(pressedIndex), id: DUALSENSE_ID };
+    }
+
+    /** Presses one **raw** browser button index, as the affected engine would report it. */
+    async function pressRaw(rawIndex: number) {
+      pads = [dualsense(rawIndex)];
+      await polled();
+      pads = [dualsense()];
+      await polled();
+    }
+
+    async function libraryReady() {
+      render(<AppShell />);
+      await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+      layoutLibrary();
+      pads = [dualsense()];
+      await polled();
+      await inputOwnershipSettled();
+    }
+
+    function searchField() {
+      return screen.getByRole('searchbox', { name: 'Search' });
+    }
+
+    beforeEach(() => {
+      vi.stubGlobal('navigator', {
+        ...window.navigator,
+        userAgent: WEBKITGTK_LINUX_UA,
+        getGamepads: () => pads,
+      });
+    });
+
+    it('reaches Search with physical Triangle from the sidebar zone, and Back restores the sidebar entry', async () => {
+      await libraryReady();
+      const allSystems = screen.getByRole('button', { name: /All systems/ });
+      act(() => allSystems.focus());
+
+      await pressRaw(RAW.triangle);
+      expect(searchField()).toHaveFocus();
+
+      await pressRaw(RAW.circle);
+      expect(allSystems).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('reaches Search with physical Triangle from the main Library zone, and Back restores the card', async () => {
+      await libraryReady();
+      const kirby = screen.getByRole('link', { name: 'Open Kirby’s Adventure details' });
+      act(() => kirby.focus());
+
+      await pressRaw(RAW.triangle);
+      expect(searchField()).toHaveFocus();
+
+      await pressRaw(RAW.circle);
+      expect(kirby).toHaveFocus();
+      expect(window.location.pathname).toBe('/library');
+    });
+
+    it('selects the focused card with physical Square without opening it', async () => {
+      await libraryReady();
+      act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+
+      await pressRaw(RAW.square);
+
+      expect(window.location.pathname).toBe('/library');
+      expect(await screen.findByText('1 SELECTED')).toBeVisible();
+    });
+
+    it('opens the focused card with physical Cross', async () => {
+      await libraryReady();
+      act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+
+      await pressRaw(RAW.cross);
+
+      await waitFor(() => expect(window.location.pathname).toBe('/games/1'));
+    });
+
+    it('keeps the footer expressing the semantic layout, not the raw browser indices', async () => {
+      await libraryReady();
+      act(() => screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }).focus());
+
+      // X stays the context glyph and Y the search glyph: the footer describes canonical Standard
+      // Gamepad semantics, which is what normalization restores.
+      const hints = within(footerHints());
+      expect(hints.getByText('SELECT').closest('li')).toHaveTextContent('X');
+      expect(hints.getByText('SEARCH').closest('li')).toHaveTextContent('Y');
+    });
+  });
 });

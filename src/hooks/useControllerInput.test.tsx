@@ -277,3 +277,148 @@ describe('useControllerInput', () => {
     expect(onAction).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The qualified WebKitGTK/DualSense face-button quirk, driven through the real acquisition path.
+ *
+ * These tests press the **raw** browser indices the operator physically measured, not canonical
+ * ones, and assert the semantic actions RetroFrontier receives. That is the only way to prove the
+ * normalization boundary is actually in the path: a canonical-index test would pass either way.
+ */
+describe('useControllerInput WebKitGTK DualSense face-button normalization', () => {
+  /** WebKitGTK 2.52.5 in the Linux Tauri WebView, the qualification target. */
+  const WEBKITGTK_LINUX_UA =
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15';
+  const CHROMIUM_LINUX_UA =
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+  /** WebKitGTK reports the Linux kernel device name verbatim as `Gamepad.id`. */
+  const DUALSENSE_ID = 'Sony Interactive Entertainment DualSense Wireless Controller';
+
+  /** Raw physical indices as measured on the qualification hardware. */
+  const RAW = { cross: 0, circle: 1, triangle: 2, square: 3 } as const;
+
+  function runtime(userAgent: string) {
+    vi.stubGlobal('navigator', {
+      ...window.navigator,
+      userAgent,
+      getGamepads: () => pads,
+    });
+  }
+
+  function dualsense(index = 0): FakePad {
+    return fakePad(index, { id: DUALSENSE_ID });
+  }
+
+  /** Presses one raw browser button index and lets the poller observe press and release. */
+  function pressRaw(rawIndex: number, pad: FakePad = dualsense()) {
+    pads = [withButton(rawIndex, pad)];
+    frame();
+    pads = [pad];
+    frame();
+  }
+
+  function actionsFrom(userAgent: string, rawIndex: number, pad: FakePad = dualsense()) {
+    const onAction = vi.fn();
+    runtime(userAgent);
+    render(<Harness enabled onAction={onAction} />);
+    pads = [pad];
+    frame();
+    pressRaw(rawIndex, pad);
+    return onAction.mock.calls.flat();
+  }
+
+  it('maps raw Cross 0 to confirm', () => {
+    expect(actionsFrom(WEBKITGTK_LINUX_UA, RAW.cross)).toEqual(['confirm']);
+  });
+
+  it('maps raw Circle 1 to back', () => {
+    expect(actionsFrom(WEBKITGTK_LINUX_UA, RAW.circle)).toEqual(['back']);
+  });
+
+  it('maps raw Square 3 to context', () => {
+    expect(actionsFrom(WEBKITGTK_LINUX_UA, RAW.square)).toEqual(['context']);
+  });
+
+  it('maps raw Triangle 2 to search', () => {
+    expect(actionsFrom(WEBKITGTK_LINUX_UA, RAW.triangle)).toEqual(['search']);
+  });
+
+  it('reports the applied quirk as a diagnostic while the affected pad is active', () => {
+    const onAction = vi.fn();
+    runtime(WEBKITGTK_LINUX_UA);
+    render(<Harness enabled onAction={onAction} />);
+    pads = [dualsense()];
+    frame();
+    expect(document.documentElement.dataset.controllerLayout).toBe('transposed-face-buttons');
+
+    pads = [];
+    frame();
+    expect(document.documentElement.dataset.controllerLayout).toBeUndefined();
+  });
+
+  /** The guard against a global swap: an unaffected pad on the same engine keeps canonical indices. */
+  it('leaves a correctly mapped pad on the same engine canonical', () => {
+    const xbox = fakePad(0, { id: 'Xbox Wireless Controller' });
+    expect(actionsFrom(WEBKITGTK_LINUX_UA, 2, xbox)).toEqual(['context']);
+    expect(document.documentElement.dataset.controllerLayout).toBeUndefined();
+  });
+
+  it('leaves a correctly mapped pad on the same engine canonical for search', () => {
+    const xbox = fakePad(0, { id: 'Xbox Wireless Controller' });
+    expect(actionsFrom(WEBKITGTK_LINUX_UA, 3, xbox)).toEqual(['search']);
+  });
+
+  it('leaves the same DualSense canonical on an engine that maps it correctly', () => {
+    expect(actionsFrom(CHROMIUM_LINUX_UA, 2)).toEqual(['context']);
+    expect(actionsFrom(CHROMIUM_LINUX_UA, 3)).toEqual(['search']);
+  });
+
+  /**
+   * Normalization corrects a layout; it may not change the ownership discipline around it. A
+   * transposed button held across a loss and return of ownership stays as silent as a canonical one.
+   */
+  it('keeps held-button adoption across an ownership change', () => {
+    const onAction = vi.fn();
+    runtime(WEBKITGTK_LINUX_UA);
+    const { rerender } = render(<Harness enabled onAction={onAction} />);
+    pads = [dualsense()];
+    frame();
+
+    // Raw Triangle — canonical search — is held while ownership is elsewhere, and stays held when it
+    // returns. Adoption must swallow it entirely.
+    pads = [withButton(RAW.triangle, dualsense())];
+    rerender(<Harness enabled={false} onAction={onAction} />);
+    frame();
+    rerender(<Harness enabled onAction={onAction} />);
+    frame();
+    frame();
+    expect(onAction).not.toHaveBeenCalled();
+
+    // Released and pressed again, it is a genuine press and arrives as the canonical action.
+    pads = [dualsense()];
+    frame();
+    pressRaw(RAW.triangle);
+    expect(onAction.mock.calls.flat()).toEqual(['search']);
+  });
+
+  it('keeps deterministic ownership selection and disconnect handling', () => {
+    const onAction = vi.fn();
+    runtime(WEBKITGTK_LINUX_UA);
+    render(<Harness enabled onAction={onAction} />);
+
+    // The active pad keeps ownership when a second, unaffected pad is plugged in.
+    pads = [dualsense(0)];
+    frame();
+    pads = [dualsense(0), fakePad(1, { id: 'Xbox Wireless Controller' })];
+    frame();
+    pressRaw(RAW.square, dualsense(0));
+    expect(onAction.mock.calls.flat()).toEqual(['context']);
+
+    // A disconnect releases, and the replacement adopts rather than replaying.
+    onAction.mockClear();
+    pads = [null, withButton(2, fakePad(1, { id: 'Xbox Wireless Controller' }))];
+    frame();
+    frame();
+    expect(onAction).not.toHaveBeenCalled();
+  });
+});
