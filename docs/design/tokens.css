@@ -9,6 +9,10 @@
   --surface:#1e1e1e;
   --surface-2:#252525;
   --chip-bg:#1e1e1e;
+  /* Vertiefung, in der Coverart sitzt. Bewusst in beiden Themes dunkel: das ist kein
+     Papier-Untergrund, sondern die Nische hinter dem Bild. Wird sichtbar, wo ein Cover
+     das Seitenverhältnis seines Rahmens nicht ausfüllt. */
+  --cover-well:#171717;
 
   /* Linien & Tiefe */
   --border:#000000;
@@ -36,6 +40,8 @@
   --surface:#fbf5e8;
   --surface-2:#f1e8d4;
   --chip-bg:#fbf5e8;
+  /* Warmes Dunkel statt neutralem, damit die Nische zur Papier-Palette passt. */
+  --cover-well:#211c14;
 
   --border:#1a1a1a;
   --shadow:#1a1a1a;

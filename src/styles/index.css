@@ -2217,12 +2217,18 @@ a:focus-visible,
 }
 
 /* Only the media frame carries the system geometry. Title and system/year copy below it keep the
-   ordinary card layout, so a long title can never change a cover's shape. */
+   ordinary card layout, so a long title can never change a cover's shape.
+
+   The frame shows through wherever a cover does not fill its profile's ratio — `contain` centres
+   the artwork and letterboxes the rest. A theme surface is the wrong thing to show there: in the
+   light theme `--surface-2` is nearly the page's own paper colour, so the bars read as a hole in
+   the card rather than as part of it. `--cover-well` is dark in *both* themes, which turns those
+   bars into the recess the artwork is mounted in. */
 .game-card-media {
   position: relative;
   aspect-ratio: var(--cover-aspect);
   overflow: hidden;
-  background: var(--surface-2);
+  background: var(--cover-well);
   border-bottom: 2px solid var(--border);
 }
 
