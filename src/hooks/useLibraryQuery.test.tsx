@@ -565,6 +565,10 @@ describe('useLibraryQuery', () => {
 
     expect(mocks.queryLibrary).not.toHaveBeenCalled();
     expect(result.current.page).toBeNull();
+    // No page is coming, so it must not keep claiming a load is in flight.
+    expect(result.current.initialLoading).toBe(false);
+    expect(result.current.refreshing).toBe(false);
+    expect(result.current.pageLoading).toBe(false);
 
     // Selecting a system is exactly what asks for the paginated grid.
     act(() => result.current.setSystemId('snes'));
@@ -580,6 +584,7 @@ describe('useLibraryQuery', () => {
     act(() => result.current.setSystemId(null));
     await act(async () => Promise.resolve());
     expect(mocks.queryLibrary).toHaveBeenCalledTimes(callsWithSystem);
+    expect(result.current.initialLoading).toBe(false);
   });
 
   it('keeps owning every user filter choice even while it is not querying', async () => {

@@ -3284,6 +3284,29 @@ describe('AppShell M8 controller navigation and focus', () => {
       expect(link('F-Zero')).toHaveFocus();
     });
 
+    it('reaches a preview card clipped outside the visible row', async () => {
+      await shelvesReady();
+      // The bounded preview can be wider than a narrow window. A clipped card is still laid out,
+      // so it stays a navigation candidate and the browser scrolls it into view when it is
+      // focused — nothing is made unreachable by the row's own overflow.
+      const clipped = link('F-Zero');
+      // Well beyond the 1440px window, but still before its own shelf's View All.
+      setRect(clipped, { left: 1500, top: 200, right: 1760, bottom: 440 });
+      setRect(viewAll('View all 3 Super Nintendo games'), {
+        left: 1780,
+        top: 200,
+        right: 1888,
+        bottom: 440,
+      });
+
+      act(() => link('Gradius III').focus());
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+      expect(clipped).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+      expect(viewAll('View all 3 Super Nintendo games')).toHaveFocus();
+    });
+
     it('offers VIEW ALL as the focused control’s confirm action', async () => {
       await shelvesReady();
       act(() => viewAll('View all 3 Super Nintendo games').focus());

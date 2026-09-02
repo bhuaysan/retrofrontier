@@ -330,9 +330,12 @@ export function useLibraryQuery({
     needsMetadataReview,
     setNeedsMetadataReview,
     page,
-    initialLoading,
-    refreshing,
-    pageLoading,
+    // Reported rather than stored: while this hook is not querying there is no page and none is
+    // coming, so it must not keep claiming a load is in flight. Deriving it means the answer
+    // cannot drift out of step with whether a request is really possible.
+    initialLoading: queries && initialLoading,
+    refreshing: queries && refreshing,
+    pageLoading: queries && pageLoading,
     resultVersion,
     error,
     retry,
