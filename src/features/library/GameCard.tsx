@@ -7,6 +7,7 @@ import { gameRoute, routePath } from '../../app/routes';
 import { PixelCheck } from '../../components/ui/PixelIcon';
 import { GameCover } from './GameCover';
 import { systemAccentKey } from './systemAccents';
+import { systemCoverPresentation } from './systemCoverPresentation';
 import { systemShortLabel } from './systemLabels';
 
 interface GameCardProps {
@@ -76,6 +77,7 @@ export function GameCard({
       className={`game-card${unavailable ? ' game-card--unavailable' : ''}${
         selected ? ' game-card--selected' : ''
       }`}
+      data-cover-presentation={systemCoverPresentation(item.systemId)}
       data-system-accent={systemAccentKey(item.systemId)}
       style={{ '--system-accent': accent } as CSSProperties}
     >

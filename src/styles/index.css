@@ -1935,9 +1935,40 @@ a:focus-visible,
   transform: scale(1.08);
 }
 
+/* M8.6 cover presentation profiles.
+   `--cover-aspect` shapes the media frame; `--cover-aspect-scale` is the same ratio as a bare
+   number, so a shelf can derive a card width from one shared media height and keep the vertical
+   rhythm coherent across systems of different shapes. The two must stay in step. */
+.game-card {
+  --cover-aspect: 3 / 4;
+  --cover-aspect-scale: 0.75;
+}
+
+.game-card[data-cover-presentation='landscapeBox'] {
+  --cover-aspect: 4 / 3;
+  --cover-aspect-scale: 1.3333;
+}
+
+.game-card[data-cover-presentation='portraitBox'] {
+  --cover-aspect: 3 / 4;
+  --cover-aspect-scale: 0.75;
+}
+
+.game-card[data-cover-presentation='dvdBox'] {
+  --cover-aspect: 2 / 3;
+  --cover-aspect-scale: 0.6667;
+}
+
+.game-card[data-cover-presentation='standard'] {
+  --cover-aspect: 3 / 4;
+  --cover-aspect-scale: 0.75;
+}
+
+/* Only the media frame carries the system geometry. Title and system/year copy below it keep the
+   ordinary card layout, so a long title can never change a cover's shape. */
 .game-card-media {
   position: relative;
-  aspect-ratio: 3 / 4;
+  aspect-ratio: var(--cover-aspect);
   overflow: hidden;
   background: var(--surface-2);
   border-bottom: 2px solid var(--border);
@@ -1950,8 +1981,11 @@ a:focus-visible,
   height: 100%;
 }
 
+/* The whole artwork stays visible. The frame keeps the system's shape and the image is letterboxed
+   or pillarboxed inside it, rather than being cropped to fill it. Deliberately scoped to the
+   Library card class: `GameCover` stays generic and Game Detail keeps `.game-detail-cover`. */
 .game-card-cover {
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .game-card-placeholder {

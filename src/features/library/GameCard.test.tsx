@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { LibraryListItem } from '../../platform/ipc';
@@ -438,5 +438,82 @@ describe('GameCard', () => {
     );
 
     expect(screen.getByRole('article')).toHaveAttribute('data-system-accent', 'accent-3');
+  });
+  it('frames the media with the system’s cover presentation profile, not one shared ratio', () => {
+    renderCard({ systemId: 'snes' });
+    expect(screen.getByRole('article')).toHaveAttribute('data-cover-presentation', 'landscapeBox');
+
+    cleanup();
+    renderCard({ systemId: 'nintendo_gamecube' });
+    expect(screen.getByRole('article')).toHaveAttribute('data-cover-presentation', 'dvdBox');
+
+    cleanup();
+    renderCard({ systemId: 'nes' });
+    expect(screen.getByRole('article')).toHaveAttribute('data-cover-presentation', 'portraitBox');
+  });
+
+  it('keeps an unknown authoritative system on the safe standard frame', () => {
+    renderCard({ systemId: 'nintendo_switch_2' as LibraryListItem['systemId'] });
+
+    expect(screen.getByRole('article')).toHaveAttribute('data-cover-presentation', 'standard');
+  });
+
+  it('carries the same profile whether the card is rendered in a shelf or in the full grid', () => {
+    // The profile is a property of the system's card presentation, so it cannot depend on which
+    // Library surface happens to be rendering. Nothing about the card is told where it lives.
+    const { unmount } = renderCard({ systemId: 'nintendo_64' });
+    const inGrid = screen.getByRole('article').getAttribute('data-cover-presentation');
+    unmount();
+
+    render(
+      <div className="library-shelf-track">
+        <GameCard
+          accent="var(--accent)"
+          item={{ ...item, systemId: 'nintendo_64' }}
+          onOpenGame={vi.fn()}
+          onToggleSelected={vi.fn()}
+          selected={false}
+          systemName="Nintendo 64"
+        />
+      </div>,
+    );
+
+    expect(screen.getByRole('article')).toHaveAttribute('data-cover-presentation', inGrid);
+    expect(inGrid).toBe('landscapeBox');
+  });
+
+  it('shows the whole cover instead of cropping it to fill the frame', () => {
+    renderCard();
+    const cover = screen.getByRole('img', { name: 'Cover art for Kirby’s Adventure' });
+
+    // The Library card's own cover class carries the containment rule. `GameCover` stays generic
+    // and Game Detail keeps its separate `game-detail-cover` presentation.
+    expect(cover).toHaveClass('game-card-cover');
+    expect(cover).not.toHaveClass('game-detail-cover');
+  });
+
+  it('keeps the missing-cover placeholder and the selection control inside the profiled frame', () => {
+    renderCard({ coverRef: null, systemId: 'snes' });
+
+    const media = screen.getByRole('article').querySelector('.game-card-media');
+    expect(media).not.toBeNull();
+    expect(
+      media?.querySelector('.game-card-placeholder'),
+      'the C4 placeholder fills the system frame',
+    ).not.toBeNull();
+    expect(
+      media?.querySelector('.game-card-select'),
+      'selection stays a sibling of the detail target inside the frame',
+    ).not.toBeNull();
+  });
+
+  it('keeps the unavailable indicator unchanged under a non-standard profile', () => {
+    renderCard({ availability: 'unavailable', systemId: 'nintendo_gamecube' });
+
+    const card = screen.getByRole('article');
+    expect(card).toHaveClass('game-card--unavailable');
+    expect(card).toHaveAttribute('data-cover-presentation', 'dvdBox');
+    expect(screen.getByText('MISSING')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select Kirby’s Adventure' })).toBeInTheDocument();
   });
 });
