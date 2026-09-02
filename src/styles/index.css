@@ -1802,8 +1802,9 @@ a:focus-visible,
   min-width: 0;
   flex-direction: column;
   gap: 26px;
-  /* The one media height every shelf shares. Card widths are derived from it. */
-  --shelf-media-height: 200px;
+  /* The one media height every shelf shares. Card widths are derived from it, and it is sized so
+     a desktop window fits a wide system's preview together with its View All. */
+  --shelf-media-height: 168px;
 }
 
 .library-shelf {
@@ -1857,32 +1858,59 @@ a:focus-visible,
 .library-shelf-track {
   display: flex;
   align-items: stretch;
-  gap: 18px;
+  gap: 16px;
   overflow-x: auto;
+  /* `overflow-x: auto` forces the block axis to compute as `auto` too, so the focus transform is
+     given room by padding rather than by letting the row grow. */
   overflow-y: hidden;
-  padding: 6px 2px 10px;
+  padding: 12px 2px 14px;
+  /* A focused card the engine scrolled to must not land flush against the clipped edge, where its
+     own focus outline would be cut off. */
+  scroll-padding-inline: 14px;
   scrollbar-width: thin;
-  scroll-padding-inline: 2px;
+  scrollbar-color: var(--text-dim) var(--surface-2);
+  /* The honest overflow affordance. The fade sits at the row's own edges, so with nothing clipped
+     it falls on empty background and is invisible; a shelf that really continues past the edge
+     fades out instead of ending in a hard cut that reads as a rendering fault. GTK's overlay
+     scrollbars cannot be relied on to say this on their own. */
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 22px,
+    #000 calc(100% - 22px),
+    transparent 100%
+  );
 }
 
+/* The scrollbar is the honest affordance that a shelf continues past the edge, so it is given the
+   same hard-edged treatment as the rest of the chrome instead of being hidden. */
 .library-shelf-track::-webkit-scrollbar {
-  height: 8px;
+  height: 10px;
 }
 
 .library-shelf-track::-webkit-scrollbar-track {
   background: var(--surface-2);
+  border: 2px solid var(--border);
 }
 
 .library-shelf-track::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--text-dim);
+  border: 2px solid var(--border);
+}
+
+.library-shelf-track::-webkit-scrollbar-thumb:hover {
+  background: var(--text);
 }
 
 .library-shelf-track > .game-card {
   flex: none;
   /* Same media height for every system; the profile decides how wide that makes the card. */
   width: calc(var(--shelf-media-height) * var(--cover-aspect-scale));
-  min-width: 108px;
-  max-width: 300px;
+  /* A very narrow profile must still leave room for a title line; a very wide one must not turn
+     one card into the whole shelf. The floor is deliberately close to the narrowest profile's own
+     derived width, so it barely perturbs the shared media height. */
+  min-width: 116px;
+  max-width: 280px;
 }
 
 /* View All closes the shelf. It is a real control, sized to sit in the row without pretending to
@@ -3341,15 +3369,19 @@ a:focus-visible,
   /* Narrow windows get shorter shelves rather than wrapped ones: the row still scrolls, so every
      bounded preview item and View All stay reachable. */
   .library-shelf-browser {
-    --shelf-media-height: 152px;
+    --shelf-media-height: 132px;
   }
 
   .library-shelf-track {
-    gap: 14px;
+    gap: 12px;
+  }
+
+  .library-shelf-track > .game-card {
+    min-width: 96px;
   }
 
   .library-shelf-view-all {
-    width: 92px;
+    width: 88px;
   }
 
   /* C4 sizes its placeholder for the 158 px floor; the narrow fallback tile needs one step less
