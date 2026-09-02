@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 
 import { useFocusNode } from '../../focus/focusContext';
 import { focusNodes } from '../../focus/focusNodes';
@@ -20,12 +20,21 @@ function count(value: number) {
   return value.toLocaleString('en-US');
 }
 
+function games(total: number) {
+  return `${count(total)} ${total === 1 ? 'GAME' : 'GAMES'}`;
+}
+
 /**
  * The View All control.
  *
  * A real focus target with the system in its accessible name, not decorative text: it is how a
  * controller leaves the preview for the system's complete library, and it must be findable by name
  * among a dozen other "View all" controls on the same screen.
+ *
+ * It is deliberately card-sized so shelf focus geometry stays predictable, but it must not *read*
+ * as a card. Beside a missing-cover placeholder a bare outlined box says "this game failed to
+ * load"; the arrow, the solid structural border, and a counted noun say "the rest of this system
+ * is through here" instead.
  */
 function ViewAllShelf({
   systemId,
@@ -53,12 +62,60 @@ function ViewAllShelf({
     >
       <span aria-hidden="true" className="library-shelf-view-all-label">
         VIEW ALL
+        <PixelArrow className="library-shelf-view-all-arrow" />
       </span>
+      {/* The count is copy, not a bare numeral: "4" beside a game card reads as a badge on the
+          card, "4 GAMES" reads as the size of the library this control opens. */}
       <span aria-hidden="true" className="library-shelf-view-all-count">
-        {count(total)}
+        {games(total)}
       </span>
     </button>
   );
+}
+
+/**
+ * Truthful horizontal overflow state for one shelf track.
+ *
+ * The edge affordance describes *actual* hidden content rather than the mere fact that the
+ * container can scroll. At the scroll origin nothing is hidden to the left, so nothing is drawn
+ * there and the first card keeps the hard edge that lines it up under the system heading.
+ */
+function useShelfOverflow(itemCount: number) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const [overflow, setOverflow] = useState({ left: false, right: false });
+
+  useLayoutEffect(() => {
+    const track = trackRef.current;
+    if (track === null) {
+      return;
+    }
+
+    const measure = () => {
+      // Sub-pixel track widths make an exact comparison claim a phantom edge, so a whole pixel of
+      // hidden content is the threshold for saying any content is hidden at all.
+      const hiddenRight = track.scrollWidth - track.clientWidth - track.scrollLeft;
+      const next = { left: track.scrollLeft > 1, right: hiddenRight > 1 };
+      setOverflow((current) =>
+        current.left === next.left && current.right === next.right ? current : next,
+      );
+    };
+
+    measure();
+    track.addEventListener('scroll', measure, { passive: true });
+    // A width change hides or reveals content without any scrolling: a resized window, or the
+    // shell giving the content column a different width. Absent in jsdom, which has no layout to
+    // observe in the first place — there the scroll listener alone carries the contract.
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(track);
+
+    return () => {
+      track.removeEventListener('scroll', measure);
+      observer?.disconnect();
+    };
+    // A shelf that gains or loses preview items changes what is hidden without resizing its track.
+  }, [itemCount]);
+
+  return { trackRef, overflow };
 }
 
 /**
@@ -78,6 +135,7 @@ export function LibraryShelf({
 }: LibraryShelfProps) {
   const headingId = `library-shelf-heading-${shelf.systemId}`;
   const accent = systemAccent(shelf.systemId);
+  const { trackRef, overflow } = useShelfOverflow(shelf.items.length);
 
   return (
     <section
@@ -94,12 +152,15 @@ export function LibraryShelf({
           {systemName.toLocaleUpperCase()}
         </h2>
         <span aria-hidden="true" />
-        <span className="library-shelf-meta">
-          {count(shelf.total)} {shelf.total === 1 ? 'GAME' : 'GAMES'}
-        </span>
+        <span className="library-shelf-meta">{games(shelf.total)}</span>
       </div>
 
-      <div className="library-shelf-track">
+      <div
+        className="library-shelf-track"
+        data-overflow-left={String(overflow.left)}
+        data-overflow-right={String(overflow.right)}
+        ref={trackRef}
+      >
         {shelf.items.map((item) => (
           <GameCard
             accent={systemAccent(item.systemId)}
