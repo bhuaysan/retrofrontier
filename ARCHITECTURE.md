@@ -142,6 +142,24 @@ physical content files, hashes, or fingerprints. The existing full `get_library_
 the M4 diagnostic contract and is not the UI list path. Favorites live in the separate
 `game_user_state` table, so scanner reconciliation cannot overwrite them.
 
+M8.6 adds a second bounded read to that same boundary: `query_library_shelves` returns the Library's
+All Systems browse projection — one shelf per system that has a match, each carrying that system's
+full match `total` and only a short preview of its games. It is one set-oriented query, never one
+per system: `ROW_NUMBER()` ranks each system's matches in the paginated grid's own title order and
+`COUNT(*)` counts them, both partitioned by system in a single pass, and only rows inside the
+preview rank are returned. The response is therefore bounded by system count times the preview
+limit and does not grow with the library; the shelf request derives a `LibraryQuery` and binds the
+grid's own filter predicate and list projection, so search, favorites and metadata-review semantics
+cannot mean one thing on a shelf and another in the grid. Shelves are grouped from whatever system
+identities the data holds rather than from a known-system list, so no system's games can be dropped
+by a projection that has not heard of it. `query_library` remains the paginated single-system path,
+and both go through the same live provider-evidence validation.
+
+Cover presentation is deliberately *not* part of this contract. The backend supplies `systemId` and
+nothing about artwork shape; the frontend maps that identity to a presentation profile. No Rust DTO
+carries a ratio, a cover shape or a packaging format. See
+[`docs/LIBRARY_BROWSING.md`](docs/LIBRARY_BROWSING.md).
+
 The M6.1 UI list receives an opaque cached-cover reference when the durable cover row is eligible:
 `rfmedia://localhost/cover/<game-id>` on Linux/macOS desktop and
 `http://rfmedia.localhost/cover/<game-id>` on Windows. Rust generates the target-correct reference,

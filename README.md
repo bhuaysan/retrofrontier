@@ -30,7 +30,9 @@ sidebar, and footer a stationary shared shell on every route, contains sidebar o
 960×640 minimum, and closes the light-theme contrast work through the semantic `--negative-text`
 token and an AA correction for the black-on-accent active controls. RetroFrontier's visual language
 is hard-edge pixel art; the directional/sidebar cursor arrows and the Game Detail Favorite star are
-deliberate accepted vector exceptions. M7 owns launching. M6.1 provides the bounded library-query, summary, local-detail, favorite,
+deliberate accepted vector exceptions. M8.6 turns All Systems into a bounded per-system shelf
+browse view while a selected system keeps the full paginated grid, and frames Library cover artwork
+by system presentation profile without cropping it. M7 owns launching. M6.1 provides the bounded library-query, summary, local-detail, favorite,
 scan-issue, cached-cover, and metadata-invalidation IPC foundations consumed by the current UI.
 
 ## Stack
@@ -91,7 +93,10 @@ External ROM directories can be added as read-only content roots.
 
 The M4 scanner contract and IPC event names are documented in
 [`docs/LIBRARY_SCANNER.md`](docs/LIBRARY_SCANNER.md), and the M5 metadata
-architecture in [`docs/METADATA.md`](docs/METADATA.md).
+architecture in [`docs/METADATA.md`](docs/METADATA.md). How the Library is
+browsed — bounded per-system shelves under All Systems, the paginated grid
+inside one system, and system-aware cover framing — is documented in
+[`docs/LIBRARY_BROWSING.md`](docs/LIBRARY_BROWSING.md).
 
 The M6 implementation record is maintained in [`docs/M6_REPORT.md`](docs/M6_REPORT.md).
 

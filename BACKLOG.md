@@ -18,6 +18,11 @@ metadata work is started by the user from Settings as a persistent, restartable,
 Accepted-match evidence revalidation is unchanged. See
 [`docs/METADATA.md`](docs/METADATA.md).
 
+M8.6 System-Aware Library Shelves & Cover Profiles is implemented on
+`feat/m8-6-library-shelves`: All Systems browses bounded per-system shelves instead of one flat
+paginated grid, and Library cards frame artwork by system presentation profile without cropping it.
+See [`docs/LIBRARY_BROWSING.md`](docs/LIBRARY_BROWSING.md).
+
 **M9 — Saves and Save States is the next implementation milestone.**
 
 The previously documented release gates remain open and unchanged: production key ceremony under
@@ -511,6 +516,36 @@ Deliberately not in M8.5:
 - [ ] retry-all no-match, retry-all failed, or resolve-all ambiguous
 - [ ] cover-only bulk operations and broader artwork categories
 - [ ] any ETA, completion percentage from job counts, or predicted provider reset instant
+
+## M8.6 — System-Aware Library Shelves & Cover Profiles
+
+**Model:** Luna Max.
+
+All Systems is a bounded browse view rather than one flat paginated grid of every system mixed
+together, and a system's cover artwork is framed by that system's own presentation profile instead
+of one shared 3:4 box. See [`docs/LIBRARY_BROWSING.md`](docs/LIBRARY_BROWSING.md).
+
+- [x] bounded system shelf projection — one set-oriented query, never one per system
+- [x] shelf semantics derived from the grid's own filter predicate and list projection
+- [x] catalog shelf ordering; empty systems omitted; unknown systems appended, never dropped
+- [x] bounded preview with the system's full match total, and a semantic View All
+- [x] View All sets the same system filter the sidebar sets — no new route
+- [x] Search, Favorites and the M8.5 review filter keep shelf mode and compose
+- [x] focused shelf query model with bounded, coalesced metadata invalidation
+- [x] system cover presentation profiles, applied in shelves and in the full grid alike
+- [x] Library card artwork contained rather than cropped; `GameCover` stays system-agnostic
+- [x] controller shelf navigation on the existing geometric focus engine
+- [x] deterministic Game Detail return chain: game → its shelf's View All → first visible → heading
+- [x] scale coverage at 5,000 and 20,000 games with a response bounded by system count
+
+Deliberately not in M8.6:
+
+- [ ] infinite horizontal scrolling through a full system library
+- [ ] user system ordering, drag-to-reorder, or cover-ratio settings
+- [ ] region-specific box profiles or per-game ratio overrides
+- [ ] automatic ratio detection from image dimensions
+- [ ] recently-played, favorites-only, genre, or custom-collection shelves
+- [ ] carousel animation or shelf autoplay
 
 ## M9 — Saves and Save States
 
