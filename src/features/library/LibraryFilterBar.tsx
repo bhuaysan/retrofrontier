@@ -15,6 +15,7 @@ export function LibraryFilterBar({ library, shelves, systems }: LibraryFilterBar
     library.searchInput !== '' ||
     library.systemId !== null ||
     library.favoritesOnly ||
+    library.hideMissing ||
     library.needsMetadataReview;
   // All Systems browses shelves, which have no page and therefore no honest visible range: the
   // meaningful number there is how many games the active filters match across every system.
@@ -47,6 +48,15 @@ export function LibraryFilterBar({ library, shelves, systems }: LibraryFilterBar
         type="button"
       >
         <PixelStar filled /> FAVORITES ONLY
+      </button>
+      <button
+        aria-pressed={library.hideMissing}
+        className={`library-filter${library.hideMissing ? ' library-filter--active' : ''}`}
+        onClick={() => library.setHideMissing(!library.hideMissing)}
+        title="Hides games whose local content the last scan found missing. Nothing is deleted."
+        type="button"
+      >
+        HIDE MISSING
       </button>
       <button
         aria-pressed={library.needsMetadataReview}

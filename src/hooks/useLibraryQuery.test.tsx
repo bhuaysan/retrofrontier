@@ -587,6 +587,34 @@ describe('useLibraryQuery', () => {
     expect(result.current.initialLoading).toBe(false);
   });
 
+  it('asks for available content only while missing games are hidden, from page one', async () => {
+    // Hiding is a query filter, never a deletion: the request narrows while the flag is set and
+    // goes back to the unfiltered question the moment it is cleared. A narrowed result also has a
+    // different length, so the page position cannot survive the change.
+    mocks.queryLibrary.mockResolvedValue(pageWith('Page one', 0, 120));
+    const { result } = renderHook(() => useLibraryQuery({ enabled: true }));
+    await waitFor(() => expect(result.current.page).not.toBeNull());
+
+    act(() => result.current.nextPage());
+    await waitFor(() =>
+      expect(mocks.queryLibrary).toHaveBeenLastCalledWith({ sort: 'titleAsc', offset: 60 }),
+    );
+
+    act(() => result.current.setHideMissing(true));
+    await waitFor(() =>
+      expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
+        sort: 'titleAsc',
+        availability: 'available',
+        offset: 0,
+      }),
+    );
+
+    act(() => result.current.setHideMissing(false));
+    await waitFor(() =>
+      expect(mocks.queryLibrary).toHaveBeenLastCalledWith({ sort: 'titleAsc', offset: 0 }),
+    );
+  });
+
   it('keeps owning every user filter choice even while it is not querying', async () => {
     // Ownership and fetching are separate: the filter bar, the sidebar and the shelf model all
     // read these values, so they must stay authoritative in All Systems too.
@@ -596,10 +624,12 @@ describe('useLibraryQuery', () => {
     await act(async () => Promise.resolve());
 
     act(() => result.current.setFavoritesOnly(true));
+    act(() => result.current.setHideMissing(true));
     act(() => result.current.setNeedsMetadataReview(true));
     act(() => result.current.setSearchInput('mario'));
 
     expect(result.current.favoritesOnly).toBe(true);
+    expect(result.current.hideMissing).toBe(true);
     expect(result.current.needsMetadataReview).toBe(true);
     expect(result.current.searchInput).toBe('mario');
     await waitFor(() => expect(result.current.debouncedSearch).toBe('mario'));
@@ -607,6 +637,7 @@ describe('useLibraryQuery', () => {
 
     act(() => result.current.resetQuery());
     expect(result.current.favoritesOnly).toBe(false);
+    expect(result.current.hideMissing).toBe(false);
     expect(result.current.needsMetadataReview).toBe(false);
     expect(result.current.searchInput).toBe('');
   });

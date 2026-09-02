@@ -283,6 +283,8 @@ export interface LibraryPage {
 export interface LibraryShelvesRequest {
   search?: string | null;
   favoritesOnly?: boolean;
+  /** Restricts every shelf to games whose local content is in the given availability state. */
+  availability?: GameAvailability | null;
   /** Restricts every shelf to games whose provider match needs a human decision. */
   needsMetadataReview?: boolean;
   /** Zero or absent means the bounded backend default; larger values are capped by the backend. */

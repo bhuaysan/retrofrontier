@@ -63,7 +63,10 @@ export function LibraryBrowser({
         <LibraryShelfBrowser
           committedSearch={canEchoSearch ? committedSearch : ''}
           hasActiveFilters={
-            library.searchInput !== '' || library.favoritesOnly || library.needsMetadataReview
+            library.searchInput !== '' ||
+            library.favoritesOnly ||
+            library.hideMissing ||
+            library.needsMetadataReview
           }
           model={shelves}
           onOpenGame={onOpenGame}

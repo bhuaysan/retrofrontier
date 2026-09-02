@@ -1737,6 +1737,46 @@ describe('AppShell M6.2 shell and library states', () => {
     );
   });
 
+  it('hides missing games from both browse surfaces without deleting anything', async () => {
+    // A deleted file leaves its game behind on purpose: reconciliation marks the content missing
+    // and keeps the record. This filter is the non-destructive way to browse without those, so it
+    // has to ask the same question on the shelves and on the grid, and give every one back when
+    // it is cleared.
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 0,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    resolveLibrary(populatedLibraryPage);
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    const hideMissing = screen.getByRole('button', { name: 'HIDE MISSING' });
+    expect(hideMissing).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(hideMissing);
+    await waitFor(() =>
+      expect(mocks.queryLibraryShelves).toHaveBeenLastCalledWith({ availability: 'available' }),
+    );
+    expect(hideMissing).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByRole('button', { name: /Nintendo Entertainment System2/ }));
+    await waitFor(() =>
+      expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
+        systemId: 'nes',
+        availability: 'available',
+        sort: 'titleAsc',
+        offset: 0,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'CLEAR SEARCH & FILTERS' }));
+    await waitFor(() => expect(mocks.queryLibraryShelves).toHaveBeenLastCalledWith({}));
+    expect(screen.getByRole('button', { name: 'HIDE MISSING' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
   it('keeps the Favorites Only filter working and unrelated to card selection', async () => {
     mocks.getLibrarySummary.mockResolvedValue({
       totalGames: 2,

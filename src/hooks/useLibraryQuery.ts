@@ -36,6 +36,15 @@ export interface LibraryQueryModel {
   setSystemId: (systemId: SystemId | null) => void;
   favoritesOnly: boolean;
   setFavoritesOnly: (favoritesOnly: boolean) => void;
+  /**
+   * Hides games whose local content is gone.
+   *
+   * A deleted file leaves its game behind by design — reconciliation marks the content missing and
+   * keeps the record, its metadata and its user-owned state. This filter is the non-destructive way
+   * to browse without those, and it never removes anything: clearing it brings every one back.
+   */
+  hideMissing: boolean;
+  setHideMissing: (hideMissing: boolean) => void;
   /** Restricts the grid to games whose provider match needs a human decision. */
   needsMetadataReview: boolean;
   setNeedsMetadataReview: (needsMetadataReview: boolean) => void;
@@ -83,6 +92,7 @@ export function useLibraryQuery({
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [systemId, setSystemIdState] = useState<SystemId | null>(null);
   const [favoritesOnly, setFavoritesOnlyState] = useState(false);
+  const [hideMissing, setHideMissingState] = useState(false);
   const [needsMetadataReview, setNeedsMetadataReviewState] = useState(false);
   const [page, setPage] = useState<LibraryPage | null>(null);
   // The browser is only mounted for a populated summary, but `enabled` can turn
@@ -137,6 +147,7 @@ export function useLibraryQuery({
       if (debouncedSearch !== '') request.search = debouncedSearch;
       if (systemId !== null) request.systemId = systemId;
       if (favoritesOnly) request.favoritesOnly = true;
+      if (hideMissing) request.availability = 'available';
       if (needsMetadataReview) request.needsMetadataReview = true;
 
       try {
@@ -173,21 +184,29 @@ export function useLibraryQuery({
         if (mounted.current && ownsLoading) setChannelLoading(channel, false);
       }
     },
-    [debouncedSearch, favoritesOnly, needsMetadataReview, queries, setChannelLoading, systemId],
+    [
+      debouncedSearch,
+      favoritesOnly,
+      hideMissing,
+      needsMetadataReview,
+      queries,
+      setChannelLoading,
+      systemId,
+    ],
   );
 
   useLayoutEffect(() => {
     latestRunQuery.current = runQuery;
     const queryIdentity =
       `${debouncedSearch}\u0000${systemId ?? ''}\u0000${favoritesOnly}` +
-      `\u0000${needsMetadataReview}`;
+      `\u0000${hideMissing}\u0000${needsMetadataReview}`;
     if (queryIdentityRef.current !== queryIdentity) {
       queryIdentityRef.current = queryIdentity;
       latestQueryState.current = { favoritesOnly, targetOffset: 0 };
     } else {
       latestQueryState.current.favoritesOnly = favoritesOnly;
     }
-  }, [debouncedSearch, favoritesOnly, needsMetadataReview, runQuery, systemId]);
+  }, [debouncedSearch, favoritesOnly, hideMissing, needsMetadataReview, runQuery, systemId]);
 
   useEffect(() => {
     mounted.current = true;
@@ -220,6 +239,10 @@ export function useLibraryQuery({
     setFavoritesOnlyState(value);
     latestQueryState.current.targetOffset = 0;
   }, []);
+  const setHideMissing = useCallback((value: boolean) => {
+    setHideMissingState(value);
+    latestQueryState.current.targetOffset = 0;
+  }, []);
   const setNeedsMetadataReview = useCallback((value: boolean) => {
     setNeedsMetadataReviewState(value);
     latestQueryState.current.targetOffset = 0;
@@ -229,6 +252,7 @@ export function useLibraryQuery({
     setDebouncedSearch('');
     setSystemIdState(null);
     setFavoritesOnlyState(false);
+    setHideMissingState(false);
     setNeedsMetadataReviewState(false);
     latestQueryState.current.targetOffset = 0;
   }, []);
@@ -327,6 +351,8 @@ export function useLibraryQuery({
     setSystemId,
     favoritesOnly,
     setFavoritesOnly,
+    hideMissing,
+    setHideMissing,
     needsMetadataReview,
     setNeedsMetadataReview,
     page,

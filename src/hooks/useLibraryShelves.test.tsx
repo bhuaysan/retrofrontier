@@ -74,6 +74,7 @@ const BASE = {
   enabled: true,
   search: '',
   favoritesOnly: false,
+  hideMissing: false,
   needsMetadataReview: false,
 };
 
@@ -110,8 +111,25 @@ describe('useLibraryShelves', () => {
     );
     await waitFor(() => expect(mocks.queryLibraryShelves).toHaveBeenCalledWith({}));
 
-    rerender({ ...BASE, search: 'mario', favoritesOnly: true, needsMetadataReview: true });
+    rerender({
+      ...BASE,
+      search: 'mario',
+      favoritesOnly: true,
+      hideMissing: true,
+      needsMetadataReview: true,
+    });
 
+    await waitFor(() =>
+      expect(mocks.queryLibraryShelves).toHaveBeenLastCalledWith({
+        search: 'mario',
+        favoritesOnly: true,
+        availability: 'available',
+        needsMetadataReview: true,
+      }),
+    );
+
+    // Clearing it asks the unfiltered question again: nothing was removed, only hidden.
+    rerender({ ...BASE, search: 'mario', favoritesOnly: true, needsMetadataReview: true });
     await waitFor(() =>
       expect(mocks.queryLibraryShelves).toHaveBeenLastCalledWith({
         search: 'mario',

@@ -468,6 +468,12 @@ pub const MAX_LIBRARY_SHELF_PREVIEW: u32 = 12;
 pub struct LibraryShelfQuery {
     pub search: Option<String>,
     pub favorites_only: bool,
+    /// Restricts every shelf to games whose local content is in the given availability state.
+    ///
+    /// Present here for the same reason as the other filters: All Systems and the paginated grid
+    /// must answer the same question. A shelf that kept showing games the grid hides would make
+    /// the filter look broken on the very view most users browse from.
+    pub availability: Option<GameAvailability>,
     pub needs_metadata_review: bool,
     /// Zero means the bounded default. Values above the backend maximum are capped.
     pub preview_limit: u32,
@@ -497,7 +503,7 @@ impl LibraryShelfQuery {
             favorites_only: self.favorites_only,
             genre: None,
             region: None,
-            availability: None,
+            availability: self.availability,
             needs_metadata_review: self.needs_metadata_review,
             sort: LibrarySort::TitleAsc,
             limit: 0,

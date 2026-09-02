@@ -23,6 +23,9 @@ M8.6 System-Aware Library Shelves & Cover Profiles is implemented on
 paginated grid, and Library cards frame artwork by system presentation profile without cropping it.
 See [`docs/LIBRARY_BROWSING.md`](docs/LIBRARY_BROWSING.md).
 
+The Library can now hide games whose local content a scan found missing. Removing such a game's
+record for good is deliberately still absent; see *Library Missing-Content Handling*.
+
 **M9 — Saves and Save States is the next implementation milestone.**
 
 The previously documented release gates remain open and unchanged: production key ceremony under
@@ -546,6 +549,21 @@ Deliberately not in M8.6:
 - [ ] automatic ratio detection from image dimensions
 - [ ] recently-played, favorites-only, genre, or custom-collection shelves
 - [ ] carousel animation or shelf autoplay
+
+## Library Missing-Content Handling
+
+**Model:** Luna Max; Sol for the destructive pass, which deletes user data.
+
+Deleting a file never deletes its game: a scan marks the content missing and keeps the record, its
+metadata and every user-owned decision (`DOMAIN.md` invariant 2). Those games stay visible with the
+card's `MISSING` flag and cannot be launched.
+
+- [x] `HIDE MISSING` filter — the existing `availability` predicate, bound on the shelves and the
+  paginated grid alike; a query and never a deletion, reversible by clearing it
+- [ ] explicit, confirmed cleanup that removes the records of games whose content is gone: ordered
+  deletion across every table referencing `games (id)` under restrictive delete behaviour, the
+  cached cover files included, never offered for a root that could not be enumerated, and never
+  automatic
 
 ## M9 — Saves and Save States
 

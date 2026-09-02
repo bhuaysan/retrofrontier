@@ -3024,7 +3024,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shelf_search_favorites_and_review_semantics_match_the_grid_exactly() {
+    async fn shelf_search_favorites_review_and_availability_match_the_grid_exactly() {
         let (_directory, pool) = fixture().await;
         let repository = LibraryRepository::new(pool.clone());
         insert_root(&pool).await;
@@ -3098,6 +3098,49 @@ mod tests {
                 .map(|shelf| (shelf.system_id, shelf.total))
                 .collect::<Vec<_>>(),
             vec![(SystemId::Nes, 1), (SystemId::Snes, 1)]
+        );
+
+        // Availability is how the Library hides a game whose files are gone. It is a query filter
+        // and never a deletion, so the shelves must apply it exactly as the grid does — and the
+        // unfiltered view must still show the very same game.
+        sqlx::query("UPDATE games SET availability = 'unavailable' WHERE id = 4")
+            .execute(&pool)
+            .await
+            .expect("synthetic missing game");
+
+        let available_only = assert_shelves_agree_with_grid(
+            &repository,
+            &LibraryShelfQuery {
+                availability: Some(GameAvailability::Available),
+                ..LibraryShelfQuery::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            available_only
+                .shelves
+                .iter()
+                .map(|shelf| shelf.total)
+                .sum::<u64>(),
+            (games.len() - 1) as u64,
+            "exactly the one missing game is hidden"
+        );
+        assert!(
+            !available_only
+                .shelves
+                .iter()
+                .any(|shelf| shelf.items.iter().any(|item| item.game_id.0 == 4)),
+            "a missing game must not survive the filter on any shelf"
+        );
+
+        let unfiltered =
+            assert_shelves_agree_with_grid(&repository, &LibraryShelfQuery::default()).await;
+        assert!(
+            unfiltered
+                .shelves
+                .iter()
+                .any(|shelf| shelf.items.iter().any(|item| item.game_id.0 == 4)),
+            "hiding is a filter, not a deletion: clearing it brings the game back"
         );
 
         let combined = assert_shelves_agree_with_grid(

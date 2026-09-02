@@ -48,16 +48,31 @@ is distinguishable among a dozen View All controls on one screen.
 
 ## Filters
 
-Search, Favorites and M8.5's `NEEDS REVIEW` all apply to shelves and all keep shelf mode. Results
-are never flattened into one mixed-system grid, and matching is never reimplemented in React.
+Search, Favorites, `HIDE MISSING` and M8.5's `NEEDS REVIEW` all apply to shelves and all keep shelf
+mode. Results are never flattened into one mixed-system grid, and matching is never reimplemented in
+React.
 
 | Filter state | Result |
 | --- | --- |
 | All Systems + Search | Shelf mode; each shelf shows its own matches; systems with none disappear |
 | All Systems + Favorites | Shelf mode, favorites only |
+| All Systems + Hide Missing | Shelf mode, available local content only |
 | All Systems + any combination | Shelf mode; the filters compose exactly as they do in the grid |
 | A system selected + any filter | The existing paginated grid, unchanged |
 | Nothing matches | The existing `NO GAMES MATCH FILTERS` state with its reset action — never a list of empty headings |
+
+### Hide Missing
+
+Deleting a file does not delete its game. A scan reconciles the vanished path, marks the content
+units and files missing and flips `games.availability` to `unavailable`, but the logical game, its
+metadata, its cover and every user-owned decision about it are kept — `DOMAIN.md` invariant 2. Those
+games stay in the Library carrying the card's `MISSING` flag, and launching them is refused.
+
+`HIDE MISSING` binds the existing `availability` filter to `available` on both surfaces. It is a
+query and never a deletion: nothing is removed, clearing the filter brings every hidden game back,
+and a root that could not be enumerated marks nothing missing in the first place, so an unplugged
+drive cannot make a library look empty. Removing a game's record for good is a separate, explicitly
+confirmed operation that does not exist yet.
 
 The Library's own query state owns every user filter choice and the search debounce. The shelf model
 is handed those committed values, so both presentations commit at the same moment and there is no

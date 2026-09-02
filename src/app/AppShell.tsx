@@ -244,6 +244,7 @@ function AppShellBody() {
     enabled: libraryPopulated && library.systemId === null,
     search: library.debouncedSearch,
     favoritesOnly: library.favoritesOnly,
+    hideMissing: library.hideMissing,
     needsMetadataReview: library.needsMetadataReview,
     scanCompletionRunId: libraryScanCompletionRunId,
   });
