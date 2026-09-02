@@ -1074,13 +1074,19 @@ impl MetadataApplicationService {
                     .await
             }
             DeterministicOutcome::Conflicting(conflict) => {
-                // Conflicting provider evidence is never resolved by preference or ordering.
+                // Conflicting provider evidence is never resolved by preference or ordering. It is
+                // still worth showing *which* game the provider answered with: for a disc
+                // container the disagreement is usually a representation difference — a CHD is not
+                // the size of the BIN the provider has on file — and the answer came from an exact
+                // filename match. Offering it as a candidate lets the user settle what this code
+                // must not settle for them.
                 tracing::info!(
                     game_id = %game_id,
                     conflict = ?conflict,
                     "provider content evidence conflicted with local content evidence"
                 );
-                self.persist_ambiguous(game_id, &[]).await?;
+                let candidates = self.answered_game_as_candidate(&record);
+                self.persist_ambiguous(game_id, &candidates).await?;
                 Ok(JobOutcome::Done)
             }
             DeterministicOutcome::Insufficient(reason) => {
@@ -1090,13 +1096,22 @@ impl MetadataApplicationService {
                     "provider returned no comparable content evidence"
                 );
                 // Stage 3: offer suggestions, still without attaching anything.
-                let candidates = match self
-                    .search_candidates(game.system_id, &game.local_title)
-                    .await
-                {
-                    Ok(Some(candidates)) => candidates,
-                    Ok(None) => return Ok(JobOutcome::Requeue),
-                    Err(failure) => return Ok(JobOutcome::ProviderFailure(failure)),
+                //
+                // The provider answered this request, which carried the file's own name, so it
+                // already named a game — that is a far better suggestion than a fuzzy title search
+                // over a local title still carrying its filename decorations. The search is kept
+                // only for the case where the answer identified no game at all, and skipping it
+                // also spares the request.
+                let candidates = match self.answered_game_as_candidate(&record) {
+                    candidates if !candidates.is_empty() => candidates,
+                    _ => match self
+                        .search_candidates(game.system_id, &game.local_title)
+                        .await
+                    {
+                        Ok(Some(candidates)) => candidates,
+                        Ok(None) => return Ok(JobOutcome::Requeue),
+                        Err(failure) => return Ok(JobOutcome::ProviderFailure(failure)),
+                    },
                 };
                 self.persist_ambiguous(game_id, &candidates).await?;
                 Ok(JobOutcome::Done)
@@ -1125,6 +1140,24 @@ impl MetadataApplicationService {
             }
         }
         Err(first_reason.unwrap_or(UnsupportedContentReason::NoPrimaryContentFile))
+    }
+
+    /// The game the provider answered with, as a single candidate for the user to confirm.
+    ///
+    /// This is the answer to a `jeuInfos` request that carried the content's own filename, so it is
+    /// a name match the provider itself made — not a guess this code assembled. It is offered, never
+    /// attached: only agreeing hashes may do that. An answer carrying no usable title is dropped
+    /// rather than shown as a bare identifier the user cannot recognise.
+    fn answered_game_as_candidate(&self, record: &ProviderGameRecord) -> Vec<ProviderCandidate> {
+        let title = record.metadata.title.trim();
+        if title.is_empty() {
+            return Vec::new();
+        }
+        vec![ProviderCandidate {
+            provider_game_id: record.provider_game_id.clone(),
+            title: title.to_owned(),
+            release_date: record.metadata.release_date.clone(),
+        }]
     }
 
     /// Heuristic title search.
@@ -1853,6 +1886,8 @@ mod tests {
         fetch: Mutex<VecDeque<ProviderResult<ProviderGameRecord>>>,
         media: Mutex<VecDeque<ProviderResult<DownloadedMedia>>>,
         calls: Mutex<Vec<&'static str>>,
+        /// The basename of the most recent lookup, which is the provider's other matching key.
+        last_identify_basename: Mutex<Option<String>>,
         /// Runs *inside* `identify_content`, so a test can change local content while the
         /// provider request is genuinely in flight.
         during_identify: Mutex<Option<InFlightHook>>,
@@ -1871,6 +1906,7 @@ mod tests {
                 fetch: Mutex::new(VecDeque::new()),
                 media: Mutex::new(VecDeque::new()),
                 calls: Mutex::new(Vec::new()),
+                last_identify_basename: Mutex::new(None),
                 during_identify: Mutex::new(None),
             })
         }
@@ -1883,6 +1919,7 @@ mod tests {
                 fetch: Mutex::new(VecDeque::new()),
                 media: Mutex::new(VecDeque::new()),
                 calls: Mutex::new(Vec::new()),
+                last_identify_basename: Mutex::new(None),
                 during_identify: Mutex::new(None),
             })
         }
@@ -1913,6 +1950,10 @@ mod tests {
 
         fn calls(&self) -> Vec<&'static str> {
             self.calls.lock().unwrap().clone()
+        }
+
+        fn last_identify_basename(&self) -> Option<String> {
+            self.last_identify_basename.lock().unwrap().clone()
         }
 
         fn call_count(&self) -> usize {
@@ -1958,8 +1999,9 @@ mod tests {
 
         async fn identify_content(
             &self,
-            _request: &ContentIdentificationRequest,
+            request: &ContentIdentificationRequest,
         ) -> ProviderResult<ProviderGameRecord> {
+            *self.last_identify_basename.lock().unwrap() = Some(request.file_basename.clone());
             let hook = self
                 .during_identify
                 .lock()
@@ -2709,12 +2751,45 @@ mod tests {
 
     #[tokio::test]
     async fn a_response_without_a_provider_content_record_becomes_a_candidate_state() {
+        // The lookup carried the content's own filename, so an answer without a comparable content
+        // record is still the provider naming a game. That answer is the candidate; a fuzzy title
+        // search would only be a worse guess at the same question, so it is not issued at all.
         let harness = Harness::new().await;
         let game_id = insert_single_file_game(&harness.pool).await;
         harness.provider.queue_identify(Ok(ProviderResponse::new(
             game_record(None, "Example Quest"),
             None,
         )));
+
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.drain(4).await;
+
+        let state = harness.state(game_id).await;
+        assert_eq!(state.status, ProviderMatchStatus::Ambiguous);
+        assert_eq!(state.match_type, None);
+        assert_eq!(state.provider_game_id, None);
+        assert_eq!(state.candidates.len(), 1);
+        assert_eq!(state.candidates[0].provider_game_id, "3");
+        assert_eq!(state.candidates[0].title, "Example Quest");
+        assert_eq!(
+            state.candidates[0].release_date.as_deref(),
+            Some("1990-09-01")
+        );
+        assert!(
+            state.metadata.is_none(),
+            "a named answer must never silently become a match"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answer_without_a_usable_title_still_falls_back_to_the_title_search() {
+        // A bare identifier is nothing the user could recognise in a candidate list, so the
+        // heuristic search remains the fallback for exactly that case.
+        let harness = Harness::new().await;
+        let game_id = insert_single_file_game(&harness.pool).await;
+        harness
+            .provider
+            .queue_identify(Ok(ProviderResponse::new(game_record(None, "   "), None)));
         harness.provider.queue_search(Ok(ProviderResponse::new(
             vec![
                 ProviderCandidate {
@@ -2736,15 +2811,9 @@ mod tests {
 
         let state = harness.state(game_id).await;
         assert_eq!(state.status, ProviderMatchStatus::Ambiguous);
-        assert_eq!(state.match_type, None);
-        assert_eq!(state.provider_game_id, None);
         assert_eq!(state.candidates.len(), 2);
         assert_eq!(state.candidates[0].provider_game_id, "11");
         assert_eq!(state.candidates[1].provider_game_id, "12");
-        assert!(
-            state.metadata.is_none(),
-            "a heuristic candidate must never silently become a match"
-        );
     }
 
     #[tokio::test]
@@ -2813,31 +2882,91 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_unsupported_container_format_refuses_automatic_matching() {
+    async fn a_playstation_disc_set_can_now_match_deterministically() {
+        // The case the old refusal made impossible. A CUE descriptor's own bytes are what the
+        // provider's CD records carry, so when its hashes agree this is an ordinary verified match
+        // — no weaker than a cartridge's, and reached by the same rule.
+        let harness = Harness::new().await;
+        let game_id = insert_game(
+            &harness.pool,
+            SystemId::PlayStation,
+            ContentUnitKind::CueBin,
+            "PlayStation/Disc Quest (USA).cue",
+            Some(SHA1),
+            Some(MD5),
+            Some(CRC32),
+            "fingerprint-cue",
+        )
+        .await;
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(Some(matched_rom()), "Disc Quest"),
+            None,
+        )));
+        harness
+            .provider
+            .queue_media(Ok(ProviderResponse::new(synthetic_png("d"), None)));
+
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.drain(4).await;
+
+        let state = harness.state(game_id).await;
+        assert_eq!(state.status, ProviderMatchStatus::Matched);
+        assert_eq!(state.match_type, Some(MatchType::DeterministicSha1));
+        assert_eq!(state.unsupported_reason, None);
+        assert!(state.deterministic);
+    }
+
+    #[tokio::test]
+    async fn a_playstation_lookup_carries_the_file_name_the_provider_can_match_on() {
+        // Why a CHD reaches the provider at all: the request carries its filename, and the provider
+        // matches on a checksum *or* an exact name. Refusing to produce evidence removed the whole
+        // request, name included, which is what left PlayStation with no route.
+        let harness = Harness::new().await;
+        let game_id = insert_game(
+            &harness.pool,
+            SystemId::PlayStation,
+            ContentUnitKind::Chd,
+            "PlayStation/Disc Quest (USA).chd",
+            Some(SHA1),
+            None,
+            None,
+            "fingerprint-chd-lookup",
+        )
+        .await;
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(None, "Disc Quest"),
+            None,
+        )));
+
+        harness.service.request_enrichment(game_id).await.unwrap();
+        harness.drain(4).await;
+
+        assert_eq!(
+            harness.provider.calls(),
+            vec!["identify"],
+            "the disc image must be looked up, and a named answer needs no title search"
+        );
+        assert_eq!(
+            harness.provider.last_identify_basename(),
+            Some("Disc Quest (USA).chd".to_owned()),
+            "the basename is the provider's other matching key"
+        );
+    }
+
+    #[tokio::test]
+    async fn content_that_is_not_a_lookup_subject_still_refuses_automatic_matching() {
         let cases = [
             (
-                ContentUnitKind::Chd,
+                ContentUnitKind::M3u,
                 SystemId::PlayStation,
-                "PS/game.chd",
-                UnsupportedContentReason::ChdRepresentationUndefined,
-            ),
-            (
-                ContentUnitKind::CueBin,
-                SystemId::PlayStation,
-                "PS/game.cue",
-                UnsupportedContentReason::CueBinRepresentationUndefined,
+                "PS/game.m3u",
+                UnsupportedContentReason::PlaylistIsNotIdentity,
             ),
             (
                 ContentUnitKind::Gdi,
                 SystemId::SegaDreamcast,
                 "DC/game.gdi",
                 UnsupportedContentReason::GdiRepresentationUndefined,
-            ),
-            (
-                ContentUnitKind::M3u,
-                SystemId::PlayStation,
-                "PS/game.m3u",
-                UnsupportedContentReason::PlaylistIsNotIdentity,
             ),
             (
                 ContentUnitKind::SingleFile,
@@ -4367,8 +4496,11 @@ mod tests {
         )
         .await;
 
-        // The matched game agrees. The second gets no comparable content evidence back, so M5 falls
-        // through to a name search and offers suggestions without attaching any of them.
+        // The first game's evidence agrees and attaches. The second and the disc image both get an
+        // answer whose content record cannot be compared, so each becomes a named suggestion the
+        // user must confirm. The disc image is the case that used to have no route at all: it now
+        // reaches the provider like anything else, and is held short of attaching by the classifier
+        // rather than by refusing to ask.
         harness.provider.queue_identify(Ok(ProviderResponse::new(
             game_record(Some(matched_rom()), "The Example Quest"),
             None,
@@ -4380,19 +4512,8 @@ mod tests {
             game_record(None, "A Different Quest"),
             None,
         )));
-        harness.provider.queue_search(Ok(ProviderResponse::new(
-            vec![
-                ProviderCandidate {
-                    provider_game_id: "5001".to_owned(),
-                    title: "Other Quest".to_owned(),
-                    release_date: None,
-                },
-                ProviderCandidate {
-                    provider_game_id: "5002".to_owned(),
-                    title: "Other Quest 2".to_owned(),
-                    release_date: None,
-                },
-            ],
+        harness.provider.queue_identify(Ok(ProviderResponse::new(
+            game_record(None, "Disc Quest"),
             None,
         )));
 
@@ -4408,8 +4529,11 @@ mod tests {
         assert_eq!(run.status, MetadataScrapeRunStatus::Completed);
         assert_eq!(run.progress.total_games, 3);
         assert_eq!(run.progress.matched, 1);
-        assert_eq!(run.progress.needs_review, 1);
-        assert_eq!(run.progress.unsupported, 1);
+        assert_eq!(run.progress.needs_review, 2);
+        assert_eq!(
+            run.progress.unsupported, 0,
+            "a disc container is no longer refused before it is ever looked up"
+        );
         assert_eq!(run.progress.processed(), 3);
         assert_eq!(run.progress.waiting, 0);
         assert!(!status.active);
@@ -4423,13 +4547,23 @@ mod tests {
         assert_eq!(review.status, ProviderMatchStatus::Ambiguous);
         assert_eq!(
             review.candidates.len(),
-            2,
+            1,
             "an ambiguous answer stays a manual choice"
         );
         assert!(review.provider_game_id.is_none());
+
+        let disc = harness.state(unsupported).await;
+        assert_eq!(disc.status, ProviderMatchStatus::Ambiguous);
+        assert_eq!(disc.unsupported_reason, None);
+        assert_eq!(disc.candidates.len(), 1);
+        assert_eq!(disc.candidates[0].title, "Disc Quest");
         assert_eq!(
-            harness.state(unsupported).await.unsupported_reason,
-            Some(UnsupportedContentReason::ChdRepresentationUndefined)
+            disc.match_type, None,
+            "a disc image the provider only named must never attach on its own"
+        );
+        assert!(
+            disc.metadata.is_none(),
+            "nothing is written until the user confirms the suggestion"
         );
     }
 
@@ -4861,8 +4995,10 @@ mod tests {
             .await
             .unwrap();
 
+        // Title-less on purpose: this test is about the minute budget the *fallback search* spends,
+        // so the answer must be one that still needs the fallback.
         harness.provider.queue_identify(Ok(ProviderResponse::new(
-            game_record(None, "Example Quest"),
+            game_record(None, "   "),
             Some(quota),
         )));
         harness.provider.queue_search(Ok(ProviderResponse::new(

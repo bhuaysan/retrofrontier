@@ -384,16 +384,37 @@ A provider refresh replaces normalized metadata and media but never touches a us
 | ------------------------- | -------------------------------- | -------------------- | -------------------------------- |
 | Single-file cartridge ROM | Yes                              | Yes                  | `matched` on agreeing evidence   |
 | GameCube ISO              | Yes                              | Yes                  | `matched` on agreeing evidence   |
-| CHD                       | No                               | Yes                  | `deferred`                       |
-| CUE/BIN                   | No                               | Yes                  | `deferred`                       |
+| CUE/BIN                   | Yes, on the CUE descriptor       | Yes                  | `matched` on agreeing evidence   |
+| CHD                       | Only if its hash is known        | Yes, named by lookup | `ambiguous` in practice          |
+| PlayStation/Saturn/Dreamcast single-file images (`.iso`, `.pbp`, `.cdi`, bare `.bin`) | Yes, when hashes agree | Yes | `matched` on agreeing evidence |
 | GDI                       | No                               | Yes                  | `deferred`                       |
 | M3U / multi-disc          | No                               | Yes                  | `deferred`                       |
 | GameCube RVZ, GCM         | No                               | Yes                  | `deferred`                       |
-| PlayStation/Saturn/Dreamcast single-file images (`.iso`, `.pbp`, `.cdi`, bare `.bin`) | No | Yes | `deferred` |
 
-The eligible set is an allowlist, not a denylist: a container whose canonical provider
-representation is not published is deferred rather than hashed and hoped for. The playlist file is
-never provider identity, and its bytes are never submitted for identification.
+Disc containers were once refused before any request was made, on the grounds that the provider
+does not document which bytes are canonical for a CHD or a CUE/BIN set. That refusal answered a
+question no working scraper asks. ES-DE and Skyscraper both hash the single file that represents
+the game in the library, whatever its format, and send its filename alongside — the provider matches
+on a checksum **or** an exact filename. Refusing to produce evidence did not make matching safer; it
+removed the request that would have carried the filename, which is why no PlayStation content could
+match by any route.
+
+Submitting a hash is therefore not a claim that those bytes are canonical, only that they are the
+bytes we have. What protects the library is unchanged and lives one layer down: `classify_deterministic_match`
+still requires an agreeing size and agreeing hashes before anything attaches. So a CUE descriptor —
+whose bytes the provider really does hold, because its CD records come from Redump — matches like
+any cartridge, while a CHD the provider has never hashed degrades to a **named suggestion the user
+confirms**, never to a silent wrong match.
+
+Two refusals survive, for reasons that still hold. A playlist names other content rather than being
+content, so no file in it is the game. A GDI set is unverified: no Dreamcast content was available
+to establish what it hashes to, and it is left refused rather than guessed at.
+
+When a lookup answers with a game whose content record cannot be compared, that answer becomes the
+candidate offered for confirmation. It is a name match the provider itself made against the file's
+real basename, which is a better suggestion than a fuzzy title search over a local title that still
+carries its filename decorations — so the title search is issued only when the answer names no game
+at all.
 
 ## Stale evidence and revalidation
 
@@ -595,9 +616,12 @@ There is no opt-in live provider test in M5. Adding one later would require sepa
 
 ## Known limitations
 
-- Automatic deterministic matching is not available for CHD, CUE/BIN, GDI, M3U/multi-disc, RVZ, or
-  the disc-system single-file images listed above. Heuristic candidates exist for all of them, and
-  none can silently attach.
+- Automatic deterministic matching is not available for GDI, M3U/multi-disc, RVZ, or GCM, and a CHD
+  matches only in the unusual case that the provider already holds that CHD's own hash. Suggestions
+  exist for all of them, and none can silently attach.
+- A CUE descriptor's hash only matches while the file is byte-identical to the provider's copy.
+  Renaming the tracks rewrites the `FILE` lines inside the `.cue` and changes its hash; such a set
+  falls back to the name-based suggestion like a CHD.
 - Broad media scraping is not implemented: one front cover only.
 - Portable export or backup of the provider cache is not implemented.
 - Exact visible attribution is an M6 responsibility. M5 preserves provider identity and the
