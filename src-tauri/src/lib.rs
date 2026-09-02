@@ -304,6 +304,7 @@ pub fn run() {
             commands::library::get_scan_issue_page,
             commands::library::get_library_snapshot,
             commands::library::query_library,
+            commands::library::query_library_shelves,
             commands::library::get_library_summary,
             commands::library::get_library_game_detail,
             commands::library::set_game_favorite,

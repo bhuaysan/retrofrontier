@@ -3,10 +3,11 @@ use crate::domain::library::{
     ContentFileMembership, ContentFileRole, ContentRoot, ContentRootAvailability, ContentRootId,
     ContentRootKind, ContentUnit, ContentUnitAvailability, ContentUnitId, ContentUnitKind, Game,
     GameAvailability, GameId, GameSnapshot, LibraryContentUnitSummary, LibraryGameDetail,
-    LibraryListItem, LibraryMetadataMatchState, LibraryPage, LibraryQuery, LibrarySnapshot,
-    LibrarySummary, LibrarySystemCount, ScanCounters, ScanIssue, ScanIssueId, ScanIssueKind,
-    ScanIssuePage, ScanPhase, ScanProgress, ScanRunId, ScanRunState, ScanStatus, ScanSummary,
-    ScannedRoot, DEFAULT_SCAN_ISSUE_PAGE_SIZE, MAX_SCAN_ISSUE_PAGE_SIZE,
+    LibraryListItem, LibraryMetadataMatchState, LibraryPage, LibraryQuery, LibraryShelf,
+    LibraryShelfQuery, LibraryShelves, LibrarySnapshot, LibrarySummary, LibrarySystemCount,
+    ScanCounters, ScanIssue, ScanIssueId, ScanIssueKind, ScanIssuePage, ScanPhase, ScanProgress,
+    ScanRunId, ScanRunState, ScanStatus, ScanSummary, ScannedRoot, DEFAULT_SCAN_ISSUE_PAGE_SIZE,
+    MAX_SCAN_ISSUE_PAGE_SIZE,
 };
 use crate::domain::metadata::MetadataProviderId;
 use crate::domain::system::SystemId;
@@ -950,6 +951,103 @@ impl LibraryRepository {
             offset: request.offset,
             limit,
         })
+    }
+
+    /// Returns the bounded All Systems shelf projection.
+    ///
+    /// One set-oriented query, never one per system. `ROW_NUMBER()` ranks each system's matches in
+    /// the *same* title order the paginated grid uses and `COUNT(*)` counts them, both partitioned
+    /// by system in a single pass; only rows inside the preview rank survive the outer filter. The
+    /// response size is therefore bounded by `system count x preview limit` and does not grow with
+    /// the library.
+    ///
+    /// The filter predicate and the projected columns are literally the same text the grid query
+    /// uses, bound through the same macro from a `LibraryQuery` derived by the domain. That is what
+    /// keeps search, favorites and metadata-review semantics from drifting between the two views.
+    ///
+    /// Systems are not filtered against a known-system list: every system present in the matching
+    /// data gets a shelf, so content whose system this build does not rank first is still returned
+    /// rather than silently dropped.
+    pub async fn query_library_shelves(
+        &self,
+        request: &LibraryShelfQuery,
+        provider_id: MetadataProviderId,
+    ) -> Result<LibraryShelves, AppError> {
+        let preview_limit = request.bounded_preview_limit();
+        let query = request.as_library_query();
+        let search = normalized_search_filter(query.search.as_deref());
+        let genre = normalized_filter(query.genre.as_deref());
+        let region = normalized_filter(query.region.as_deref());
+        let availability = query.availability.map(GameAvailability::as_db);
+        let provider_id = provider_id.as_db();
+
+        let rows = bind_library_query!(
+            sqlx::query(
+                "WITH ranked AS ( \
+                    SELECT g.id AS game_id, g.system_id, g.local_title, g.availability, \
+                           md.title AS metadata_title, md.sort_title AS metadata_sort_title, \
+                           md.release_date, md.genre, md.region, \
+                           COALESCE(us.favorite, 0) AS favorite, pm.status AS metadata_status, \
+                           CASE WHEN ma.state = 'cached' \
+                                     AND ma.cache_relative_path IS NOT NULL \
+                                     AND lower(COALESCE(ma.content_type, '')) IN \
+                                         ('image/png', 'image/jpeg', 'image/webp') \
+                                THEN 1 ELSE 0 END AS cover_cached, \
+                           COALESCE(NULLIF(md.sort_title, ''), NULLIF(md.title, ''), \
+                                    g.local_title) AS effective_sort_title, \
+                           ROW_NUMBER() OVER ( \
+                               PARTITION BY g.system_id \
+                               ORDER BY lower(COALESCE(NULLIF(md.sort_title, ''), \
+                                                       NULLIF(md.title, ''), \
+                                                       g.local_title)) ASC, g.id ASC \
+                           ) AS shelf_rank, \
+                           COUNT(*) OVER (PARTITION BY g.system_id) AS shelf_total \
+                    FROM games g \
+                    LEFT JOIN game_user_state us ON us.game_id = g.id \
+                    LEFT JOIN provider_metadata md ON md.game_id = g.id AND md.provider_id = ? \
+                    LEFT JOIN provider_matches pm ON pm.game_id = g.id AND pm.provider_id = ? \
+                    LEFT JOIN provider_media_assets ma ON ma.game_id = g.id \
+                        AND ma.provider_id = ? AND ma.kind = 'cover' \
+                    WHERE (? IS NULL OR g.system_id = ?) \
+                      AND (? = 0 OR COALESCE(us.favorite, 0) = 1) \
+                      AND (? = 0 OR pm.status = 'ambiguous') \
+                      AND (? IS NULL OR lower(COALESCE(md.genre, '')) = lower(?)) \
+                      AND (? IS NULL OR lower(COALESCE(md.region, '')) = lower(?)) \
+                      AND (? IS NULL OR g.availability = ?) \
+                      AND (? IS NULL OR lower(COALESCE(md.title, '')) LIKE '%' || lower(?) || '%' ESCAPE '\\' \
+                           OR lower(g.local_title) LIKE '%' || lower(?) || '%' ESCAPE '\\') \
+                 ) \
+                 SELECT * FROM ranked WHERE shelf_rank <= ? \
+                 ORDER BY system_id ASC, shelf_rank ASC"
+            ),
+            query,
+            provider_id,
+            search.as_deref(),
+            genre.as_deref(),
+            region.as_deref(),
+            availability
+        )
+        .bind(i64::from(preview_limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        let mut shelves: Vec<LibraryShelf> = Vec::new();
+        for row in &rows {
+            let item = library_list_item_from_row(row)?;
+            let total = u64_value(row.get::<i64, _>("shelf_total"))?;
+            match shelves.last_mut() {
+                // Rows arrive grouped and ordered by system, so the open shelf is always the last.
+                Some(shelf) if shelf.system_id == item.system_id => shelf.items.push(item),
+                _ => shelves.push(LibraryShelf {
+                    system_id: item.system_id,
+                    total,
+                    items: vec![item],
+                }),
+            }
+        }
+
+        Ok(LibraryShelves { shelves })
     }
 
     /// Returns aggregate counts without materializing game rows.
@@ -1993,7 +2091,10 @@ fn duration_ms(started_at: i64, completed_at: Option<i64>) -> u64 {
 mod tests {
     use super::*;
     use crate::adapters::database::Database;
-    use crate::domain::library::{DEFAULT_LIBRARY_PAGE_SIZE, MAX_LIBRARY_PAGE_SIZE};
+    use crate::domain::library::{
+        DEFAULT_LIBRARY_PAGE_SIZE, DEFAULT_LIBRARY_SHELF_PREVIEW, MAX_LIBRARY_PAGE_SIZE,
+        MAX_LIBRARY_SHELF_PREVIEW,
+    };
     use crate::domain::metadata::MetadataProviderId;
     use crate::domain::system::SystemId;
     use sqlx::SqlitePool;
@@ -2759,6 +2860,429 @@ mod tests {
         assert_eq!(tail.items.len(), 20);
         assert_eq!(tail.items.first().unwrap().game_id, GameId(481));
         assert_eq!(tail.items.last().unwrap().game_id, GameId(500));
+    }
+
+    /// The shelf query and the grid query must agree about *which* games match. Rather than
+    /// restating the expected set by hand for each filter, this asks both surfaces the same
+    /// question and compares them, which is the invariant that actually matters.
+    async fn assert_shelves_agree_with_grid(
+        repository: &LibraryRepository,
+        shelf_query: &LibraryShelfQuery,
+    ) -> LibraryShelves {
+        let shelves = repository
+            .query_library_shelves(shelf_query, MetadataProviderId::ScreenScraper)
+            .await
+            .expect("shelf projection");
+
+        let grid = repository
+            .query_library(
+                &LibraryQuery {
+                    limit: MAX_LIBRARY_PAGE_SIZE,
+                    ..shelf_query.as_library_query()
+                },
+                MetadataProviderId::ScreenScraper,
+            )
+            .await
+            .expect("grid page");
+
+        // Totals: every shelf total summed is the grid's total for the same filters.
+        let shelf_total: u64 = shelves.shelves.iter().map(|shelf| shelf.total).sum();
+        assert_eq!(
+            shelf_total, grid.total,
+            "shelves and the grid disagree about how many games match"
+        );
+
+        for shelf in &shelves.shelves {
+            // Order: each shelf's preview is the grid's order restricted to that system.
+            let expected: Vec<i64> = grid
+                .items
+                .iter()
+                .filter(|item| item.system_id == shelf.system_id)
+                .map(|item| item.game_id.0)
+                .take(shelf.items.len())
+                .collect();
+            let actual: Vec<i64> = shelf.items.iter().map(|item| item.game_id.0).collect();
+            assert_eq!(
+                actual, expected,
+                "shelf {:?} does not follow the Library's own title order",
+                shelf.system_id
+            );
+
+            assert!(
+                !shelf.items.is_empty(),
+                "a system with no match must have no shelf at all"
+            );
+            assert!(
+                shelf.items.len() as u64 <= shelf.total,
+                "a preview cannot hold more games than the system matches"
+            );
+        }
+
+        shelves
+    }
+
+    #[tokio::test]
+    async fn shelves_preview_each_system_in_the_librarys_own_order_and_omit_empty_systems() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        insert_root(&pool).await;
+
+        // Two systems with content, one authoritative system with none.
+        for (game_id, title) in [(1_i64, "Zeta"), (2, "Alpha"), (3, "Mid")] {
+            insert_game(
+                &pool,
+                game_id,
+                SystemId::Snes,
+                title,
+                GameAvailability::Available,
+            )
+            .await;
+        }
+        insert_game(
+            &pool,
+            4,
+            SystemId::Nes,
+            "Kirby",
+            GameAvailability::Available,
+        )
+        .await;
+
+        let shelves = assert_shelves_agree_with_grid(&repository, &LibraryShelfQuery::default())
+            .await
+            .shelves;
+
+        assert_eq!(shelves.len(), 2, "only systems with a match get a shelf");
+        let snes = shelves
+            .iter()
+            .find(|shelf| shelf.system_id == SystemId::Snes)
+            .expect("SNES shelf");
+        assert_eq!(snes.total, 3);
+        assert_eq!(
+            snes.items
+                .iter()
+                .map(|item| item.display_title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Alpha", "Mid", "Zeta"]
+        );
+        let nes = shelves
+            .iter()
+            .find(|shelf| shelf.system_id == SystemId::Nes)
+            .expect("NES shelf");
+        assert_eq!(nes.total, 1);
+        assert!(
+            !shelves
+                .iter()
+                .any(|shelf| shelf.system_id == SystemId::NintendoGameCube),
+            "a system with no games must not appear as an empty heading"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_shelf_preview_is_bounded_while_its_total_counts_every_match() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        insert_root(&pool).await;
+        for game_id in 1_i64..=84 {
+            insert_game(
+                &pool,
+                game_id,
+                SystemId::Snes,
+                &format!("SNES Game {game_id:04}"),
+                GameAvailability::Available,
+            )
+            .await;
+        }
+
+        let shelves = assert_shelves_agree_with_grid(&repository, &LibraryShelfQuery::default())
+            .await
+            .shelves;
+        assert_eq!(shelves.len(), 1);
+        assert_eq!(shelves[0].total, 84, "the total is the whole system");
+        assert_eq!(
+            shelves[0].items.len(),
+            DEFAULT_LIBRARY_SHELF_PREVIEW as usize,
+            "the preview stays bounded"
+        );
+        assert_eq!(shelves[0].items[0].display_title, "SNES Game 0001");
+
+        // A caller cannot widen the preview past the backend ceiling.
+        let capped = repository
+            .query_library_shelves(
+                &LibraryShelfQuery {
+                    preview_limit: u32::MAX,
+                    ..LibraryShelfQuery::default()
+                },
+                MetadataProviderId::ScreenScraper,
+            )
+            .await
+            .expect("shelf projection");
+        assert_eq!(
+            capped.shelves[0].items.len(),
+            MAX_LIBRARY_SHELF_PREVIEW as usize
+        );
+        assert_eq!(capped.shelves[0].total, 84);
+    }
+
+    #[tokio::test]
+    async fn shelf_search_favorites_and_review_semantics_match_the_grid_exactly() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        insert_root(&pool).await;
+
+        // Deliberately mixed: metadata titles, local-title-only games, favorites, and every
+        // provider match state the review filter has to discriminate between.
+        let games = [
+            (1_i64, SystemId::Snes, "Super Mario World", "matched"),
+            (2, SystemId::Snes, "F-Zero", "ambiguous"),
+            (3, SystemId::Nes, "Super Mario Bros.", "ambiguous"),
+            (4, SystemId::Nes, "Metroid", "no_match"),
+            (5, SystemId::Nintendo64, "Super Mario 64", "matched"),
+            (6, SystemId::Nintendo64, "GoldenEye 007", "failed"),
+            (7, SystemId::NintendoGameCube, "Mario Kart", "pending"),
+        ];
+        for (game_id, system, title, status) in games {
+            insert_game(&pool, game_id, system, title, GameAvailability::Available).await;
+            insert_match(&pool, game_id, status).await;
+        }
+        // Metadata titles must be searched as well as local titles, exactly as the grid does.
+        insert_metadata(&pool, 6, "GoldenEye 007 (Mario Cameo)", None, None, None).await;
+        for favorite in [1_i64, 3, 5] {
+            sqlx::query(
+                "INSERT INTO game_user_state (game_id, favorite, created_at, updated_at) \
+                 VALUES (?, 1, ?, ?)",
+            )
+            .bind(favorite)
+            .bind(TEST_TIME)
+            .bind(TEST_TIME)
+            .execute(&pool)
+            .await
+            .expect("synthetic favorite");
+        }
+
+        let search = assert_shelves_agree_with_grid(
+            &repository,
+            &LibraryShelfQuery {
+                search: Some("mario".to_owned()),
+                ..LibraryShelfQuery::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            search.shelves.len(),
+            4,
+            "systems with no match disappear from a searched shelf view"
+        );
+
+        assert_shelves_agree_with_grid(
+            &repository,
+            &LibraryShelfQuery {
+                favorites_only: true,
+                ..LibraryShelfQuery::default()
+            },
+        )
+        .await;
+
+        // M8.5's review filter is one narrow ambiguous-only flag; it must not widen here.
+        let review = assert_shelves_agree_with_grid(
+            &repository,
+            &LibraryShelfQuery {
+                needs_metadata_review: true,
+                ..LibraryShelfQuery::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            review
+                .shelves
+                .iter()
+                .map(|shelf| (shelf.system_id, shelf.total))
+                .collect::<Vec<_>>(),
+            vec![(SystemId::Nes, 1), (SystemId::Snes, 1)]
+        );
+
+        let combined = assert_shelves_agree_with_grid(
+            &repository,
+            &LibraryShelfQuery {
+                search: Some("mario".to_owned()),
+                favorites_only: true,
+                ..LibraryShelfQuery::default()
+            },
+        )
+        .await;
+        // Grouped by system, so this is the grid's matching set re-partitioned rather than its
+        // flat order. The backend orders shelves by system identity for determinism; the catalog's
+        // own presentation order is applied by the frontend, which is where it is authoritative.
+        assert_eq!(
+            combined
+                .shelves
+                .iter()
+                .map(|shelf| (
+                    shelf.system_id,
+                    shelf.items.iter().map(|item| item.game_id.0).collect()
+                ))
+                .collect::<Vec<(SystemId, Vec<i64>)>>(),
+            vec![
+                (SystemId::Nes, vec![3]),
+                (SystemId::Nintendo64, vec![5]),
+                (SystemId::Snes, vec![1]),
+            ],
+            "combined filters compose exactly as they do in the grid"
+        );
+
+        // Search metacharacters stay literal on both surfaces.
+        assert_shelves_agree_with_grid(
+            &repository,
+            &LibraryShelfQuery {
+                search: Some("%".to_owned()),
+                ..LibraryShelfQuery::default()
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn shelves_project_availability_favorites_and_cover_identity_like_the_grid() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        insert_root(&pool).await;
+        insert_game(
+            &pool,
+            1,
+            SystemId::Snes,
+            "Local Only",
+            GameAvailability::Unavailable,
+        )
+        .await;
+        insert_metadata(&pool, 1, "Provider Title", None, Some("RPG"), Some("EU")).await;
+        insert_match(&pool, 1, "matched").await;
+        insert_cached_cover(&pool, 1).await;
+
+        let shelves = repository
+            .query_library_shelves(
+                &LibraryShelfQuery::default(),
+                MetadataProviderId::ScreenScraper,
+            )
+            .await
+            .expect("shelf projection");
+        let item = &shelves.shelves[0].items[0];
+        let grid = repository
+            .query_library(&LibraryQuery::default(), MetadataProviderId::ScreenScraper)
+            .await
+            .expect("grid page");
+
+        assert_eq!(
+            item, &grid.items[0],
+            "the shelf must reuse the grid's own list projection, field for field"
+        );
+        assert_eq!(item.display_title, "Provider Title");
+        assert_eq!(item.availability, GameAvailability::Unavailable);
+        assert_eq!(
+            item.cover_ref.as_deref(),
+            Some("rfmedia://localhost/cover/1")
+        );
+
+        let serialized = serde_json::to_string(&shelves).expect("serializable shelves");
+        assert_no_physical_identity(&serialized);
+    }
+
+    #[tokio::test]
+    async fn every_system_present_in_the_data_receives_a_shelf() {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        insert_root(&pool).await;
+
+        // The shelf SQL groups by whatever `system_id` the data really holds. Nothing is matched
+        // against a hard-coded ordering table, so no system's games can be dropped by a projection
+        // that has not heard of it yet.
+        for (index, system) in SystemId::ALL_V1.iter().enumerate() {
+            insert_game(
+                &pool,
+                index as i64 + 1,
+                *system,
+                "Any Title",
+                GameAvailability::Available,
+            )
+            .await;
+        }
+
+        let shelves = assert_shelves_agree_with_grid(&repository, &LibraryShelfQuery::default())
+            .await
+            .shelves;
+        assert_eq!(shelves.len(), SystemId::ALL_V1.len());
+        let mut returned: Vec<&str> = shelves
+            .iter()
+            .map(|shelf| shelf.system_id.as_str())
+            .collect();
+        returned.sort_unstable();
+        let mut expected: Vec<&str> = SystemId::ALL_V1.iter().map(|id| id.as_str()).collect();
+        expected.sort_unstable();
+        assert_eq!(returned, expected);
+    }
+
+    /// Inserts `games` rows spread over every authoritative system and proves the shelf response
+    /// is bounded by system count rather than by library size.
+    async fn shelf_scale_run(games: i64) {
+        let (_directory, pool) = fixture().await;
+        let repository = LibraryRepository::new(pool.clone());
+        insert_root(&pool).await;
+        let systems = SystemId::ALL_V1;
+        let mut transaction = pool.begin().await.unwrap();
+        for game_id in 1..=games {
+            sqlx::query(
+                "INSERT INTO games \
+                 (id, system_id, local_title, availability, created_at, updated_at) \
+                 VALUES (?, ?, ?, 'available', ?, ?)",
+            )
+            .bind(game_id)
+            .bind(systems[(game_id as usize) % systems.len()].as_str())
+            .bind(format!("Synthetic Game {game_id:06}"))
+            .bind(TEST_TIME)
+            .bind(TEST_TIME)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        }
+        transaction.commit().await.unwrap();
+
+        let shelves = repository
+            .query_library_shelves(
+                &LibraryShelfQuery::default(),
+                MetadataProviderId::ScreenScraper,
+            )
+            .await
+            .expect("shelf projection")
+            .shelves;
+
+        let returned: usize = shelves.iter().map(|shelf| shelf.items.len()).sum();
+        let ceiling = systems.len() * DEFAULT_LIBRARY_SHELF_PREVIEW as usize;
+        assert!(
+            returned <= ceiling,
+            "a {games}-game library returned {returned} items, above the \
+             system-count x preview ceiling of {ceiling}"
+        );
+        assert_eq!(shelves.len(), systems.len());
+        for shelf in &shelves {
+            assert_eq!(shelf.items.len(), DEFAULT_LIBRARY_SHELF_PREVIEW as usize);
+            assert!(
+                shelf.total > DEFAULT_LIBRARY_SHELF_PREVIEW as u64,
+                "the total must keep counting past the preview"
+            );
+        }
+        let counted: u64 = shelves.iter().map(|shelf| shelf.total).sum();
+        assert_eq!(
+            counted, games as u64,
+            "every game is still counted even though almost none are returned"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_five_thousand_game_library_returns_a_bounded_shelf_response() {
+        shelf_scale_run(5_000).await;
+    }
+
+    #[tokio::test]
+    async fn a_twenty_thousand_game_library_returns_a_bounded_shelf_response() {
+        shelf_scale_run(20_000).await;
     }
 
     #[tokio::test]

@@ -1,7 +1,8 @@
 use crate::application::AppState;
 use crate::domain::library::{
     ContentRoot, ContentRootId, GameFavorite, GameId, LibraryGameDetail, LibraryPage, LibraryQuery,
-    LibrarySnapshot, LibrarySummary, ScanIssue, ScanIssuePage, ScanStatus, ScanSummary,
+    LibraryShelfQuery, LibraryShelves, LibrarySnapshot, LibrarySummary, ScanIssue, ScanIssuePage,
+    ScanStatus, ScanSummary,
 };
 use crate::domain::system::SystemId;
 use crate::error::AppError;
@@ -142,6 +143,21 @@ pub async fn query_library(
     state: tauri::State<'_, AppState>,
 ) -> Result<LibraryPage, AppError> {
     let result = state.library().query_library(&request).await;
+    log_result(&result);
+    result
+}
+
+/// The All Systems browse projection: one bounded preview per system with a match.
+///
+/// Deliberately separate from `query_library` rather than a mode of it. The paginated grid answers
+/// "give me page N of one filtered list"; this answers "show me a little of everything". Folding
+/// them together would make one command's response shape depend on which filter happened to be set.
+#[tauri::command]
+pub async fn query_library_shelves(
+    request: LibraryShelfQuery,
+    state: tauri::State<'_, AppState>,
+) -> Result<LibraryShelves, AppError> {
+    let result = state.library().query_library_shelves(&request).await;
     log_result(&result);
     result
 }

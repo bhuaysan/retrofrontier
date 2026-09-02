@@ -274,6 +274,41 @@ export interface LibraryPage {
   limit: number;
 }
 
+/**
+ * The All Systems browse request.
+ *
+ * There is deliberately no `systemId`: choosing a system is what leaves shelf mode for the
+ * paginated grid. Only the filters the Library really owns appear here.
+ */
+export interface LibraryShelvesRequest {
+  search?: string | null;
+  favoritesOnly?: boolean;
+  /** Restricts every shelf to games whose provider match needs a human decision. */
+  needsMetadataReview?: boolean;
+  /** Zero or absent means the bounded backend default; larger values are capped by the backend. */
+  previewLimit?: number;
+}
+
+/**
+ * One system's bounded shelf. `total` is every matching game of that system; `items` is only the
+ * preview the shelf renders.
+ */
+export interface LibraryShelf {
+  systemId: SystemId;
+  total: number;
+  items: LibraryListItem[];
+}
+
+/**
+ * Shelves for every system with at least one match. Systems with none are absent.
+ *
+ * Backend order is deterministic but is *not* the catalog's presentation order; the frontend
+ * applies that, because the catalog is the authority on how systems are presented.
+ */
+export interface LibraryShelves {
+  shelves: LibraryShelf[];
+}
+
 export interface LibrarySystemCount {
   systemId: SystemId;
   gameCount: number;
@@ -959,6 +994,17 @@ export async function getScanIssuePage(request: ScanIssuePageRequest = {}): Prom
 export async function queryLibrary(request: LibraryQueryRequest = {}): Promise<LibraryPage> {
   try {
     return await invoke<LibraryPage>('query_library', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+/** The bounded All Systems shelf projection. One request for every system, never one per system. */
+export async function queryLibraryShelves(
+  request: LibraryShelvesRequest = {},
+): Promise<LibraryShelves> {
+  try {
+    return await invoke<LibraryShelves>('query_library_shelves', { request });
   } catch (error: unknown) {
     throw normalizeIpcError(error);
   }

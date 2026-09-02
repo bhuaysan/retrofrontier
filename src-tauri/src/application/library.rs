@@ -1,7 +1,8 @@
 use crate::domain::library::{
-    roots_overlap, ContentRoot, GameFavorite, GameId, LibraryGameDetail, LibraryMetadataMatchState,
-    LibraryPage, LibraryQuery, LibrarySnapshot, LibrarySummary, ScanIssue, ScanIssueKind,
-    ScanIssuePage, ScanProgress, ScanStatus, ScanSummary,
+    roots_overlap, ContentRoot, GameFavorite, GameId, LibraryGameDetail, LibraryListItem,
+    LibraryMetadataMatchState, LibraryPage, LibraryQuery, LibraryShelfQuery, LibraryShelves,
+    LibrarySnapshot, LibrarySummary, ScanIssue, ScanIssueKind, ScanIssuePage, ScanProgress,
+    ScanStatus, ScanSummary,
 };
 use crate::domain::metadata::MetadataProviderId;
 use crate::domain::system::{SystemCatalog, SystemId};
@@ -189,8 +190,30 @@ impl LibraryApplicationService {
             .repository
             .query_library(request, MetadataProviderId::ScreenScraper)
             .await?;
-        self.validate_live_metadata_state(&mut page).await?;
+        self.validate_live_metadata_state(&mut page.items).await?;
         Ok(page)
+    }
+
+    /// The bounded All Systems shelf projection.
+    ///
+    /// It goes through the same live-evidence read invariant as the paginated grid, over the shelf
+    /// previews only: the whole response is already bounded by system count, so the evidence work
+    /// is bounded with it and does not scale with the library.
+    pub async fn query_library_shelves(
+        &self,
+        request: &LibraryShelfQuery,
+    ) -> Result<LibraryShelves, AppError> {
+        let mut shelves = self
+            .repository
+            .query_library_shelves(request, MetadataProviderId::ScreenScraper)
+            .await?;
+        let mut items: Vec<&mut LibraryListItem> = shelves
+            .shelves
+            .iter_mut()
+            .flat_map(|shelf| shelf.items.iter_mut())
+            .collect();
+        self.validate_live_metadata_items(&mut items).await?;
+        Ok(shelves)
     }
 
     pub async fn get_library_summary(&self) -> Result<LibrarySummary, AppError> {
@@ -238,9 +261,21 @@ impl LibraryApplicationService {
     /// Match snapshots and current M4 evidence are each loaded in bulk. Stale items retain the
     /// list query's cached metadata and cover because staleness changes trust, not last-known-good
     /// data availability.
-    async fn validate_live_metadata_state(&self, page: &mut LibraryPage) -> Result<(), AppError> {
-        let game_ids: Vec<GameId> = page
-            .items
+    async fn validate_live_metadata_state(
+        &self,
+        items: &mut [LibraryListItem],
+    ) -> Result<(), AppError> {
+        let mut borrowed: Vec<&mut LibraryListItem> = items.iter_mut().collect();
+        self.validate_live_metadata_items(&mut borrowed).await
+    }
+
+    /// The same invariant over a borrowed set of list items, so the paginated grid and the shelf
+    /// projection cannot end up validating provider evidence differently.
+    async fn validate_live_metadata_items(
+        &self,
+        items: &mut [&mut LibraryListItem],
+    ) -> Result<(), AppError> {
+        let game_ids: Vec<GameId> = items
             .iter()
             .filter(|item| item.metadata_match_state == LibraryMetadataMatchState::Matched)
             .map(|item| item.game_id)
@@ -255,7 +290,7 @@ impl LibraryApplicationService {
             .await?;
         let current = self.evidence.current_evidence_for_games(&game_ids).await?;
 
-        for item in &mut page.items {
+        for item in items.iter_mut() {
             if item.metadata_match_state != LibraryMetadataMatchState::Matched {
                 continue;
             }
