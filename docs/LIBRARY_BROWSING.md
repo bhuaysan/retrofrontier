@@ -137,10 +137,12 @@ system-agnostic — a test guards that — and Game Detail keeps its separate co
 A profile is a property of a system's card presentation, not of shelf mode. A GameCube card is
 DVD-shaped on its shelf and DVD-shaped in the full GameCube grid.
 
-Within a shelf, card **width** is derived from one shared media height and the system's ratio, so a
-wide SNES card and a narrow GameCube card still line up at the same height and the vertical rhythm
-down the page stays coherent. A per-card width floor keeps the narrowest profile legible; it is set
-close to that profile's own derived width so it barely perturbs the shared height.
+Within a shelf, a card is never narrower than a readable title column; above that floor its
+**width** is derived from one shared media height and the system's ratio. The media frame carries
+the ratio and resolves its own height, so lifting a narrow profile off the floor makes that card
+proportionally taller rather than squeezing its title — a `dvdBox` card stays DVD-shaped and simply
+grows. Shelves of different systems therefore differ in height, as the mixed-system grid already
+does; cards *within* one shelf always align, which is what scanning a row depends on.
 
 ## Deliberately not in M8.6
 

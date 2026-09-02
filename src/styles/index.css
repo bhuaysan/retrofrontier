@@ -1793,9 +1793,11 @@ a:focus-visible,
 /* ---------------------------------------------------------------------------------------------
    M8.6 All Systems shelves.
 
-   One horizontal shelf per system, never wrapping. Card *width* comes from one shared media
-   height and the system's own cover ratio, so a wide SNES card and a narrow GameCube card still
-   line up at the same height and the vertical rhythm down the page stays coherent.
+   One horizontal shelf per system, never wrapping. A card is never narrower than a readable title
+   column; above that floor its width comes from one shared media height and the system's own cover
+   ratio. The media frame carries the ratio and derives its own height, so lifting a narrow profile
+   off the floor makes that card proportionally taller rather than squeezing its title. Shelves of
+   different systems therefore differ in height — as the mixed-system grid already does.
    --------------------------------------------------------------------------------------------- */
 .library-shelf-browser {
   display: flex;
@@ -1805,6 +1807,9 @@ a:focus-visible,
   /* The one media height every shelf shares. Card widths are derived from it, and it is sized so
      a desktop window fits a wide system's preview together with its View All. */
   --shelf-media-height: 168px;
+  /* The narrowest a shelf card may be. Two clamped title lines at this width reach the part of a
+     long name that identifies it; below it, a title truncates to something that names no game. */
+  --shelf-card-floor: 140px;
 }
 
 .library-shelf {
@@ -1919,10 +1924,12 @@ a:focus-visible,
   flex: none;
   /* Same media height for every system; the profile decides how wide that makes the card. */
   width: calc(var(--shelf-media-height) * var(--cover-aspect-scale));
-  /* A very narrow profile must still leave room for a title line; a very wide one must not turn
-     one card into the whole shelf. The floor is deliberately close to the narrowest profile's own
-     derived width, so it barely perturbs the shared media height. */
-  min-width: 116px;
+  /* The title column, not the artwork, sets the floor: a `dvdBox` card derived from the shared
+     height is barely wide enough for a dozen characters. Lifting it to the floor keeps the ratio
+     untouched — the media frame simply resolves taller — so the card stays DVD-shaped and its
+     title becomes readable. A very wide profile must still not turn one card into the whole
+     shelf. */
+  min-width: var(--shelf-card-floor);
   max-width: 280px;
 }
 
@@ -2182,8 +2189,8 @@ a:focus-visible,
 
 /* M8.6 cover presentation profiles.
    `--cover-aspect` shapes the media frame; `--cover-aspect-scale` is the same ratio as a bare
-   number, so a shelf can derive a card width from one shared media height and keep the vertical
-   rhythm coherent across systems of different shapes. The two must stay in step. */
+   number, so a shelf can derive a card width from one shared media height. Above the shelf's width
+   floor the two stay in step; at the floor the width wins and `--cover-aspect` resolves the height. The two must stay in step. */
 .game-card {
   --cover-aspect: 3 / 4;
   --cover-aspect-scale: 0.75;
@@ -3424,17 +3431,15 @@ a:focus-visible,
   }
 
   /* Narrow windows get shorter shelves rather than wrapped ones: the row still scrolls, so every
-     bounded preview item and View All stay reachable. */
+     bounded preview item and View All stay reachable. The width floor scales with the shelf's own
+     media height, so the same relationship between a card and its title column survives. */
   .library-shelf-browser {
     --shelf-media-height: 132px;
+    --shelf-card-floor: 112px;
   }
 
   .library-shelf-track {
     gap: 12px;
-  }
-
-  .library-shelf-track > .game-card {
-    min-width: 96px;
   }
 
   /* One label step down so "VIEW ALL" and its arrow still fit on one line in the narrow shelf. */

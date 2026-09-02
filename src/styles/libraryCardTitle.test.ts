@@ -40,6 +40,32 @@ describe('Library card titles clamp to two lines on every cover profile', () => 
     }
   });
 
+  it('never lets a shelf card fall below a readable title column', () => {
+    // The floor is what makes two clamped lines worth having: below it a title truncates to
+    // something that names no game, however many lines it is allowed.
+    expect(rule('.library-shelf-browser')).toMatch(/--shelf-card-floor:\s*140px;/);
+    expect(rule('.library-shelf-track > .game-card')).toMatch(
+      /min-width:\s*var\(--shelf-card-floor\);/,
+    );
+
+    const narrowStyles = applicationStyles.slice(
+      applicationStyles.indexOf('@media (max-width: 620px)'),
+    );
+    expect(rule('.library-shelf-browser', narrowStyles), 'the floor scales with the shelf').toMatch(
+      /--shelf-card-floor:\s*112px;/,
+    );
+  });
+
+  it('lets the ratio resolve the height rather than pinning the media frame', () => {
+    // A card lifted to the floor must grow taller, not squeeze its cover: the media frame carries
+    // the ratio and derives its own height, so no profile mapping had to change.
+    const media = rule('.game-card-media');
+    expect(media).toMatch(/aspect-ratio:\s*var\(--cover-aspect\);/);
+    expect(media, 'a fixed height would crop or letterbox the lifted card').not.toMatch(
+      /\n\s*height:\s*/,
+    );
+  });
+
   it('leaves the Library cover containment and the Detail cover untouched', () => {
     expect(rule('.game-card-cover')).toMatch(/object-fit:\s*contain;/);
     expect(rule('.game-card-media')).toMatch(/aspect-ratio:\s*var\(--cover-aspect\);/);
