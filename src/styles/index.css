@@ -1869,10 +1869,23 @@ a:focus-visible,
   scroll-padding-inline: 14px;
   scrollbar-width: thin;
   scrollbar-color: var(--text-dim) var(--surface-2);
-  /* The honest overflow affordance. The fade sits at the row's own edges, so with nothing clipped
-     it falls on empty background and is invisible; a shelf that really continues past the edge
-     fades out instead of ending in a hard cut that reads as a rendering fault. GTK's overlay
-     scrollbars cannot be relied on to say this on their own. */
+}
+
+/* The overflow affordance is *state*, not decoration. A fade is painted only on an edge that
+   really has content hidden behind it, because a fade drawn at the scroll origin describes nothing
+   and instead hazes the first card — weakening the hard left alignment between the system heading
+   and the game under it, and reading as a masking fault rather than as "this row continues".
+   The shelf reports its own edges; these rules only draw what it reports. A mask paints no box, so
+   it can neither take pointer input nor move a card's focus rectangle. */
+.library-shelf-track[data-overflow-left='true'] {
+  mask-image: linear-gradient(to right, transparent 0, #000 22px, #000 100%);
+}
+
+.library-shelf-track[data-overflow-right='true'] {
+  mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 22px), transparent 100%);
+}
+
+.library-shelf-track[data-overflow-left='true'][data-overflow-right='true'] {
   mask-image: linear-gradient(
     to right,
     transparent 0,
@@ -1913,16 +1926,20 @@ a:focus-visible,
   max-width: 280px;
 }
 
-/* View All closes the shelf. It is a real control, sized to sit in the row without pretending to
-   be another game card. */
+/* View All closes the shelf. It stays card-sized so shelf focus geometry stays predictable, but
+   its border is *structural* and solid: a dashed outline sits in the same visual family as a
+   missing cover, so beside a placeholder it read as one more game that failed to load rather than
+   as the way into the system's full library. The arrow and the counted noun below it carry the
+   navigational meaning; nothing else about the control changed. */
 .library-shelf-view-all {
+  position: relative;
   display: flex;
   flex: none;
   align-items: center;
   justify-content: center;
   flex-direction: column;
   gap: 8px;
-  width: 108px;
+  width: 128px;
   align-self: stretch;
   padding: 12px 10px;
   color: var(--text);
@@ -1931,12 +1948,37 @@ a:focus-visible,
   line-height: 1.6;
   text-align: center;
   background: var(--surface);
-  border: 2px dashed var(--border);
+  border: 2px solid var(--border);
   box-shadow: var(--shadow-rest);
   cursor: pointer;
   transition:
     transform 0.14s cubic-bezier(0.16, 1, 0.3, 1),
     box-shadow 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* The leading accent edge ties the control to the system whose shelf it closes, in the same hard
+   pixel vocabulary as the heading arrow. Decorative only, so it never takes pointer input. */
+.library-shelf-view-all::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: var(--system-accent);
+  pointer-events: none;
+  content: '';
+}
+
+.library-shelf-view-all-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.library-shelf-view-all-arrow {
+  flex: none;
+  color: var(--system-accent);
 }
 
 .library-shelf-view-all-count {
@@ -1946,15 +1988,17 @@ a:focus-visible,
 }
 
 .library-shelf-view-all:hover {
-  border-style: solid;
   border-color: var(--system-accent);
   box-shadow: var(--shadow-hover);
   transform: scale(1.04);
 }
 
+/* The established A6 V5 focus language, unchanged: accent border, focus shadow, and the larger
+   scale step. The border is solid at rest now, so focus is carried by colour, shadow, and scale
+   rather than by the border style flipping. */
 .library-shelf-view-all:focus-visible,
 [data-input-mode='controller'] .library-shelf-view-all:focus {
-  border-style: solid;
+  color: var(--system-accent);
   border-color: var(--system-accent);
   box-shadow: var(--shadow-focus);
   outline: none;
@@ -2289,8 +2333,13 @@ a:focus-visible,
   gap: 6px;
 }
 
+/* Two title lines are *reserved* whether or not a title needs both. A card is only as wide as its
+   system's cover profile allows, so a DVD-shaped GameCube card has barely a third of a landscape
+   SNES card's title column; letting the block grow only when a title is long would leave cards in
+   one shelf — and cards of mixed systems in one grid row — sitting at different heights. */
 .game-card-title {
   min-width: 0;
+  min-height: 2.5em;
   margin: 0;
   font-size: 14.5px;
   font-weight: 700;
@@ -2298,7 +2347,13 @@ a:focus-visible,
 }
 
 /* The detail target stays a real anchor; the card owns its appearance, so no user-agent link
-   colour, underline, or visited treatment leaks into the tile. */
+   colour, underline, or visited treatment leaks into the tile.
+
+   The title clamps to two lines rather than one. A single line put "The Legen…" on a narrow card,
+   which names no game; two lines reach the part of a title that identifies it while still ending
+   in an honest ellipsis. The clamp is a hard ceiling, so a long title can never push the
+   system/year row down or change the media frame above it. `overflow-wrap` keeps a single
+   unbroken token from escaping the column instead of being clipped mid-glyph. */
 .game-card-title-link,
 .game-card-title-link:visited,
 .game-card-title-link:hover,
@@ -2307,12 +2362,14 @@ a:focus-visible,
 [data-input-mode='controller'] .game-card-title-link:visited,
 [data-input-mode='controller'] .game-card-title-link:hover,
 [data-input-mode='controller'] .game-card-title-link:focus {
-  display: block;
+  display: -webkit-box;
   overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   color: var(--text);
   text-decoration: none;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 /* The title remains the one semantic detail link; its transparent hit area makes the whole card
@@ -3380,8 +3437,10 @@ a:focus-visible,
     min-width: 96px;
   }
 
+  /* One label step down so "VIEW ALL" and its arrow still fit on one line in the narrow shelf. */
   .library-shelf-view-all {
-    width: 88px;
+    width: 112px;
+    font-size: 9px;
   }
 
   /* C4 sizes its placeholder for the 158 px floor; the narrow fallback tile needs one step less

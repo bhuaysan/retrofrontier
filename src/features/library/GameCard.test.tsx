@@ -509,6 +509,51 @@ describe('GameCard', () => {
     ).not.toBeNull();
   });
 
+  it('keeps a long title fully available semantically on the narrowest cover profile', () => {
+    const long = 'The Legend of Zelda: Twilight Princess';
+    renderCard({ systemId: 'nintendo_gamecube', displayTitle: long, releaseDate: '2006-12-02' });
+
+    // The visible copy clamps in CSS; the title itself is never shortened in the DOM, so the
+    // heading, the link's accessible name, and the hover title all still name the whole game.
+    const heading = screen.getByRole('heading', { name: long });
+    expect(heading).toHaveAttribute('title', long);
+    expect(heading).toHaveClass('game-card-title');
+    expect(screen.getByRole('link', { name: `Open ${long} details` })).toHaveTextContent(long);
+    expect(screen.getByRole('article')).toHaveAttribute('data-cover-presentation', 'dvdBox');
+  });
+
+  it('keeps the system/year row a sibling of the title, never inside the clamped block', () => {
+    // A clamped title can only ever consume its own block, so it cannot push into or overlap the
+    // metadata row below it however long the title is.
+    renderCard({ displayTitle: 'The Legend of Zelda: Twilight Princess' });
+
+    const copy = screen.getByRole('article').querySelector('.game-card-copy');
+    const title = copy?.querySelector('.game-card-title');
+    const systemRow = copy?.querySelector('.game-card-system-row');
+    expect(title).not.toBeNull();
+    expect(systemRow).not.toBeNull();
+    expect(title?.contains(systemRow ?? null)).toBe(false);
+    expect(title?.nextElementSibling).toBe(systemRow);
+    expect(within(systemRow as HTMLElement).getByText('NES')).toBeInTheDocument();
+    expect(within(systemRow as HTMLElement).getByText('1993')).toBeInTheDocument();
+  });
+
+  it('gives a landscape card the same title structure as a narrow one', () => {
+    // One title implementation for every profile: a mixed-system grid row would otherwise sit at
+    // two different heights depending on which systems happened to match the query.
+    renderCard({ systemId: 'snes', displayTitle: 'Super Mario World' });
+    const landscape = screen.getByRole('article');
+    expect(landscape).toHaveAttribute('data-cover-presentation', 'landscapeBox');
+    const landscapeTitle = landscape.querySelector('.game-card-title > .game-card-title-link');
+    expect(landscapeTitle).not.toBeNull();
+
+    cleanup();
+    renderCard({ systemId: 'nintendo_gamecube', displayTitle: 'Super Mario Sunshine' });
+    const narrow = screen.getByRole('article');
+    expect(narrow).toHaveAttribute('data-cover-presentation', 'dvdBox');
+    expect(narrow.querySelector('.game-card-title > .game-card-title-link')).not.toBeNull();
+  });
+
   it('keeps the unavailable indicator unchanged under a non-standard profile', () => {
     renderCard({ availability: 'unavailable', systemId: 'nintendo_gamecube' });
 
