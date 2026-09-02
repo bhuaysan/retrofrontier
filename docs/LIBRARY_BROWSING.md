@@ -112,13 +112,24 @@ alter a cover's geometry.
 | Profile | Ratio | Systems |
 | --- | --- | --- |
 | `landscapeBox` | 4 / 3 | SNES, Nintendo 64 |
-| `portraitBox` | 3 / 4 | NES, Game Boy, Game Boy Color, Game Boy Advance, Mega Drive |
+| `portraitBox` | 3 / 4 | NES, Mega Drive |
+| `squareBox` | 1 / 1 | Game Boy, Game Boy Color, Game Boy Advance |
 | `dvdBox` | 2 / 3 | GameCube, Dreamcast |
 | `standard` | 3 / 4 | PlayStation, Saturn, and every unknown or future system |
 
 These are **presentation profiles tuned for RetroFrontier's artwork, not historical packaging
 specifications.** PlayStation and Saturn stay on the neutral frame deliberately: jewel-case artwork
 differs between regions, and RetroFrontier will not assert a shape it cannot know.
+
+`squareBox` is what that principle looks like when the artwork disagrees with the frame. The three
+Game Boy generations began on `portraitBox`; measured on the rendered shelves, the covers the
+provider actually delivers sit at roughly 1.03–1.05, so over a quarter of each frame's height was
+empty well above and below the art. The profile is 1:1 rather than a measured 1.04 — the frame is
+an approximation of a shape, not a fit to one scan.
+
+Every declared profile must carry a CSS rule, and its `--cover-aspect-scale` must equal its
+`--cover-aspect` as a number, since a shelf derives card width from the scale. A test asserts both:
+a profile added to the mapping without a rule would otherwise render silently on the default 3:4.
 
 An unknown or future system identity resolves to `standard`. It never throws, and it never requires a
 backend change — the backend supplies `systemId` and nothing about artwork shape.

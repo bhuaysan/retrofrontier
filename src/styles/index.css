@@ -2206,6 +2206,15 @@ a:focus-visible,
   --cover-aspect-scale: 0.75;
 }
 
+/* The handheld frame. Game Boy artwork is broad and stubby, not tall: measured across the Game
+   Boy, Color, and Advance shelves it sits at roughly 1.03–1.05, so the portrait frame left a
+   quarter of its height as empty well. 1:1 is the honest approximation; over-fitting to a measured
+   1.04 would claim a precision the artwork does not have. */
+.game-card[data-cover-presentation='squareBox'] {
+  --cover-aspect: 1 / 1;
+  --cover-aspect-scale: 1;
+}
+
 .game-card[data-cover-presentation='dvdBox'] {
   --cover-aspect: 2 / 3;
   --cover-aspect-scale: 0.6667;

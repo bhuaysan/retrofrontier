@@ -34,10 +34,16 @@ describe('systemCoverPresentation', () => {
 
   it('gives the tall cardboard and clamshell systems a portrait media frame', () => {
     expect(systemCoverPresentation('nes')).toBe('portraitBox');
-    expect(systemCoverPresentation('game_boy')).toBe('portraitBox');
-    expect(systemCoverPresentation('game_boy_color')).toBe('portraitBox');
-    expect(systemCoverPresentation('game_boy_advance')).toBe('portraitBox');
     expect(systemCoverPresentation('mega_drive')).toBe('portraitBox');
+  });
+
+  it('gives every handheld generation the square frame its artwork actually has', () => {
+    // Measured on the rendered Game Boy, Color, and Advance shelves: the artwork RetroFrontier
+    // receives sits at roughly 1.03-1.05, so the portrait frame spent over a quarter of its height
+    // on empty well. The three generations share one profile because they share one shape.
+    expect(systemCoverPresentation('game_boy')).toBe('squareBox');
+    expect(systemCoverPresentation('game_boy_color')).toBe('squareBox');
+    expect(systemCoverPresentation('game_boy_advance')).toBe('squareBox');
   });
 
   it('gives the DVD-keepcase systems the narrow DVD media frame', () => {

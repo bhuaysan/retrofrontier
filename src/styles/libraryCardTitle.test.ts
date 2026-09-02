@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import applicationStyles from './index.css?raw';
 import designTokens from '../../docs/design/tokens.css?raw';
+import { COVER_PRESENTATIONS } from '../features/library/systemCoverPresentation';
 
 /** A token's value in one theme block. */
 function tokenValue(theme: 'dark' | 'light', token: string) {
@@ -52,7 +53,7 @@ describe('Library card titles clamp to two lines on every cover profile', () => 
   });
 
   it('applies one title treatment rather than one per cover profile', () => {
-    for (const profile of ['landscapeBox', 'portraitBox', 'dvdBox', 'standard']) {
+    for (const profile of COVER_PRESENTATIONS) {
       expect(applicationStyles, `${profile} must not carry its own title rule`).not.toMatch(
         new RegExp(`\\[data-cover-presentation='${profile}'\\][^{]*\\.game-card-title`),
       );
@@ -99,6 +100,34 @@ describe('Library card titles clamp to two lines on every cover profile', () => 
         `the ${theme} well must stay dark, or the bars read as paper again`,
       ).toBeLessThan(0.05);
     }
+  });
+
+  it('gives every declared cover profile a media frame in CSS', () => {
+    // Without this, adding a profile to the TypeScript mapping and forgetting its rule would leave
+    // those cards silently on the default 3/4 frame — a wrong shape rather than a visible failure.
+    for (const profile of COVER_PRESENTATIONS) {
+      const block = rule(`.game-card[data-cover-presentation='${profile}']`);
+      expect(block, `${profile} declares no ratio`).toMatch(/--cover-aspect:\s*\d+ \/ \d+;/);
+      expect(block, `${profile} declares no width scale`).toMatch(
+        /--cover-aspect-scale:\s*[\d.]+;/,
+      );
+
+      // The two must stay in step: the scale is the ratio as a bare number, and a shelf derives a
+      // card's width from it. A profile whose pair disagreed would render at one shape and be laid
+      // out at another.
+      const [, w, h] = block.match(/--cover-aspect:\s*(\d+) \/ (\d+);/) as RegExpMatchArray;
+      const [, scale] = block.match(/--cover-aspect-scale:\s*([\d.]+);/) as RegExpMatchArray;
+      expect(Number(scale), `${profile} scale disagrees with its ratio`).toBeCloseTo(
+        Number(w) / Number(h),
+        3,
+      );
+    }
+  });
+
+  it('frames handheld artwork square rather than portrait', () => {
+    const square = rule(".game-card[data-cover-presentation='squareBox']");
+    expect(square).toMatch(/--cover-aspect:\s*1 \/ 1;/);
+    expect(square).toMatch(/--cover-aspect-scale:\s*1;/);
   });
 
   it('leaves the Library cover containment and the Detail cover untouched', () => {

@@ -11,12 +11,14 @@ import type { SystemId } from '../../platform/ipc';
  * Frontend policy on purpose: the backend supplies an authoritative `systemId` and nothing about how
  * a cover should be shown. No Rust DTO carries a ratio, a shape, or a packaging format.
  */
-export type CoverPresentation = 'landscapeBox' | 'portraitBox' | 'dvdBox' | 'standard';
+export type CoverPresentation =
+  'landscapeBox' | 'portraitBox' | 'squareBox' | 'dvdBox' | 'standard';
 
 /** Every declared profile, for exhaustive presentation tests and CSS parity checks. */
 export const COVER_PRESENTATIONS: readonly CoverPresentation[] = [
   'landscapeBox',
   'portraitBox',
+  'squareBox',
   'dvdBox',
   'standard',
 ];
@@ -34,10 +36,13 @@ const SYSTEM_COVER_PRESENTATIONS: Readonly<Record<SystemId, CoverPresentation>> 
   nintendo_64: 'landscapeBox',
   // Cardboard boxes and clamshells taller than wide.
   nes: 'portraitBox',
-  game_boy: 'portraitBox',
-  game_boy_color: 'portraitBox',
-  game_boy_advance: 'portraitBox',
   mega_drive: 'portraitBox',
+  // Handheld boxes: broad and stubby rather than tall. Measured across the three Game Boy shelves,
+  // the artwork RetroFrontier actually receives sits at roughly 1.03–1.05, so a 3:4 frame spent
+  // over a quarter of its height on empty well above and below every cover.
+  game_boy: 'squareBox',
+  game_boy_color: 'squareBox',
+  game_boy_advance: 'squareBox',
   // DVD-style keepcases: distinctly tall and narrow.
   nintendo_gamecube: 'dvdBox',
   sega_dreamcast: 'dvdBox',
