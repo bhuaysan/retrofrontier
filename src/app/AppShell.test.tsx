@@ -4,6 +4,7 @@ import { StrictMode } from 'react';
 
 import type {
   ContentRoot,
+  LibraryShelves,
   LaunchResponse,
   LaunchState,
   GameMetadataState,
@@ -14,7 +15,7 @@ import type {
   ScanSummary,
 } from '../platform/ipc';
 import { GAMEPAD_BUTTON_INDEX } from '../input/gamepadAdapter';
-import { installRectStub, layoutColumn, layoutGrid } from '../test/geometry';
+import { installRectStub, layoutColumn, layoutGrid, setRect } from '../test/geometry';
 import { AppShell } from './AppShell';
 
 const mocks = vi.hoisted(() => {
@@ -46,6 +47,7 @@ const mocks = vi.hoisted(() => {
     setContentRootEnabled: vi.fn(),
     getLibrarySummary: vi.fn(),
     queryLibrary: vi.fn(),
+    queryLibraryShelves: vi.fn(),
     getLibraryGameDetail: vi.fn(),
     getGameMetadata: vi.fn(),
     setGameFavorite: vi.fn(),
@@ -86,6 +88,7 @@ vi.mock('../platform/ipc', () => ({
   setContentRootEnabled: mocks.setContentRootEnabled,
   getLibrarySummary: mocks.getLibrarySummary,
   queryLibrary: mocks.queryLibrary,
+  queryLibraryShelves: mocks.queryLibraryShelves,
   getLibraryGameDetail: mocks.getLibraryGameDetail,
   getGameMetadata: mocks.getGameMetadata,
   setGameFavorite: mocks.setGameFavorite,
@@ -288,6 +291,53 @@ const populatedGameMetadata: GameMetadataState = {
   jobs: [],
 };
 
+/**
+ * The All Systems shelf projection the backend would return for a given set of games.
+ *
+ * Grouping here mirrors what the real bounded query does — one shelf per system present, in the
+ * backend's deterministic system order, each holding a preview and the system's true total — so a
+ * test can describe library content once and have both Library presentations agree about it.
+ */
+function shelvesFrom(page: LibraryPage, previewLimit = 6): LibraryShelves {
+  const bySystem = new Map<string, LibraryPage['items']>();
+  for (const item of page.items) {
+    const existing = bySystem.get(item.systemId);
+    if (existing) existing.push(item);
+    else bySystem.set(item.systemId, [item]);
+  }
+  return {
+    shelves: [...bySystem.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([systemId, items]) => ({
+        systemId: systemId as LibraryPage['items'][number]['systemId'],
+        total: items.length,
+        items: items.slice(0, previewLimit),
+      })),
+  };
+}
+
+/** Sets both Library presentations from one description of the library's content. */
+function resolveLibrary(page: LibraryPage) {
+  mocks.queryLibrary.mockResolvedValue(page);
+  mocks.queryLibraryShelves.mockResolvedValue(shelvesFrom(page));
+}
+
+/**
+ * Leaves the All Systems browse view for one system's complete paginated grid, the way a user
+ * does: by choosing the system in the sidebar. Pagination is a property of that grid, so a test
+ * about pages has to be in it.
+ */
+async function selectSystemFilter(name = 'Nintendo Entertainment System') {
+  // Scoped to the sidebar: a shelf's View All names its system too, and it is a different control.
+  const sidebar = screen.getByRole('complementary', { name: /library navigation/i });
+  fireEvent.click(within(sidebar).getByRole('button', { name: new RegExp(name, 'i') }));
+  await waitFor(() =>
+    expect(mocks.queryLibrary).toHaveBeenLastCalledWith(
+      expect.objectContaining({ systemId: 'nes' }),
+    ),
+  );
+}
+
 function setupDefaults() {
   mocks.progressHandlers.clear();
   mocks.completedHandlers.clear();
@@ -299,6 +349,7 @@ function setupDefaults() {
     mocks.setContentRootEnabled,
     mocks.getLibrarySummary,
     mocks.queryLibrary,
+    mocks.queryLibraryShelves,
     mocks.getLibraryGameDetail,
     mocks.getGameMetadata,
     mocks.setGameFavorite,
@@ -345,6 +396,7 @@ function setupDefaults() {
   );
   mocks.getLibrarySummary.mockResolvedValue({ totalGames: 0, favoriteGames: 0, systems: [] });
   mocks.queryLibrary.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
+  mocks.queryLibraryShelves.mockResolvedValue({ shelves: [] });
   mocks.getLibraryGameDetail.mockResolvedValue(populatedGameDetail);
   mocks.getGameMetadata.mockResolvedValue(populatedGameMetadata);
   mocks.setGameFavorite.mockResolvedValue({ gameId: 1, favorite: true });
@@ -449,7 +501,7 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
     render(<AppShell />);
 
     expect(
@@ -545,7 +597,7 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
     render(<AppShell />);
 
     fireEvent.click(await screen.findByRole('button', { name: /Settings/ }));
@@ -570,7 +622,7 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
     render(<AppShell />);
 
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
@@ -630,12 +682,16 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 121 }],
     });
+    mocks.queryLibraryShelves.mockResolvedValue(shelvesFrom(populatedLibraryPage));
     mocks.queryLibrary
       .mockResolvedValueOnce({ ...populatedLibraryPage, total: 121, offset: 0 })
       .mockResolvedValue({ ...populatedLibraryPage, total: 121, offset: 60 });
     render(<AppShell />);
 
+    // Pages belong to one system's complete grid; All Systems is the bounded shelf browse view.
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    await selectSystemFilter();
+    await screen.findByRole('button', { name: 'NEXT PAGE' });
     fireEvent.click(screen.getByRole('button', { name: 'NEXT PAGE' }));
     await screen.findByText('PAGE 2 OF 3');
     fireEvent.click(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }));
@@ -643,7 +699,11 @@ describe('AppShell M6.2 shell and library states', () => {
 
     act(() => window.history.back());
     await screen.findByText('PAGE 2 OF 3');
-    expect(mocks.queryLibrary).toHaveBeenLastCalledWith({ sort: 'titleAsc', offset: 60 });
+    expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
+      sort: 'titleAsc',
+      systemId: 'nes',
+      offset: 60,
+    });
     await waitFor(() =>
       expect(document.activeElement).toBe(
         screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }),
@@ -657,7 +717,7 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
     render(<AppShell />);
 
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
@@ -673,25 +733,87 @@ describe('AppShell M6.2 shell and library states', () => {
     );
   });
 
-  it('returns focus to the Library heading when the originating card is no longer present', async () => {
+  it('falls back deterministically when the originating card is gone from a system grid', async () => {
     mocks.getLibrarySummary.mockResolvedValue({
       totalGames: 2,
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary.mockResolvedValueOnce(populatedLibraryPage).mockResolvedValueOnce({
+    mocks.queryLibraryShelves.mockResolvedValue(shelvesFrom(populatedLibraryPage));
+    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    await selectSystemFilter();
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    // The game leaves the committed result while the user is on its Detail screen.
+    mocks.queryLibrary.mockResolvedValue({
       ...populatedLibraryPage,
       items: [populatedLibraryPage.items[1]],
       total: 1,
     });
-    render(<AppShell />);
-
-    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
     fireEvent.click(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }));
     await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
     fireEvent.click(screen.getByRole('link', { name: /back to library/i }));
 
     await screen.findByRole('heading', { name: 'A Very Long Local Title Without Metadata' });
+    // A selected system has no shelf to return to, so the chain lands on the first game the
+    // committed grid really shows rather than on a card that no longer exists.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('link', { name: 'Open A Very Long Local Title Without Metadata details' }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it('returns a shelf game to its own shelf’s View All when the game itself is gone', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    resolveLibrary(populatedLibraryPage);
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    fireEvent.click(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }));
+    await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+
+    // The shelf survives, but the game no longer appears in its bounded preview.
+    mocks.queryLibraryShelves.mockResolvedValue({
+      shelves: [{ systemId: 'nes', total: 1, items: [populatedLibraryPage.items[1]] }],
+    });
+    fireEvent.click(screen.getByRole('link', { name: /back to library/i }));
+
+    await screen.findByRole('heading', { name: 'A Very Long Local Title Without Metadata' });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', {
+          name: 'View all 1 Nintendo Entertainment System games',
+        }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it('falls back to the Library heading when the shelf a return named is gone too', async () => {
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 2,
+      favoriteGames: 1,
+      systems: [{ systemId: 'nes', gameCount: 2 }],
+    });
+    resolveLibrary(populatedLibraryPage);
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+
+    fireEvent.click(screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }));
+    await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+
+    // Every shelf is gone — a filter that now matches nothing. Focus must still land somewhere
+    // deterministic rather than being stranded on the document body.
+    mocks.queryLibraryShelves.mockResolvedValue({ shelves: [] });
+    fireEvent.click(screen.getByRole('link', { name: /back to library/i }));
+
+    await screen.findByRole('heading', { name: 'NO GAMES MATCH FILTERS' });
     await waitFor(() => expect(screen.getByRole('heading', { name: 'LIBRARY' })).toHaveFocus());
   });
 
@@ -1403,7 +1525,7 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
     render(<AppShell />);
 
     expect(await screen.findByRole('heading', { name: 'Kirby’s Adventure' })).toBeInTheDocument();
@@ -1418,7 +1540,10 @@ describe('AppShell M6.2 shell and library states', () => {
     expect(screen.queryByText('SEARCH LIBRARY')).not.toBeInTheDocument();
     expect(screen.getByText('// FILTER')).toBeVisible();
     expect(screen.getAllByText('Nintendo Entertainment System').length).toBeGreaterThanOrEqual(1);
-    expect(mocks.queryLibrary).toHaveBeenCalledWith({ sort: 'titleAsc', offset: 0 });
+    // All Systems is the bounded shelf projection; the flat paginated page is not requested for a
+    // view that does not render it.
+    expect(mocks.queryLibraryShelves).toHaveBeenCalledWith({});
+    expect(mocks.queryLibrary).not.toHaveBeenCalled();
   });
 
   // M6.7B: the populated grid must read as games, not as database records. The tiles carry the
@@ -1430,7 +1555,7 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
     render(<AppShell />);
 
     await screen.findByRole('heading', { name: 'Kirby\u2019s Adventure' });
@@ -1501,7 +1626,7 @@ describe('AppShell M6.2 shell and library states', () => {
         favoriteGames: 0,
         systems: [{ systemId: 'nes', gameCount: 1 }],
       });
-    mocks.queryLibrary.mockResolvedValue({
+    resolveLibrary({
       ...populatedLibraryPage,
       items: [populatedLibraryPage.items[0]],
       total: 1,
@@ -1510,7 +1635,7 @@ describe('AppShell M6.2 shell and library states', () => {
 
     expect(await screen.findByRole('heading', { name: 'LIBRARY IS EMPTY' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /All systems/ })).toHaveTextContent('0');
-    expect(mocks.queryLibrary).not.toHaveBeenCalled();
+    expect(mocks.queryLibraryShelves).not.toHaveBeenCalled();
 
     await act(async () => {
       mocks.completedHandlers.forEach((handler) =>
@@ -1534,7 +1659,7 @@ describe('AppShell M6.2 shell and library states', () => {
     expect(await screen.findByRole('heading', { name: 'Kirby’s Adventure' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'LIBRARY IS EMPTY' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /All systems/ })).toHaveTextContent('1');
-    expect(mocks.queryLibrary).toHaveBeenCalledTimes(1);
+    expect(mocks.queryLibraryShelves).toHaveBeenCalledTimes(1);
     expect(mocks.rescanLibrary).not.toHaveBeenCalled();
   });
 
@@ -1544,9 +1669,9 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary
+    mocks.queryLibraryShelves
       .mockRejectedValueOnce(new mocks.IpcError('database_unavailable', 'internal query detail'))
-      .mockResolvedValueOnce(populatedLibraryPage);
+      .mockResolvedValueOnce(shelvesFrom(populatedLibraryPage));
     render(<AppShell />);
 
     expect(await screen.findByText('LIBRARY QUERY UNAVAILABLE')).toBeInTheDocument();
@@ -1562,24 +1687,22 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary
-      .mockResolvedValueOnce(populatedLibraryPage)
-      .mockResolvedValueOnce({ items: [], total: 0, offset: 0, limit: 60 })
-      .mockResolvedValueOnce(populatedLibraryPage);
+    mocks.queryLibraryShelves
+      .mockResolvedValueOnce(shelvesFrom(populatedLibraryPage))
+      .mockResolvedValueOnce({ shelves: [] })
+      .mockResolvedValueOnce(shelvesFrom(populatedLibraryPage));
     render(<AppShell />);
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
 
+    // Searching under All Systems stays in shelf mode; it never flattens into a mixed-system grid.
     const search = screen.getByRole('searchbox', { name: 'Search' });
     fireEvent.change(search, { target: { value: 'Nothing%_\\' } });
-    expect(mocks.queryLibrary).toHaveBeenCalledTimes(1);
+    expect(mocks.queryLibraryShelves).toHaveBeenCalledTimes(1);
     expect(
       await screen.findByRole('heading', { name: 'NO MATCH FOR “Nothing%_\\”' }),
     ).toBeInTheDocument();
-    expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
-      search: 'Nothing%_\\',
-      sort: 'titleAsc',
-      offset: 0,
-    });
+    expect(mocks.queryLibraryShelves).toHaveBeenLastCalledWith({ search: 'Nothing%_\\' });
+    expect(mocks.queryLibrary).not.toHaveBeenCalled();
     expect(screen.queryByRole('heading', { name: 'LIBRARY IS EMPTY' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear library search' }));
@@ -1593,7 +1716,7 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 0,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
     render(<AppShell />);
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
 
@@ -1620,22 +1743,23 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary.mockResolvedValueOnce(populatedLibraryPage).mockResolvedValueOnce({
-      ...populatedLibraryPage,
-      items: [populatedLibraryPage.items[1]],
-      total: 1,
-    });
+    mocks.queryLibraryShelves
+      .mockResolvedValueOnce(shelvesFrom(populatedLibraryPage))
+      .mockResolvedValueOnce(
+        shelvesFrom({
+          ...populatedLibraryPage,
+          items: [populatedLibraryPage.items[1]],
+          total: 1,
+        }),
+      );
     render(<AppShell />);
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
 
+    // Favorites under All Systems also stays in shelf mode.
     const favoritesFilter = screen.getByRole('button', { name: 'FAVORITES ONLY' });
     fireEvent.click(favoritesFilter);
     await waitFor(() =>
-      expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
-        favoritesOnly: true,
-        sort: 'titleAsc',
-        offset: 0,
-      }),
+      expect(mocks.queryLibraryShelves).toHaveBeenLastCalledWith({ favoritesOnly: true }),
     );
     expect(favoritesFilter).toHaveAttribute('aria-pressed', 'true');
 
@@ -1664,11 +1788,15 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary.mockResolvedValueOnce(populatedLibraryPage).mockResolvedValueOnce({
-      ...populatedLibraryPage,
-      items: [populatedLibraryPage.items[1]],
-      total: 1,
-    });
+    mocks.queryLibraryShelves
+      .mockResolvedValueOnce(shelvesFrom(populatedLibraryPage))
+      .mockResolvedValueOnce(
+        shelvesFrom({
+          ...populatedLibraryPage,
+          items: [populatedLibraryPage.items[1]],
+          total: 1,
+        }),
+      );
     render(<AppShell />);
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
 
@@ -1685,10 +1813,10 @@ describe('AppShell M6.2 shell and library states', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 2 }],
     });
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
     render(<AppShell />);
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
-    const initialCalls = mocks.queryLibrary.mock.calls.length;
+    const initialCalls = mocks.queryLibraryShelves.mock.calls.length;
 
     act(() =>
       mocks.progressHandlers.forEach((handler) =>
@@ -1707,7 +1835,7 @@ describe('AppShell M6.2 shell and library states', () => {
         }),
       ),
     );
-    expect(mocks.queryLibrary).toHaveBeenCalledTimes(initialCalls);
+    expect(mocks.queryLibraryShelves).toHaveBeenCalledTimes(initialCalls);
 
     const completion: ScanSummary = {
       runId: 41,
@@ -1724,9 +1852,9 @@ describe('AppShell M6.2 shell and library states', () => {
       durationMs: 1000,
     };
     act(() => mocks.completedHandlers.forEach((handler) => handler(completion)));
-    await waitFor(() => expect(mocks.queryLibrary).toHaveBeenCalledTimes(initialCalls + 1));
+    await waitFor(() => expect(mocks.queryLibraryShelves).toHaveBeenCalledTimes(initialCalls + 1));
     act(() => mocks.completedHandlers.forEach((handler) => handler(completion)));
-    expect(mocks.queryLibrary).toHaveBeenCalledTimes(initialCalls + 1);
+    expect(mocks.queryLibraryShelves).toHaveBeenCalledTimes(initialCalls + 1);
   });
 
   it('cleans up both scan event listeners on unmount', async () => {
@@ -1864,7 +1992,7 @@ describe('AppShell M6.7A library composition', () => {
     setupDefaults();
     window.history.replaceState({}, '', '/library');
     mocks.getLibrarySummary.mockResolvedValue(populatedSummary);
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
     mocks.getScanStatus.mockResolvedValue(terminalStatus(healthyResult));
   });
 
@@ -1980,33 +2108,48 @@ describe('AppShell M6.7A library composition', () => {
       favoriteGames: 1,
       systems: [{ systemId: 'nes', gameCount: 121 }],
     });
+    mocks.queryLibraryShelves.mockResolvedValue(shelvesFrom(populatedLibraryPage));
     mocks.queryLibrary
       .mockResolvedValueOnce({ ...populatedLibraryPage, total: 121, offset: 0 })
       .mockResolvedValue({ ...populatedLibraryPage, total: 121, offset: 60 });
     render(<AppShell />);
 
+    // All Systems is a bounded browse view, so it offers no pagination at all…
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    expect(screen.queryByRole('navigation', { name: 'Library pages' })).not.toBeInTheDocument();
+
+    // …and one system's complete grid still does.
+    await selectSystemFilter();
+    expect(await screen.findByText('PAGE 1 OF 3')).toBeVisible();
     expect(screen.getByRole('navigation', { name: 'Library pages' })).toBeVisible();
-    expect(screen.getByText('PAGE 1 OF 3')).toBeVisible();
     expect(screen.getByRole('button', { name: 'PREVIOUS PAGE' })).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: 'NEXT PAGE' }));
     await screen.findByText('PAGE 2 OF 3');
-    expect(mocks.queryLibrary).toHaveBeenLastCalledWith({ sort: 'titleAsc', offset: 60 });
+    expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
+      sort: 'titleAsc',
+      systemId: 'nes',
+      offset: 60,
+    });
   });
 
   it('keeps the query result range and system context as live compact metadata', async () => {
     render(<AppShell />);
 
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
-    const range = screen.getByText('1–2 OF 2');
+    // All Systems has no page and therefore no honest visible range; the truthful number there is
+    // how many games the active filters match across every system.
+    const filterBar = screen.getByRole('group', { name: 'Library filters' });
+    const range = within(filterBar).getByText('2 GAMES');
     expect(range).toBeVisible();
     expect(range).toHaveAttribute('aria-live', 'polite');
     expect(screen.getByText('ALL SYSTEMS')).toBeVisible();
     expect(screen.queryByText('TITLE ORDER · LOCAL DATA')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /Nintendo Entertainment System/ }));
+    await selectSystemFilter();
     expect(await screen.findByText('NINTENDO ENTERTAINMENT SYSTEM')).toBeVisible();
+    // The selected system's grid is paginated again, so its range is a real page range.
+    expect(await screen.findByText('1–2 OF 2')).toBeVisible();
   });
 
   it('keeps the large scan result while the library is still empty', async () => {
@@ -2058,7 +2201,7 @@ describe('AppShell M6.7 B1 library card selection', () => {
     setupDefaults();
     window.history.replaceState({}, '', '/library');
     mocks.getLibrarySummary.mockResolvedValue(populatedSummary);
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
   });
 
   it('renders one selection control per card and no Favorite star in the grid', async () => {
@@ -2190,12 +2333,16 @@ describe('AppShell M6.7 B1 library card selection', () => {
   });
 
   it('leaves no invisible selection behind when the committed query changes', async () => {
-    mocks.queryLibrary.mockReset();
-    mocks.queryLibrary.mockResolvedValueOnce(populatedLibraryPage).mockResolvedValue({
-      ...populatedLibraryPage,
-      items: [populatedLibraryPage.items[0]],
-      total: 1,
-    });
+    mocks.queryLibraryShelves.mockReset();
+    mocks.queryLibraryShelves
+      .mockResolvedValueOnce(shelvesFrom(populatedLibraryPage))
+      .mockResolvedValue(
+        shelvesFrom({
+          ...populatedLibraryPage,
+          items: [populatedLibraryPage.items[0]],
+          total: 1,
+        }),
+      );
     render(<AppShell />);
     await screen.findByRole('heading', { name: 'A Very Long Local Title Without Metadata' });
 
@@ -2208,11 +2355,7 @@ describe('AppShell M6.7 B1 library card selection', () => {
       target: { value: 'kirby' },
     });
     await waitFor(() =>
-      expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
-        search: 'kirby',
-        sort: 'titleAsc',
-        offset: 0,
-      }),
+      expect(mocks.queryLibraryShelves).toHaveBeenLastCalledWith({ search: 'kirby' }),
     );
 
     await waitFor(() =>
@@ -2230,10 +2373,14 @@ describe('AppShell M6.7 B1 library card selection', () => {
       limit: 60,
     };
     mocks.getLibrarySummary.mockResolvedValue({ ...populatedSummary, totalGames: 61 });
+    mocks.queryLibraryShelves.mockResolvedValue(shelvesFrom(populatedLibraryPage));
     mocks.queryLibrary.mockReset();
     mocks.queryLibrary.mockResolvedValueOnce(firstPage).mockResolvedValue(secondPage);
     render(<AppShell />);
+    // Pages exist in one system's complete grid, which is where this selection rule applies.
     await screen.findByRole('heading', { name: 'Kirby’s Adventure' });
+    await selectSystemFilter();
+    await screen.findByRole('button', { name: 'NEXT PAGE' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Select Kirby’s Adventure' }));
     expect(screen.getByText('1 SELECTED')).toBeVisible();
@@ -2326,7 +2473,7 @@ describe('AppShell M8 launch interaction ownership', () => {
     installRectStub();
     window.history.replaceState({}, '', '/library');
     mocks.getLibrarySummary.mockResolvedValue(twoGameSummary);
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
     // Both boundaries take a request object, so the fixture is selected by its `gameId` field.
     mocks.getLibraryGameDetail.mockImplementation(async (request: { gameId: number }) =>
       request.gameId === 2 ? secondGameDetail : populatedGameDetail,
@@ -2653,6 +2800,34 @@ describe('AppShell M8 controller navigation and focus', () => {
     layoutColumn(Array.from(document.querySelectorAll('.pixel-row')));
   }
 
+  /**
+   * Lays out the All Systems shelves the way they really render: one non-wrapping row per system,
+   * each ending in View All, with different card widths per cover profile and a shared media
+   * height. Vertical movement between shelves must therefore resolve geometrically, not by array
+   * index — which is exactly what these tests exercise.
+   */
+  function layoutShelves(rows: readonly { width: number; top: number }[]) {
+    const shelves = Array.from(document.querySelectorAll('.library-shelf'));
+    shelves.forEach((shelf, shelfIndex) => {
+      const row = rows[shelfIndex] ?? { width: 160, top: 200 + shelfIndex * 260 };
+      const entries = Array.from(
+        shelf.querySelectorAll('[data-game-detail-link], .library-shelf-view-all'),
+      );
+      let left = 300;
+      for (const entry of entries) {
+        const width = entry.classList.contains('library-shelf-view-all') ? 108 : row.width;
+        setRect(entry, {
+          left,
+          top: row.top,
+          right: left + width,
+          bottom: row.top + 240,
+        });
+        left += width + 18;
+      }
+    });
+    layoutColumn(Array.from(document.querySelectorAll('.pixel-row')));
+  }
+
   function footerHints() {
     return screen.getByRole('list', { name: 'Controller actions' });
   }
@@ -2677,7 +2852,7 @@ describe('AppShell M8 controller navigation and focus', () => {
     vi.stubGlobal('navigator', { ...window.navigator, getGamepads: () => pads });
     window.history.replaceState({}, '', '/library');
     mocks.getLibrarySummary.mockResolvedValue(populatedM8Summary);
-    mocks.queryLibrary.mockResolvedValue(populatedLibraryPage);
+    resolveLibrary(populatedLibraryPage);
   });
 
   afterEach(() => {
@@ -2720,10 +2895,12 @@ describe('AppShell M8 controller navigation and focus', () => {
    */
   describe('Library controller navigation zones', () => {
     function sidebarRows() {
+      // Scoped to the sidebar: a shelf's View All also names its system, and it is another control.
+      const sidebar = screen.getByRole('complementary', { name: /library navigation/i });
       return {
-        allSystems: screen.getByRole('button', { name: /All systems/ }),
-        nes: screen.getByRole('button', { name: /Nintendo Entertainment System/ }),
-        settings: screen.getByRole('button', { name: 'Settings' }),
+        allSystems: within(sidebar).getByRole('button', { name: /All systems/ }),
+        nes: within(sidebar).getByRole('button', { name: /Nintendo Entertainment System/ }),
+        settings: within(sidebar).getByRole('button', { name: 'Settings' }),
       };
     }
 
@@ -2895,9 +3072,7 @@ describe('AppShell M8 controller navigation and focus', () => {
     });
 
     it('A7: lands on the Library heading when the selected view has no game', async () => {
-      mocks.queryLibrary
-        .mockResolvedValueOnce(populatedLibraryPage)
-        .mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
+      mocks.queryLibrary.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
       await libraryReady();
       act(() => sidebarRows().nes.focus());
 
@@ -2918,15 +3093,217 @@ describe('AppShell M8 controller navigation and focus', () => {
    * controller anyway; the answer is an explicit semantic transition on the upper face button, not a
    * hole in zone containment.
    */
+  /**
+   * M8.6 — controller navigation across the All Systems shelves.
+   *
+   * Movement is resolved from rendered geometry by the existing focus engine. These tests lay the
+   * shelves out with *different card widths per system*, which is the point: vertical movement must
+   * pick the geometrically nearest target, never the same array index.
+   */
+  describe('All Systems shelf navigation', () => {
+    const shelfSummary = {
+      totalGames: 5,
+      favoriteGames: 0,
+      systems: [
+        { systemId: 'snes' as const, gameCount: 3 },
+        { systemId: 'nintendo_gamecube' as const, gameCount: 3 },
+      ],
+    };
+
+    const shelfCatalog = {
+      ...systemsResponse,
+      systems: [
+        { ...systemsResponse.systems[0], id: 'snes' as const, displayName: 'Super Nintendo' },
+        {
+          ...systemsResponse.systems[0],
+          id: 'nintendo_gamecube' as const,
+          displayName: 'Nintendo GameCube',
+        },
+      ],
+    };
+
+    function game(gameId: number, systemId: 'snes' | 'nintendo_gamecube', title: string) {
+      return {
+        ...populatedLibraryPage.items[0],
+        gameId,
+        systemId,
+        displayTitle: title,
+        metadataTitle: title,
+      };
+    }
+
+    const wideShelf = [game(1, 'snes', 'Gradius III'), game(2, 'snes', 'F-Zero')];
+    const narrowShelf = [
+      game(11, 'nintendo_gamecube', 'Rogue Leader'),
+      game(12, 'nintendo_gamecube', 'Metroid Prime'),
+      game(13, 'nintendo_gamecube', 'Wind Waker'),
+    ];
+
+    async function shelvesReady() {
+      mocks.getSystems.mockResolvedValue(shelfCatalog);
+      mocks.getLibrarySummary.mockResolvedValue(shelfSummary);
+      mocks.queryLibraryShelves.mockResolvedValue({
+        shelves: [
+          { systemId: 'snes', total: 3, items: wideShelf },
+          { systemId: 'nintendo_gamecube', total: 3, items: narrowShelf },
+        ],
+      });
+      render(<AppShell />);
+      await screen.findByRole('heading', { name: 'Gradius III' });
+      // Wide landscape SNES cards above narrow DVD-shaped GameCube cards.
+      layoutShelves([
+        { width: 260, top: 200 },
+        { width: 130, top: 500 },
+      ]);
+      await connectController();
+      await inputOwnershipSettled();
+    }
+
+    const link = (title: string) => screen.getByRole('link', { name: `Open ${title} details` });
+    const viewAll = (label: string) => screen.getByRole('button', { name: label });
+
+    it('enters the first preview game of the first shelf from the sidebar', async () => {
+      await shelvesReady();
+      const sidebar = screen.getByRole('complementary', { name: /library navigation/i });
+      act(() =>
+        within(sidebar)
+          .getByRole('button', { name: /All systems/ })
+          .focus(),
+      );
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+
+      await waitFor(() => expect(link('Gradius III')).toHaveFocus());
+    });
+
+    it('moves along a shelf and reaches View All past the last preview game', async () => {
+      await shelvesReady();
+      act(() => link('Gradius III').focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+      expect(link('F-Zero')).toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadRight);
+      expect(viewAll('View all 3 Super Nintendo games')).toHaveFocus();
+
+      // And back again, so the shelf is traversable in both directions.
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadLeft);
+      expect(link('F-Zero')).toHaveFocus();
+    });
+
+    it('moves between shelves to the geometrically nearest card, not the same index', async () => {
+      await shelvesReady();
+      // Layout: the wide SNES cards span x 300–560 and 578–838; the narrow GameCube cards below
+      // span 300–430, 448–578 and 596–726. The second SNES card therefore sits above the *third*
+      // GameCube card, and index-based navigation would wrongly pick the second.
+      act(() => link('F-Zero').focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+      expect(link('Wind Waker'), 'index 1 above must not force index 1 below').toHaveFocus();
+      expect(link('Metroid Prime')).not.toHaveFocus();
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadUp);
+      // And back up to whichever wide card really covers it.
+      expect(link('F-Zero')).toHaveFocus();
+    });
+
+    it('treats a next-shelf View All as an ordinary geometric neighbour', async () => {
+      await shelvesReady();
+      // The SNES View All sits at x≈856–964; below it the GameCube shelf's own View All is the
+      // nearest box. Nothing about View All is special to movement — it is a normal target.
+      act(() => viewAll('View all 3 Super Nintendo games').focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+
+      expect(viewAll('View all 3 Nintendo GameCube games')).toHaveFocus();
+    });
+
+    it('reaches the first card of the next shelf from the leftmost card above it', async () => {
+      await shelvesReady();
+      act(() => link('Gradius III').focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
+      expect(link('Rogue Leader')).toHaveFocus();
+    });
+
+    it('keeps back out of the shelves pointed at the All Systems sidebar row', async () => {
+      await shelvesReady();
+      act(() => link('Gradius III').focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+
+      const sidebar = screen.getByRole('complementary', { name: /library navigation/i });
+      expect(within(sidebar).getByRole('button', { name: /All systems/ })).toHaveFocus();
+      expect(window.location.pathname, 'back inside the Library never navigates').toBe('/library');
+    });
+
+    it('lands on the first game of the system grid after activating View All', async () => {
+      await shelvesReady();
+      mocks.queryLibrary.mockResolvedValue({
+        items: wideShelf,
+        total: 3,
+        offset: 0,
+        limit: 60,
+      });
+      act(() => viewAll('View all 3 Super Nintendo games').focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+
+      await waitFor(() =>
+        expect(mocks.queryLibrary).toHaveBeenLastCalledWith(
+          expect.objectContaining({ systemId: 'snes' }),
+        ),
+      );
+      await waitFor(() => expect(link('Gradius III')).toHaveFocus());
+      // And back from the grid points at the system the user is now in.
+      await pressButton(GAMEPAD_BUTTON_INDEX.back);
+      const sidebar = screen.getByRole('complementary', { name: /library navigation/i });
+      expect(within(sidebar).getByRole('button', { name: /Super Nintendo/ })).toHaveFocus();
+    });
+
+    it('opens a shelf game with confirm and restores it after back', async () => {
+      await shelvesReady();
+      act(() => link('F-Zero').focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
+      await screen.findByRole('heading', { level: 1, name: 'Kirby’s Adventure' });
+
+      act(() => window.history.back());
+      await screen.findByRole('heading', { name: 'Gradius III' });
+      await waitFor(() => expect(link('F-Zero')).toHaveFocus());
+    });
+
+    it('selects the focused shelf card with context without opening it', async () => {
+      await shelvesReady();
+      act(() => link('F-Zero').focus());
+
+      await pressButton(GAMEPAD_BUTTON_INDEX.context);
+
+      expect(await screen.findByText('1 SELECTED')).toBeVisible();
+      expect(window.location.pathname).toBe('/library');
+      expect(link('F-Zero')).toHaveFocus();
+    });
+
+    it('offers VIEW ALL as the focused control’s confirm action', async () => {
+      await shelvesReady();
+      act(() => viewAll('View all 3 Super Nintendo games').focus());
+
+      expect(
+        within(screen.getByRole('list', { name: 'Controller actions' })).getByText('VIEW ALL'),
+      ).toBeVisible();
+    });
+  });
+
   describe('Library controller search action', () => {
     function searchField() {
       return screen.getByRole('searchbox', { name: 'Search' });
     }
 
     function sidebarRows() {
+      const sidebar = screen.getByRole('complementary', { name: /library navigation/i });
       return {
-        allSystems: screen.getByRole('button', { name: /All systems/ }),
-        nes: screen.getByRole('button', { name: /Nintendo Entertainment System/ }),
+        allSystems: within(sidebar).getByRole('button', { name: /All systems/ }),
+        nes: within(sidebar).getByRole('button', { name: /Nintendo Entertainment System/ }),
       };
     }
 
@@ -3018,9 +3395,9 @@ describe('AppShell M8 controller navigation and focus', () => {
     });
 
     it('A4: falls back to the Library when the origin disappeared while Search was focused', async () => {
-      mocks.queryLibrary
-        .mockResolvedValueOnce(populatedLibraryPage)
-        .mockResolvedValue({ items: [], total: 0, offset: 0, limit: 60 });
+      mocks.queryLibraryShelves
+        .mockResolvedValueOnce(shelvesFrom(populatedLibraryPage))
+        .mockResolvedValue({ shelves: [] });
       await libraryReady();
       act(() => cards().kirby.focus());
 
@@ -3717,5 +4094,361 @@ describe('AppShell M8 controller navigation and focus', () => {
       expect(hints.getByText('SELECT').closest('li')).toHaveTextContent('X');
       expect(hints.getByText('SEARCH').closest('li')).toHaveTextContent('Y');
     });
+  });
+});
+
+/**
+ * M8.6 — the Library's two browse presentations.
+ *
+ * All Systems is a bounded, ordered shelf browse view; a selected system is the existing complete
+ * paginated grid. These cover the boundary between them rather than either one in isolation.
+ */
+describe('AppShell M8.6 All Systems shelves', () => {
+  const multiSystemPage: LibraryPage = {
+    items: [
+      { ...populatedLibraryPage.items[0], gameId: 10, systemId: 'snes', displayTitle: 'F-Zero' },
+      {
+        ...populatedLibraryPage.items[0],
+        gameId: 11,
+        systemId: 'snes',
+        displayTitle: 'Super Mario World',
+      },
+      { ...populatedLibraryPage.items[0], gameId: 20, systemId: 'nes', displayTitle: 'Metroid' },
+      {
+        ...populatedLibraryPage.items[0],
+        gameId: 30,
+        systemId: 'nintendo_gamecube',
+        displayTitle: 'Rogue Leader',
+      },
+    ],
+    total: 4,
+    offset: 0,
+    limit: 60,
+  };
+
+  const multiSystemCatalog = {
+    ...systemsResponse,
+    systems: [
+      systemsResponse.systems[0],
+      { ...systemsResponse.systems[0], id: 'snes' as const, displayName: 'Super Nintendo' },
+      {
+        ...systemsResponse.systems[0],
+        id: 'nintendo_gamecube' as const,
+        displayName: 'Nintendo GameCube',
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    setupDefaults();
+    window.history.replaceState({}, '', '/library');
+    mocks.getSystems.mockResolvedValue(multiSystemCatalog);
+    mocks.getLibrarySummary.mockResolvedValue({
+      totalGames: 4,
+      favoriteGames: 0,
+      systems: [
+        { systemId: 'nes', gameCount: 1 },
+        { systemId: 'snes', gameCount: 2 },
+        { systemId: 'nintendo_gamecube', gameCount: 1 },
+      ],
+    });
+    resolveLibrary(multiSystemPage);
+  });
+
+  function shelfHeadings() {
+    return Array.from(document.querySelectorAll('.library-shelf-heading h2')).map((heading) =>
+      heading.textContent?.trim(),
+    );
+  }
+
+  it('renders one shelf per system in catalog order, not in the backend’s response order', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+
+    // The mocked backend returns shelves grouped alphabetically by system identity; the sidebar's
+    // catalog order is what the view must follow.
+    expect(mocks.queryLibraryShelves.mock.results).toHaveLength(1);
+    expect(shelfHeadings()).toEqual([
+      'NINTENDO ENTERTAINMENT SYSTEM',
+      'SUPER NINTENDO',
+      'NINTENDO GAMECUBE',
+    ]);
+  });
+
+  it('shows no pagination in the browse view and restores it inside one system', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+
+    expect(screen.queryByRole('navigation', { name: 'Library pages' })).not.toBeInTheDocument();
+
+    mocks.queryLibrary.mockResolvedValue({ ...multiSystemPage, total: 121 });
+    fireEvent.click(
+      within(screen.getByRole('complementary', { name: /library navigation/i })).getByRole(
+        'button',
+        { name: /Super Nintendo/ },
+      ),
+    );
+
+    expect(await screen.findByRole('navigation', { name: 'Library pages' })).toBeVisible();
+    expect(shelfHeadings()).toEqual([]);
+  });
+
+  it('omits systems with no match and never renders an empty shelf heading', async () => {
+    mocks.queryLibraryShelves.mockResolvedValue({
+      shelves: [{ systemId: 'snes', total: 2, items: multiSystemPage.items.slice(0, 2) }],
+    });
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+
+    expect(shelfHeadings()).toEqual(['SUPER NINTENDO']);
+  });
+
+  it('appends a system the catalog does not know rather than dropping its games', async () => {
+    mocks.queryLibraryShelves.mockResolvedValue({
+      shelves: [
+        {
+          systemId: 'nintendo_switch_2' as LibraryPage['items'][number]['systemId'],
+          total: 1,
+          items: [
+            {
+              ...multiSystemPage.items[0],
+              gameId: 99,
+              systemId: 'nintendo_switch_2' as LibraryPage['items'][number]['systemId'],
+              displayTitle: 'A Future Game',
+            },
+          ],
+        },
+        { systemId: 'snes', total: 2, items: multiSystemPage.items.slice(0, 2) },
+      ],
+    });
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'A Future Game' });
+
+    expect(shelfHeadings()).toEqual(['SUPER NINTENDO', 'NINTENDO_SWITCH_2']);
+    expect(screen.getByRole('link', { name: 'Open A Future Game details' })).toBeInTheDocument();
+  });
+
+  it('keeps shelf mode under Search, Favorites, and both together', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search' }), {
+      target: { value: 'mario' },
+    });
+    await waitFor(() =>
+      expect(mocks.queryLibraryShelves).toHaveBeenLastCalledWith({ search: 'mario' }),
+    );
+    expect(shelfHeadings().length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'FAVORITES ONLY' }));
+    await waitFor(() =>
+      expect(mocks.queryLibraryShelves).toHaveBeenLastCalledWith({
+        search: 'mario',
+        favoritesOnly: true,
+      }),
+    );
+    expect(shelfHeadings().length).toBeGreaterThan(0);
+
+    // M8.5's review filter composes the same way and still never flattens the view.
+    fireEvent.click(screen.getByRole('button', { name: 'NEEDS REVIEW' }));
+    await waitFor(() =>
+      expect(mocks.queryLibraryShelves).toHaveBeenLastCalledWith({
+        search: 'mario',
+        favoritesOnly: true,
+        needsMetadataReview: true,
+      }),
+    );
+    expect(screen.queryByRole('navigation', { name: 'Library pages' })).not.toBeInTheDocument();
+    expect(mocks.queryLibrary).not.toHaveBeenCalled();
+  });
+
+  it('enters the full system grid through View All and marks the sidebar accordingly', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+    const sidebar = screen.getByRole('complementary', { name: /library navigation/i });
+    expect(within(sidebar).getByRole('button', { name: /All systems/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    mocks.queryLibrary.mockResolvedValue({
+      ...multiSystemPage,
+      items: multiSystemPage.items.slice(0, 2),
+      total: 2,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'View all 2 Super Nintendo games' }));
+
+    await waitFor(() =>
+      expect(mocks.queryLibrary).toHaveBeenLastCalledWith({
+        sort: 'titleAsc',
+        systemId: 'snes',
+        offset: 0,
+      }),
+    );
+    // View All sets exactly the filter the sidebar sets, so the sidebar follows by itself.
+    expect(within(sidebar).getByRole('button', { name: /Super Nintendo/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(within(sidebar).getByRole('button', { name: /All systems/ })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    expect(window.location.pathname, 'View All is a filter, not a route').toBe('/library');
+    await waitFor(() => expect(shelfHeadings()).toEqual([]));
+  });
+
+  it('names each View All with its own system and total', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+
+    expect(
+      screen.getByRole('button', { name: 'View all 1 Nintendo Entertainment System games' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'View all 2 Super Nintendo games' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'View all 1 Nintendo GameCube games' }),
+    ).toBeInTheDocument();
+  });
+
+  it('gives each shelf an accessible name and unique heading identity', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+
+    const sections = screen
+      .getAllByRole('region')
+      .filter((region) => region.classList.contains('library-shelf'));
+    expect(sections).toHaveLength(3);
+    const headingIds = sections.map((section) => section.getAttribute('aria-labelledby'));
+    expect(new Set(headingIds).size).toBe(headingIds.length);
+    for (const section of sections) {
+      expect(section).toHaveAccessibleName();
+    }
+  });
+
+  it('keeps each card on its own system’s cover profile inside a mixed browse view', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+
+    const profileOf = (title: string) =>
+      screen
+        .getByRole('link', { name: `Open ${title} details` })
+        .closest('article')
+        ?.getAttribute('data-cover-presentation');
+
+    expect(profileOf('F-Zero')).toBe('landscapeBox');
+    expect(profileOf('Metroid')).toBe('portraitBox');
+    expect(profileOf('Rogue Leader')).toBe('dvdBox');
+  });
+
+  it('carries the same cover profile into the system’s full grid', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+    const inShelf = screen
+      .getByRole('link', { name: 'Open F-Zero details' })
+      .closest('article')
+      ?.getAttribute('data-cover-presentation');
+
+    mocks.queryLibrary.mockResolvedValue({
+      ...multiSystemPage,
+      items: multiSystemPage.items.slice(0, 2),
+      total: 2,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'View all 2 Super Nintendo games' }));
+    await waitFor(() => expect(shelfHeadings()).toEqual([]));
+
+    expect(
+      screen
+        .getByRole('link', { name: 'Open F-Zero details' })
+        .closest('article')
+        ?.getAttribute('data-cover-presentation'),
+    ).toBe(inShelf);
+    expect(inShelf).toBe('landscapeBox');
+  });
+
+  it('keeps card selection working in shelf mode and never selects View All', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select F-Zero' }));
+    expect(await screen.findByText('1 SELECTED')).toBeVisible();
+    expect(window.location.pathname, 'selecting must not open Game Detail').toBe('/library');
+
+    // View All is a navigation control, never part of multi-selection.
+    const viewAll = screen.getByRole('button', { name: 'View all 2 Super Nintendo games' });
+    expect(viewAll).not.toHaveAttribute('aria-pressed');
+    expect(viewAll.className).not.toContain('game-card-select');
+  });
+
+  it('shows the shared no-match state instead of a list of empty system headings', async () => {
+    mocks.queryLibraryShelves
+      .mockResolvedValueOnce(shelvesFrom(multiSystemPage))
+      .mockResolvedValue({ shelves: [] });
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search' }), {
+      target: { value: 'nothing matches this' },
+    });
+
+    expect(await screen.findByRole('heading', { name: /NO MATCH FOR/ })).toBeVisible();
+    expect(shelfHeadings()).toEqual([]);
+    expect(screen.getByRole('button', { name: 'CLEAR SEARCH & FILTERS' })).toBeVisible();
+  });
+
+  it('keeps the previous shelves and offers a retry when a refresh fails', async () => {
+    mocks.queryLibraryShelves
+      .mockResolvedValueOnce(shelvesFrom(multiSystemPage))
+      .mockRejectedValueOnce(new mocks.IpcError('database_unavailable', 'internal detail'))
+      .mockResolvedValue(shelvesFrom(multiSystemPage));
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'FAVORITES ONLY' }));
+
+    expect(await screen.findByText('LIBRARY REFRESH FAILED')).toBeInTheDocument();
+    // The bounded shelves already on screen are last-known-good and must not be blanked.
+    expect(screen.getByRole('heading', { name: 'F-Zero' })).toBeInTheDocument();
+    expect(screen.getByRole('alert')).not.toHaveTextContent('internal detail');
+
+    fireEvent.click(screen.getByRole('button', { name: 'RETRY LIBRARY' }));
+    await waitFor(() =>
+      expect(screen.queryByText('LIBRARY REFRESH FAILED')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('refreshes shelves only for a metadata event a visible preview really contains', async () => {
+    render(<AppShell />);
+    await screen.findByRole('heading', { name: 'F-Zero' });
+    const initial = mocks.queryLibraryShelves.mock.calls.length;
+
+    // A whole-library scrape walks games no shelf is showing.
+    await act(async () => {
+      for (let gameId = 500; gameId < 900; gameId += 1) {
+        mocks.metadataHandlers.forEach((handler) =>
+          handler({ gameId, providerId: 'screenScraper' }),
+        );
+      }
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+    });
+    expect(mocks.queryLibraryShelves).toHaveBeenCalledTimes(initial);
+
+    // A visible preview game does earn exactly one coalesced bounded refresh.
+    await act(async () => {
+      mocks.metadataHandlers.forEach((handler) =>
+        handler({ gameId: 10, providerId: 'screenScraper' }),
+      );
+      mocks.metadataHandlers.forEach((handler) =>
+        handler({ gameId: 11, providerId: 'screenScraper' }),
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(mocks.queryLibraryShelves).toHaveBeenCalledTimes(initial + 1);
   });
 });

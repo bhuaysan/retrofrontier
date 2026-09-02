@@ -1790,6 +1790,179 @@ a:focus-visible,
   white-space: nowrap;
 }
 
+/* ---------------------------------------------------------------------------------------------
+   M8.6 All Systems shelves.
+
+   One horizontal shelf per system, never wrapping. Card *width* comes from one shared media
+   height and the system's own cover ratio, so a wide SNES card and a narrow GameCube card still
+   line up at the same height and the vertical rhythm down the page stays coherent.
+   --------------------------------------------------------------------------------------------- */
+.library-shelf-browser {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 26px;
+  /* The one media height every shelf shares. Card widths are derived from it. */
+  --shelf-media-height: 200px;
+}
+
+.library-shelf {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* The existing pixel section rule, one level quieter than the LIBRARY heading. A shelf is a light
+   grouping, not another bordered panel: full chrome per system would cost more vertical space than
+   the games it introduces. */
+.library-shelf-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.library-shelf-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: 11px;
+  letter-spacing: 1px;
+  line-height: 1.5;
+}
+
+.library-shelf-heading .heading-arrow {
+  color: var(--system-accent);
+}
+
+.library-shelf-heading > span:first-of-type {
+  flex: 1;
+  height: 2px;
+  background: var(--border);
+}
+
+.library-shelf-meta {
+  flex: none;
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 16px;
+  white-space: nowrap;
+}
+
+/* Bounded horizontal overflow. The preview is short by construction, so this only ever engages on
+   a narrow window; it keeps every preview item and View All reachable rather than clipping them.
+   The card hover/focus transform needs vertical breathing room, hence the padding. */
+.library-shelf-track {
+  display: flex;
+  align-items: stretch;
+  gap: 18px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 2px 10px;
+  scrollbar-width: thin;
+  scroll-padding-inline: 2px;
+}
+
+.library-shelf-track::-webkit-scrollbar {
+  height: 8px;
+}
+
+.library-shelf-track::-webkit-scrollbar-track {
+  background: var(--surface-2);
+}
+
+.library-shelf-track::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+.library-shelf-track > .game-card {
+  flex: none;
+  /* Same media height for every system; the profile decides how wide that makes the card. */
+  width: calc(var(--shelf-media-height) * var(--cover-aspect-scale));
+  min-width: 108px;
+  max-width: 300px;
+}
+
+/* View All closes the shelf. It is a real control, sized to sit in the row without pretending to
+   be another game card. */
+.library-shelf-view-all {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  width: 108px;
+  align-self: stretch;
+  padding: 12px 10px;
+  color: var(--text);
+  font-family: var(--font-label);
+  font-size: 10px;
+  line-height: 1.6;
+  text-align: center;
+  background: var(--surface);
+  border: 2px dashed var(--border);
+  box-shadow: var(--shadow-rest);
+  cursor: pointer;
+  transition:
+    transform 0.14s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.library-shelf-view-all-count {
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 16px;
+}
+
+.library-shelf-view-all:hover {
+  border-style: solid;
+  border-color: var(--system-accent);
+  box-shadow: var(--shadow-hover);
+  transform: scale(1.04);
+}
+
+.library-shelf-view-all:focus-visible,
+[data-input-mode='controller'] .library-shelf-view-all:focus {
+  border-style: solid;
+  border-color: var(--system-accent);
+  box-shadow: var(--shadow-focus);
+  outline: none;
+  transform: scale(1.08);
+}
+
+.library-shelf-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+.library-shelf-skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.library-shelf-skeleton-heading {
+  display: block;
+  width: 180px;
+  height: 12px;
+  background: var(--surface-2);
+}
+
+.library-shelf-skeleton-track {
+  display: flex;
+  overflow: hidden;
+  gap: 18px;
+}
+
+.library-shelf-skeleton-track .game-card-skeleton {
+  flex: none;
+  width: 158px;
+}
+
 .library-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
@@ -3163,6 +3336,20 @@ a:focus-visible,
 
   .library-grid {
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+
+  /* Narrow windows get shorter shelves rather than wrapped ones: the row still scrolls, so every
+     bounded preview item and View All stay reachable. */
+  .library-shelf-browser {
+    --shelf-media-height: 152px;
+  }
+
+  .library-shelf-track {
+    gap: 14px;
+  }
+
+  .library-shelf-view-all {
+    width: 92px;
   }
 
   /* C4 sizes its placeholder for the 158 px floor; the narrow fallback tile needs one step less

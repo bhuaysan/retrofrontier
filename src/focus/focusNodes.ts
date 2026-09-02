@@ -27,6 +27,15 @@ export const focusNodes = {
   /** A Library game's own Game Detail target — the native card link. */
   libraryGame: (gameId: number): FocusNodeId => `library:game:${gameId}`,
   libraryHeading: 'library:heading' as FocusNodeId,
+  /**
+   * A system shelf's View All control in the All Systems browse view.
+   *
+   * The games on a shelf keep their ordinary `libraryGame` identity: one rendered Library view
+   * shows a game once, so it needs one semantic identity, and a shelf-qualified game identity would
+   * only make focus restoration guess which representation it meant. View All is genuinely new, so
+   * it gets an identity of its own.
+   */
+  libraryShelfViewAll: (systemId: string): FocusNodeId => `library:shelf:view-all:${systemId}`,
   /** The shared top bar's Library Search field. Outside both Library zones by design. */
   librarySearch: 'library:search' as FocusNodeId,
   /** `null` is the "all systems" row. */

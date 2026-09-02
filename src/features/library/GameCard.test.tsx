@@ -76,7 +76,9 @@ describe('GameCard', () => {
 
     fireEvent.click(link);
 
-    expect(onOpenGame).toHaveBeenCalledWith(1);
+    // The system is reported alongside the game so a Game Detail return can fall back to the shelf
+    // the card was browsed on.
+    expect(onOpenGame).toHaveBeenCalledWith(1, 'nes');
     expect(onOpenGame).toHaveBeenCalledTimes(1);
     expect(link.closest('button')).toBeNull();
   });

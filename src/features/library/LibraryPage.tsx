@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { InlineError } from '../../components/ui/InlineError';
 import { useFocusApi, useFocusNode } from '../../focus/focusContext';
@@ -20,6 +20,7 @@ import {
   type ScanSummary,
 } from '../../platform/ipc';
 import type { LibraryQueryModel } from '../../hooks/useLibraryQuery';
+import type { LibraryShelvesModel } from '../../hooks/useLibraryShelves';
 import { useLibrarySelection } from '../../hooks/useLibrarySelection';
 import type { SystemLabel } from '../../hooks/useSystemCatalog';
 import type { ScanStateModel } from '../../hooks/useScanState';
@@ -28,6 +29,19 @@ import { LibraryBrowser } from './LibraryBrowser';
 import { LibraryFilterBar } from './LibraryFilterBar';
 import { LibrarySelectionBar } from './LibrarySelectionBar';
 import { rootAvailabilityLabel } from './rootLabels';
+
+/**
+ * A Game Detail return request.
+ *
+ * It names the game by its stable identity and records the system it was browsed under, so a return
+ * to the All Systems view can fall back to that game's own shelf rather than to the top of the
+ * page. It is never a DOM selector and never a rendered position.
+ */
+export interface LibraryFocusReturn {
+  gameId: number;
+  /** `null` when the game was opened from the paginated grid of a system already selected. */
+  systemId: string | null;
+}
 
 interface LibraryPageProps {
   summary: LibrarySummary | null;
@@ -40,12 +54,21 @@ interface LibraryPageProps {
   refreshRoots: () => Promise<ContentRoot[] | null>;
   systems: SystemLabel[];
   library: LibraryQueryModel;
+  /** The All Systems browse projection. Only consulted while no system filter is selected. */
+  shelves: LibraryShelvesModel;
   scan: ScanStateModel;
   onAddExternalFolder: () => Promise<boolean>;
   onOpenManagedFolder: () => Promise<void>;
   onManageRoots: () => void;
-  onOpenGame: (gameId: number) => void;
-  restoreFocusGameId: number | null;
+  onOpenGame: (gameId: number, systemId: string) => void;
+  /** A shelf's View All: the same system filter the sidebar sets, so both stay one state. */
+  onViewAllSystem: (systemId: string) => void;
+  /**
+   * The game a Game Detail return should hand focus back to, named by its stable identity and by
+   * the system it was browsed under. The system is what lets a shelf return fall back to that
+   * shelf's own View All when the game itself is gone.
+   */
+  restoreFocus: LibraryFocusReturn | null;
   onFocusRestored: () => void;
   /**
    * Declares this screen's main content as the Library's main controller navigation zone. It is
@@ -556,19 +579,32 @@ export function LibraryPage({
   refreshRoots,
   systems,
   library,
+  shelves,
   scan,
   onAddExternalFolder,
   onOpenManagedFolder,
   onManageRoots,
   onOpenGame,
-  restoreFocusGameId,
+  onViewAllSystem,
+  restoreFocus,
   onFocusRestored,
   mainZoneRef,
 }: LibraryPageProps) {
   // B1 multi-select is transient presentation state owned by the Library composition, so the
   // selection bar, the count, and every card's selected state all read one authority.
   const focus = useFocusApi();
-  const selection = useLibrarySelection(library.page);
+  // Which browse presentation owns this render. The shelves are the All Systems view; a selected
+  // system is the paginated grid. Everything below that depends on "what is currently visible" —
+  // selection lifetime, focus settling — reads whichever of the two is actually rendered.
+  const showsShelves = library.systemId === null;
+  const visibleItems = useMemo(
+    () =>
+      showsShelves
+        ? (shelves.shelves?.shelves.flatMap((shelf) => shelf.items) ?? null)
+        : (library.page?.items ?? null),
+    [library.page, shelves.shelves, showsShelves],
+  );
+  const selection = useLibrarySelection(visibleItems);
   const managedRoot = roots.find((root) => root.kind === 'managed');
   const isRunning = scan.status?.running === true;
   const lastResult = scan.status?.lastResult;
@@ -592,30 +628,59 @@ export function LibraryPage({
   // a DOM query and it is never resolved against a stale page. It stays pending until this screen
   // reports that its bounded query settled, at which point the card is focused if it is really
   // present and the Library heading is used otherwise.
+  //
+  // Both presentations settle the same way; only which query's version and loading flags count
+  // changes with the mode, so the request never resolves against the surface the user is leaving.
+  const resultVersion = showsShelves ? shelves.resultVersion : library.resultVersion;
+  const settling = showsShelves
+    ? shelves.initialLoading || shelves.refreshing
+    : library.pageLoading || library.refreshing || library.initialLoading;
   const settleVersion = useRef<number | null>(null);
+  const pendingRestore = useRef<LibraryFocusReturn | null>(null);
   useEffect(() => {
-    if (restoreFocusGameId === null) return;
-    focus.requestFocus(focusNodes.libraryGame(restoreFocusGameId), {
+    if (restoreFocus === null) return;
+    pendingRestore.current = restoreFocus;
+    // The immediate request is the safety net for a query that never settles at all: its own
+    // bounded timeout then takes the Library heading rather than stranding focus on the body.
+    focus.requestFocus(focusNodes.libraryGame(restoreFocus.gameId), {
       awaitSettle: true,
       fallback: focusNodes.libraryHeading,
     });
-    settleVersion.current = library.resultVersion;
+    settleVersion.current = resultVersion;
     onFocusRestored();
-  }, [focus, library.resultVersion, onFocusRestored, restoreFocusGameId]);
+  }, [focus, onFocusRestored, restoreFocus, resultVersion]);
 
   useEffect(() => {
     if (settleVersion.current === null) return;
-    if (library.resultVersion === settleVersion.current) return;
-    if (library.pageLoading || library.refreshing || library.initialLoading) return;
+    if (resultVersion === settleVersion.current) return;
+    if (settling) return;
     settleVersion.current = null;
-    focus.settleFocusRequest();
-  }, [
-    focus,
-    library.initialLoading,
-    library.pageLoading,
-    library.refreshing,
-    library.resultVersion,
-  ]);
+    const restore = pendingRestore.current;
+    pendingRestore.current = null;
+    if (restore === null) {
+      focus.settleFocusRequest();
+      return;
+    }
+
+    // The result really settled, so a target that is not here now is not coming. Resolve the
+    // deterministic chain directly against the committed view: the game itself; then, for a game
+    // that legitimately left the result, its own shelf's View All — which is still where the user
+    // was; then the first game the committed view does show; then the Library heading. Every step
+    // is a declared semantic identity, tried in order, and one that is not rendered simply fails.
+    // Nothing is queried out of the DOM and nothing is retried on a timer.
+    focus.cancelFocusRequest();
+    const chain = [
+      focusNodes.libraryGame(restore.gameId),
+      ...(restore.systemId === null ? [] : [focusNodes.libraryShelfViewAll(restore.systemId)]),
+      ...(visibleItems && visibleItems.length > 0
+        ? [focusNodes.libraryGame(visibleItems[0].gameId)]
+        : []),
+      focusNodes.libraryHeading,
+    ];
+    for (const target of chain) {
+      if (focus.focusNode(target)) return;
+    }
+  }, [focus, resultVersion, settling, visibleItems]);
 
   return (
     <main
@@ -624,7 +689,7 @@ export function LibraryPage({
       id="main-content"
       ref={mainZoneRef}
     >
-      {populated && <LibraryFilterBar library={library} systems={systems} />}
+      {populated && <LibraryFilterBar library={library} shelves={shelves} systems={systems} />}
       {populated && selection.count > 0 ? (
         <LibrarySelectionBar count={selection.count} onClear={selection.clear} />
       ) : null}
@@ -716,7 +781,9 @@ export function LibraryPage({
             <LibraryBrowser
               library={library}
               onOpenGame={onOpenGame}
+              onViewAllSystem={onViewAllSystem}
               selection={selection}
+              shelves={shelves}
               systems={systems}
             />
           )}

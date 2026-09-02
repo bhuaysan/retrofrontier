@@ -29,7 +29,7 @@ function pageOf(gameIds: number[], offset = 0): LibraryPage {
 describe('useLibrarySelection', () => {
   it('starts empty and toggles a game on and off', () => {
     const page = pageOf([1, 2, 3]);
-    const { result } = renderHook(() => useLibrarySelection(page));
+    const { result } = renderHook(() => useLibrarySelection(page?.items ?? null));
 
     expect(result.current.count).toBe(0);
     expect(result.current.isSelected(1)).toBe(false);
@@ -45,7 +45,7 @@ describe('useLibrarySelection', () => {
 
   it('selects several visible games independently and clears all of them at once', () => {
     const page = pageOf([1, 2, 3]);
-    const { result } = renderHook(() => useLibrarySelection(page));
+    const { result } = renderHook(() => useLibrarySelection(page?.items ?? null));
 
     act(() => result.current.toggle(1));
     act(() => result.current.toggle(3));
@@ -58,9 +58,12 @@ describe('useLibrarySelection', () => {
   });
 
   it('keeps the selection when a refresh returns the same visible games', () => {
-    const { result, rerender } = renderHook(({ page }) => useLibrarySelection(page), {
-      initialProps: { page: pageOf([1, 2]) },
-    });
+    const { result, rerender } = renderHook(
+      ({ page }) => useLibrarySelection(page?.items ?? null),
+      {
+        initialProps: { page: pageOf([1, 2]) },
+      },
+    );
     act(() => result.current.toggle(2));
 
     // A new page object with the same games (metadata invalidation, scan completion refresh).
@@ -71,9 +74,12 @@ describe('useLibrarySelection', () => {
   });
 
   it('drops selected games that a newly committed result set no longer shows', () => {
-    const { result, rerender } = renderHook(({ page }) => useLibrarySelection(page), {
-      initialProps: { page: pageOf([1, 2, 3]) },
-    });
+    const { result, rerender } = renderHook(
+      ({ page }) => useLibrarySelection(page?.items ?? null),
+      {
+        initialProps: { page: pageOf([1, 2, 3]) },
+      },
+    );
     act(() => result.current.toggle(1));
     act(() => result.current.toggle(3));
     expect(result.current.count).toBe(2);
@@ -87,9 +93,12 @@ describe('useLibrarySelection', () => {
   });
 
   it('leaves no invisible selection behind after page navigation', () => {
-    const { result, rerender } = renderHook(({ page }) => useLibrarySelection(page), {
-      initialProps: { page: pageOf([1, 2], 0) },
-    });
+    const { result, rerender } = renderHook(
+      ({ page }) => useLibrarySelection(page?.items ?? null),
+      {
+        initialProps: { page: pageOf([1, 2], 0) },
+      },
+    );
     act(() => result.current.toggle(1));
     act(() => result.current.toggle(2));
     expect(result.current.count).toBe(2);
@@ -100,9 +109,12 @@ describe('useLibrarySelection', () => {
   });
 
   it('does not resurrect an old selection when a game returns to the visible page', () => {
-    const { result, rerender } = renderHook(({ page }) => useLibrarySelection(page), {
-      initialProps: { page: pageOf([1, 2]) },
-    });
+    const { result, rerender } = renderHook(
+      ({ page }) => useLibrarySelection(page?.items ?? null),
+      {
+        initialProps: { page: pageOf([1, 2]) },
+      },
+    );
     act(() => result.current.toggle(1));
 
     rerender({ page: pageOf([3, 4]) });
@@ -115,7 +127,7 @@ describe('useLibrarySelection', () => {
 
   it('clears the selection while no result set is committed', () => {
     const { result, rerender } = renderHook(
-      ({ page }: { page: LibraryPage | null }) => useLibrarySelection(page),
+      ({ page }: { page: LibraryPage | null }) => useLibrarySelection(page?.items ?? null),
       { initialProps: { page: pageOf([1, 2]) as LibraryPage | null } },
     );
     act(() => result.current.toggle(1));
@@ -123,5 +135,23 @@ describe('useLibrarySelection', () => {
     rerender({ page: null });
 
     expect(result.current.count).toBe(0);
+  });
+  it('reconciles against the visible shelf previews in All Systems exactly as it does for a page', () => {
+    // The All Systems view has no page; its visible set is the union of every shelf preview. The
+    // selection lifetime rule is the same one, which is why both surfaces share this model.
+    const shelfItems = (gameIds: number[]) => gameIds.map(listItem);
+    const { result, rerender } = renderHook(
+      ({ items }: { items: LibraryListItem[] }) => useLibrarySelection(items),
+      { initialProps: { items: shelfItems([1, 2, 3]) } },
+    );
+
+    act(() => result.current.toggle(2));
+    expect(result.current.count).toBe(1);
+
+    // A search narrows the shelves and game 2 leaves the preview entirely.
+    rerender({ items: shelfItems([1, 3]) });
+
+    expect(result.current.count).toBe(0);
+    expect(result.current.isSelected(2)).toBe(false);
   });
 });

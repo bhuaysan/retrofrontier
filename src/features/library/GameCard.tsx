@@ -15,7 +15,8 @@ interface GameCardProps {
   systemName: string;
   accent: string;
   selected: boolean;
-  onOpenGame: (gameId: number) => void;
+  /** The system is reported alongside the game so a return can fall back to its own shelf. */
+  onOpenGame: (gameId: number, systemId: string) => void;
   onToggleSelected: (gameId: number) => void;
 }
 
@@ -68,7 +69,7 @@ export function GameCard({
       return;
     }
     event.preventDefault();
-    onOpenGame(item.gameId);
+    onOpenGame(item.gameId, item.systemId);
   };
 
   return (

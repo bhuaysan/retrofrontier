@@ -555,4 +555,54 @@ describe('useLibraryQuery', () => {
     expect(mocks.queryLibrary).toHaveBeenLastCalledWith({ sort: 'titleAsc', offset: 60 });
     expect(result.current.page?.offset).toBe(60);
   });
+  it('skips the flat all-systems page for a Library that renders a different projection there', async () => {
+    // M8.6's All Systems view is bounded shelves, not this page. Fetching it anyway would spend a
+    // second bounded query on a result nothing renders — and keep refreshing it invisibly.
+    const { result } = renderHook(() =>
+      useLibraryQuery({ enabled: true, queriesAllSystems: false }),
+    );
+    await act(async () => Promise.resolve());
+
+    expect(mocks.queryLibrary).not.toHaveBeenCalled();
+    expect(result.current.page).toBeNull();
+
+    // Selecting a system is exactly what asks for the paginated grid.
+    act(() => result.current.setSystemId('snes'));
+    await waitFor(() => expect(result.current.page).toEqual(firstPage));
+    expect(mocks.queryLibrary).toHaveBeenCalledWith({
+      sort: 'titleAsc',
+      systemId: 'snes',
+      offset: 0,
+    });
+
+    // Returning to All Systems stops querying again rather than falling back to the flat page.
+    const callsWithSystem = mocks.queryLibrary.mock.calls.length;
+    act(() => result.current.setSystemId(null));
+    await act(async () => Promise.resolve());
+    expect(mocks.queryLibrary).toHaveBeenCalledTimes(callsWithSystem);
+  });
+
+  it('keeps owning every user filter choice even while it is not querying', async () => {
+    // Ownership and fetching are separate: the filter bar, the sidebar and the shelf model all
+    // read these values, so they must stay authoritative in All Systems too.
+    const { result } = renderHook(() =>
+      useLibraryQuery({ enabled: true, queriesAllSystems: false }),
+    );
+    await act(async () => Promise.resolve());
+
+    act(() => result.current.setFavoritesOnly(true));
+    act(() => result.current.setNeedsMetadataReview(true));
+    act(() => result.current.setSearchInput('mario'));
+
+    expect(result.current.favoritesOnly).toBe(true);
+    expect(result.current.needsMetadataReview).toBe(true);
+    expect(result.current.searchInput).toBe('mario');
+    await waitFor(() => expect(result.current.debouncedSearch).toBe('mario'));
+    expect(mocks.queryLibrary).not.toHaveBeenCalled();
+
+    act(() => result.current.resetQuery());
+    expect(result.current.favoritesOnly).toBe(false);
+    expect(result.current.needsMetadataReview).toBe(false);
+    expect(result.current.searchInput).toBe('');
+  });
 });

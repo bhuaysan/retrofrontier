@@ -16,6 +16,15 @@ const METADATA_INVALIDATION_MAX_WAIT_MS = 1000;
 
 interface UseLibraryQueryOptions {
   enabled: boolean;
+  /**
+   * Whether the caller needs a paginated page while *no* system is selected.
+   *
+   * A Library that renders a different projection for "all systems" — M8.6's bounded shelves —
+   * would otherwise spend a second bounded query on a page it never renders, and would keep
+   * refreshing that invisible page on metadata invalidation. This hook stays authoritative for the
+   * paginated grid and for every user filter choice either way; only the fetch is skipped.
+   */
+  queriesAllSystems?: boolean;
   scanCompletionRunId?: number | null;
 }
 
@@ -52,6 +61,7 @@ type LoadingChannel = 'initial' | 'refresh' | 'page';
 
 export function useLibraryQuery({
   enabled,
+  queriesAllSystems = true,
   scanCompletionRunId = null,
 }: UseLibraryQueryOptions): LibraryQueryModel {
   const mounted = useRef(true);
@@ -94,12 +104,14 @@ export function useLibraryQuery({
     else setPageLoading(value);
   }, []);
 
+  const queries = enabled && (queriesAllSystems || systemId !== null);
+
   const runQuery = useCallback(
     async (
       requestedOffset = latestQueryState.current.targetOffset,
       requestedChannel?: LoadingChannel,
     ) => {
-      if (!enabled) return;
+      if (!queries) return;
 
       latestQueryState.current.targetOffset = requestedOffset;
       const generation = requestGeneration.current + 1;
@@ -161,7 +173,7 @@ export function useLibraryQuery({
         if (mounted.current && ownsLoading) setChannelLoading(channel, false);
       }
     },
-    [debouncedSearch, enabled, favoritesOnly, needsMetadataReview, setChannelLoading, systemId],
+    [debouncedSearch, favoritesOnly, needsMetadataReview, queries, setChannelLoading, systemId],
   );
 
   useLayoutEffect(() => {
@@ -239,7 +251,7 @@ export function useLibraryQuery({
   );
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!queries) return;
 
     if (scanCompletionRunId !== null && lastScanCompletionRunId.current !== scanCompletionRunId) {
       lastScanCompletionRunId.current = scanCompletionRunId;
@@ -250,10 +262,10 @@ export function useLibraryQuery({
     }
 
     void runQuery();
-  }, [enabled, runQuery, scanCompletionRunId]);
+  }, [queries, runQuery, scanCompletionRunId]);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!queries) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
     let timer: number | undefined;
@@ -305,7 +317,7 @@ export function useLibraryQuery({
       unlisten?.();
       void subscription;
     };
-  }, [enabled]);
+  }, [queries]);
 
   return {
     searchInput,
