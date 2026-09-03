@@ -2335,6 +2335,115 @@ mod tests {
         assert_eq!(fixture.read("Nestopia/Synthetic.sav"), b"opaque save data");
     }
 
+    /// A capability snapshot never authorizes anything, however stale it is.
+    ///
+    /// The listing reports what was true when it ran. Everything can change afterwards, and the
+    /// action re-proves every invariant from scratch — so a frontend holding a `ready`, deletable
+    /// view is refused exactly as if it had held none.
+    #[tokio::test]
+    async fn a_stale_capability_snapshot_authorizes_nothing() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+
+        // The snapshot the frontend would be holding: everything is fine.
+        let stale = fixture.service.list_save_states(GameId(1)).await.unwrap();
+        assert_eq!(
+            stale[0].capabilities.loadability,
+            SaveStateLoadability::Ready
+        );
+        assert!(stale[0].capabilities.deletable);
+        let id = stale[0].id;
+
+        // The world moves on underneath it in three independent ways.
+        fixture.launch.active.store(true, Ordering::Relaxed);
+        assert_eq!(
+            fixture.service.load_save_state(id).await,
+            LoadSaveStateResponse::refused(SaveStateError::TemporarilyBlocked)
+        );
+        assert_eq!(
+            fixture.service.delete_save_state(id).await,
+            DeleteSaveStateResponse::failed(SaveStateError::TemporarilyBlocked)
+        );
+
+        fixture.launch.active.store(false, Ordering::Relaxed);
+        fixture.runtime.remove(CORE_A);
+        assert_eq!(
+            fixture.service.load_save_state(id).await,
+            LoadSaveStateResponse::refused(SaveStateError::CoreUnavailable)
+        );
+
+        fixture.write("Nestopia/Synthetic.state1", b"changed underneath");
+        assert_eq!(
+            fixture.service.delete_save_state(id).await,
+            DeleteSaveStateResponse::failed(SaveStateError::IntegrityMismatch)
+        );
+        // Nothing was launched and nothing was deleted on the strength of the stale view.
+        assert!(fixture.launch.plans.lock().unwrap().is_empty());
+        assert!(fixture.exists("Nestopia/Synthetic.state1"));
+    }
+
+    /// The same content basename under two cores is two states, not one.
+    ///
+    /// `sort_savestates_enable` puts each core's states in its own directory, so identical
+    /// basenames are ordinary — and because identity is the registered *path* plus proved
+    /// provenance rather than the basename, neither collides with the other.
+    #[tokio::test]
+    async fn the_same_content_basename_under_two_cores_produces_two_independent_states() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"from core A")])
+            .await;
+        fixture
+            .run_session(
+                CORE_B,
+                1,
+                &[("bsnes-mercury/Synthetic.state1", b"from core B")],
+            )
+            .await;
+
+        let states = fixture.states().await;
+        assert_eq!(states.len(), 2, "two distinct physical paths, two objects");
+        assert_eq!(
+            states
+                .iter()
+                .map(|state| state.state.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Nestopia/Synthetic.state1",
+                "bsnes-mercury/Synthetic.state1"
+            ]
+        );
+        // Same slot and same basename, different provenance and different bytes.
+        assert_eq!(states[0].slot, states[1].slot);
+        assert_ne!(
+            states[0].provenance.core_binary_sha256,
+            states[1].provenance.core_binary_sha256
+        );
+
+        // Deleting one leaves the other completely untouched.
+        assert!(matches!(
+            fixture.service.delete_save_state(states[0].id).await,
+            DeleteSaveStateResponse::Deleted { .. }
+        ));
+        assert!(!fixture.exists("Nestopia/Synthetic.state1"));
+        assert_eq!(
+            fixture.read("bsnes-mercury/Synthetic.state1"),
+            b"from core B"
+        );
+        assert_eq!(
+            fixture
+                .save_states
+                .save_state(states[1].id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SaveStateStatus::Available
+        );
+    }
+
     /// With no launch port attached the service refuses every mutation rather than performing an
     /// unguarded one.
     ///
