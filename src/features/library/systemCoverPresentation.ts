@@ -12,13 +12,14 @@ import type { SystemId } from '../../platform/ipc';
  * a cover should be shown. No Rust DTO carries a ratio, a shape, or a packaging format.
  */
 export type CoverPresentation =
-  'landscapeBox' | 'portraitBox' | 'squareBox' | 'dvdBox' | 'standard';
+  'landscapeBox' | 'portraitBox' | 'squareBox' | 'jewelCaseBox' | 'dvdBox' | 'standard';
 
 /** Every declared profile, for exhaustive presentation tests and CSS parity checks. */
 export const COVER_PRESENTATIONS: readonly CoverPresentation[] = [
   'landscapeBox',
   'portraitBox',
   'squareBox',
+  'jewelCaseBox',
   'dvdBox',
   'standard',
 ];
@@ -26,9 +27,9 @@ export const COVER_PRESENTATIONS: readonly CoverPresentation[] = [
 /**
  * Authoritative system IDs to profiles.
  *
- * `standard` is used for a *known* system too, wherever RetroFrontier genuinely cannot claim a
- * shape: jewel-case artwork differs between regions, so PlayStation and Saturn keep the neutral
- * frame rather than being asserted into one that is wrong half the time.
+ * `standard` is what a system gets while RetroFrontier has no artwork of its own to measure. It is
+ * a held position, not a claim: Saturn keeps it because no Saturn cover was available, and it moves
+ * the moment one is — the same way PlayStation moved off it once its artwork could be measured.
  */
 const SYSTEM_COVER_PRESENTATIONS: Readonly<Record<SystemId, CoverPresentation>> = {
   // Cardboard boxes noticeably wider than tall.
@@ -46,8 +47,11 @@ const SYSTEM_COVER_PRESENTATIONS: Readonly<Record<SystemId, CoverPresentation>> 
   // DVD-style keepcases: distinctly tall and narrow.
   nintendo_gamecube: 'dvdBox',
   sega_dreamcast: 'dvdBox',
-  // Jewel cases: no single shape RetroFrontier can honestly assert.
-  playstation: 'standard',
+  // Jewel case wrap: the artwork carries the spine beside the front, so it is wider than tall.
+  // Measured on the delivered cover rather than assumed from the packaging.
+  playstation: 'jewelCaseBox',
+  // Saturn shares the physical format but no Saturn artwork was available to measure, so it keeps
+  // the neutral frame rather than being moved on PlayStation's evidence.
   sega_saturn: 'standard',
 };
 

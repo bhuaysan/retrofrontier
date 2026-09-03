@@ -51,10 +51,16 @@ describe('systemCoverPresentation', () => {
     expect(systemCoverPresentation('sega_dreamcast')).toBe('dvdBox');
   });
 
-  it('leaves the jewel-case systems on the neutral standard frame', () => {
-    // RetroFrontier does not know which regional packaging a given cover came from, and jewel-case
-    // artwork is not consistently landscape or portrait. The neutral frame asserts nothing.
-    expect(systemCoverPresentation('playstation')).toBe('standard');
+  it('frames PlayStation on the measured jewel-case wrap, not a portrait guess', () => {
+    // The delivered artwork carries the case spine beside the front, so it is wider than tall.
+    // Measured at 1.165 against the 0.750 the neutral frame assumed, which left over a third of
+    // the frame height empty.
+    expect(systemCoverPresentation('playstation')).toBe('jewelCaseBox');
+  });
+
+  it('leaves a system whose artwork was never measured on the neutral frame', () => {
+    // Saturn shares PlayStation's physical packaging, but sharing a case is not evidence about the
+    // scan RetroFrontier receives. It moves when there is artwork to measure, not before.
     expect(systemCoverPresentation('sega_saturn')).toBe('standard');
   });
 

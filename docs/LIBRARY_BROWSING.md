@@ -129,18 +129,31 @@ alter a cover's geometry.
 | `landscapeBox` | 4 / 3 | SNES, Nintendo 64 |
 | `portraitBox` | 3 / 4 | NES, Mega Drive |
 | `squareBox` | 1 / 1 | Game Boy, Game Boy Color, Game Boy Advance |
+| `jewelCaseBox` | 7 / 6 | PlayStation |
 | `dvdBox` | 2 / 3 | GameCube, Dreamcast |
-| `standard` | 3 / 4 | PlayStation, Saturn, and every unknown or future system |
+| `standard` | 3 / 4 | Saturn, and every unknown or future system |
 
 These are **presentation profiles tuned for RetroFrontier's artwork, not historical packaging
 specifications.** PlayStation and Saturn stay on the neutral frame deliberately: jewel-case artwork
 differs between regions, and RetroFrontier will not assert a shape it cannot know.
+
+`jewelCaseBox` is the same correction on the other axis. ScreenScraper delivers PlayStation
+artwork as the whole case wrap, spine included, so it is wider than tall — the cached cover measures
+792 x 680, or 1.165, against the 0.750 the neutral frame assumed. Over a third of every PlayStation
+frame's height was empty. Evidence here is a single cover, so this is the profile most worth
+re-checking as the library grows; Saturn shares the physical packaging but no Saturn artwork was
+available, and sharing a case is not evidence about the scan, so it stays neutral.
 
 `squareBox` is what that principle looks like when the artwork disagrees with the frame. The three
 Game Boy generations began on `portraitBox`; measured on the rendered shelves, the covers the
 provider actually delivers sit at roughly 1.03–1.05, so over a quarter of each frame's height was
 empty well above and below the art. The profile is 1:1 rather than a measured 1.04 — the frame is
 an approximation of a shape, not a fit to one scan.
+
+Profiles are measured against the artwork the provider actually delivers, not against physical
+packaging. Cached covers in one real library read: handhelds 1.000-1.007 across 28 covers, SNES
+1.368 (4), Nintendo 64 1.418 (15), NES 0.731, Mega Drive 0.712, GameCube 0.715, PlayStation 1.165.
+Nintendo 64 sits systematically wider than its 4:3 frame and is the next candidate for review.
 
 Every declared profile must carry a CSS rule, and its `--cover-aspect-scale` must equal its
 `--cover-aspect` as a number, since a shelf derives card width from the scale. A test asserts both:
