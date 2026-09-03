@@ -483,6 +483,25 @@ impl SaveStateRepository {
         Ok(ids.into_iter().map(PlaySessionId).collect())
     }
 
+    /// Whether any play session started *after* this one.
+    ///
+    /// Launches are mutually exclusive, so a higher session id means another session ran to
+    /// completion in between. That matters because the baseline delta model is only sound while
+    /// the session that captured the baseline is the *only* thing that touched the state tree
+    /// since: once a later session has written to it, a file absent from this baseline may equally
+    /// have come from that later session, and the delta can no longer prove whose it is.
+    pub async fn session_was_superseded(
+        &self,
+        session_id: PlaySessionId,
+    ) -> Result<bool, AppError> {
+        let later: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM play_sessions WHERE id > ?")
+            .bind(session_id.0)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(AppError::Database)?;
+        Ok(later > 0)
+    }
+
     pub async fn increment_baseline_attempts(
         &self,
         session_id: PlaySessionId,

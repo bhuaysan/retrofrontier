@@ -464,7 +464,7 @@ pub fn read_verified_managed_file(
     file.by_ref()
         .take(expected_size.saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|_| SaveStateError::UnsafeFilesystemTarget)?;
+        .map_err(|_| SaveStateError::Indeterminate)?;
     if bytes.len() != capacity {
         return Err(SaveStateError::IntegrityMismatch);
     }
@@ -503,7 +503,7 @@ pub fn delete_verified_managed_file(
         relative_path,
         expected_size,
         expected_sha256,
-        None,
+        &DeleteRaceHooks::default(),
     )
 }
 
@@ -587,17 +587,19 @@ fn open_managed_file(
         .ok_or(SaveStateError::UnsafeFilesystemTarget)?
         .to_owned();
 
+    // `ENOENT` is *proof* the file is gone; `ELOOP` and `ENOTDIR` are proof the target is not the
+    // managed regular file it must be. Everything else — out of descriptors, an I/O error, a
+    // momentarily unreadable tree — proves nothing at all, and must not be allowed to retire a
+    // save state whose lifecycle can never be reopened.
     let descriptor = rustix::fs::openat(
         &parent,
         name.as_str(),
         FILE_OPEN_FLAGS,
         rustix::fs::Mode::empty(),
     )
-    .map_err(|_| SaveStateError::UnsafeFilesystemTarget)?;
+    .map_err(open_failure)?;
     let file = std::fs::File::from(descriptor);
-    let metadata = file
-        .metadata()
-        .map_err(|_| SaveStateError::UnsafeFilesystemTarget)?;
+    let metadata = file.metadata().map_err(|_| SaveStateError::Indeterminate)?;
     if !metadata.file_type().is_file() {
         return Err(SaveStateError::UnsafeFilesystemTarget);
     }
@@ -623,7 +625,7 @@ fn open_parent_directory(
 ) -> Result<rustix::fd::OwnedFd, SaveStateError> {
     let mut current =
         rustix::fs::open(states_root, DIRECTORY_OPEN_FLAGS, rustix::fs::Mode::empty())
-            .map_err(|_| SaveStateError::UnsafeFilesystemTarget)?;
+            .map_err(open_failure)?;
 
     let mut components: Vec<&str> = relative_path.as_str().split('/').collect();
     // The final component is the file itself; every earlier one must be a real directory.
@@ -635,9 +637,24 @@ fn open_parent_directory(
             DIRECTORY_OPEN_FLAGS,
             rustix::fs::Mode::empty(),
         )
-        .map_err(|_| SaveStateError::UnsafeFilesystemTarget)?;
+        .map_err(open_failure)?;
     }
     Ok(current)
+}
+
+/// Classify an open failure into a *proof* or an inconclusive observation.
+fn open_failure(error: rustix::io::Errno) -> SaveStateError {
+    match error {
+        // The file, or a directory on the way to it, is genuinely not there.
+        rustix::io::Errno::NOENT => SaveStateError::UnsafeFilesystemTarget,
+        // A symbolic link where a real component must be, or a non-directory used as one: both
+        // prove the target is not what RetroFrontier registered.
+        rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR => {
+            SaveStateError::UnsafeFilesystemTarget
+        }
+        // Everything else is a failed observation, not a fact about the file.
+        _ => SaveStateError::Indeterminate,
+    }
 }
 
 fn hash_descriptor(mut file: std::fs::File) -> Result<Sha256Digest, SaveStateError> {
@@ -646,7 +663,7 @@ fn hash_descriptor(mut file: std::fs::File) -> Result<Sha256Digest, SaveStateErr
     loop {
         let read = file
             .read(&mut buffer)
-            .map_err(|_| SaveStateError::UnsafeFilesystemTarget)?;
+            .map_err(|_| SaveStateError::Indeterminate)?;
         if read == 0 {
             break;
         }
@@ -668,16 +685,46 @@ fn quarantine_name() -> String {
     )
 }
 
-/// The delete implementation, with an injectable hook for the adversarial replacement test.
-///
-/// The hook runs exactly in the window an attacker would need: after the verifying open, before
-/// the destructive step. Production passes `None`.
+/// The two windows an attacker racing a delete can act in. Production passes `None` for both.
+#[cfg(test)]
+#[derive(Default)]
+struct DeleteRaceHooks<'a> {
+    /// After the verifying open, before the file is moved to its quarantine name.
+    before_rename: Option<&'a (dyn Fn() + Send + Sync)>,
+    /// After the quarantine rename, while the original name is briefly free — the window in which
+    /// a restore could otherwise clobber whatever took it.
+    after_rename: Option<&'a (dyn Fn() + Send + Sync)>,
+}
+
+#[cfg(not(test))]
+#[derive(Default)]
+struct DeleteRaceHooks<'a> {
+    marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl DeleteRaceHooks<'_> {
+    fn before_rename(&self) {
+        #[cfg(test)]
+        if let Some(hook) = self.before_rename {
+            hook();
+        }
+    }
+
+    fn after_rename(&self) {
+        #[cfg(test)]
+        if let Some(hook) = self.after_rename {
+            hook();
+        }
+    }
+}
+
+/// The delete implementation, with injectable hooks for the adversarial replacement tests.
 fn delete_verified_managed_file_inner(
     states_root: &Path,
     relative_path: &RelativePath,
     expected_size: u64,
     expected_sha256: Sha256Digest,
-    before_rename: Option<&(dyn Fn() + Send + Sync)>,
+    hooks: &DeleteRaceHooks<'_>,
 ) -> Result<(), SaveStateError> {
     use std::os::unix::fs::MetadataExt;
 
@@ -693,9 +740,7 @@ fn delete_verified_managed_file_inner(
         return Err(SaveStateError::IntegrityMismatch);
     }
 
-    if let Some(hook) = before_rename {
-        hook();
-    }
+    hooks.before_rename();
 
     // Move the verified inode to a name only RetroFrontier knows. `renameat` is atomic within one
     // directory, so after this either the rename happened or it did not — and a replacement racing
@@ -703,13 +748,34 @@ fn delete_verified_managed_file_inner(
     let quarantine = quarantine_name();
     rustix::fs::renameat(&parent, name.as_str(), &parent, quarantine.as_str())
         .map_err(|_| SaveStateError::DeleteFailed)?;
+    hooks.after_rename();
 
     // Re-verify at the quarantine name. This is the authoritative check: it proves the inode now
     // sitting there is the one that was verified, so the unlink below cannot remove anything else.
     let restore = || {
-        // Nothing was deleted. Put the name back so the filesystem is left as it was found; a
-        // failure to restore is logged by the caller and still deletes nothing.
-        let _ = rustix::fs::renameat(&parent, quarantine.as_str(), &parent, name.as_str());
+        // Nothing was deleted. Put the name back so the filesystem is left as it was found —
+        // but **never over something else**. A plain `renameat` replaces its destination
+        // silently, and the situations that reach this closure are exactly the ones where another
+        // actor raced the delete; if that actor has since created a file at the original name,
+        // restoring on top of it would destroy a file RetroFrontier never verified. That would
+        // break the same invariant this whole function exists to keep.
+        //
+        // When the name is taken, the quarantined file simply stays where it is: it is inert to
+        // the parser, so it is never attributed, listed, or loaded, and `sweep_delete_quarantine`
+        // removes it at the next startup.
+        let restored = rustix::fs::renameat_with(
+            &parent,
+            quarantine.as_str(),
+            &parent,
+            name.as_str(),
+            rustix::fs::RenameFlags::NOREPLACE,
+        );
+        if restored.is_err() {
+            tracing::warn!(
+                "a save-state delete could not restore its original name, so the verified file \
+                 was left quarantined for the next startup sweep"
+            );
+        }
     };
     let descriptor = match rustix::fs::openat(
         &parent,
@@ -1467,7 +1533,10 @@ mod tests {
             &relative,
             bytes.len() as u64,
             digest_of(bytes),
-            Some(&swap),
+            &DeleteRaceHooks {
+                before_rename: Some(&swap),
+                ..Default::default()
+            },
         );
 
         assert_eq!(outcome, Err(SaveStateError::UnsafeFilesystemTarget));
@@ -1504,13 +1573,109 @@ mod tests {
                 &relative,
                 bytes.len() as u64,
                 digest_of(bytes),
-                Some(&swap),
+                &DeleteRaceHooks {
+                    before_rename: Some(&swap),
+                    ..Default::default()
+                },
             ),
             Err(SaveStateError::UnsafeFilesystemTarget)
         );
         assert_eq!(fs::read(&target).unwrap(), attacker);
         assert_eq!(fs::read(&stashed).unwrap(), bytes);
         assert_eq!(no_quarantine_files(root.path()), 0);
+    }
+
+    /// Restoring the original name must never overwrite something that appeared there.
+    ///
+    /// The situations that reach the restore path are exactly the ones where another actor raced
+    /// the delete. If that actor created a file at the original name, restoring on top of it would
+    /// destroy a file RetroFrontier never verified — breaking the very invariant the quarantine
+    /// exists to keep.
+    #[test]
+    fn a_failed_delete_never_restores_over_a_file_that_took_the_original_name() {
+        let root = states_root();
+        let registered = b"the registered state";
+        write(root.path(), "Nestopia/Synthetic.state1", registered);
+        let relative = path("Nestopia/Synthetic.state1");
+        let target = root.path().join("Nestopia/Synthetic.state1");
+
+        // The racing actor acts in the window *after* the verified file was moved to quarantine —
+        // the only window in which a restore could clobber the original name. It takes that name,
+        // and it also replaces the quarantined inode so re-verification fails and the restore path
+        // really runs.
+        let directory = root.path().join("Nestopia");
+        let target_for_hook = target.clone();
+        let after_rename = move || {
+            fs::write(&target_for_hook, b"a completely unrelated file").unwrap();
+            for entry in fs::read_dir(&directory).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(QUARANTINE_PREFIX) {
+                    fs::remove_file(entry.path()).unwrap();
+                    fs::write(entry.path(), b"not the verified inode").unwrap();
+                }
+            }
+        };
+
+        assert_eq!(
+            delete_verified_managed_file_inner(
+                root.path(),
+                &relative,
+                registered.len() as u64,
+                digest_of(registered),
+                &DeleteRaceHooks {
+                    after_rename: Some(&after_rename),
+                    ..Default::default()
+                },
+            ),
+            Err(SaveStateError::UnsafeFilesystemTarget)
+        );
+
+        // The unrelated file that took the name is intact — restoring refused to clobber it.
+        assert_eq!(fs::read(&target).unwrap(), b"a completely unrelated file");
+        // The quarantined file stayed quarantined rather than being forced back over that name.
+        // It is inert to the parser, and the startup sweep cleans it up.
+        assert_eq!(no_quarantine_files(root.path()), 1);
+        assert_eq!(sweep_delete_quarantine(root.path()), 1);
+        assert_eq!(fs::read(&target).unwrap(), b"a completely unrelated file");
+    }
+
+    /// Only a *proven* absence or mismatch may close a Save State's lifecycle.
+    ///
+    /// `missing` is never reopened, so an observation that merely failed — out of descriptors, an
+    /// I/O error, an unreadable tree — must be distinguishable from one that proves something.
+    #[test]
+    fn a_failed_observation_is_reported_as_indeterminate_rather_than_as_proof() {
+        let root = states_root();
+        let bytes = b"registered";
+        write(root.path(), "Nestopia/Synthetic.state1", bytes);
+
+        // Proofs: the file is genuinely gone, a link stands in its place, and the content changed.
+        assert_eq!(
+            hash_managed_file(root.path(), &path("Nestopia/Absent.state1")),
+            Err(SaveStateError::UnsafeFilesystemTarget)
+        );
+        assert!(SaveStateError::UnsafeFilesystemTarget.proves_absence_or_mismatch());
+        assert!(SaveStateError::IntegrityMismatch.proves_absence_or_mismatch());
+
+        // A directory standing where a state should be is likewise proof, via `ENOTDIR` on the
+        // component below it.
+        fs::create_dir_all(root.path().join("Nestopia/Directory.state2")).unwrap();
+        assert_eq!(
+            hash_managed_file(root.path(), &path("Nestopia/Directory.state2/inner.state1")),
+            Err(SaveStateError::UnsafeFilesystemTarget)
+        );
+
+        // A failed observation proves nothing, and must never close a lifecycle.
+        assert!(!SaveStateError::Indeterminate.proves_absence_or_mismatch());
+        let protected = root.path().join("locked");
+        fs::create_dir_all(&protected).unwrap();
+        fs::write(protected.join("Hidden.state1"), bytes).unwrap();
+        fs::set_permissions(&protected, fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(
+            hash_managed_file(root.path(), &path("locked/Hidden.state1")),
+            Err(SaveStateError::Indeterminate)
+        );
+        fs::set_permissions(&protected, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]

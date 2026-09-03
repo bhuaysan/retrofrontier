@@ -825,6 +825,7 @@ export type SaveStateErrorCode =
   | 'temporarilyBlocked'
   | 'integrityMismatch'
   | 'unsafeFilesystemTarget'
+  | 'indeterminate'
   | 'reconciliationFailed'
   | 'launchFailed'
   | 'deleteFailed';

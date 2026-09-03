@@ -310,6 +310,14 @@ pub enum SaveStateError {
     TemporarilyBlocked,
     IntegrityMismatch,
     UnsafeFilesystemTarget,
+    /// The file could not be examined at all — the observation failed, rather than proving
+    /// anything about the file.
+    ///
+    /// This is deliberately distinct from [`Self::UnsafeFilesystemTarget`], which is a *proof*
+    /// that the target is not the managed regular file it must be. Running out of file
+    /// descriptors, a read error, or a momentarily unreadable tree prove nothing, and a
+    /// lifecycle that can never be reopened must not be closed on the strength of them.
+    Indeterminate,
     ReconciliationFailed,
     LaunchFailed,
     DeleteFailed,
@@ -323,6 +331,7 @@ impl SaveStateError {
         Self::TemporarilyBlocked,
         Self::IntegrityMismatch,
         Self::UnsafeFilesystemTarget,
+        Self::Indeterminate,
         Self::ReconciliationFailed,
         Self::LaunchFailed,
         Self::DeleteFailed,
@@ -336,6 +345,7 @@ impl SaveStateError {
             Self::TemporarilyBlocked => "temporarilyBlocked",
             Self::IntegrityMismatch => "integrityMismatch",
             Self::UnsafeFilesystemTarget => "unsafeFilesystemTarget",
+            Self::Indeterminate => "indeterminate",
             Self::ReconciliationFailed => "reconciliationFailed",
             Self::LaunchFailed => "launchFailed",
             Self::DeleteFailed => "deleteFailed",
@@ -365,12 +375,27 @@ impl SaveStateError {
             Self::UnsafeFilesystemTarget => {
                 "RetroFrontier could not confirm the save-state file it manages, so it did nothing."
             }
+            Self::Indeterminate => {
+                "RetroFrontier could not read this save state just now. Nothing was changed; try \
+                 again."
+            }
             Self::ReconciliationFailed => {
                 "RetroFrontier could not record the save states from the last session."
             }
             Self::LaunchFailed => "RetroFrontier could not start the game from this save state.",
             Self::DeleteFailed => "RetroFrontier could not delete this save state.",
         }
+    }
+}
+
+impl SaveStateError {
+    /// Whether this outcome is *evidence* that the registered file is gone or is no longer the
+    /// content that was registered.
+    ///
+    /// Only such an outcome may close a Save State's lifecycle, because `missing` is never
+    /// reopened. A failed observation proves nothing and must leave the row exactly as it is.
+    pub const fn proves_absence_or_mismatch(self) -> bool {
+        matches!(self, Self::IntegrityMismatch | Self::UnsafeFilesystemTarget)
     }
 }
 
@@ -719,6 +744,7 @@ mod tests {
             "temporarilyBlocked",
             "integrityMismatch",
             "unsafeFilesystemTarget",
+            "indeterminate",
             "reconciliationFailed",
             "launchFailed",
             "deleteFailed",

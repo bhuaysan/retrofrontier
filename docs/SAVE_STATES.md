@@ -161,6 +161,12 @@ where provable, and only then remove the baseline.
 - **Retryable and idempotent.** The same completed session and physical identity cannot produce a
   duplicate row: a unique `(play_session_id, state_relative_path, state_sha256)` index makes a
   replay a no-op, `updated_at` included.
+- **A baseline can only prove anything while its session is the last thing that touched the tree.**
+  A retained baseline is retried at the next startup, by which time another session may have written
+  its own states — absent from this baseline too, so the delta could no longer say whose they are.
+  Attributing them would register another game's state under this session's provenance and supersede
+  the row that legitimately owns it. There is no way to disambiguate after the fact, so a baseline a
+  later session has written past is **dropped without attributing or removing anything**.
 - **Partial independent success.** Each candidate is an independent proof, so one bad candidate does
   not discard the others.
 - **A RetroArch crash is not a reason to discard the delta.** A crash is a *certain* end, so valid
@@ -171,6 +177,16 @@ where provable, and only then remove the baseline.
   link anywhere in the tree, a non-UTF-8 name, or a tree beyond the entry and depth bounds all make
   the snapshot *incomplete*, and an incomplete snapshot never drives a `missing` transition.
 - A baseline that stays indeterminate is dropped after bounded retries rather than leaking forever.
+
+### Same path, different games
+
+RetroArch's state path is `<library name>/<content basename>.stateN`, so two different library games
+whose ROMs share a basename — the same dump added from two content roots, or two files both called
+`Tetris.nes` — collide on one path under one core. Updating in place therefore requires the same
+**game and content unit** as well as the same binary; otherwise it supersedes and inserts, exactly
+as a different binary does. Matching on the binary alone would move the first game's row onto the
+second game's bytes while keeping the first game's ids, so its detail page would list a state that
+is really the other game's and loading it would boot the wrong ROM.
 
 ### Same slot, different cores
 
@@ -183,8 +199,8 @@ Game / ContentUnit / core binary B / slot 1
 
 When core binary B overwrites the physical path a state from core binary A occupied, the old object
 becomes `superseded` and a **new** object is created with its own immutable provenance and digest.
-The old object's provenance is never rewritten. When the *same* binary overwrites its own slot, the
-object keeps its identity and moves onto the newly proved content — that change is *explained* by a
+The old object's provenance is never rewritten. When the *same game, content unit, and binary*
+overwrites its own slot, the object keeps its identity and moves onto the newly proved content — that change is *explained* by a
 controlled launch, which is what distinguishes it from the unexplained change that invalidates a
 registered identity.
 
@@ -430,12 +446,21 @@ Select + R1 to save and Select + ←/→ to change slot. It names no load hotkey
 
 While any managed game is launching, running, or blocked, M9 performs no Save-State load or delete,
 and the listing reports both `temporarilyBlocked` and `deletable: false` so the UI can say so
-honestly.
+honestly. The listing also **skips its file re-check entirely** in that state, for the same reason
+the mutations check for an active session first: a running RetroArch is entitled to be mid-write on
+a registered state, and concluding `missing` from a half-written file would cost that state its
+identity and its history.
 
 ## Errors
 
 `notFound`, `unavailable`, `coreUnavailable`, `temporarilyBlocked`, `integrityMismatch`,
-`unsafeFilesystemTarget`, `reconciliationFailed`, `launchFailed`, `deleteFailed`.
+`unsafeFilesystemTarget`, `indeterminate`, `reconciliationFailed`, `launchFailed`, `deleteFailed`.
+
+`indeterminate` is deliberately distinct from `unsafeFilesystemTarget`. The latter is a *proof* —
+the file is gone, or the target is not the managed regular file it must be. The former means the
+observation itself failed: the process is out of descriptors, a read errored, the tree was
+momentarily unreadable. **Only a proof may close a lifecycle**, because `missing` is never
+reopened; an inconclusive observation leaves the row exactly as it is.
 
 There is deliberately **no `corrupt`**. A load returns a status-tagged response that keeps a
 Save-State verdict (`refused`) distinct from the launch pipeline's own (`launchFailed`), so the UI
@@ -473,6 +498,11 @@ controlled launch.
   read the whole state tree. A same-size tamper therefore survives the listing and is caught by the
   full digest verification that every load and delete performs. The snapshot is explicitly never an
   authorization.
+- **A restore that cannot reclaim its own name leaves the file quarantined.** If something takes the
+  original name in the window after the quarantine rename, the restore refuses to overwrite it —
+  destroying a file RetroFrontier never verified would break the same invariant the quarantine
+  exists to keep. The verified file then stays under its inert quarantine name until the next
+  startup sweep removes it.
 - **Safe deletion is Unix-only.** The no-follow, directory-handle-relative implementation is
   `#[cfg(unix)]`. On a non-Unix target the stub returns `unsafeFilesystemTarget` unconditionally, so
   Windows and macOS fail *closed* rather than weakening the invariant. Implementing it there is

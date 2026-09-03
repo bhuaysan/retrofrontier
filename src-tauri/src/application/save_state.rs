@@ -202,20 +202,42 @@ impl SaveStateApplicationService {
 
         let mut views = Vec::with_capacity(states.len());
         for state in states {
-            if let Err(error) = managed_file_matches_size(
-                &self.states_root,
-                &state.state.relative_path,
-                state.state.size_bytes,
-            ) {
-                tracing::info!(
-                    save_state_id = %state.id,
-                    game_id = %state.provenance.game_id,
-                    slot = state.slot.get(),
-                    error = %error,
-                    "a registered save-state file no longer matches; the state is now missing"
-                );
-                self.save_states.mark_missing(state.id).await?;
-                continue;
+            // **The re-check is skipped entirely while a managed session is active**, for exactly
+            // the reason the load and delete paths check for one first: a running RetroArch is
+            // entitled to be mid-write on a registered state file, and a half-written file has the
+            // wrong size. `missing` is a closed lifecycle that is never reopened, so concluding it
+            // from a mid-write observation would cost the state its identity and its history — the
+            // session that ends would then register a brand-new object at the same path. Nothing
+            // is lost by waiting: the listing still renders, and the session's own reconciliation
+            // records the new content on the existing object.
+            if !blocked {
+                if let Err(error) = managed_file_matches_size(
+                    &self.states_root,
+                    &state.state.relative_path,
+                    state.state.size_bytes,
+                ) {
+                    if error.proves_absence_or_mismatch() {
+                        tracing::info!(
+                            save_state_id = %state.id,
+                            game_id = %state.provenance.game_id,
+                            slot = state.slot.get(),
+                            error = %error,
+                            "a registered save-state file no longer matches; the state is now \
+                             missing"
+                        );
+                        self.save_states.mark_missing(state.id).await?;
+                        continue;
+                    }
+                    // The file could not be examined at all. That is uncertainty, not absence, so
+                    // the row keeps its lifecycle and the state is simply not offered right now.
+                    tracing::warn!(
+                        save_state_id = %state.id,
+                        error = %error,
+                        "a registered save-state file could not be examined; its lifecycle was \
+                         left unchanged"
+                    );
+                    continue;
+                }
             }
 
             let key = (
@@ -533,14 +555,29 @@ impl SaveStateApplicationService {
         ) {
             Ok(_) => Ok(state),
             Err(error) => {
-                tracing::info!(
-                    save_state_id = %id,
-                    error = %error,
-                    "the registered save-state identity no longer matches; the file was left \
-                     untouched"
-                );
-                if let Err(error) = self.save_states.mark_missing(id).await {
-                    error.log();
+                // Only a *proven* absence or a proven content mismatch closes the lifecycle.
+                // `missing` can never be reopened, so an observation that merely failed — the
+                // process is out of descriptors, the read errored, the tree is momentarily
+                // unreadable — must not be allowed to retire a perfectly good save state. The
+                // module's rule everywhere else is that only a complete, certain observation may
+                // drive a destructive transition, and this is the same rule.
+                if error.proves_absence_or_mismatch() {
+                    tracing::info!(
+                        save_state_id = %id,
+                        error = %error,
+                        "the registered save-state identity no longer matches; the file was left \
+                         untouched"
+                    );
+                    if let Err(error) = self.save_states.mark_missing(id).await {
+                        error.log();
+                    }
+                } else {
+                    tracing::warn!(
+                        save_state_id = %id,
+                        error = %error,
+                        "the registered save state could not be examined; its lifecycle was left \
+                         unchanged"
+                    );
                 }
                 Err(error)
             }
@@ -608,7 +645,50 @@ impl SaveStateApplicationService {
             return Ok(());
         }
 
-        let observed = self.observe_delta(&baseline);
+        // **A baseline can only prove anything while its session is the last thing that touched
+        // the state tree.** A baseline is deliberately retained when reconciliation is
+        // indeterminate, and the retry happens at the next startup — by which time another session
+        // may have run and written its own states. Those files are absent from *this* baseline too,
+        // so the delta can no longer say whose they are: attributing them here would register
+        // another game's save state under this session's game, content unit, and core binary, and
+        // supersede the row that legitimately owns it.
+        //
+        // There is no way to disambiguate after the fact, so this fails closed: the baseline is
+        // dropped, nothing is attributed, and nothing is marked missing. Whatever this session
+        // wrote and did not get registered stays on disk as an unattributable file, which is
+        // exactly what M9 does with every file whose provenance it cannot prove.
+        if self
+            .save_states
+            .session_was_superseded(session_id)
+            .await
+            .map_err(storage)?
+        {
+            tracing::warn!(
+                play_session_id = %session_id,
+                game_id = %baseline.provenance.game_id,
+                "a later play session has since written to the state tree, so this baseline can no \
+                 longer attribute anything; it was dropped without attributing or removing anything"
+            );
+            self.save_states
+                .delete_baseline(session_id)
+                .await
+                .map_err(storage)?;
+            return Ok(());
+        }
+
+        // The filesystem phase blocks — the stability probe sleeps between observations, and
+        // hashing reads whole files. It runs from the process monitor and, on a failed launch,
+        // from inside `launch_locked` while the sequence lock and the OS runtime-mutation lock are
+        // held, so parking a runtime worker there would stall the application at exactly its
+        // busiest moment.
+        let service = self.clone();
+        let for_observation = baseline.clone();
+        let observed = tokio::task::spawn_blocking(move || service.observe_delta(&for_observation))
+            .await
+            .map_err(|error| {
+                tracing::warn!(error = %error, "the save-state observation task stopped");
+                SaveStateError::ReconciliationFailed
+            })?;
 
         let mut indeterminate = observed.indeterminate;
         for candidate in &observed.candidates {
@@ -754,12 +834,24 @@ impl SaveStateApplicationService {
             {
                 Ok(())
             }
-            // The same core binary overwrote its own slot. The object keeps its identity and its
-            // immutable core provenance and moves onto the newly proved content: this change is
-            // *explained* by a controlled launch, which is exactly what distinguishes it from the
-            // unexplained change that invalidates a registered identity.
+            // The same game, the same content unit, and the same core binary overwrote its own
+            // slot. The object keeps its identity and its immutable provenance and moves onto the
+            // newly proved content: this change is *explained* by a controlled launch, which is
+            // what distinguishes it from the unexplained change that invalidates a registered
+            // identity.
+            //
+            // The game and content unit are part of the test, not just the binary. RetroArch's
+            // state path is `<library name>/<content basename>.stateN`, so two different library
+            // games whose ROMs share a basename — the same dump added from two content roots, or
+            // two files both called `Tetris.nes` — collide on one path under one core. Refreshing
+            // on the binary alone would move the first game's row onto the second game's bytes
+            // while keeping the first game's ids: its detail page would list a state that is really
+            // the other game's, and loading it would boot the wrong ROM. That is a false
+            // attribution, so it takes the supersede-and-insert path below instead.
             Some(existing)
-                if existing.provenance.core_binary_sha256 == provenance.core_binary_sha256 =>
+                if existing.provenance.core_binary_sha256 == provenance.core_binary_sha256
+                    && existing.provenance.game_id == provenance.game_id
+                    && existing.provenance.content_unit_id == provenance.content_unit_id =>
             {
                 self.save_states
                     .refresh_state(
@@ -767,7 +859,12 @@ impl SaveStateApplicationService {
                         &RefreshedSaveState {
                             play_session_id: provenance.play_session_id,
                             state: new.state.clone(),
-                            thumbnail: new.thumbnail.clone(),
+                            // A refresh that proved no thumbnail keeps the one already recorded.
+                            // Clearing it would orphan the file: nothing revisits it, and a later
+                            // delete only removes the thumbnail the row still names, so it could
+                            // never be cleaned up or attributed again. Keeping it is also the
+                            // truthful record — that image is still on disk.
+                            thumbnail: new.thumbnail.clone().or_else(|| existing.thumbnail.clone()),
                         },
                     )
                     .await
@@ -1690,6 +1787,215 @@ mod tests {
             .is_none());
         assert!(fixture.states().await.is_empty());
         assert!(fixture.exists("Nestopia/Synthetic.state1"));
+    }
+
+    /// **A stale baseline must never attribute a later session's files.**
+    ///
+    /// A baseline is retained when reconciliation is indeterminate, and the retry happens at the
+    /// next startup. By then another session may have written its own states — which are absent
+    /// from *this* baseline too, so the delta cannot say whose they are. Attributing them would
+    /// register another game's save state under this session's game, content unit, and core
+    /// binary, and supersede the row that legitimately owns it.
+    #[tokio::test]
+    async fn a_baseline_a_later_session_has_written_past_attributes_nothing() {
+        let fixture = Fixture::build().await;
+
+        // Session 1 ends indeterminate, so its baseline is retained.
+        fixture.stability.unstable("Nestopia/GameA.state1");
+        let first = fixture.begin_session(CORE_A, 1).await;
+        fixture.write("Nestopia/GameA.state1", b"game A, never settled");
+        fixture
+            .end_session(first, PlaySessionOutcome::Completed)
+            .await;
+        fixture.service.reconcile_session(first).await;
+        assert!(fixture.save_states.baseline(first).await.unwrap().is_some());
+        assert!(fixture.states().await.is_empty());
+
+        // Session 2 — a different game, a different core — runs and reconciles cleanly.
+        fixture
+            .run_session(CORE_B, 3, &[("bsnes-mercury/GameB.state1", b"game B")])
+            .await;
+        let owned_by_b = fixture.only_state().await;
+        assert_eq!(owned_by_b.provenance.game_id, GameId(2));
+        assert_eq!(
+            owned_by_b.provenance.core_binary_sha256,
+            sha256_bytes(CORE_B)
+        );
+
+        // Now the retained baseline is retried at startup. Game B's state is not in it.
+        fixture.service.reconcile_on_startup().await.unwrap();
+
+        // Nothing was attributed, and Game B's state is untouched: same id, same provenance,
+        // same status. It was neither superseded nor re-registered under Game A.
+        let after = fixture
+            .save_states
+            .save_state(owned_by_b.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after, owned_by_b);
+        assert_eq!(fixture.states().await, vec![owned_by_b]);
+        assert!(fixture
+            .service
+            .list_save_states(GameId(1))
+            .await
+            .unwrap()
+            .is_empty());
+        // The unattributable baseline is dropped rather than retried forever, and the file it
+        // could not prove stays on disk untouched.
+        assert!(fixture.save_states.baseline(first).await.unwrap().is_none());
+        assert_eq!(
+            fixture.read("Nestopia/GameA.state1"),
+            b"game A, never settled"
+        );
+    }
+
+    /// Two games whose ROMs share a basename collide on one RetroArch state path under one core.
+    ///
+    /// Refreshing on the core binary alone would move the first game's row onto the second game's
+    /// bytes while keeping the first game's ids — a state listed under the wrong game, which would
+    /// boot the wrong ROM when loaded.
+    #[tokio::test]
+    async fn a_colliding_state_path_from_another_game_supersedes_rather_than_refreshing() {
+        let fixture = Fixture::build().await;
+        // Game 1 saves at this path...
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Tetris.state1", b"game one")])
+            .await;
+        let first = fixture.only_state().await;
+        assert_eq!(first.provenance.game_id, GameId(1));
+
+        // ...and game 2, whose ROM happens to share the basename, saves at the same path with the
+        // very same core binary.
+        fixture
+            .run_session(CORE_A, 3, &[("Nestopia/Tetris.state1", b"game two")])
+            .await;
+
+        // The first game's row was *not* refreshed onto the second game's bytes.
+        let old = fixture
+            .save_states
+            .save_state(first.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(old.status, SaveStateStatus::Superseded);
+        assert_eq!(old.provenance.game_id, GameId(1));
+        assert_eq!(old.state.sha256, first.state.sha256);
+
+        // A new object owns the file, under the game that really wrote it.
+        let current = fixture.only_state().await;
+        assert_ne!(current.id, first.id);
+        assert_eq!(current.provenance.game_id, GameId(2));
+        assert_eq!(current.provenance.content_unit_id, ContentUnitId(3));
+        assert_eq!(current.state.sha256, sha256_bytes(b"game two"));
+
+        // And each game lists only its own.
+        assert!(fixture
+            .service
+            .list_save_states(GameId(1))
+            .await
+            .unwrap()
+            .is_empty());
+        let listed = fixture.service.list_save_states(GameId(2)).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, current.id);
+    }
+
+    /// The listing must not retire a state a running emulator is mid-write on.
+    ///
+    /// `missing` is never reopened, so concluding it from a half-written file would cost the state
+    /// its identity, its `created_at`, and its history — the session that ends would then register
+    /// a brand-new object at the same path.
+    #[tokio::test]
+    async fn the_listing_never_marks_a_state_missing_while_a_managed_session_is_active() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[("Nestopia/Synthetic.state1", b"registered bytes")],
+            )
+            .await;
+        let state = fixture.only_state().await;
+
+        // A game is running and the file is mid-write, so its size no longer matches.
+        fixture.launch.active.store(true, Ordering::Relaxed);
+        fixture.write("Nestopia/Synthetic.state1", b"half");
+
+        let views = fixture.service.list_save_states(GameId(1)).await.unwrap();
+
+        // Still listed, still `available`, and honestly reported as temporarily unavailable.
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].id, state.id);
+        assert_eq!(
+            views[0].capabilities.loadability,
+            SaveStateLoadability::TemporarilyBlocked
+        );
+        assert!(!views[0].capabilities.deletable);
+        assert_eq!(
+            fixture
+                .save_states
+                .save_state(state.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SaveStateStatus::Available
+        );
+
+        // When the session ends, the same object takes on the finished content.
+        fixture.launch.active.store(false, Ordering::Relaxed);
+        let session = fixture.begin_session(CORE_A, 1).await;
+        fixture.write("Nestopia/Synthetic.state1", b"the finished save");
+        fixture
+            .end_session(session, PlaySessionOutcome::Completed)
+            .await;
+        fixture.service.reconcile_session(session).await;
+
+        let updated = fixture.only_state().await;
+        assert_eq!(updated.id, state.id, "identity and history are preserved");
+        assert_eq!(updated.created_at, state.created_at);
+        assert_eq!(updated.state.sha256, sha256_bytes(b"the finished save"));
+    }
+
+    /// A refresh that proved no thumbnail keeps the one already recorded.
+    ///
+    /// Clearing it would orphan the file — nothing revisits it, and a later delete only removes the
+    /// thumbnail the row still names, so it could never be cleaned up again.
+    #[tokio::test]
+    async fn a_refresh_without_a_proved_thumbnail_keeps_the_recorded_one() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[
+                    ("Nestopia/Synthetic.state1", b"first save"),
+                    ("Nestopia/Synthetic.state1.png", b"the thumbnail"),
+                ],
+            )
+            .await;
+        let original = fixture.only_state().await;
+        assert!(original.thumbnail.is_some());
+
+        // The next session overwrites the state but its thumbnail does not settle.
+        fixture.stability.unstable("Nestopia/Synthetic.state1.png");
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[
+                    ("Nestopia/Synthetic.state1", b"second save"),
+                    ("Nestopia/Synthetic.state1.png", b"half-written image"),
+                ],
+            )
+            .await;
+
+        let refreshed = fixture.only_state().await;
+        assert_eq!(refreshed.id, original.id);
+        assert_eq!(refreshed.state.sha256, sha256_bytes(b"second save"));
+        // The recorded thumbnail identity survived, so the file stays reachable for a later delete.
+        assert_eq!(refreshed.thumbnail, original.thumbnail);
     }
 
     // ================================================================ thumbnails
