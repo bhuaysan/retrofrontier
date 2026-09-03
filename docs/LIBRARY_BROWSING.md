@@ -144,11 +144,11 @@ so they sit with the handhelds on `squareBox` — a shared shape, not a shared p
 particular came off `dvdBox`, whose 2:3 frame spent a third of its height on nothing.
 
 `jewelCaseBox` is the same correction on the other axis. ScreenScraper delivers PlayStation
-artwork as the whole case wrap, spine included, so it is wider than tall — the cached cover measures
-792 x 680, or 1.165, against the 0.750 the neutral frame assumed. Over a third of every PlayStation
-frame's height was empty. Evidence here is a single cover, so this is the profile most worth
-re-checking as the library grows; Saturn shares the physical packaging but no Saturn artwork was
-available, and sharing a case is not evidence about the scan, so it stays neutral.
+artwork as the whole case wrap, spine included, so it is wider than tall — both cached covers
+measure 792 x 680, or 1.1647, against the 0.750 the neutral frame assumed. Over a third of every
+PlayStation frame's height was empty. The profile was set from a single cover and flagged as the
+one most worth re-checking; a second arrived pixel-identical to the first, and 7:6 sits 0.17% from
+it, so it was left alone rather than re-fitted for a third of a pixel.
 
 `squareBox` is what that principle looks like when the artwork disagrees with the frame. The three
 Game Boy generations began on `portraitBox`; measured on the rendered shelves, the covers the
@@ -158,8 +158,8 @@ an approximation of a shape, not a fit to one scan.
 
 Profiles are measured against the artwork the provider actually delivers, not against physical
 packaging. Cached covers in one real library read: handhelds 1.000-1.007 across 28 covers, Saturn and
-Dreamcast 1.000 (3), SNES 1.360-1.368 (4), Nintendo 64 bimodal at 1.365 and ~1.45 (15), NES 0.731,
-Mega Drive 0.712, GameCube 0.715, PlayStation 1.165. GameCube 0.7147 across two covers that agree to the
+Dreamcast 1.000 (3), PlayStation 1.1647 (2), SNES 1.360-1.368 (4), Nintendo 64 bimodal at 1.365 and ~1.45 (15), NES 0.731,
+Mega Drive 0.712, GameCube 0.7147 across two covers that agree to the
 pixel. Every profile is now within a fraction of a percent of its artwork except `landscapeBox`,
 which cannot be, because Nintendo 64's own scans disagree by 7%.
 Nintendo 64's scans are bimodal — seven at 1.365 and eight newer ones near 1.45 — so no single

@@ -2214,8 +2214,9 @@ a:focus-visible,
 /* The jewel-case frame. ScreenScraper delivers PlayStation artwork as the whole case wrap, spine
    included, so it is wider than tall — measured at 1.165 on the delivered cover, against the 0.750
    the neutral frame assumed. That gap left over a third of the frame height as empty well. 7:6 is
-   the honest approximation of the measurement. Evidence is one cover, so this is the profile most
-   worth re-checking as the library grows. */
+   the honest approximation of the measurement. Set from one cover and re-checked against a second
+   that came back pixel-identical, 792x680 both times; 7:6 sits 0.17% off, which is a third of a
+   pixel on a real card, so it stays rather than being re-fitted to one provider's normalization. */
 .game-card[data-cover-presentation='jewelCaseBox'] {
   --cover-aspect: 7 / 6;
   --cover-aspect-scale: 1.1667;
