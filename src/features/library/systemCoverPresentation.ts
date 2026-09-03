@@ -45,7 +45,8 @@ const SYSTEM_COVER_PRESENTATIONS: Readonly<Record<SystemId, CoverPresentation>> 
   game_boy: 'squareBox',
   game_boy_color: 'squareBox',
   game_boy_advance: 'squareBox',
-  // DVD-style keepcase: distinctly tall and narrow.
+  // DVD-style keepcase: distinctly tall and narrow, and the one profile whose two measured covers
+  // agree to the pixel.
   nintendo_gamecube: 'dvdBox',
   // Square front inserts. Measured, not inferred: three cached Saturn and Dreamcast covers are all
   // 680x680 exactly. They share a frame with the handhelds because they share a shape, not because

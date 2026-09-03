@@ -2230,9 +2230,12 @@ a:focus-visible,
   --cover-aspect-scale: 1;
 }
 
+/* The keepcase frame. 2:3 was the case's shape; the artwork's is narrower still by a hair and
+   perfectly consistent — both cached GameCube covers are 486x680 exactly, a ratio of 0.7147.
+   5:7 lands 0.06% off that, against the 6.7% the packaging-derived frame was wasting. */
 .game-card[data-cover-presentation='dvdBox'] {
-  --cover-aspect: 2 / 3;
-  --cover-aspect-scale: 0.6667;
+  --cover-aspect: 5 / 7;
+  --cover-aspect-scale: 0.7143;
 }
 
 .game-card[data-cover-presentation='standard'] {

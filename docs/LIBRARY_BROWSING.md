@@ -130,7 +130,7 @@ alter a cover's geometry.
 | `portraitBox` | 3 / 4 | NES, Mega Drive |
 | `squareBox` | 1 / 1 | Game Boy, Game Boy Color, Game Boy Advance, Saturn, Dreamcast |
 | `jewelCaseBox` | 7 / 6 | PlayStation |
-| `dvdBox` | 2 / 3 | GameCube |
+| `dvdBox` | 5 / 7 | GameCube |
 | `standard` | 3 / 4 | Every unknown or future system |
 
 These are **presentation profiles tuned for RetroFrontier's artwork, not historical packaging
@@ -159,8 +159,9 @@ an approximation of a shape, not a fit to one scan.
 Profiles are measured against the artwork the provider actually delivers, not against physical
 packaging. Cached covers in one real library read: handhelds 1.000-1.007 across 28 covers, Saturn and
 Dreamcast 1.000 (3), SNES 1.360-1.368 (4), Nintendo 64 bimodal at 1.365 and ~1.45 (15), NES 0.731,
-Mega Drive 0.712, GameCube 0.715, PlayStation 1.165. GameCube's 0.715 against a 2:3 frame is the
-remaining known gap, on one cover.
+Mega Drive 0.712, GameCube 0.715, PlayStation 1.165. GameCube 0.7147 across two covers that agree to the
+pixel. Every profile is now within a fraction of a percent of its artwork except `landscapeBox`,
+which cannot be, because Nintendo 64's own scans disagree by 7%.
 Nintendo 64's scans are bimodal — seven at 1.365 and eight newer ones near 1.45 — so no single
 frame fits it well. `landscapeBox` was retuned from 4:3 to 11:8 as the best compromise across both
 cartridge-landscape systems, which roughly halves the average waste; the residual worst case on an
