@@ -46,9 +46,24 @@ describe('systemCoverPresentation', () => {
     expect(systemCoverPresentation('game_boy_advance')).toBe('squareBox');
   });
 
-  it('gives the DVD-keepcase systems the narrow DVD media frame', () => {
+  it('gives the DVD-keepcase system the narrow DVD media frame', () => {
     expect(systemCoverPresentation('nintendo_gamecube')).toBe('dvdBox');
-    expect(systemCoverPresentation('sega_dreamcast')).toBe('dvdBox');
+  });
+
+  it('frames the square-front disc systems with the handhelds, on measurement not on hardware', () => {
+    // Three cached Saturn and Dreamcast covers are 680x680 exactly. Dreamcast in particular used to
+    // sit on dvdBox, whose 2:3 frame spent a third of its height on nothing.
+    expect(systemCoverPresentation('sega_saturn')).toBe('squareBox');
+    expect(systemCoverPresentation('sega_dreamcast')).toBe('squareBox');
+  });
+
+  it('keeps the other disc systems off the PlayStation frame despite shared packaging', () => {
+    // The provider crops PlayStation with its case spine and the other two without it, and the crop
+    // is what gets framed. Packaging is not evidence about the scan.
+    expect(systemCoverPresentation('playstation')).not.toBe(systemCoverPresentation('sega_saturn'));
+    expect(systemCoverPresentation('playstation')).not.toBe(
+      systemCoverPresentation('sega_dreamcast'),
+    );
   });
 
   it('frames PlayStation on the measured jewel-case wrap, not a portrait guess', () => {
@@ -56,12 +71,6 @@ describe('systemCoverPresentation', () => {
     // Measured at 1.165 against the 0.750 the neutral frame assumed, which left over a third of
     // the frame height empty.
     expect(systemCoverPresentation('playstation')).toBe('jewelCaseBox');
-  });
-
-  it('leaves a system whose artwork was never measured on the neutral frame', () => {
-    // Saturn shares PlayStation's physical packaging, but sharing a case is not evidence about the
-    // scan RetroFrontier receives. It moves when there is artwork to measure, not before.
-    expect(systemCoverPresentation('sega_saturn')).toBe('standard');
   });
 
   it('falls back to the standard frame for an unknown or future system ID', () => {
@@ -83,9 +92,13 @@ describe('systemCoverPresentation', () => {
       expect(COVER_PRESENTATIONS).toContain(presentation);
       classified.add(presentation);
     }
-    // Every declared profile is actually reachable from the current catalog; a profile nothing uses
-    // would be untested presentation policy.
-    expect([...classified].sort()).toEqual([...COVER_PRESENTATIONS].sort());
+    // Every declared profile except the fallback is reachable from the current catalog; a profile
+    // nothing uses would be untested presentation policy. `standard` is deliberately exempt: it is
+    // what an unknown or future identity resolves to, and a separate test covers that. Every V1
+    // system has since been moved onto a frame measured from its own artwork.
+    const reachable = COVER_PRESENTATIONS.filter((profile) => profile !== 'standard');
+    expect([...classified].sort()).toEqual([...reachable].sort());
+    expect(classified.has('standard')).toBe(false);
   });
 
   it('is a pure mapping with no per-game or per-cover input', () => {

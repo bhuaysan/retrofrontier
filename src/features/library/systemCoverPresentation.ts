@@ -28,8 +28,9 @@ export const COVER_PRESENTATIONS: readonly CoverPresentation[] = [
  * Authoritative system IDs to profiles.
  *
  * `standard` is what a system gets while RetroFrontier has no artwork of its own to measure. It is
- * a held position, not a claim: Saturn keeps it because no Saturn cover was available, and it moves
- * the moment one is — the same way PlayStation moved off it once its artwork could be measured.
+ * a held position, not a claim, and it moves the moment there is a cover to measure — which is how
+ * PlayStation and Saturn both came off it. No V1 system sits on it today; it remains the frame an
+ * unknown or future system resolves to.
  */
 const SYSTEM_COVER_PRESENTATIONS: Readonly<Record<SystemId, CoverPresentation>> = {
   // Cardboard boxes noticeably wider than tall.
@@ -44,15 +45,17 @@ const SYSTEM_COVER_PRESENTATIONS: Readonly<Record<SystemId, CoverPresentation>> 
   game_boy: 'squareBox',
   game_boy_color: 'squareBox',
   game_boy_advance: 'squareBox',
-  // DVD-style keepcases: distinctly tall and narrow.
+  // DVD-style keepcase: distinctly tall and narrow.
   nintendo_gamecube: 'dvdBox',
-  sega_dreamcast: 'dvdBox',
-  // Jewel case wrap: the artwork carries the spine beside the front, so it is wider than tall.
-  // Measured on the delivered cover rather than assumed from the packaging.
+  // Square front inserts. Measured, not inferred: three cached Saturn and Dreamcast covers are all
+  // 680x680 exactly. They share a frame with the handhelds because they share a shape, not because
+  // anything about the hardware is alike.
+  sega_saturn: 'squareBox',
+  sega_dreamcast: 'squareBox',
+  // Jewel case *wrap*: PlayStation artwork carries the spine beside the front, so it is wider than
+  // tall. This is why the other two disc systems do not share it despite sharing the packaging —
+  // the provider crops them differently, and the crop is what RetroFrontier frames.
   playstation: 'jewelCaseBox',
-  // Saturn shares the physical format but no Saturn artwork was available to measure, so it keeps
-  // the neutral frame rather than being moved on PlayStation's evidence.
-  sega_saturn: 'standard',
 };
 
 /**

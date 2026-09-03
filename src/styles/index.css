@@ -2196,9 +2196,14 @@ a:focus-visible,
   --cover-aspect-scale: 0.75;
 }
 
+/* The landscape cartridge frame. 4:3 was the packaging's shape, not the artwork's: across 19
+   cached covers SNES reads 1.360-1.368 and Nintendo 64 is bimodal, seven scans at 1.365 and eight
+   newer ones near 1.45. No single frame fits N64 well because the provider's own scans disagree by
+   7%; 11:8 is the best compromise over both systems and roughly halves the average waste 4:3 left.
+   The two keep one profile: splitting them would buy under a percent. */
 .game-card[data-cover-presentation='landscapeBox'] {
-  --cover-aspect: 4 / 3;
-  --cover-aspect-scale: 1.3333;
+  --cover-aspect: 11 / 8;
+  --cover-aspect-scale: 1.375;
 }
 
 .game-card[data-cover-presentation='portraitBox'] {

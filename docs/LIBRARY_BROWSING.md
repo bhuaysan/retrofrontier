@@ -126,16 +126,22 @@ alter a cover's geometry.
 
 | Profile | Ratio | Systems |
 | --- | --- | --- |
-| `landscapeBox` | 4 / 3 | SNES, Nintendo 64 |
+| `landscapeBox` | 11 / 8 | SNES, Nintendo 64 |
 | `portraitBox` | 3 / 4 | NES, Mega Drive |
-| `squareBox` | 1 / 1 | Game Boy, Game Boy Color, Game Boy Advance |
+| `squareBox` | 1 / 1 | Game Boy, Game Boy Color, Game Boy Advance, Saturn, Dreamcast |
 | `jewelCaseBox` | 7 / 6 | PlayStation |
-| `dvdBox` | 2 / 3 | GameCube, Dreamcast |
-| `standard` | 3 / 4 | Saturn, and every unknown or future system |
+| `dvdBox` | 2 / 3 | GameCube |
+| `standard` | 3 / 4 | Every unknown or future system |
 
 These are **presentation profiles tuned for RetroFrontier's artwork, not historical packaging
 specifications.** PlayStation and Saturn stay on the neutral frame deliberately: jewel-case artwork
 differs between regions, and RetroFrontier will not assert a shape it cannot know.
+
+Saturn and Dreamcast were expected to share PlayStation's frame, since all three ship in jewel
+cases. Measurement said otherwise: three cached covers are 680x680 exactly, because the provider
+crops PlayStation with its case spine and the other two without it. The crop is what gets framed,
+so they sit with the handhelds on `squareBox` — a shared shape, not a shared platform. Dreamcast in
+particular came off `dvdBox`, whose 2:3 frame spent a third of its height on nothing.
 
 `jewelCaseBox` is the same correction on the other axis. ScreenScraper delivers PlayStation
 artwork as the whole case wrap, spine included, so it is wider than tall — the cached cover measures
@@ -151,9 +157,15 @@ empty well above and below the art. The profile is 1:1 rather than a measured 1.
 an approximation of a shape, not a fit to one scan.
 
 Profiles are measured against the artwork the provider actually delivers, not against physical
-packaging. Cached covers in one real library read: handhelds 1.000-1.007 across 28 covers, SNES
-1.368 (4), Nintendo 64 1.418 (15), NES 0.731, Mega Drive 0.712, GameCube 0.715, PlayStation 1.165.
-Nintendo 64 sits systematically wider than its 4:3 frame and is the next candidate for review.
+packaging. Cached covers in one real library read: handhelds 1.000-1.007 across 28 covers, Saturn and
+Dreamcast 1.000 (3), SNES 1.360-1.368 (4), Nintendo 64 bimodal at 1.365 and ~1.45 (15), NES 0.731,
+Mega Drive 0.712, GameCube 0.715, PlayStation 1.165. GameCube's 0.715 against a 2:3 frame is the
+remaining known gap, on one cover.
+Nintendo 64's scans are bimodal — seven at 1.365 and eight newer ones near 1.45 — so no single
+frame fits it well. `landscapeBox` was retuned from 4:3 to 11:8 as the best compromise across both
+cartridge-landscape systems, which roughly halves the average waste; the residual worst case on an
+N64 cover is about 6%. Splitting SNES and Nintendo 64 into separate profiles would recover under a
+percent and was not done.
 
 Every declared profile must carry a CSS rule, and its `--cover-aspect-scale` must equal its
 `--cover-aspect` as a number, since a shelf derives card width from the scale. A test asserts both:
