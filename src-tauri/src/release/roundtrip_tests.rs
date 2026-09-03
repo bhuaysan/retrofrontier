@@ -102,6 +102,25 @@ fn zipped_support_subtree() -> Vec<u8> {
     output
 }
 
+/// The RetroPad roles the qualified DualSense profiles declare, verbatim from the real
+/// authenticated database.
+///
+/// M9 derives its save-state hotkeys from exactly these four keys, so the fixture has to carry
+/// them: otherwise the roundtrip would install a release whose shipped profiles cannot express
+/// Select + R1, and the test would prove less than it appears to.
+const QUALIFIED_PROFILE_BODY: &str = concat!(
+    "input_driver = \"udev\"\n",
+    "input_vendor_id = \"1356\"\n",
+    "input_product_id = \"3302\"\n",
+    "input_b_btn = \"0\"\n",
+    "input_select_btn = \"8\"\n",
+    "input_start_btn = \"9\"\n",
+    "input_left_btn = \"h0left\"\n",
+    "input_right_btn = \"h0right\"\n",
+    "input_l_btn = \"4\"\n",
+    "input_r_btn = \"5\"\n",
+);
+
 /// A joypad-autoconfig-shaped zip: a versioned repository root whose driver directories hold
 /// profiles, plus the licence text the real database carries.
 fn zipped_joypad_autoconfig() -> Vec<u8> {
@@ -109,10 +128,22 @@ fn zipped_joypad_autoconfig() -> Vec<u8> {
     {
         let mut writer = zip::ZipWriter::new(Cursor::new(&mut output));
         let options = zip::write::SimpleFileOptions::default();
+        let dualsense = format!(
+            "{QUALIFIED_PROFILE_BODY}input_device = \"Sony Interactive Entertainment DualSense \
+             Wireless Controller\"\n"
+        );
+        let edge = format!(
+            "{QUALIFIED_PROFILE_BODY}input_device = \"Sony Interactive Entertainment DualSense \
+             Edge Wireless Controller\"\n"
+        );
         for (name, bytes) in [
             (
                 "retroarch-joypad-autoconfig-fixture/udev/Sony Interactive Entertainment DualSense Wireless Controller.cfg",
-                &b"input_driver = \"udev\"\ninput_device = \"Sony Interactive Entertainment DualSense Wireless Controller\"\ninput_vendor_id = \"1356\"\ninput_product_id = \"3302\"\ninput_b_btn = \"0\"\n"[..],
+                dualsense.as_bytes(),
+            ),
+            (
+                "retroarch-joypad-autoconfig-fixture/udev/Sony Interactive Entertainment DualSense Edge Wireless Controller.cfg",
+                edge.as_bytes(),
             ),
             (
                 "retroarch-joypad-autoconfig-fixture/sdl2/Some Other Pad.cfg",
@@ -473,11 +504,37 @@ async fn a_constructed_release_installs_and_launches_through_the_real_tuf_path()
         crate::services::retroarch::RetroArchService::resolve_controller_profiles(&launch).unwrap();
     assert_eq!(&resolved, profiles);
     let launch_paths = crate::services::retroarch_paths::LaunchPaths::new(app_data.path());
-    let generated = crate::services::retroarch_config::RetroArchConfig::build(
-        &launch_paths,
-        core.core_path.parent().unwrap(),
+    // The M9 hotkeys are derived from the same verified profile database, so a real release also
+    // proves that the qualified profiles it ships resolve the managed save-state combinations.
+    let hotkeys = crate::services::retroarch_input::resolve_managed_save_state_hotkeys(
         &resolved,
+        crate::services::retroarch::MANAGED_JOYPAD_DRIVER,
+    )
+    .expect("the shipped profile database resolves the managed save-state hotkeys");
+    let generated = crate::services::retroarch_config::RetroArchConfig::build(
+        &crate::services::retroarch_config::RetroArchConfigRequest {
+            paths: &launch_paths,
+            core_directory: core.core_path.parent().unwrap(),
+            controller_profiles_root: &resolved,
+            state_slot: crate::domain::save_state::SaveStateSlot::default_launch_slot(),
+            save_state_hotkeys: Some(&hotkeys),
+        },
     );
+    // The values are the authenticated DualSense profile's own: Select, R1, and the D-Pad hat.
+    assert_eq!(generated.value("input_enable_hotkey_btn"), Some("8"));
+    assert_eq!(generated.value("input_save_state_btn"), Some("5"));
+    assert_eq!(
+        generated.value("input_state_slot_increase_btn"),
+        Some("h0right")
+    );
+    assert_eq!(
+        generated.value("input_state_slot_decrease_btn"),
+        Some("h0left")
+    );
+    // And a real release still binds no ingame load.
+    assert!(!generated.render().contains("load_state"));
+    assert_eq!(generated.value("savestate_thumbnail_enable"), Some("true"));
+    assert_eq!(generated.value("state_slot"), Some("1"));
     assert_eq!(
         generated.value("joypad_autoconfig_dir").map(Path::new),
         Some(resolved.as_path())

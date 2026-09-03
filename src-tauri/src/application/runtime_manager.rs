@@ -763,6 +763,70 @@ impl RuntimeManager {
         ))
     }
 
+    /// Whether some currently trusted installation *declares* the exact core binary.
+    ///
+    /// This is a **capability snapshot**, not an authorization. It reads each installation's
+    /// authenticated manifest and the persisted trust state — a few kilobytes each — and checks
+    /// whether the inventory declares that component's executable with that digest. It
+    /// deliberately does *not* re-verify the installed tree, because
+    /// `locate_authenticated_core_binary` does and that means re-hashing hundreds of megabytes;
+    /// paying it once per Save State every time a Game Detail screen opens would be absurd.
+    ///
+    /// So this answers "would a load plausibly find the core?" for the UI, and
+    /// `locate_authenticated_core_binary` answers "does it, right now?" for the action. The action
+    /// never trusts this answer.
+    pub fn declares_authenticated_core_binary(
+        &self,
+        component_id: &SafeIdentifier,
+        binary_sha256: Sha256Digest,
+    ) -> bool {
+        let Ok(trust_state) = self.trust_store.load() else {
+            return false;
+        };
+        let Ok(entries) = fs::read_dir(self.paths.versions_root()) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                continue;
+            }
+            let Ok((manifest, manifest_sha256)) =
+                crate::adapters::runtime_installed::read_manifest(&entry.path())
+            else {
+                continue;
+            };
+            // Revocation and the anti-rollback floor apply here too, so a revoked release never
+            // makes a state *look* loadable.
+            if !trust_state.permits(
+                &manifest.release.release_id,
+                manifest.release.release_sequence,
+                manifest_sha256,
+            ) {
+                continue;
+            }
+            let declares = manifest
+                .release
+                .components
+                .iter()
+                .filter(|component| {
+                    component.id == *component_id
+                        && component.kind == crate::domain::runtime::ComponentKind::Core
+                })
+                .any(|component| {
+                    let install_path = entry.path().join(component.install_path.to_path_buf());
+                    managed_core_component(&manifest, component, &install_path)
+                        .is_some_and(|core| core.binary_sha256 == binary_sha256)
+                });
+            if declares {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Hand the launch service the same OS-backed lock runtime mutation uses.
     ///
     /// ADR-011 serializes game launch and runtime mutation under this lock, so an activation

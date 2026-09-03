@@ -5,6 +5,7 @@ pub mod metadata;
 pub mod metadata_scrape;
 mod runtime;
 pub mod runtime_manager;
+pub mod save_state;
 mod systems;
 
 use crate::repositories::settings::SettingsRepository;
@@ -23,6 +24,7 @@ pub use metadata_scrape::{
 };
 pub use runtime::{RuntimeApplicationService, RuntimeInstallResponse, RuntimeInstallState};
 pub use runtime_manager::RuntimeManager;
+pub use save_state::{SaveStateApplicationService, SaveStateConfig};
 use std::sync::Arc;
 pub use systems::{SystemsApplicationService, SystemsResponse};
 
@@ -36,6 +38,7 @@ pub struct AppState {
     metadata: Arc<MetadataApplicationService>,
     metadata_scrape: Arc<MetadataScrapeApplicationService>,
     media_delivery: Arc<CachedCoverDelivery>,
+    save_states: Arc<SaveStateApplicationService>,
     _metadata_worker: Arc<MetadataWorker>,
     _instance_lock: Arc<ApplicationInstanceLock>,
 }
@@ -52,6 +55,7 @@ impl AppState {
         metadata: Arc<MetadataApplicationService>,
         metadata_scrape: Arc<MetadataScrapeApplicationService>,
         media_delivery: Arc<CachedCoverDelivery>,
+        save_states: Arc<SaveStateApplicationService>,
         metadata_worker: Arc<MetadataWorker>,
     ) -> Self {
         Self {
@@ -63,6 +67,7 @@ impl AppState {
             metadata,
             metadata_scrape,
             media_delivery,
+            save_states,
             _metadata_worker: metadata_worker,
             _instance_lock: Arc::new(instance_lock),
         }
@@ -98,5 +103,9 @@ impl AppState {
 
     pub fn media_delivery(&self) -> &CachedCoverDelivery {
         &self.media_delivery
+    }
+
+    pub fn save_states(&self) -> &Arc<SaveStateApplicationService> {
+        &self.save_states
     }
 }

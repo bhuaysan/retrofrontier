@@ -10,7 +10,9 @@ use crate::adapters::runtime_process::{
     clear_process_record, make_launching_record, make_running_record, read_process_record,
     write_process_record,
 };
-use crate::application::runtime_manager::{RuntimeManager, VerifiedLaunchRuntime};
+use crate::application::runtime_manager::{
+    AuthenticatedCoreBinary, RuntimeManager, VerifiedLaunchRuntime,
+};
 use crate::domain::bios::BiosRequirementStatusState;
 use crate::domain::core::CoreId;
 use crate::domain::launch::{
@@ -21,7 +23,10 @@ use crate::domain::launch::{
 use crate::domain::library::{
     ContentRootAvailability, ContentUnit, ContentUnitId, GameAvailability, GameId,
 };
-use crate::domain::runtime::{ManagedProcessPhase, RuntimeError, RuntimeStatus, SafeIdentifier};
+use crate::domain::runtime::{
+    ManagedProcessPhase, RuntimeError, RuntimeStatus, SafeIdentifier, Sha256Digest,
+};
+use crate::domain::save_state::{SaveStateError, SaveStateId, SaveStateSlot};
 use crate::domain::system::SystemCatalog;
 use crate::error::AppError;
 use crate::repositories::launch::{running_session, LaunchRepository, NewPlaySession};
@@ -71,6 +76,69 @@ pub trait LaunchEventSink: Send + Sync {
     fn publish(&self, event: GameLaunchStateChanged);
 }
 
+/// The exact facts a save-state load hands to the shared launch pipeline.
+///
+/// Every value was already re-proved by `SaveStateApplicationService` against durable provenance
+/// and the current filesystem. The pipeline still validates them again — a plan is an instruction,
+/// not a licence — but it never *derives* them from the game's current preferences.
+#[derive(Debug, Clone)]
+pub struct SaveStateLaunchPlan {
+    pub save_state_id: SaveStateId,
+    pub game_id: GameId,
+    /// The exact recorded content unit. A Disc 1 state is never launched as Disc 2.
+    pub content_unit_id: ContentUnitId,
+    /// The exact historical core binary, located in a currently trusted installation.
+    pub core: AuthenticatedCoreBinary,
+    pub slot: SaveStateSlot,
+}
+
+/// Which of the two launch shapes one request is.
+///
+/// There is exactly one pipeline. The plan replaces only *core resolution* and *content-unit
+/// selection*; the runtime mutation lock, process exclusivity, content-target validation, BIOS
+/// validation, managed controller profiles, configuration generation, the durable play session,
+/// the durable process record, restart adoption, and process monitoring are the same code for
+/// both.
+#[derive(Debug, Clone)]
+enum LaunchPlan {
+    Normal {
+        content_unit_id: Option<ContentUnitId>,
+    },
+    // Boxed: a save-state plan carries a whole located core binary, and an ordinary launch — by
+    // far the common case — should not pay for that on the stack.
+    SaveState(Box<SaveStateLaunchPlan>),
+}
+
+/// The save-state side of one managed launch.
+///
+/// A launch with no durable baseline is a launch whose save states could never be attributed, so
+/// this is a required collaborator rather than an optional hook, and `capture_baseline` failing
+/// fails the launch *before* anything is spawned.
+#[async_trait::async_trait]
+pub trait SaveStateLifecycle: Send + Sync {
+    /// Durably record the pre-launch state tree. Called before the process record and the spawn.
+    async fn capture_baseline(&self, request: BaselineRequest) -> Result<(), SaveStateError>;
+    /// Drop a baseline for a launch that never reached a process.
+    async fn discard_baseline(&self, session_id: PlaySessionId);
+    /// Reconcile one session whose process end was *certainly observed*.
+    async fn reconcile_session(&self, session_id: PlaySessionId);
+}
+
+/// What one launch knows about itself when its baseline is captured.
+#[derive(Debug, Clone)]
+pub struct BaselineRequest {
+    pub session_id: PlaySessionId,
+    pub game_id: GameId,
+    pub content_unit_id: ContentUnitId,
+    pub core_id: CoreId,
+    pub core_component_id: SafeIdentifier,
+    pub core_binary_sha256: Sha256Digest,
+    pub core_display_version: Option<String>,
+    pub core_source_revision: Option<String>,
+    pub runtime_installation_id: SafeIdentifier,
+    pub runtime_release_id: SafeIdentifier,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct LaunchConfig {
     /// How long a freshly started child is watched for an immediate exit.
@@ -91,6 +159,15 @@ impl Default for LaunchConfig {
             adoption_poll_interval: Duration::from_secs(5),
         }
     }
+}
+
+/// The core-binary facts one launch records for its session's baseline.
+#[derive(Debug, Clone)]
+struct CoreBinaryProvenance {
+    sha256: Sha256Digest,
+    display_version: Option<String>,
+    source_revision: Option<String>,
+    release_id: SafeIdentifier,
 }
 
 #[derive(Debug, Default)]
@@ -115,6 +192,7 @@ pub struct LaunchApplicationService {
     runtime: Arc<dyn LaunchRuntime>,
     retroarch: Arc<RetroArchService>,
     events: Arc<dyn LaunchEventSink>,
+    save_states: Arc<dyn SaveStateLifecycle>,
     config: LaunchConfig,
     // Serializes the launch sequence in this process. The durable record and the OS mutation lock
     // cover a second or crashed application process.
@@ -133,6 +211,7 @@ impl LaunchApplicationService {
         runtime: Arc<dyn LaunchRuntime>,
         retroarch: Arc<RetroArchService>,
         events: Arc<dyn LaunchEventSink>,
+        save_states: Arc<dyn SaveStateLifecycle>,
         config: LaunchConfig,
     ) -> Self {
         Self {
@@ -143,6 +222,7 @@ impl LaunchApplicationService {
             runtime,
             retroarch,
             events,
+            save_states,
             config,
             sequence: Arc::new(tokio::sync::Mutex::new(())),
             active: Arc::new(Mutex::new(ActiveState::default())),
@@ -289,6 +369,22 @@ impl LaunchApplicationService {
         game_id: GameId,
         content_unit_id: Option<ContentUnitId>,
     ) -> LaunchResponse {
+        self.launch(game_id, LaunchPlan::Normal { content_unit_id })
+            .await
+    }
+
+    /// Launch one game from a proved Save State.
+    ///
+    /// A save-state launch is a **new managed play session** in every respect: it takes the same
+    /// locks, writes its own durable process record, and receives its own pre-launch save-state
+    /// baseline, so states written or overwritten during it reconcile normally.
+    pub async fn launch_save_state(&self, plan: SaveStateLaunchPlan) -> LaunchResponse {
+        let game_id = plan.game_id;
+        self.launch(game_id, LaunchPlan::SaveState(Box::new(plan)))
+            .await
+    }
+
+    async fn launch(&self, game_id: GameId, plan: LaunchPlan) -> LaunchResponse {
         let Ok(_sequence) = self.sequence.try_lock() else {
             return LaunchResponse::failed(LaunchErrorCode::GameAlreadyRunning);
         };
@@ -299,16 +395,44 @@ impl LaunchApplicationService {
             }
         }
 
-        match self.launch_locked(game_id, content_unit_id).await {
+        match self.launch_locked(game_id, plan).await {
             Ok(response) => response,
             Err(failure) => LaunchResponse::failure(failure),
         }
     }
 
+    /// Hand the Save-State service the launch capabilities it needs, as a trait object.
+    ///
+    /// The two services are mutually dependent; this is the half that is attached after both
+    /// exist. See `SaveStateApplicationService` for why the cycle is broken on that side.
+    pub fn clone_as_port(&self) -> Arc<dyn crate::application::save_state::SaveStateLaunchPort> {
+        Arc::new(self.clone())
+    }
+
+    /// Whether a managed RetroArch session is launching, running, or of uncertain identity.
+    ///
+    /// This is the one predicate the Save-State service asks before it loads or deletes anything.
+    /// It is deliberately broader than `LaunchState`: it also reports a launch that is in progress
+    /// in this process but has not yet published a running session, and a durable record inherited
+    /// from a previous application run.
+    pub fn is_managed_session_active(&self) -> bool {
+        {
+            let active = self.active.lock().expect("launch state lock");
+            if active.running.is_some() || active.blocked {
+                return true;
+            }
+        }
+        if self.sequence.try_lock().is_err() {
+            return true;
+        }
+        // The durable record is the authority on a process this application did not fork.
+        self.runtime.ensure_no_active_game().is_err()
+    }
+
     async fn launch_locked(
         &self,
         game_id: GameId,
-        content_unit_id: Option<ContentUnitId>,
+        plan: LaunchPlan,
     ) -> Result<LaunchResponse, LaunchFailure> {
         // ADR-011 serializes launch and runtime mutation under this lock, so an activation cannot
         // interleave with the window between verification and spawn.
@@ -336,7 +460,13 @@ impl LaunchApplicationService {
             .await
             .map_err(internal)?;
         let launchable = self.launchable_units(&units).await?;
-        let unit = match content_unit_id {
+        // A save-state launch has no selection to make: the content unit is recorded provenance,
+        // so it is *required* to still be launchable rather than offered as one of several.
+        let requested = match &plan {
+            LaunchPlan::Normal { content_unit_id } => *content_unit_id,
+            LaunchPlan::SaveState(plan) => Some(plan.content_unit_id),
+        };
+        let unit = match requested {
             Some(requested) => launchable
                 .iter()
                 .find(|unit| unit.id == requested)
@@ -368,18 +498,61 @@ impl LaunchApplicationService {
             .runtime
             .verified_launch_runtime()
             .map_err(|_| self.runtime_not_ready())?;
-        let core_override = self
-            .launch
-            .core_override(game_id)
-            .await
-            .map_err(internal)?
-            .map(|value| value.core_id);
-        let core = RetroArchService::resolve_core(
-            &self.catalog,
-            game.system_id,
-            core_override.as_ref(),
-            &launch_runtime,
-        )?;
+        // The two shapes differ here and only here.
+        //
+        // A save-state launch resolves the **exact historical core binary** its plan carries and
+        // deliberately never reads `game_launch_overrides`: the state was produced by one specific
+        // binary, and the game's current preference is irrelevant to loading it. There is no
+        // fallback to that preference either — if the historical binary cannot be resolved, the
+        // load is refused. Loading a save state also never *writes* the override, so it stays a
+        // one-shot launch override and nothing more.
+        let (core, entry_slot, core_binary) = match &plan {
+            LaunchPlan::Normal { .. } => {
+                let core_override = self
+                    .launch
+                    .core_override(game_id)
+                    .await
+                    .map_err(internal)?
+                    .map(|value| value.core_id);
+                let core = RetroArchService::resolve_core(
+                    &self.catalog,
+                    game.system_id,
+                    core_override.as_ref(),
+                    &launch_runtime,
+                )?;
+                let binary = launch_runtime
+                    .cores
+                    .get(&core.component_id)
+                    .ok_or_else(|| {
+                        LaunchFailure::new(LaunchErrorCode::CoreNotInstalled)
+                            .with_system(game.system_id)
+                    })?;
+                let provenance = CoreBinaryProvenance {
+                    sha256: binary.binary_sha256,
+                    display_version: binary.display_version.clone(),
+                    source_revision: binary.source_revision.clone(),
+                    release_id: launch_runtime.release_id.clone(),
+                };
+                (core, None, provenance)
+            }
+            LaunchPlan::SaveState(plan) => {
+                let core = RetroArchService::resolve_historical_core(
+                    &self.catalog,
+                    game.system_id,
+                    &plan.core,
+                    &launch_runtime,
+                )?;
+                let provenance = CoreBinaryProvenance {
+                    sha256: plan.core.binary_sha256,
+                    display_version: plan.core.display_version.clone(),
+                    source_revision: plan.core.source_revision.clone(),
+                    // The release recorded for the *new* session is the one the binary was found
+                    // in, which may not be the release that produced the state being loaded.
+                    release_id: plan.core.release_id.clone(),
+                };
+                (core, Some(plan.slot), provenance)
+            }
+        };
 
         let bios_files = self.validate_bios(game.system_id)?;
         // The managed controller profiles come from the same verified runtime as the core, so a
@@ -392,7 +565,7 @@ impl LaunchApplicationService {
             content_path: &content_path,
             bios_files: &bios_files,
             controller_profiles_root: &controller_profiles_root,
-            entry_slot: None,
+            entry_slot,
         })?;
 
         let session = self
@@ -410,6 +583,41 @@ impl LaunchApplicationService {
                 LaunchFailure::new(LaunchErrorCode::SessionPersistenceFailed)
             })?;
 
+        // The durable pre-launch baseline, before the process record and before the spawn.
+        //
+        // ADR-011's ordering already writes the record before `exec` so a crash cannot leave an
+        // invisible managed process. The baseline goes one step earlier for the same kind of
+        // reason: a state written by a session whose "before" was never recorded could never be
+        // attributed afterwards, and RetroFrontier would rather refuse the launch than silently
+        // lose the player's save states. Nothing has been spawned yet, so failing here costs only
+        // the open session.
+        if let Err(error) = self
+            .save_states
+            .capture_baseline(BaselineRequest {
+                session_id: session.id,
+                game_id,
+                content_unit_id: unit.id,
+                core_id: core.core_id.clone(),
+                core_component_id: core.component_id.clone(),
+                core_binary_sha256: core_binary.sha256,
+                core_display_version: core_binary.display_version.clone(),
+                core_source_revision: core_binary.source_revision.clone(),
+                runtime_installation_id: launch_runtime.installation_id.clone(),
+                runtime_release_id: core_binary.release_id.clone(),
+            })
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                play_session_id = %session.id,
+                game_id = %game_id,
+                "the save-state baseline could not be captured; the launch was refused"
+            );
+            self.close_session(session.id, PlaySessionOutcome::FailedToStart, None)
+                .await;
+            return Err(LaunchFailure::new(LaunchErrorCode::SaveStateBaselineFailed));
+        }
+
         let paths = self.runtime.runtime_paths();
         let launch_id = self.next_launch_id()?;
         // The conservative pre-spawn record closes the crash window between exec and persisting a
@@ -425,6 +633,9 @@ impl LaunchApplicationService {
             Ok(record) => record,
             Err(error) => {
                 tracing::warn!(error = %error, "the managed process record could not be written");
+                // No process was ever created, so the baseline describes a session that can never
+                // produce a delta.
+                self.save_states.discard_baseline(session.id).await;
                 self.close_session(session.id, PlaySessionOutcome::FailedToStart, None)
                     .await;
                 return Err(LaunchFailure::new(LaunchErrorCode::ProcessIdentityFailed));
@@ -436,6 +647,7 @@ impl LaunchApplicationService {
             Err(failure) => {
                 // The spawn never reached a running child, so no managed process exists.
                 clear_record_after_proven_death(&paths);
+                self.save_states.discard_baseline(session.id).await;
                 self.close_session(session.id, PlaySessionOutcome::FailedToStart, None)
                     .await;
                 return Err(failure);
@@ -461,6 +673,9 @@ impl LaunchApplicationService {
                     clear_record_after_proven_death(&paths);
                     self.close_session(session.id, PlaySessionOutcome::FailedToStart, exit.code())
                         .await;
+                    // The child really ran, however briefly, and its end was positively observed.
+                    // A state it managed to write before dying is still a valid delta.
+                    self.save_states.reconcile_session(session.id).await;
                     Err(LaunchFailure::new(if termination.exited_on_its_own {
                         LaunchErrorCode::ProcessExitedDuringLaunch
                     } else {
@@ -493,6 +708,7 @@ impl LaunchApplicationService {
             clear_record_after_proven_death(&paths);
             self.close_session(session.id, PlaySessionOutcome::FailedToStart, exit.code())
                 .await;
+            self.save_states.reconcile_session(session.id).await;
             return Err(
                 LaunchFailure::new(LaunchErrorCode::ProcessExitedDuringLaunch)
                     .with_exit_code(exit.code()),
@@ -583,6 +799,9 @@ impl LaunchApplicationService {
             // The child was positively observed and reaped.
             clear_record_after_proven_death(&service.runtime.runtime_paths());
             service.close_session(session_id, outcome, exit_code).await;
+            // The session is now closed with a certain verdict — including `crashed`, because a
+            // RetroArch crash is not by itself a reason to discard the delta.
+            service.save_states.reconcile_session(session_id).await;
             service.set_active(None, false);
             service.publish(Some(ExitedGameSession {
                 session_id,
@@ -627,6 +846,8 @@ impl LaunchApplicationService {
                 tokio::time::sleep(service.config.adoption_poll_interval).await;
             }
             service.close_session(session_id, outcome, None).await;
+            // Only now is the end certain. Until this point no attribution happened at all.
+            service.save_states.reconcile_session(session_id).await;
             service.set_active(None, false);
             service.publish(game_id.map(|game_id| ExitedGameSession {
                 session_id,
@@ -830,7 +1051,10 @@ mod tests {
     use crate::adapters::runtime_process::{
         read_process_record, LinuxManagedProcessInspector, ManagedProcessInspector,
     };
-    use crate::application::runtime_manager::{ManagedCoreComponent, VerifiedLaunchRuntime};
+    use crate::application::runtime_manager::{
+        AuthenticatedCoreBinary, ManagedCoreComponent, VerifiedLaunchRuntime,
+    };
+    use crate::application::save_state::{SaveStateApplicationService, SaveStateConfig};
     use crate::domain::core::CoreId;
     use crate::domain::launch::{
         GameLaunchStateChanged, HostPrerequisite, LaunchErrorCode, LaunchResponse, PlaySessionId,
@@ -844,6 +1068,7 @@ mod tests {
     use crate::domain::system::{SystemCatalog, SystemId};
     use crate::repositories::launch::LaunchRepository;
     use crate::repositories::library::LibraryRepository;
+    use crate::repositories::save_state::SaveStateRepository;
     use crate::services::bios::BiosService;
     use crate::services::retroarch::RetroArchService;
     use crate::services::retroarch_host::HostPrerequisiteInspector;
@@ -946,6 +1171,30 @@ mod tests {
         }
     }
 
+    /// The M7 suite never loads a save state, so no historical core lookup should ever succeed
+    /// here. Answering "no" rather than stubbing a binary keeps that explicit.
+    struct NoManagedCores;
+
+    impl crate::application::save_state::SaveStateRuntime for NoManagedCores {
+        fn locate_authenticated_core_binary(
+            &self,
+            _component_id: &SafeIdentifier,
+            _binary_sha256: Sha256Digest,
+        ) -> Result<AuthenticatedCoreBinary, RuntimeError> {
+            Err(RuntimeError::InstalledTree(
+                "this suite installs no historical core".to_owned(),
+            ))
+        }
+
+        fn declares_authenticated_core_binary(
+            &self,
+            _component_id: &SafeIdentifier,
+            _binary_sha256: Sha256Digest,
+        ) -> bool {
+            false
+        }
+    }
+
     struct Harness {
         _app_data: TempDir,
         _content: TempDir,
@@ -964,6 +1213,8 @@ mod tests {
         config: LaunchConfig,
         service: LaunchApplicationService,
         events: Arc<RecordingEvents>,
+        save_state_repository: SaveStateRepository,
+        states_root: std::path::PathBuf,
     }
 
     impl Harness {
@@ -1013,12 +1264,26 @@ mod tests {
             ));
             let events = Arc::new(RecordingEvents::default());
             let launch_repository = LaunchRepository::new(pool.clone());
-            let library_repository = LibraryRepository::new(pool);
+            let library_repository = LibraryRepository::new(pool.clone());
             let config = LaunchConfig {
                 settle_window: Duration::from_millis(120),
                 settle_poll_interval: Duration::from_millis(10),
                 adoption_poll_interval: Duration::from_millis(50),
             };
+            // A real save-state service, over the same durable state and the same owned states
+            // root. Every launch in this suite therefore captures a real durable baseline and
+            // reconciles for real, which is the M9 contract rather than a stub of it.
+            let states_root_path = LaunchPaths::new(app_data.path())
+                .states_root()
+                .to_path_buf();
+            let save_states = Arc::new(SaveStateApplicationService::new(
+                SaveStateRepository::new(pool.clone()),
+                library_repository.clone(),
+                launch_repository.clone(),
+                Arc::new(NoManagedCores),
+                states_root_path.clone(),
+                SaveStateConfig::default(),
+            ));
             let service = LaunchApplicationService::new(
                 library_repository.clone(),
                 launch_repository.clone(),
@@ -1027,8 +1292,10 @@ mod tests {
                 runtime.clone(),
                 retroarch.clone(),
                 events.clone(),
+                save_states.clone(),
                 config,
             );
+            save_states.attach_launch(service.clone_as_port());
 
             Self {
                 started_file: app_data.path().join("synthetic-runtime-started"),
@@ -1046,12 +1313,25 @@ mod tests {
                 config,
                 service,
                 events,
+                save_state_repository: SaveStateRepository::new(pool),
+                states_root: states_root_path,
             }
         }
 
         /// A fresh application service over the same durable state: a RetroFrontier restart.
+        ///
+        /// The save-state service is rebuilt too, so a baseline persisted before the "crash" is
+        /// found by a genuinely new object reading the same database and the same states root.
         fn rebuild(&self) -> LaunchApplicationService {
-            LaunchApplicationService::new(
+            let save_states = Arc::new(SaveStateApplicationService::new(
+                self.save_state_repository.clone(),
+                self.library_repository.clone(),
+                self.launch_repository.clone(),
+                Arc::new(NoManagedCores),
+                self.states_root.clone(),
+                SaveStateConfig::default(),
+            ));
+            let service = LaunchApplicationService::new(
                 self.library_repository.clone(),
                 self.launch_repository.clone(),
                 self.catalog.clone(),
@@ -1059,8 +1339,24 @@ mod tests {
                 self.runtime.clone(),
                 self.retroarch.clone(),
                 Arc::new(RecordingEvents::default()),
+                save_states.clone(),
                 self.config,
-            )
+            );
+            save_states.attach_launch(service.clone_as_port());
+            service
+        }
+
+        fn save_states(&self) -> SaveStateApplicationService {
+            let save_states = SaveStateApplicationService::new(
+                self.save_state_repository.clone(),
+                self.library_repository.clone(),
+                self.launch_repository.clone(),
+                Arc::new(NoManagedCores),
+                self.states_root.clone(),
+                SaveStateConfig::default(),
+            );
+            save_states.attach_launch(self.service.clone_as_port());
+            save_states
         }
 
         fn set_app_run(&self, script: &str) {

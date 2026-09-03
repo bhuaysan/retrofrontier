@@ -4,7 +4,7 @@
 #![allow(clippy::result_large_err)]
 
 use crate::adapters::game_process::{GameProcessLauncher, SpawnRequest, SpawnedGame};
-use crate::application::runtime_manager::VerifiedLaunchRuntime;
+use crate::application::runtime_manager::{AuthenticatedCoreBinary, VerifiedLaunchRuntime};
 use crate::domain::core::{current_core_target, CoreId};
 use crate::domain::launch::{LaunchDiagnostic, LaunchErrorCode, LaunchFailure};
 use crate::domain::library::{ContentFileRole, ContentUnit, ContentUnitAvailability};
@@ -251,26 +251,77 @@ impl RetroArchService {
                 .with_core(core_id));
         }
 
-        let mut support_assets = Vec::new();
-        for asset in &definition.support_assets {
-            let asset_component = SafeIdentifier::new(asset.component_id.as_str())
-                .map_err(|_| LaunchFailure::new(LaunchErrorCode::InternalLaunchFailure))?;
-            // Support data comes only from the verified managed runtime boundary; an arbitrary
-            // user directory is never accepted as a substitute.
-            let source = runtime
-                .support_assets
-                .get(&asset_component)
-                .ok_or_else(not_installed)?;
-            if !fs::symlink_metadata(source).is_ok_and(|metadata| metadata.is_dir()) {
-                return Err(not_installed());
-            }
-            support_assets.push((asset.system_directory_path.clone(), source.clone()));
-        }
+        let support_assets = resolve_support_assets(definition, runtime, &not_installed)?;
 
         Ok(ResolvedCore {
             core_id,
             component_id,
             core_path: component.core_path.clone(),
+            support_assets,
+        })
+    }
+
+    /// Resolve the **exact historical core binary** a Save State was produced by.
+    ///
+    /// This is the one-shot launch override a save-state load needs, and it is deliberately not a
+    /// relaxation of policy. The binary was already located by `RuntimeManager` in a currently
+    /// installed, authenticated, allowed installation; what is re-checked here is everything the
+    /// ordinary resolver checks *except* which core the game currently prefers:
+    ///
+    /// - the component maps to a core the catalog knows;
+    /// - the catalog approves that core for **this game's system**;
+    /// - the definition declares the running platform target;
+    /// - the authenticated release that carries the binary approves it for this system;
+    /// - the binary is still a regular, non-symlinked file on disk.
+    ///
+    /// There is no fallback: if any of that fails the load is refused, and it never falls through
+    /// to the game's currently configured core. Support data still comes from the *currently*
+    /// verified runtime, because a support component is read-only shared data — Dolphin's `Sys` —
+    /// and not part of the state's core-binary identity.
+    pub fn resolve_historical_core(
+        catalog: &SystemCatalog,
+        system_id: SystemId,
+        historical: &AuthenticatedCoreBinary,
+        runtime: &VerifiedLaunchRuntime,
+    ) -> Result<ResolvedCore, LaunchFailure> {
+        let not_approved =
+            || LaunchFailure::new(LaunchErrorCode::CoreNotApproved).with_system(system_id);
+        let definition = catalog
+            .core_for_component(&historical.component_id)
+            .ok_or_else(not_approved)?;
+        let core_id = definition.id.clone();
+        if !catalog.approves_core_for_system(system_id, &core_id) {
+            return Err(not_approved().with_core(core_id));
+        }
+        let Some(target) = current_core_target() else {
+            return Err(not_approved().with_core(core_id));
+        };
+        if !definition.supports_target(target) {
+            return Err(not_approved().with_core(core_id));
+        }
+        // The authenticated release that carries this binary must approve it for the launching
+        // system, exactly as an ordinary launch requires.
+        let release_system = SafeIdentifier::new(system_id.as_str())
+            .map_err(|_| LaunchFailure::new(LaunchErrorCode::InternalLaunchFailure))?;
+        if !historical.systems.contains(&release_system) {
+            return Err(not_approved().with_core(core_id));
+        }
+        let not_installed = || {
+            LaunchFailure::new(LaunchErrorCode::CoreNotInstalled)
+                .with_system(system_id)
+                .with_core(core_id.clone())
+        };
+        if !fs::symlink_metadata(&historical.core_path)
+            .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        {
+            return Err(not_installed());
+        }
+
+        let support_assets = resolve_support_assets(definition, runtime, &not_installed)?;
+        Ok(ResolvedCore {
+            core_id,
+            component_id: historical.component_id.clone(),
+            core_path: historical.core_path.clone(),
             support_assets,
         })
     }
@@ -417,6 +468,31 @@ impl RetroArchService {
 
 /// Replace a RetroFrontier-owned symbolic link. A pre-existing regular file or directory at the
 /// same name is refused rather than silently destroyed.
+/// The verified managed support data one core definition declares.
+///
+/// It comes only from the verified managed runtime boundary; an arbitrary user directory is never
+/// accepted as a substitute.
+fn resolve_support_assets(
+    definition: &crate::domain::core::CoreDefinition,
+    runtime: &VerifiedLaunchRuntime,
+    not_installed: &dyn Fn() -> LaunchFailure,
+) -> Result<Vec<(String, PathBuf)>, LaunchFailure> {
+    let mut support_assets = Vec::new();
+    for asset in &definition.support_assets {
+        let asset_component = SafeIdentifier::new(asset.component_id.as_str())
+            .map_err(|_| LaunchFailure::new(LaunchErrorCode::InternalLaunchFailure))?;
+        let source = runtime
+            .support_assets
+            .get(&asset_component)
+            .ok_or_else(not_installed)?;
+        if !fs::symlink_metadata(source).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err(not_installed());
+        }
+        support_assets.push((asset.system_directory_path.clone(), source.clone()));
+    }
+    Ok(support_assets)
+}
+
 fn link(link_path: &Path, target: &Path) -> Result<(), LaunchFailure> {
     let config_failed = || LaunchFailure::new(LaunchErrorCode::ConfigPreparationFailed);
     match fs::symlink_metadata(link_path) {

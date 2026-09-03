@@ -32,15 +32,16 @@ use application::{
     LaunchApplicationService, LaunchConfig, LibraryApplicationService, MetadataApplicationService,
     MetadataConfig, MetadataScrapeApplicationService, MetadataScrapeConfig, MetadataWorkSignal,
     MetadataWorker, ProviderCredentialState, RuntimeApplicationService, RuntimeManager,
-    SystemsApplicationService, TauriLaunchEventSink, TauriMetadataStateEventSink,
-    TauriScanEventSink,
+    SaveStateApplicationService, SaveStateConfig, SystemsApplicationService, TauriLaunchEventSink,
+    TauriMetadataStateEventSink, TauriScanEventSink,
 };
 use domain::system::SystemCatalog;
 use repositories::settings::SettingsRepository;
 use services::bios::BiosService;
 use services::media_delivery::{
-    app_error_status, cover_response, parse_cover_route, protocol_error_response,
-    CachedCoverDelivery, CACHED_COVER_PROTOCOL,
+    app_error_status, cover_response, parse_cover_route, parse_save_state_thumbnail_route,
+    protocol_error_response, CachedCoverDelivery, SaveStateThumbnailDelivery,
+    CACHED_COVER_PROTOCOL,
 };
 use services::metadata_provider::MetadataProvider;
 use services::metadata_queue::{RandomJitter, SystemClock};
@@ -115,6 +116,21 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
     // reconciliation sees the durable process record RuntimeManager has already judged.
     let launch_paths = LaunchPaths::new(&app_data_dir);
     launch_paths.prepare()?;
+    let states_root = launch_paths.states_root().to_path_buf();
+
+    // The two services are mutually dependent, so the cycle is broken by construction order:
+    // save-states first (it needs no launch), then the launch service (which *requires* a
+    // save-state lifecycle, because a launch with no durable baseline is a launch whose save
+    // states could never be attributed), then the port is attached. Until it is, the save-state
+    // service reports every managed session as active and refuses every mutation.
+    let save_states = Arc::new(SaveStateApplicationService::new(
+        repositories::save_state::SaveStateRepository::new(database.pool().clone()),
+        repositories::library::LibraryRepository::new(database.pool().clone()),
+        repositories::launch::LaunchRepository::new(database.pool().clone()),
+        Arc::new(runtime.clone()),
+        &states_root,
+        SaveStateConfig::default(),
+    ));
     let launch = LaunchApplicationService::new(
         repositories::library::LibraryRepository::new(database.pool().clone()),
         repositories::launch::LaunchRepository::new(database.pool().clone()),
@@ -127,14 +143,30 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
             Arc::new(LinuxHostPrerequisiteInspector::default()),
         )),
         Arc::new(TauriLaunchEventSink::new(app.clone())),
+        save_states.clone(),
         LaunchConfig::default(),
     );
+    save_states.attach_launch(launch.clone_as_port());
     let launch_state = tauri::async_runtime::block_on(launch.reconcile_on_startup())?;
     if launch_state.running.is_some() || launch_state.blocked {
         tracing::info!(
             blocked = launch_state.blocked,
             "a managed game process survived the previous RetroFrontier run"
         );
+    }
+    // Save-state reconciliation runs *after* launch reconciliation, so a session adopted from a
+    // previous run is still open here and is deliberately not attributed; it reconciles once its
+    // process is proven gone. A quarantine file left by a crash mid-delete is inert either way.
+    let swept = crate::services::save_state_fs::sweep_delete_quarantine(&states_root);
+    if swept > 0 {
+        tracing::info!(swept, "save-state delete quarantine files were removed");
+    }
+    match tauri::async_runtime::block_on(save_states.reconcile_on_startup()) {
+        Ok(0) => {}
+        Ok(sessions) => tracing::info!(sessions, "save-state baselines were reconciled"),
+        // Reconciliation is retryable, so a failure here must not stop the application from
+        // starting: nothing was attributed and nothing was destroyed.
+        Err(error) => error.log(),
     }
 
     // One work signal is shared by the metadata service, the scrape orchestrator and the worker,
@@ -170,6 +202,7 @@ fn initialize_state(app: &tauri::AppHandle) -> Result<AppState, error::AppError>
         metadata,
         metadata_scrape,
         media_delivery,
+        save_states,
         metadata_worker,
     ))
 }
@@ -256,15 +289,29 @@ pub fn run() {
             |_context, request, responder| {
                 let app = _context.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    let path = request.uri().path().to_owned();
                     let response = if request.method().as_str() != "GET" {
                         protocol_error_response(405)
-                    } else if let Some(game_id) = parse_cover_route(request.uri().path()) {
+                    } else if let Some(game_id) = parse_cover_route(&path) {
                         let delivery = app
                             .try_state::<AppState>()
                             .map(|state| state.media_delivery().clone());
                         match delivery {
                             Some(delivery) => match delivery.load_cover(game_id).await {
                                 Ok(cover) => cover_response(cover),
+                                Err(error) => protocol_error_response(app_error_status(error)),
+                            },
+                            None => protocol_error_response(503),
+                        }
+                    } else if let Some(save_state_id) = parse_save_state_thumbnail_route(&path) {
+                        // Resolved from durable provenance by identity, then re-verified in full.
+                        // The WebView never sends, and never receives, a filesystem path.
+                        let delivery = app.try_state::<AppState>().map(|state| {
+                            SaveStateThumbnailDelivery::new(state.save_states().clone())
+                        });
+                        match delivery {
+                            Some(delivery) => match delivery.load_thumbnail(save_state_id).await {
+                                Ok(thumbnail) => cover_response(thumbnail),
                                 Err(error) => protocol_error_response(app_error_status(error)),
                             },
                             None => protocol_error_response(503),
@@ -322,7 +369,10 @@ pub fn run() {
             commands::metadata::preview_metadata_scrape,
             commands::metadata::get_metadata_scrape_status,
             commands::metadata::start_metadata_scrape,
-            commands::metadata::stop_metadata_scrape
+            commands::metadata::stop_metadata_scrape,
+            commands::save_state::list_save_states,
+            commands::save_state::load_save_state,
+            commands::save_state::delete_save_state
         ])
         .run(tauri::generate_context!())
         .expect("error while running RetroFrontier");

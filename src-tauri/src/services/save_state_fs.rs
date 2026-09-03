@@ -107,6 +107,9 @@ impl StateTreeSnapshot {
         self.complete
     }
 
+    /// Inspection affordance for tests; production compares whole snapshots through
+    /// `state_tree_delta` and `contains`.
+    #[cfg(test)]
     pub fn get(&self, relative_path: &RelativePath) -> Option<PhysicalIdentity> {
         self.entries.get(relative_path).copied()
     }
@@ -119,10 +122,12 @@ impl StateTreeSnapshot {
         self.entries.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    #[cfg(test)]
     pub fn entries(&self) -> impl Iterator<Item = (&RelativePath, &PhysicalIdentity)> {
         self.entries.iter()
     }

@@ -403,6 +403,53 @@ impl From<SaveStateError> for SaveStateFailure {
     }
 }
 
+/// Opaque reference understood by the native cached-media protocol. It is not a filesystem path.
+///
+/// It resolves back to durable Save-State provenance by identity, exactly as a cached cover
+/// resolves by `GameId`, and the protocol handler re-verifies the thumbnail's registered size and
+/// digest before any byte leaves Rust. The origin is target-specific for the same reason the cover
+/// reference's is: desktop WebViews on Windows address the handler through its localhost HTTP
+/// origin, while Linux and macOS use the registered scheme.
+pub fn save_state_thumbnail_reference(id: SaveStateId) -> String {
+    format!(
+        "{}save-state-thumbnail/{}",
+        crate::domain::library::CACHED_COVER_REFERENCE_PREFIX.trim_end_matches("cover/"),
+        id.0
+    )
+}
+
+/// The result of a load request.
+///
+/// A save-state load has two genuinely different ways to be refused, and collapsing them would
+/// make the UI guess. `Refused` is a Save-State verdict — the state is gone, its identity no
+/// longer matches, its historical core is unavailable, or a game is running. `LaunchFailed` is the
+/// managed launch pipeline's own normalized verdict about a launch that was otherwise permitted.
+///
+/// There is deliberately no content-selection arm: the content unit is recorded provenance, so a
+/// save-state load never has a choice to offer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum LoadSaveStateResponse {
+    Started {
+        session: crate::domain::launch::RunningGameSession,
+        diagnostics: Vec<crate::domain::launch::LaunchDiagnostic>,
+    },
+    Refused {
+        error: SaveStateFailure,
+    },
+    LaunchFailed {
+        error: crate::domain::launch::LaunchFailure,
+    },
+}
+
+impl LoadSaveStateResponse {
+    pub fn refused(code: SaveStateError) -> Self {
+        Self::Refused {
+            error: SaveStateFailure::new(code),
+        }
+    }
+}
+
 /// The result of a delete request. Every anticipated problem is a tagged response, not an IPC
 /// error, so React can act on a stable code instead of parsing text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

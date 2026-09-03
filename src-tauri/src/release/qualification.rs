@@ -232,11 +232,14 @@ async fn rescan_the_managed_library() {
 async fn launch_a_real_game_through_the_m7_path() {
     use crate::adapters::database::Database;
     use crate::adapters::game_process::LinuxGameProcessLauncher;
-    use crate::application::{LaunchApplicationService, LaunchConfig};
+    use crate::application::{
+        LaunchApplicationService, LaunchConfig, SaveStateApplicationService, SaveStateConfig,
+    };
     use crate::domain::library::GameId;
     use crate::domain::system::SystemCatalog;
     use crate::repositories::launch::LaunchRepository;
     use crate::repositories::library::LibraryRepository;
+    use crate::repositories::save_state::SaveStateRepository;
     use crate::services::bios::BiosService;
     use crate::services::retroarch::RetroArchService;
     use crate::services::retroarch_host::LinuxHostPrerequisiteInspector;
@@ -273,6 +276,14 @@ async fn launch_a_real_game_through_the_m7_path() {
     let launch_paths = LaunchPaths::new(&app_data);
     launch_paths.prepare().expect("launch paths prepare");
 
+    let save_states = Arc::new(SaveStateApplicationService::new(
+        SaveStateRepository::new(database.pool().clone()),
+        LibraryRepository::new(database.pool().clone()),
+        LaunchRepository::new(database.pool().clone()),
+        Arc::new(manager.clone()),
+        launch_paths.states_root().to_path_buf(),
+        SaveStateConfig::default(),
+    ));
     let launch = LaunchApplicationService::new(
         LibraryRepository::new(database.pool().clone()),
         LaunchRepository::new(database.pool().clone()),
@@ -285,8 +296,10 @@ async fn launch_a_real_game_through_the_m7_path() {
             Arc::new(LinuxHostPrerequisiteInspector::default()),
         )),
         Arc::new(PrintingLaunchEvents),
+        save_states.clone(),
         LaunchConfig::default(),
     );
+    save_states.attach_launch(launch.clone_as_port());
     let reconciled = launch
         .reconcile_on_startup()
         .await
@@ -399,10 +412,13 @@ async fn report_bios_and_system_readiness() {
 async fn reconcile_after_a_crash() {
     use crate::adapters::database::Database;
     use crate::adapters::game_process::LinuxGameProcessLauncher;
-    use crate::application::{LaunchApplicationService, LaunchConfig};
+    use crate::application::{
+        LaunchApplicationService, LaunchConfig, SaveStateApplicationService, SaveStateConfig,
+    };
     use crate::domain::system::SystemCatalog;
     use crate::repositories::launch::LaunchRepository;
     use crate::repositories::library::LibraryRepository;
+    use crate::repositories::save_state::SaveStateRepository;
     use crate::services::bios::BiosService;
     use crate::services::retroarch::RetroArchService;
     use crate::services::retroarch_host::LinuxHostPrerequisiteInspector;
@@ -435,6 +451,14 @@ async fn reconcile_after_a_crash() {
         .expect("BIOS discovery composes");
     let launch_paths = LaunchPaths::new(&app_data);
     launch_paths.prepare().expect("launch paths prepare");
+    let save_states = Arc::new(SaveStateApplicationService::new(
+        SaveStateRepository::new(database.pool().clone()),
+        LibraryRepository::new(database.pool().clone()),
+        LaunchRepository::new(database.pool().clone()),
+        Arc::new(manager.clone()),
+        launch_paths.states_root().to_path_buf(),
+        SaveStateConfig::default(),
+    ));
     let launch = LaunchApplicationService::new(
         LibraryRepository::new(database.pool().clone()),
         LaunchRepository::new(database.pool().clone()),
@@ -447,8 +471,10 @@ async fn reconcile_after_a_crash() {
             Arc::new(LinuxHostPrerequisiteInspector::default()),
         )),
         Arc::new(PrintingLaunchEvents),
+        save_states.clone(),
         LaunchConfig::default(),
     );
+    save_states.attach_launch(launch.clone_as_port());
     let state = launch
         .reconcile_on_startup()
         .await

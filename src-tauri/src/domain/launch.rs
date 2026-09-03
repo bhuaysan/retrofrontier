@@ -173,6 +173,7 @@ pub enum LaunchErrorCode {
     ProcessIdentityFailed,
     ProcessExitedDuringLaunch,
     SessionPersistenceFailed,
+    SaveStateBaselineFailed,
     InternalLaunchFailure,
 }
 
@@ -196,6 +197,7 @@ impl LaunchErrorCode {
         Self::ProcessIdentityFailed,
         Self::ProcessExitedDuringLaunch,
         Self::SessionPersistenceFailed,
+        Self::SaveStateBaselineFailed,
         Self::InternalLaunchFailure,
     ];
 
@@ -219,6 +221,7 @@ impl LaunchErrorCode {
             Self::ProcessIdentityFailed => "processIdentityFailed",
             Self::ProcessExitedDuringLaunch => "processExitedDuringLaunch",
             Self::SessionPersistenceFailed => "sessionPersistenceFailed",
+            Self::SaveStateBaselineFailed => "saveStateBaselineFailed",
             Self::InternalLaunchFailure => "internalLaunchFailure",
         }
     }
@@ -281,6 +284,14 @@ impl LaunchErrorCode {
             }
             Self::SessionPersistenceFailed => {
                 "RetroFrontier could not record this play session, so the game was not started."
+            }
+            // The baseline is what lets RetroFrontier prove afterwards which save states this
+            // session produced. Without it, any state written during the session could never be
+            // attributed, so the launch is refused before anything is spawned rather than losing
+            // the player's save states silently.
+            Self::SaveStateBaselineFailed => {
+                "RetroFrontier could not prepare save-state tracking for this session, so the \
+                 game was not started."
             }
             Self::InternalLaunchFailure => "RetroFrontier could not complete the launch.",
         }
@@ -465,6 +476,7 @@ mod tests {
             "processIdentityFailed",
             "processExitedDuringLaunch",
             "sessionPersistenceFailed",
+            "saveStateBaselineFailed",
             "internalLaunchFailure",
         ];
 
