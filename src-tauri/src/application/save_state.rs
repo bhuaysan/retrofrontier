@@ -348,7 +348,18 @@ impl SaveStateApplicationService {
     }
 
     /// Re-prove everything a load depends on, in order.
+    ///
+    /// **The active-session check comes first, and that ordering is load-bearing.**
+    /// `verified_state` marks a state `missing` when its registered digest no longer matches, and a
+    /// *running* RetroArch is entitled to be rewriting exactly that file — the session that ends
+    /// will reconcile it properly. Verifying first would therefore let a live emulator's ordinary
+    /// mid-write content turn a perfectly good Save State into `missing`. The launch pipeline
+    /// re-checks the same thing again under the runtime mutation lock, so this is a guard rather
+    /// than the authority.
     async fn prepare_load(&self, id: SaveStateId) -> Result<SaveStateLaunchPlan, SaveStateError> {
+        if self.managed_session_active() {
+            return Err(SaveStateError::TemporarilyBlocked);
+        }
         let state = self.verified_state(id).await?;
 
         // The game and its exact recorded content unit must still be there and usable. A
@@ -394,8 +405,9 @@ impl SaveStateApplicationService {
                 SaveStateError::CoreUnavailable
             })?;
 
-        // Last, because it is the most likely to have changed while the checks above ran, and
-        // because the launch pipeline re-checks it under the mutation lock anyway.
+        // Again, because a session may have started while the checks above ran. The launch
+        // pipeline re-checks it a third time under the runtime mutation lock, which is the one
+        // that actually decides.
         if self.managed_session_active() {
             return Err(SaveStateError::TemporarilyBlocked);
         }
@@ -430,6 +442,9 @@ impl SaveStateApplicationService {
     }
 
     async fn delete_verified(&self, id: SaveStateId) -> Result<(), SaveStateError> {
+        // First, for the same reason the load path checks first: a running RetroArch may
+        // legitimately be rewriting this very file, and `verified_state` would otherwise mark a
+        // perfectly good Save State `missing` on the strength of a mid-write digest.
         if self.managed_session_active() {
             return Err(SaveStateError::TemporarilyBlocked);
         }
@@ -961,4 +976,1419 @@ fn now_timestamp() -> UnixTimestamp {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        SaveStateApplicationService, SaveStateConfig, SaveStateLaunchPort, SaveStateRuntime,
+    };
+    use crate::adapters::database::Database;
+    use crate::adapters::runtime_integrity::sha256_bytes;
+    use crate::application::launch::{BaselineRequest, SaveStateLaunchPlan, SaveStateLifecycle};
+    use crate::application::runtime_manager::AuthenticatedCoreBinary;
+    use crate::domain::core::CoreId;
+    use crate::domain::launch::{
+        LaunchErrorCode, LaunchFailure, LaunchResponse, PlaySessionId, PlaySessionOutcome,
+    };
+    use crate::domain::library::{ContentUnitId, GameId};
+    use crate::domain::runtime::{RelativePath, RuntimeError, SafeIdentifier, Sha256Digest};
+    use crate::domain::save_state::{
+        DeleteSaveStateResponse, LoadSaveStateResponse, SaveStateError, SaveStateId,
+        SaveStateLoadability, SaveStateStatus,
+    };
+    use crate::repositories::launch::{LaunchRepository, NewPlaySession};
+    use crate::repositories::library::LibraryRepository;
+    use crate::repositories::save_state::SaveStateRepository;
+    use crate::services::save_state_fs::StabilityProbe;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+
+    const TEST_TIME: i64 = 1_756_900_000_000;
+    const CORE_A: &[u8] = b"core binary A";
+    const CORE_B: &[u8] = b"core binary B";
+
+    // ---------------------------------------------------------------- doubles
+
+    /// A runtime whose installed core binaries are whatever the test says they are.
+    #[derive(Default)]
+    struct StubRuntime {
+        available: Mutex<Vec<Sha256Digest>>,
+    }
+
+    impl StubRuntime {
+        fn with(binaries: &[&[u8]]) -> Arc<Self> {
+            Arc::new(Self {
+                available: Mutex::new(binaries.iter().map(|bytes| sha256_bytes(bytes)).collect()),
+            })
+        }
+
+        fn remove(&self, bytes: &[u8]) {
+            let digest = sha256_bytes(bytes);
+            self.available.lock().unwrap().retain(|it| *it != digest);
+        }
+    }
+
+    impl SaveStateRuntime for StubRuntime {
+        fn locate_authenticated_core_binary(
+            &self,
+            component_id: &SafeIdentifier,
+            binary_sha256: Sha256Digest,
+        ) -> Result<AuthenticatedCoreBinary, RuntimeError> {
+            if !self.available.lock().unwrap().contains(&binary_sha256) {
+                return Err(RuntimeError::InstalledTree("absent".to_owned()));
+            }
+            Ok(AuthenticatedCoreBinary {
+                component_id: component_id.clone(),
+                core_path: std::path::PathBuf::from("/synthetic/cores/core.so"),
+                binary_sha256,
+                binary_size_bytes: 13,
+                systems: vec![SafeIdentifier::new("nes").unwrap()],
+                display_version: Some("1.53".to_owned()),
+                source_revision: Some("deadbeef".to_owned()),
+                installation_id: SafeIdentifier::new("install-1").unwrap(),
+                release_id: SafeIdentifier::new("release-1").unwrap(),
+            })
+        }
+
+        fn declares_authenticated_core_binary(
+            &self,
+            _component_id: &SafeIdentifier,
+            binary_sha256: Sha256Digest,
+        ) -> bool {
+            self.available.lock().unwrap().contains(&binary_sha256)
+        }
+    }
+
+    /// A launch port that records what it was asked to launch and can pretend a game is running.
+    #[derive(Default)]
+    struct StubLaunch {
+        active: AtomicBool,
+        plans: Mutex<Vec<SaveStateLaunchPlan>>,
+        fail: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl SaveStateLaunchPort for StubLaunch {
+        fn is_managed_session_active(&self) -> bool {
+            self.active.load(Ordering::Relaxed)
+        }
+
+        async fn launch_save_state(&self, plan: SaveStateLaunchPlan) -> LaunchResponse {
+            self.plans.lock().unwrap().push(plan);
+            if self.fail.load(Ordering::Relaxed) {
+                return LaunchResponse::failure(LaunchFailure::new(LaunchErrorCode::SpawnFailed));
+            }
+            LaunchResponse::Started {
+                session: crate::domain::launch::RunningGameSession {
+                    session_id: PlaySessionId(1),
+                    game_id: GameId(1),
+                    content_unit_id: ContentUnitId(1),
+                    core_id: CoreId::new("nestopia").unwrap(),
+                    started_at: TEST_TIME,
+                },
+                diagnostics: Vec::new(),
+            }
+        }
+    }
+
+    /// A deterministic stability probe: stable unless a path was explicitly declared unstable.
+    #[derive(Default)]
+    struct ScriptedStability {
+        unstable: Mutex<Vec<String>>,
+        observations: AtomicUsize,
+    }
+
+    impl ScriptedStability {
+        fn unstable(&self, relative_path: &str) {
+            self.unstable.lock().unwrap().push(relative_path.to_owned());
+        }
+    }
+
+    impl StabilityProbe for ScriptedStability {
+        fn is_stable(&self, _states_root: &Path, relative_path: &RelativePath) -> bool {
+            self.observations.fetch_add(1, Ordering::Relaxed);
+            !self
+                .unstable
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|path| path == relative_path.as_str())
+        }
+    }
+
+    // ---------------------------------------------------------------- fixture
+
+    struct Fixture {
+        _directory: TempDir,
+        states_root: std::path::PathBuf,
+        service: SaveStateApplicationService,
+        save_states: SaveStateRepository,
+        sessions: LaunchRepository,
+        runtime: Arc<StubRuntime>,
+        launch: Arc<StubLaunch>,
+        stability: Arc<ScriptedStability>,
+        pool: sqlx::SqlitePool,
+    }
+
+    impl Fixture {
+        async fn build() -> Self {
+            Self::build_with(StubRuntime::with(&[CORE_A, CORE_B])).await
+        }
+
+        async fn build_with(runtime: Arc<StubRuntime>) -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let states_root = directory.path().join("states");
+            std::fs::create_dir_all(&states_root).unwrap();
+            let database = Database::open(directory.path().join("save-states.sqlite3"))
+                .await
+                .unwrap();
+            let pool = database.pool().clone();
+            seed(&pool).await;
+
+            let stability = Arc::new(ScriptedStability::default());
+            let launch = Arc::new(StubLaunch::default());
+            let service = SaveStateApplicationService::new(
+                SaveStateRepository::new(pool.clone()),
+                LibraryRepository::new(pool.clone()),
+                LaunchRepository::new(pool.clone()),
+                runtime.clone(),
+                &states_root,
+                SaveStateConfig::default(),
+            )
+            .with_stability_probe(stability.clone());
+            service.attach_launch(launch.clone());
+
+            Self {
+                _directory: directory,
+                states_root,
+                service,
+                save_states: SaveStateRepository::new(pool.clone()),
+                sessions: LaunchRepository::new(pool.clone()),
+                runtime,
+                launch,
+                stability,
+                pool,
+            }
+        }
+
+        /// Open a session, capture its baseline, and hand back its id.
+        async fn begin_session(&self, core: &[u8], content_unit_id: i64) -> PlaySessionId {
+            let session = self
+                .sessions
+                .start_session(&NewPlaySession {
+                    game_id: GameId(if content_unit_id == 3 { 2 } else { 1 }),
+                    content_unit_id: ContentUnitId(content_unit_id),
+                    core_id: CoreId::new("nestopia").unwrap(),
+                    runtime_installation_id: "install-1".to_owned(),
+                    runtime_release_id: "release-1".to_owned(),
+                })
+                .await
+                .unwrap();
+            self.service
+                .capture_baseline(BaselineRequest {
+                    session_id: session.id,
+                    game_id: session.game_id,
+                    content_unit_id: session.content_unit_id,
+                    core_id: CoreId::new("nestopia").unwrap(),
+                    core_component_id: SafeIdentifier::new("nestopia").unwrap(),
+                    core_binary_sha256: sha256_bytes(core),
+                    core_display_version: Some("1.53".to_owned()),
+                    core_source_revision: Some("deadbeef".to_owned()),
+                    runtime_installation_id: SafeIdentifier::new("install-1").unwrap(),
+                    runtime_release_id: SafeIdentifier::new("release-1").unwrap(),
+                })
+                .await
+                .expect("the baseline is captured");
+            session.id
+        }
+
+        async fn end_session(&self, id: PlaySessionId, outcome: PlaySessionOutcome) {
+            self.sessions
+                .complete_session(id, outcome, Some(0))
+                .await
+                .unwrap();
+        }
+
+        /// One complete controlled session: baseline, the writes it performs, a certain end, and
+        /// reconciliation.
+        async fn run_session(
+            &self,
+            core: &[u8],
+            content_unit_id: i64,
+            writes: &[(&str, &[u8])],
+        ) -> PlaySessionId {
+            let id = self.begin_session(core, content_unit_id).await;
+            for (path, bytes) in writes {
+                self.write(path, bytes);
+            }
+            self.end_session(id, PlaySessionOutcome::Completed).await;
+            self.service.reconcile_session(id).await;
+            id
+        }
+
+        fn write(&self, relative: &str, bytes: &[u8]) {
+            let target = self.states_root.join(relative);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, bytes).unwrap();
+        }
+
+        fn exists(&self, relative: &str) -> bool {
+            self.states_root.join(relative).exists()
+        }
+
+        fn read(&self, relative: &str) -> Vec<u8> {
+            std::fs::read(self.states_root.join(relative)).unwrap()
+        }
+
+        async fn states(&self) -> Vec<crate::domain::save_state::SaveState> {
+            self.save_states.available_states().await.unwrap()
+        }
+
+        async fn only_state(&self) -> crate::domain::save_state::SaveState {
+            let mut states = self.states().await;
+            assert_eq!(states.len(), 1, "expected exactly one available state");
+            states.remove(0)
+        }
+    }
+
+    /// One game with two content units — the multi-disc case — plus a second game.
+    async fn seed(pool: &sqlx::SqlitePool) {
+        sqlx::query(
+            "INSERT INTO content_roots \
+             (id, path, kind, enabled, availability, created_at, updated_at) \
+             VALUES (1, '/synthetic/library', 'managed', 1, 'available', ?, ?)",
+        )
+        .bind(TEST_TIME)
+        .bind(TEST_TIME)
+        .execute(pool)
+        .await
+        .unwrap();
+        for (id, title) in [(1_i64, "Synthetic Disc Set"), (2, "Other Game")] {
+            sqlx::query(
+                "INSERT INTO games (id, system_id, local_title, availability, created_at, \
+                 updated_at) VALUES (?, 'nes', ?, 'available', ?, ?)",
+            )
+            .bind(id)
+            .bind(title)
+            .bind(TEST_TIME)
+            .bind(TEST_TIME)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        for (id, game_id, title, path) in [
+            (1_i64, 1_i64, "Disc 1", "NES/disc1.nes"),
+            (2, 1, "Disc 2", "NES/disc2.nes"),
+            (3, 2, "Other", "NES/other.nes"),
+        ] {
+            sqlx::query(
+                "INSERT INTO content_units \
+                 (id, game_id, root_id, system_id, kind, local_title, primary_relative_path, \
+                  fingerprint, availability, created_at, updated_at) \
+                 VALUES (?, ?, 1, 'nes', 'single_file', ?, ?, NULL, 'available', ?, ?)",
+            )
+            .bind(id)
+            .bind(game_id)
+            .bind(title)
+            .bind(path)
+            .bind(TEST_TIME)
+            .bind(TEST_TIME)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    // ================================================================ reconciliation
+
+    #[tokio::test]
+    async fn a_new_stable_state_is_registered_with_complete_provenance() {
+        let fixture = Fixture::build().await;
+        let session = fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+
+        let state = fixture.only_state().await;
+        assert_eq!(state.provenance.play_session_id, session);
+        assert_eq!(state.provenance.game_id, GameId(1));
+        assert_eq!(state.provenance.content_unit_id, ContentUnitId(1));
+        assert_eq!(state.provenance.core_id, CoreId::new("nestopia").unwrap());
+        assert_eq!(state.provenance.core_binary_sha256, sha256_bytes(CORE_A));
+        assert_eq!(
+            state.provenance.core_display_version.as_deref(),
+            Some("1.53")
+        );
+        assert_eq!(
+            state.provenance.originating_runtime_release_id.as_str(),
+            "release-1"
+        );
+        assert_eq!(state.slot.get(), 1);
+        assert_eq!(state.state.sha256, sha256_bytes(b"state bytes"));
+        assert_eq!(state.state.size_bytes, 11);
+        assert!(state.thumbnail.is_none());
+        assert_eq!(state.status, SaveStateStatus::Available);
+        // The baseline is consumed once the outcome is deterministic.
+        assert!(fixture
+            .save_states
+            .baseline(session)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn unsupported_slots_and_unrelated_files_are_never_attributed() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[
+                    // The one supported slot.
+                    ("Nestopia/Synthetic.state1", b"managed"),
+                    // Slot 0 and the automatic slot.
+                    ("Nestopia/Synthetic.state", b"slot zero"),
+                    ("Nestopia/Synthetic.state.auto", b"auto"),
+                    // Out of range, ambiguous, and unrelated.
+                    ("Nestopia/Synthetic.state1000", b"too high"),
+                    ("Nestopia/Synthetic.state01", b"ambiguous"),
+                    ("Nestopia/Synthetic.srm", b"save data"),
+                ],
+            )
+            .await;
+
+        let states = fixture.states().await;
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].slot.get(), 1);
+        assert_eq!(
+            states[0].state.relative_path.as_str(),
+            "Nestopia/Synthetic.state1"
+        );
+        // Nothing unsupported was touched on disk either.
+        for path in [
+            "Nestopia/Synthetic.state",
+            "Nestopia/Synthetic.state.auto",
+            "Nestopia/Synthetic.state1000",
+            "Nestopia/Synthetic.srm",
+        ] {
+            assert!(fixture.exists(path), "{path} must be left alone");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_that_predates_the_session_is_not_attributed_to_it() {
+        let fixture = Fixture::build().await;
+        // A legacy file shaped exactly like a valid RetroArch state, present before the launch.
+        fixture.write("Nestopia/Legacy.state1", b"pre-existing");
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/New.state2", b"written now")])
+            .await;
+
+        let states = fixture.states().await;
+        assert_eq!(
+            states.len(),
+            1,
+            "only the session's own write is attributed"
+        );
+        assert_eq!(
+            states[0].state.relative_path.as_str(),
+            "Nestopia/New.state2"
+        );
+        // The legacy file stays exactly where it is: untouched, unimported, invisible.
+        assert!(fixture.exists("Nestopia/Legacy.state1"));
+        assert_eq!(fixture.read("Nestopia/Legacy.state1"), b"pre-existing");
+    }
+
+    #[tokio::test]
+    async fn an_unstable_candidate_is_skipped_while_its_siblings_are_still_registered() {
+        let fixture = Fixture::build().await;
+        fixture.stability.unstable("Nestopia/Unstable.state2");
+
+        let session = fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[
+                    ("Nestopia/Stable.state1", b"complete"),
+                    ("Nestopia/Unstable.state2", b"still being written"),
+                ],
+            )
+            .await;
+
+        // Partial independent success: one bad candidate does not discard a proved sibling.
+        let states = fixture.states().await;
+        assert_eq!(states.len(), 1);
+        assert_eq!(
+            states[0].state.relative_path.as_str(),
+            "Nestopia/Stable.state1"
+        );
+        // The unstable file is left untouched and unregistered.
+        assert!(fixture.exists("Nestopia/Unstable.state2"));
+        // And the baseline is kept, because the outcome was not deterministic.
+        assert!(fixture
+            .save_states
+            .baseline(session)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_is_idempotent_and_a_replay_changes_nothing() {
+        let fixture = Fixture::build().await;
+        let session = fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let first = fixture.only_state().await;
+
+        // Replaying a completed reconciliation is a no-op, whatever drives it.
+        for _ in 0..3 {
+            fixture.service.reconcile_session(session).await;
+        }
+        assert_eq!(fixture.service.reconcile_on_startup().await.unwrap(), 0);
+
+        let states = fixture.states().await;
+        assert_eq!(states.len(), 1, "no duplicate row");
+        assert_eq!(states[0], first, "nothing changed, updated_at included");
+    }
+
+    #[tokio::test]
+    async fn a_crash_before_persistence_leaves_the_baseline_and_the_retry_completes() {
+        let fixture = Fixture::build().await;
+        let session = fixture.begin_session(CORE_A, 1).await;
+        fixture.write("Nestopia/Synthetic.state1", b"state bytes");
+        fixture
+            .end_session(session, PlaySessionOutcome::Completed)
+            .await;
+
+        // A RetroFrontier crash between the snapshot and persistence: nothing was registered, and
+        // the baseline is still there.
+        assert!(fixture.states().await.is_empty());
+        assert!(fixture
+            .save_states
+            .baseline(session)
+            .await
+            .unwrap()
+            .is_some());
+
+        // The retry — here, a restart — completes it.
+        assert_eq!(fixture.service.reconcile_on_startup().await.unwrap(), 1);
+        assert_eq!(fixture.only_state().await.slot.get(), 1);
+        assert!(fixture
+            .save_states
+            .baseline(session)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn an_open_session_attributes_nothing_and_keeps_its_baseline() {
+        let fixture = Fixture::build().await;
+        let session = fixture.begin_session(CORE_A, 1).await;
+        fixture.write("Nestopia/Synthetic.state1", b"written while running");
+
+        // The process may still be alive or of uncertain identity, so nothing is attributed and
+        // nothing is destroyed — however many times reconciliation is driven.
+        for _ in 0..3 {
+            fixture.service.reconcile_session(session).await;
+        }
+        assert!(fixture.states().await.is_empty());
+        assert!(fixture
+            .save_states
+            .baseline(session)
+            .await
+            .unwrap()
+            .is_some());
+        // Startup reconciliation deliberately does not pick it up either.
+        assert_eq!(fixture.service.reconcile_on_startup().await.unwrap(), 0);
+
+        // Once the end is certain, the very same baseline yields the attribution.
+        fixture
+            .end_session(session, PlaySessionOutcome::Completed)
+            .await;
+        fixture.service.reconcile_session(session).await;
+        assert_eq!(fixture.only_state().await.slot.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_retroarch_crash_still_reconciles_the_state_it_managed_to_write() {
+        let fixture = Fixture::build().await;
+        let session = fixture.begin_session(CORE_A, 1).await;
+        fixture.write("Nestopia/Synthetic.state1", b"saved before the crash");
+        // A crash is a *certain* end, so the delta it left behind is still valid provenance.
+        fixture
+            .end_session(session, PlaySessionOutcome::Crashed)
+            .await;
+        fixture.service.reconcile_session(session).await;
+
+        assert_eq!(
+            fixture.only_state().await.state.sha256,
+            sha256_bytes(b"saved before the crash")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_core_binary_overwriting_its_own_slot_updates_the_state_in_place() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"first save")])
+            .await;
+        let original = fixture.only_state().await;
+
+        let second = fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"second save!")])
+            .await;
+
+        let updated = fixture.only_state().await;
+        assert_eq!(updated.id, original.id, "identity is preserved");
+        assert_eq!(updated.created_at, original.created_at);
+        assert_eq!(
+            updated.provenance.core_binary_sha256,
+            original.provenance.core_binary_sha256
+        );
+        // Only the physical facts and the producing session moved on.
+        assert_eq!(updated.state.sha256, sha256_bytes(b"second save!"));
+        assert_eq!(updated.provenance.play_session_id, second);
+        assert_eq!(fixture.states().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_different_core_binary_at_the_same_path_supersedes_rather_than_rewriting() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"from core A")])
+            .await;
+        let original = fixture.only_state().await;
+
+        fixture
+            .run_session(CORE_B, 1, &[("Nestopia/Synthetic.state1", b"from core B")])
+            .await;
+
+        // The old object keeps its own immutable provenance and becomes history.
+        let old = fixture
+            .save_states
+            .save_state(original.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(old.status, SaveStateStatus::Superseded);
+        assert_eq!(
+            old.provenance.core_binary_sha256,
+            sha256_bytes(CORE_A),
+            "provenance is never rewritten"
+        );
+        assert_eq!(old.state.sha256, original.state.sha256);
+
+        // And a new object exists with the new provenance and digest.
+        let current = fixture.only_state().await;
+        assert_ne!(current.id, original.id);
+        assert_eq!(current.provenance.core_binary_sha256, sha256_bytes(CORE_B));
+        assert_eq!(current.state.sha256, sha256_bytes(b"from core B"));
+        // Same slot, different core binary: both are representable, one is live.
+        assert_eq!(current.slot, old.slot);
+    }
+
+    #[tokio::test]
+    async fn an_externally_deleted_state_becomes_missing_and_no_replacement_is_sought() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let original = fixture.only_state().await;
+
+        // Deleted outside RetroFrontier, then a later controlled session reconciles.
+        std::fs::remove_file(fixture.states_root.join("Nestopia/Synthetic.state1")).unwrap();
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Other.state2", b"unrelated")])
+            .await;
+
+        assert_eq!(
+            fixture
+                .save_states
+                .save_state(original.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SaveStateStatus::Missing
+        );
+        // Nothing looked for a similarly named replacement: the other state is its own object.
+        let live = fixture.only_state().await;
+        assert_ne!(live.id, original.id);
+        assert_eq!(live.state.relative_path.as_str(), "Nestopia/Other.state2");
+    }
+
+    #[tokio::test]
+    async fn an_incomplete_enumeration_never_drives_a_missing_transition() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let original = fixture.only_state().await;
+
+        // The next session starts from a tree that *can* be described, so it gets a baseline.
+        let session = fixture.begin_session(CORE_A, 1).await;
+
+        // Then the file goes away and the tree stops being completely describable, so absence is
+        // no longer provable.
+        std::fs::remove_file(fixture.states_root.join("Nestopia/Synthetic.state1")).unwrap();
+        let protected = fixture.states_root.join("protected");
+        std::fs::create_dir_all(&protected).unwrap();
+        std::fs::write(protected.join("Hidden.state1"), b"hidden").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        fixture
+            .end_session(session, PlaySessionOutcome::Completed)
+            .await;
+        fixture.service.reconcile_session(session).await;
+
+        // Still available: an unreadable subtree is uncertainty, not evidence of deletion.
+        assert_eq!(
+            fixture
+                .save_states
+                .save_state(original.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SaveStateStatus::Available
+        );
+        std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_permanently_indeterminate_baseline_is_dropped_rather_than_leaking_forever() {
+        let fixture = Fixture::build().await;
+        fixture.stability.unstable("Nestopia/Synthetic.state1");
+        let session = fixture.begin_session(CORE_A, 1).await;
+        fixture.write("Nestopia/Synthetic.state1", b"never settles");
+        fixture
+            .end_session(session, PlaySessionOutcome::Completed)
+            .await;
+
+        // The baseline survives every attempt but the last, so a transient problem always gets
+        // its retries.
+        let attempts = SaveStateConfig::default().max_reconciliation_attempts;
+        for _ in 1..attempts {
+            fixture.service.reconcile_session(session).await;
+            assert!(fixture
+                .save_states
+                .baseline(session)
+                .await
+                .unwrap()
+                .is_some());
+        }
+        // The last one gives up, so a permanently indeterminate baseline cannot leak forever.
+        fixture.service.reconcile_session(session).await;
+
+        assert!(fixture
+            .save_states
+            .baseline(session)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(fixture.states().await.is_empty());
+        assert!(fixture.exists("Nestopia/Synthetic.state1"));
+    }
+
+    // ================================================================ thumbnails
+
+    #[tokio::test]
+    async fn a_thumbnail_is_associated_only_when_this_session_proved_it() {
+        let fixture = Fixture::build().await;
+        // A pre-existing image that is *not* part of the session's delta, and a thumbnail of a
+        // state this session did not write.
+        fixture.write("Nestopia/Old.state9", b"old state");
+        fixture.write("Nestopia/Old.state9.png", b"old thumbnail");
+
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[
+                    ("Nestopia/New.state1", b"new state"),
+                    ("Nestopia/New.state1.png", b"new thumbnail"),
+                ],
+            )
+            .await;
+
+        let state = fixture.only_state().await;
+        let thumbnail = state.thumbnail.expect("the proved thumbnail is associated");
+        assert_eq!(thumbnail.relative_path.as_str(), "Nestopia/New.state1.png");
+        assert_eq!(thumbnail.sha256, sha256_bytes(b"new thumbnail"));
+        assert_eq!(thumbnail.size_bytes, 13);
+        // The old image was never associated with anything.
+        assert!(fixture.exists("Nestopia/Old.state9.png"));
+    }
+
+    #[tokio::test]
+    async fn a_state_without_a_provable_thumbnail_stays_valid_with_none() {
+        let fixture = Fixture::build().await;
+        // The image exists from before, so the session's delta does not include it.
+        fixture.write("Nestopia/Synthetic.state1.png", b"stale image");
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+
+        let state = fixture.only_state().await;
+        assert_eq!(state.status, SaveStateStatus::Available);
+        assert!(
+            state.thumbnail.is_none(),
+            "an unproved image is never borrowed"
+        );
+        assert!(fixture.exists("Nestopia/Synthetic.state1.png"));
+    }
+
+    #[tokio::test]
+    async fn an_unstable_thumbnail_leaves_a_valid_state_without_one() {
+        let fixture = Fixture::build().await;
+        fixture.stability.unstable("Nestopia/Synthetic.state1.png");
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[
+                    ("Nestopia/Synthetic.state1", b"state bytes"),
+                    ("Nestopia/Synthetic.state1.png", b"half-written"),
+                ],
+            )
+            .await;
+
+        let state = fixture.only_state().await;
+        assert_eq!(state.status, SaveStateStatus::Available);
+        assert!(state.thumbnail.is_none());
+    }
+
+    // ================================================================ listing
+
+    #[tokio::test]
+    async fn the_listing_reports_only_available_states_with_honest_capabilities() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/A.state1", b"from core A")])
+            .await;
+        fixture
+            .run_session(CORE_B, 2, &[("Nestopia/B.state2", b"from core B")])
+            .await;
+
+        let views = fixture.service.list_save_states(GameId(1)).await.unwrap();
+        assert_eq!(views.len(), 2);
+        // Ordered by the backend, most recently updated first.
+        assert!(views[0].updated_at >= views[1].updated_at);
+        for view in &views {
+            assert_eq!(view.capabilities.loadability, SaveStateLoadability::Ready);
+            assert!(view.capabilities.deletable);
+            assert!(view.thumbnail_ref.is_none());
+        }
+        // Two content units, so a disc label disambiguates.
+        assert_eq!(views[0].content_unit_label.as_deref(), Some("Disc 2"));
+        assert_eq!(views[1].content_unit_label.as_deref(), Some("Disc 1"));
+
+        // The historical core of one of them disappears: that state is not loadable, but it stays
+        // visible and stays deletable.
+        fixture.runtime.remove(CORE_B);
+        let views = fixture.service.list_save_states(GameId(1)).await.unwrap();
+        let from_b = views
+            .iter()
+            .find(|view| view.content_unit_id == ContentUnitId(2))
+            .unwrap();
+        assert_eq!(
+            from_b.capabilities.loadability,
+            SaveStateLoadability::CoreUnavailable
+        );
+        assert!(from_b.capabilities.deletable, "deleting needs no emulator");
+
+        // While a managed game runs, both mutations are refused and the listing says so.
+        fixture.launch.active.store(true, Ordering::Relaxed);
+        for view in fixture.service.list_save_states(GameId(1)).await.unwrap() {
+            assert_eq!(
+                view.capabilities.loadability,
+                SaveStateLoadability::TemporarilyBlocked
+            );
+            assert!(!view.capabilities.deletable);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_single_content_unit_game_shows_no_disc_label() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 3, &[("Nestopia/Other.state1", b"other game")])
+            .await;
+
+        let views = fixture.service.list_save_states(GameId(2)).await.unwrap();
+        assert_eq!(views.len(), 1);
+        assert!(views[0].content_unit_label.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_listing_transitions_a_vanished_state_to_missing_and_drops_it() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let state = fixture.only_state().await;
+
+        std::fs::remove_file(fixture.states_root.join("Nestopia/Synthetic.state1")).unwrap();
+
+        assert!(fixture
+            .service
+            .list_save_states(GameId(1))
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            fixture
+                .save_states
+                .save_state(state.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SaveStateStatus::Missing
+        );
+    }
+
+    #[tokio::test]
+    async fn a_state_with_a_proved_thumbnail_exposes_an_opaque_reference_and_no_path() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[
+                    ("Nestopia/Synthetic.state1", b"state bytes"),
+                    ("Nestopia/Synthetic.state1.png", b"thumbnail"),
+                ],
+            )
+            .await;
+
+        let views = fixture.service.list_save_states(GameId(1)).await.unwrap();
+        let reference = views[0].thumbnail_ref.as_deref().expect("a reference");
+        assert!(reference.ends_with(&format!("save-state-thumbnail/{}", views[0].id.0)));
+        // Never a filesystem path, and never a digest.
+        let serialized = serde_json::to_string(&views).unwrap();
+        assert!(!serialized.contains("Nestopia/"));
+        assert!(!serialized.contains(&sha256_bytes(b"state bytes").to_hex()));
+
+        // The bytes are served only after full re-verification.
+        assert!(fixture
+            .service
+            .verified_thumbnail(views[0].id)
+            .await
+            .is_ok());
+        fixture.write("Nestopia/Synthetic.state1.png", b"tampered thumbnail");
+        assert_eq!(
+            fixture.service.verified_thumbnail(views[0].id).await,
+            Err(SaveStateError::IntegrityMismatch)
+        );
+    }
+
+    // ================================================================ load
+
+    #[tokio::test]
+    async fn a_controlled_load_resolves_every_fact_from_the_identity_alone() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(
+                CORE_A,
+                2,
+                &[("Nestopia/Synthetic.state7", b"disc two state")],
+            )
+            .await;
+        let state = fixture.only_state().await;
+
+        let response = fixture.service.load_save_state(state.id).await;
+        assert!(matches!(response, LoadSaveStateResponse::Started { .. }));
+
+        let plans = fixture.launch.plans.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        let plan = &plans[0];
+        assert_eq!(plan.save_state_id, state.id);
+        assert_eq!(plan.game_id, GameId(1));
+        // The exact recorded content unit — a Disc 2 state is never offered as Disc 1.
+        assert_eq!(plan.content_unit_id, ContentUnitId(2));
+        assert_eq!(plan.core.binary_sha256, sha256_bytes(CORE_A));
+        assert_eq!(plan.slot, state.slot);
+    }
+
+    #[tokio::test]
+    async fn every_load_precondition_is_reproved_and_refuses_without_launching() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let state = fixture.only_state().await;
+
+        // An identity that does not exist.
+        assert_eq!(
+            fixture.service.load_save_state(SaveStateId(9_999)).await,
+            LoadSaveStateResponse::refused(SaveStateError::NotFound)
+        );
+
+        // A managed game is running.
+        fixture.launch.active.store(true, Ordering::Relaxed);
+        assert_eq!(
+            fixture.service.load_save_state(state.id).await,
+            LoadSaveStateResponse::refused(SaveStateError::TemporarilyBlocked)
+        );
+        fixture.launch.active.store(false, Ordering::Relaxed);
+
+        // The exact historical core binary is gone.
+        fixture.runtime.remove(CORE_A);
+        assert_eq!(
+            fixture.service.load_save_state(state.id).await,
+            LoadSaveStateResponse::refused(SaveStateError::CoreUnavailable)
+        );
+        fixture
+            .runtime
+            .available
+            .lock()
+            .unwrap()
+            .push(sha256_bytes(CORE_A));
+
+        // The game's content is no longer available.
+        sqlx::query("UPDATE content_units SET availability = 'missing' WHERE id = 1")
+            .execute(&fixture.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.service.load_save_state(state.id).await,
+            LoadSaveStateResponse::refused(SaveStateError::Unavailable)
+        );
+        sqlx::query("UPDATE content_units SET availability = 'available' WHERE id = 1")
+            .execute(&fixture.pool)
+            .await
+            .unwrap();
+
+        // Nothing was ever launched by any of them.
+        assert!(fixture.launch.plans.lock().unwrap().is_empty());
+        // And the state is still perfectly loadable once the world is right again.
+        assert!(matches!(
+            fixture.service.load_save_state(state.id).await,
+            LoadSaveStateResponse::Started { .. }
+        ));
+    }
+
+    /// A running emulator rewriting its own slot must not cost the player a Save State.
+    ///
+    /// `verified_state` marks a mismatched state `missing`, and a live RetroArch is entitled to be
+    /// mid-write. Both mutations therefore refuse *before* they verify, and the session that ends
+    /// reconciles the new content properly.
+    #[tokio::test]
+    async fn a_state_being_rewritten_by_a_running_game_is_never_marked_missing() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[("Nestopia/Synthetic.state1", b"registered bytes")],
+            )
+            .await;
+        let state = fixture.only_state().await;
+
+        // A game is running and has just overwritten the slot this state occupies.
+        fixture.launch.active.store(true, Ordering::Relaxed);
+        fixture.write(
+            "Nestopia/Synthetic.state1",
+            b"mid-write bytes from the live emulator",
+        );
+
+        assert_eq!(
+            fixture.service.load_save_state(state.id).await,
+            LoadSaveStateResponse::refused(SaveStateError::TemporarilyBlocked)
+        );
+        assert_eq!(
+            fixture.service.delete_save_state(state.id).await,
+            DeleteSaveStateResponse::failed(SaveStateError::TemporarilyBlocked)
+        );
+
+        // Still available: the digest was never consulted, so nothing was concluded from it.
+        assert_eq!(
+            fixture
+                .save_states
+                .save_state(state.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SaveStateStatus::Available
+        );
+
+        // And once the session ends, reconciliation records the new content on the same object.
+        fixture.launch.active.store(false, Ordering::Relaxed);
+        let session = fixture.begin_session(CORE_A, 1).await;
+        fixture.write("Nestopia/Synthetic.state1", b"the finished save");
+        fixture
+            .end_session(session, PlaySessionOutcome::Completed)
+            .await;
+        fixture.service.reconcile_session(session).await;
+
+        let updated = fixture.only_state().await;
+        assert_eq!(updated.id, state.id);
+        assert_eq!(updated.state.sha256, sha256_bytes(b"the finished save"));
+    }
+
+    #[tokio::test]
+    async fn a_tampered_state_refuses_to_load_and_the_new_bytes_are_left_untouched() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[("Nestopia/Synthetic.state1", b"registered bytes")],
+            )
+            .await;
+        let state = fixture.only_state().await;
+
+        // Changed outside any attributable controlled launch.
+        fixture.write("Nestopia/Synthetic.state1", b"unexplained new bytes");
+
+        assert_eq!(
+            fixture.service.load_save_state(state.id).await,
+            LoadSaveStateResponse::refused(SaveStateError::IntegrityMismatch)
+        );
+        // The registered identity is no longer valid, so the object leaves the normal list...
+        assert_eq!(
+            fixture
+                .save_states
+                .save_state(state.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SaveStateStatus::Missing
+        );
+        // ...the old id can no longer delete anything...
+        assert_eq!(
+            fixture.service.delete_save_state(state.id).await,
+            DeleteSaveStateResponse::failed(SaveStateError::Unavailable)
+        );
+        // ...and the untrusted file is exactly as the writer left it.
+        assert_eq!(
+            fixture.read("Nestopia/Synthetic.state1"),
+            b"unexplained new bytes"
+        );
+        assert!(fixture.launch.plans.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_launch_never_damages_the_save_state() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let before = fixture.only_state().await;
+        fixture.launch.fail.store(true, Ordering::Relaxed);
+
+        let response = fixture.service.load_save_state(before.id).await;
+
+        // The launch pipeline's own verdict, kept distinct from a Save-State refusal.
+        assert!(matches!(
+            response,
+            LoadSaveStateResponse::LaunchFailed { .. }
+        ));
+        // Nothing about the state changed: not its status, not its digest, not its provenance.
+        let after = fixture
+            .save_states
+            .save_state(before.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after, before);
+        assert_eq!(after.status, SaveStateStatus::Available);
+
+        // And a later retry succeeds once the launch works again.
+        fixture.launch.fail.store(false, Ordering::Relaxed);
+        assert!(matches!(
+            fixture.service.load_save_state(before.id).await,
+            LoadSaveStateResponse::Started { .. }
+        ));
+    }
+
+    // ================================================================ delete
+
+    #[tokio::test]
+    async fn a_safe_delete_removes_the_state_and_its_proved_thumbnail() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[
+                    ("Nestopia/Synthetic.state1", b"state bytes"),
+                    ("Nestopia/Synthetic.state1.png", b"thumbnail"),
+                    ("Nestopia/Sibling.state2", b"keep me"),
+                ],
+            )
+            .await;
+        let state = fixture
+            .states()
+            .await
+            .into_iter()
+            .find(|state| state.slot.get() == 1)
+            .unwrap();
+
+        assert_eq!(
+            fixture.service.delete_save_state(state.id).await,
+            DeleteSaveStateResponse::Deleted {
+                save_state_id: state.id
+            }
+        );
+
+        assert!(!fixture.exists("Nestopia/Synthetic.state1"));
+        assert!(!fixture.exists("Nestopia/Synthetic.state1.png"));
+        // The sibling is untouched, and the lifecycle is persisted.
+        assert_eq!(fixture.read("Nestopia/Sibling.state2"), b"keep me");
+        assert_eq!(
+            fixture
+                .save_states
+                .save_state(state.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SaveStateStatus::Deleted
+        );
+    }
+
+    #[tokio::test]
+    async fn a_state_whose_historical_core_is_gone_is_still_safely_deletable() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let state = fixture.only_state().await;
+        fixture.runtime.remove(CORE_A);
+
+        // It cannot be loaded...
+        assert_eq!(
+            fixture.service.load_save_state(state.id).await,
+            LoadSaveStateResponse::refused(SaveStateError::CoreUnavailable)
+        );
+        // ...and deleting it needs no emulator at all.
+        assert!(matches!(
+            fixture.service.delete_save_state(state.id).await,
+            DeleteSaveStateResponse::Deleted { .. }
+        ));
+        assert!(!fixture.exists("Nestopia/Synthetic.state1"));
+    }
+
+    #[tokio::test]
+    async fn a_delete_is_refused_while_a_managed_game_is_active() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let state = fixture.only_state().await;
+        fixture.launch.active.store(true, Ordering::Relaxed);
+
+        assert_eq!(
+            fixture.service.delete_save_state(state.id).await,
+            DeleteSaveStateResponse::failed(SaveStateError::TemporarilyBlocked)
+        );
+        assert!(fixture.exists("Nestopia/Synthetic.state1"));
+    }
+
+    #[tokio::test]
+    async fn a_delete_refuses_a_symlink_standing_where_the_registered_file_was() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let state = fixture.only_state().await;
+
+        let target = fixture.states_root.join("Nestopia/Synthetic.state1");
+        let elsewhere = fixture.states_root.join("Nestopia/moved.bin");
+        std::fs::rename(&target, &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &target).unwrap();
+
+        assert_eq!(
+            fixture.service.delete_save_state(state.id).await,
+            DeleteSaveStateResponse::failed(SaveStateError::UnsafeFilesystemTarget)
+        );
+        // Neither the link nor its target was deleted.
+        assert!(target.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read(&elsewhere).unwrap(), b"state bytes");
+    }
+
+    #[tokio::test]
+    async fn a_state_deletes_safely_even_when_its_thumbnail_can_no_longer_be_verified() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[
+                    ("Nestopia/Synthetic.state1", b"state bytes"),
+                    ("Nestopia/Synthetic.state1.png", b"thumbnail"),
+                ],
+            )
+            .await;
+        let state = fixture.only_state().await;
+        // The thumbnail changed outside RetroFrontier, so its registered identity is gone.
+        fixture.write(
+            "Nestopia/Synthetic.state1.png",
+            b"a different image entirely",
+        );
+
+        assert!(matches!(
+            fixture.service.delete_save_state(state.id).await,
+            DeleteSaveStateResponse::Deleted { .. }
+        ));
+
+        // Safe deletion of the state was not sacrificed...
+        assert!(!fixture.exists("Nestopia/Synthetic.state1"));
+        // ...and the questionable image was left exactly where it is.
+        assert_eq!(
+            fixture.read("Nestopia/Synthetic.state1.png"),
+            b"a different image entirely"
+        );
+        // The retained thumbnail identity records that RetroFrontier did *not* remove it.
+        let deleted = fixture
+            .save_states
+            .save_state(state.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(deleted.status, SaveStateStatus::Deleted);
+        assert!(deleted.thumbnail.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_persistence_failure_after_the_physical_delete_converges_on_the_filesystem_truth() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let state = fixture.only_state().await;
+
+        // The physical delete succeeds and the lifecycle write then fails.
+        sqlx::query("DROP TRIGGER IF EXISTS none")
+            .execute(&fixture.pool)
+            .await
+            .ok();
+        delete_then_fail_persistence(&fixture, state.id).await;
+
+        // For one moment the row still claims `available` while its file is gone — the documented
+        // window. The next listing re-verifies and converges on the physical truth.
+        assert!(!fixture.exists("Nestopia/Synthetic.state1"));
+        assert!(fixture
+            .service
+            .list_save_states(GameId(1))
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            fixture
+                .save_states
+                .save_state(state.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SaveStateStatus::Missing
+        );
+    }
+
+    /// Simulate "the file was deleted, the database write did not happen".
+    ///
+    /// The physical delete is performed through the same adapter the service uses, and the
+    /// lifecycle row is deliberately left untouched.
+    async fn delete_then_fail_persistence(fixture: &Fixture, id: SaveStateId) {
+        let state = fixture.save_states.save_state(id).await.unwrap().unwrap();
+        crate::services::save_state_fs::delete_verified_managed_file(
+            &fixture.states_root,
+            &state.state.relative_path,
+            state.state.size_bytes,
+            state.state.sha256,
+        )
+        .expect("the physical delete succeeds");
+    }
+
+    // ================================================================ boundaries
+
+    #[tokio::test]
+    async fn normal_save_data_is_never_enumerated_interpreted_or_deleted() {
+        let fixture = Fixture::build().await;
+        // The adapter is only ever given the states root, so `saves/` is unreachable by
+        // construction. This proves the *behaviour* that follows from it.
+        fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[
+                    ("Nestopia/Synthetic.state1", b"a save state"),
+                    ("Nestopia/Synthetic.srm", b"opaque SRAM"),
+                    ("Nestopia/Synthetic.sav", b"opaque save data"),
+                ],
+            )
+            .await;
+
+        let views = fixture.service.list_save_states(GameId(1)).await.unwrap();
+        assert_eq!(views.len(), 1, "only the save state is a domain object");
+
+        // Deleting the state leaves every piece of save data exactly where it is.
+        fixture.service.delete_save_state(views[0].id).await;
+        assert_eq!(fixture.read("Nestopia/Synthetic.srm"), b"opaque SRAM");
+        assert_eq!(fixture.read("Nestopia/Synthetic.sav"), b"opaque save data");
+    }
+
+    /// With no launch port attached the service refuses every mutation rather than performing an
+    /// unguarded one.
+    ///
+    /// The state is real and otherwise perfectly loadable and deletable, so the refusal can only
+    /// come from the missing guard — which is the point.
+    #[tokio::test]
+    async fn an_unattached_service_fails_closed() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let state = fixture.only_state().await;
+        // Everything is in order while the port is attached.
+        assert_eq!(
+            fixture
+                .service
+                .list_save_states(GameId(1))
+                .await
+                .unwrap()
+                .first()
+                .map(|view| view.capabilities.loadability),
+            Some(SaveStateLoadability::Ready)
+        );
+
+        // A second service over exactly the same durable state, with no launch port.
+        let unattached = SaveStateApplicationService::new(
+            SaveStateRepository::new(fixture.pool.clone()),
+            LibraryRepository::new(fixture.pool.clone()),
+            LaunchRepository::new(fixture.pool.clone()),
+            fixture.runtime.clone(),
+            &fixture.states_root,
+            SaveStateConfig::default(),
+        );
+
+        assert_eq!(
+            unattached.load_save_state(state.id).await,
+            LoadSaveStateResponse::refused(SaveStateError::TemporarilyBlocked)
+        );
+        assert_eq!(
+            unattached.delete_save_state(state.id).await,
+            DeleteSaveStateResponse::failed(SaveStateError::TemporarilyBlocked)
+        );
+        // And it really deleted nothing.
+        assert!(fixture.exists("Nestopia/Synthetic.state1"));
+        // The listing still works and reports the honest blocked capability.
+        let views = unattached.list_save_states(GameId(1)).await.unwrap();
+        assert_eq!(
+            views[0].capabilities.loadability,
+            SaveStateLoadability::TemporarilyBlocked
+        );
+        assert!(!views[0].capabilities.deletable);
+    }
 }

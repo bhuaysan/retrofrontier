@@ -1042,10 +1042,8 @@ pub fn is_process_authority(_session: &PlaySession) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        LaunchApplicationService, LaunchConfig, LaunchEventSink, LaunchRuntime,
-        SaveStateLaunchPlan,
+        LaunchApplicationService, LaunchConfig, LaunchEventSink, LaunchRuntime, SaveStateLaunchPlan,
     };
-    use crate::domain::save_state::SaveStateSlot;
     use crate::adapters::database::Database;
     use crate::adapters::game_process::{
         GameProcessLauncher, LinuxGameProcessLauncher, ProcessFaults, SpawnRequest, SpawnedGame,
@@ -1069,6 +1067,7 @@ mod tests {
         ManagedProcessPhase, RuntimeError, RuntimeState, RuntimeStatus, SafeIdentifier,
         Sha256Digest,
     };
+    use crate::domain::save_state::SaveStateSlot;
     use crate::domain::system::{SystemCatalog, SystemId};
     use crate::repositories::launch::LaunchRepository;
     use crate::repositories::library::LibraryRepository;
@@ -2539,7 +2538,10 @@ mod tests {
                     SystemId::Nes,
                 ))
                 .await;
-            assert!(matches!(started, LaunchResponse::Started { .. }), "slot {slot}");
+            assert!(
+                matches!(started, LaunchResponse::Started { .. }),
+                "slot {slot}"
+            );
             let config = std::fs::read_to_string(harness.retroarch.paths().config_file()).unwrap();
             assert!(
                 config.contains(&format!("state_slot = \"{slot}\"")),
@@ -2635,7 +2637,12 @@ mod tests {
         );
 
         // Nothing was started by any of them, and no session was opened.
-        assert!(harness.launch_repository.open_sessions().await.unwrap().is_empty());
+        assert!(harness
+            .launch_repository
+            .open_sessions()
+            .await
+            .unwrap()
+            .is_empty());
         assert_eq!(harness.service.get_launch_state().running, None);
     }
 
@@ -2645,7 +2652,12 @@ mod tests {
         let source = include_str!("launch.rs");
         let production = source.split_once("#[cfg(test)]").unwrap().0;
         // `launch_save_state` builds exactly one plan and hands it straight to the shared pipeline.
-        assert_eq!(production.matches("LaunchPlan::SaveState(Box::new(plan))").count(), 1);
+        assert_eq!(
+            production
+                .matches("LaunchPlan::SaveState(Box::new(plan))")
+                .count(),
+            1
+        );
         // And core resolution for that plan never consults the stored override.
         let save_state_arm = production
             .split("LaunchPlan::SaveState(plan) => {")
@@ -2718,14 +2730,20 @@ mod tests {
             .expect("a launch captures a durable baseline");
         assert_eq!(baseline.provenance.play_session_id, session_id);
         assert_eq!(baseline.provenance.game_id, GameId(1));
-        assert_eq!(baseline.provenance.core_id, CoreId::new("nestopia").unwrap());
+        assert_eq!(
+            baseline.provenance.core_id,
+            CoreId::new("nestopia").unwrap()
+        );
         // The authenticated core-binary digest the runtime projection reported, not a hash of
         // whatever is on disk.
         assert_eq!(
             baseline.provenance.core_binary_sha256,
             Sha256Digest::from_hex(&"a".repeat(64)).unwrap()
         );
-        assert_eq!(baseline.provenance.core_display_version.as_deref(), Some("synthetic-1.0"));
+        assert_eq!(
+            baseline.provenance.core_display_version.as_deref(),
+            Some("synthetic-1.0")
+        );
         assert_eq!(baseline.attempts, 0);
 
         harness.stop();
@@ -2860,8 +2878,7 @@ mod tests {
         // A child whose `wait` fails: its end can never be positively observed.
         launcher.faults.fail_wait(true);
         launcher.faults.fail_try_exit(true);
-        let harness =
-            Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
+        let harness = Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
         harness.set_app_run_until_stopped();
 
         let started = harness.service.launch_game(GameId(1), None).await;
@@ -2886,5 +2903,4 @@ mod tests {
             .is_open());
         assert!(harness.service.is_managed_session_active());
     }
-
 }
