@@ -7,6 +7,7 @@ pub mod metadata;
 pub mod metadata_scrape;
 pub mod readiness;
 pub mod runtime;
+pub mod save_state;
 pub mod system;
 
 pub use app_info::AppInfo;
