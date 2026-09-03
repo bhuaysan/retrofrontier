@@ -142,6 +142,24 @@ physical content files, hashes, or fingerprints. The existing full `get_library_
 the M4 diagnostic contract and is not the UI list path. Favorites live in the separate
 `game_user_state` table, so scanner reconciliation cannot overwrite them.
 
+M8.6 adds a second bounded read to that same boundary: `query_library_shelves` returns the Library's
+All Systems browse projection — one shelf per system that has a match, each carrying that system's
+full match `total` and only a short preview of its games. It is one set-oriented query, never one
+per system: `ROW_NUMBER()` ranks each system's matches in the paginated grid's own title order and
+`COUNT(*)` counts them, both partitioned by system in a single pass, and only rows inside the
+preview rank are returned. The response is therefore bounded by system count times the preview
+limit and does not grow with the library; the shelf request derives a `LibraryQuery` and binds the
+grid's own filter predicate and list projection, so search, favorites and metadata-review semantics
+cannot mean one thing on a shelf and another in the grid. Shelves are grouped from whatever system
+identities the data holds rather than from a known-system list, so no system's games can be dropped
+by a projection that has not heard of it. `query_library` remains the paginated single-system path,
+and both go through the same live provider-evidence validation.
+
+Cover presentation is deliberately *not* part of this contract. The backend supplies `systemId` and
+nothing about artwork shape; the frontend maps that identity to a presentation profile. No Rust DTO
+carries a ratio, a cover shape or a packaging format. See
+[`docs/LIBRARY_BROWSING.md`](docs/LIBRARY_BROWSING.md).
+
 The M6.1 UI list receives an opaque cached-cover reference when the durable cover row is eligible:
 `rfmedia://localhost/cover/<game-id>` on Linux/macOS desktop and
 `http://rfmedia.localhost/cover/<game-id>` on Windows. Rust generates the target-correct reference,
@@ -170,6 +188,19 @@ and unit fingerprint; heuristic title results stay candidates. Provider state is
 evidence snapshot, so same-path content replacement marks a match stale instead of silently keeping
 it trusted. The metadata repository writes to no M4 table. See
 [`docs/METADATA.md`](docs/METADATA.md) for the implementation contract.
+
+M8.5 adds a persistent orchestration layer above that queue, not a second one beside it.
+`MetadataScrapeApplicationService` owns which user-initiated batch operation is in progress, its
+fixed target set, bounded feeding, stop semantics and restart semantics; the M5 queue keeps
+provider requests, quota, deferral, retry, matching and persistence. There is still exactly one
+worker, one scheduler and one provider adapter.
+
+Library discovery is local and does not automatically trigger first-time metadata scraping: a scan
+finds content on this machine and does not decide to spend the user's provider budget on it. First
+contact with the provider for a newly discovered game happens only through a scrape run the user
+starts in Settings. Accepted metadata relationships are still automatically revalidated for evidence
+integrity — that sweep protects relationships the user already has and is a different mechanism from
+going out to fetch new ones.
 
 ### RuntimeManager
 

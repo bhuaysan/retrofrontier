@@ -19,6 +19,10 @@ const mocks = vi.hoisted(() => ({
   setMetadataProviderCredentials: vi.fn(),
   clearMetadataProviderCredentials: vi.fn(),
   getRuntimeInstallState: vi.fn(),
+  getMetadataScrapeStatus: vi.fn(),
+  previewMetadataScrape: vi.fn(),
+  startMetadataScrape: vi.fn(),
+  stopMetadataScrape: vi.fn(),
   installRuntime: vi.fn(),
   repairRuntime: vi.fn(),
 }));
@@ -32,6 +36,10 @@ vi.mock('../../platform/ipc', async (importOriginal) => {
     setMetadataProviderCredentials: mocks.setMetadataProviderCredentials,
     clearMetadataProviderCredentials: mocks.clearMetadataProviderCredentials,
     getRuntimeInstallState: mocks.getRuntimeInstallState,
+    getMetadataScrapeStatus: mocks.getMetadataScrapeStatus,
+    previewMetadataScrape: mocks.previewMetadataScrape,
+    startMetadataScrape: mocks.startMetadataScrape,
+    stopMetadataScrape: mocks.stopMetadataScrape,
     installRuntime: mocks.installRuntime,
     repairRuntime: mocks.repairRuntime,
   };
@@ -148,6 +156,7 @@ function renderSettings(removeExternalRoot = vi.fn().mockResolvedValue(undefined
         onAddExternalFolder={vi.fn().mockResolvedValue(true)}
         onOpenManagedFolder={vi.fn().mockResolvedValue(undefined)}
         onBackToLibrary={vi.fn()}
+        onReviewMetadataMatches={vi.fn()}
       />
       <ControllerFooter controllerConnected gameRunning={false} interactive status="SCAN READY" />
     </FocusProvider>,
@@ -168,6 +177,14 @@ function send(action: 'back' | 'down' | 'confirm' | 'context') {
 beforeEach(() => {
   installRectStub();
   mocks.getRuntimeInstallState.mockReset().mockResolvedValue(runtimeState);
+  mocks.getMetadataScrapeStatus
+    .mockReset()
+    .mockResolvedValue({ providerId: 'screenScraper', run: null, active: false });
+  mocks.previewMetadataScrape
+    .mockReset()
+    .mockImplementation(async ({ mode }: { mode: string }) => ({ mode, eligibleGames: 12 }));
+  mocks.startMetadataScrape.mockReset();
+  mocks.stopMetadataScrape.mockReset();
   mocks.installRuntime.mockReset();
   mocks.repairRuntime.mockReset();
   mocks.getMetadataProviderStatus.mockReset().mockResolvedValue(providerStatus);

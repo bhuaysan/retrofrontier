@@ -1,0 +1,219 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+
+import {
+  normalizeIpcError,
+  onMetadataStateChanged,
+  queryLibraryShelves,
+  type IpcError,
+  type LibraryShelves,
+  type LibraryShelvesRequest,
+} from '../platform/ipc';
+
+const METADATA_INVALIDATION_DEBOUNCE_MS = 180;
+const METADATA_INVALIDATION_MAX_WAIT_MS = 1000;
+
+interface UseLibraryShelvesOptions {
+  /** Only the All Systems view queries shelves; a selected system uses the paginated grid. */
+  enabled: boolean;
+  /**
+   * The already-committed search. The Library's own query state owns the input and its debounce,
+   * so the shelves commit at exactly the same moment the grid would.
+   */
+  search: string;
+  favoritesOnly: boolean;
+  /** Hides games whose local content is gone, exactly as the paginated grid does. */
+  hideMissing: boolean;
+  needsMetadataReview: boolean;
+  scanCompletionRunId?: number | null;
+}
+
+export interface LibraryShelvesModel {
+  shelves: LibraryShelves | null;
+  /** No shelves have ever been committed and the first request is still in flight. */
+  initialLoading: boolean;
+  /** Shelves are on screen and a newer bounded request is in flight behind them. */
+  refreshing: boolean;
+  /**
+   * Increments once per committed outcome, success or failure. Focus entry compares it rather than
+   * guessing from a loading flag that has not flipped yet, exactly as the grid does.
+   */
+  resultVersion: number;
+  error: IpcError | null;
+  retry: () => Promise<void>;
+}
+
+/**
+ * The All Systems shelf projection.
+ *
+ * Deliberately a second, focused hook rather than a mode of `useLibraryQuery`. The two answer
+ * different questions — "page N of one filtered list" against "a little of everything" — and
+ * folding them together would turn the Library's data owner into a mixed-mode state machine whose
+ * response shape depends on which filter happens to be set. `useLibraryQuery` stays authoritative
+ * for the paginated single-system grid, and it still owns every user filter choice; this hook owns
+ * only its own request, loading, error and refresh state.
+ */
+export function useLibraryShelves({
+  enabled,
+  search,
+  favoritesOnly,
+  hideMissing,
+  needsMetadataReview,
+  scanCompletionRunId = null,
+}: UseLibraryShelvesOptions): LibraryShelvesModel {
+  const mounted = useRef(true);
+  const shelvesRef = useRef<LibraryShelves | null>(null);
+  const requestGeneration = useRef(0);
+  const initialLoadingOwner = useRef(0);
+  const refreshingOwner = useRef(0);
+  // Which filter combination the rendered shelves belong to. A pending invalidation that was armed
+  // under a different combination is dropped rather than firing a redundant second request.
+  const queryIdentityRef = useRef<string | null>(null);
+  const latestRunQuery = useRef<() => Promise<void>>(async () => {});
+
+  const [shelves, setShelves] = useState<LibraryShelves | null>(null);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [resultVersion, setResultVersion] = useState(0);
+  const [error, setError] = useState<IpcError | null>(null);
+
+  const runQuery = useCallback(async () => {
+    if (!enabled) return;
+
+    const generation = requestGeneration.current + 1;
+    requestGeneration.current = generation;
+    const channel = shelvesRef.current === null ? 'initial' : 'refresh';
+    if (channel === 'initial') initialLoadingOwner.current = generation;
+    else refreshingOwner.current = generation;
+
+    if (mounted.current) {
+      if (channel === 'initial') setInitialLoading(true);
+      else setRefreshing(true);
+      setError(null);
+    }
+
+    const request: LibraryShelvesRequest = {};
+    if (search !== '') request.search = search;
+    if (favoritesOnly) request.favoritesOnly = true;
+    if (hideMissing) request.availability = 'available';
+    if (needsMetadataReview) request.needsMetadataReview = true;
+
+    try {
+      const next = await queryLibraryShelves(request);
+      if (mounted.current && requestGeneration.current === generation) {
+        shelvesRef.current = next;
+        setShelves(next);
+        setError(null);
+        setResultVersion((version) => version + 1);
+      }
+    } catch (reason: unknown) {
+      // A failed refresh keeps the bounded shelves already on screen: they are last-known-good, and
+      // blanking the whole Library to report a retryable read failure helps nobody.
+      if (mounted.current && requestGeneration.current === generation) {
+        setError(normalizeIpcError(reason));
+        setResultVersion((version) => version + 1);
+      }
+    } finally {
+      const ownsLoading =
+        channel === 'initial'
+          ? initialLoadingOwner.current === generation
+          : refreshingOwner.current === generation;
+      if (mounted.current && ownsLoading) {
+        if (channel === 'initial') setInitialLoading(false);
+        else setRefreshing(false);
+      }
+    }
+  }, [enabled, favoritesOnly, hideMissing, needsMetadataReview, search]);
+
+  useLayoutEffect(() => {
+    latestRunQuery.current = runQuery;
+    queryIdentityRef.current =
+      `${search}\u0000${favoritesOnly}\u0000${hideMissing}` + `\u0000${needsMetadataReview}`;
+  }, [favoritesOnly, hideMissing, needsMetadataReview, runQuery, search]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      requestGeneration.current += 1;
+    };
+  }, []);
+
+  const retry = useCallback(() => latestRunQuery.current(), []);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    // A terminal scan run identity is part of this effect's dependencies, so a completed scan
+    // refetches exactly once. Shelves already on screen stay rendered while it does: the channel is
+    // chosen from whether anything is committed, not from why the request was made.
+    //
+    // Dispatched through the ref the layout effect keeps current, matching `useLibraryQuery`: the
+    // request is an asynchronous side effect this effect starts, not state it writes itself.
+    void latestRunQuery.current();
+  }, [enabled, runQuery, scanCompletionRunId]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    let timer: number | undefined;
+    let maxTimer: number | undefined;
+    let hasVisibleInvalidation = false;
+    let invalidationQueryIdentity: string | null = null;
+
+    const flushInvalidation = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (maxTimer !== undefined) window.clearTimeout(maxTimer);
+      timer = undefined;
+      maxTimer = undefined;
+      if (
+        disposed ||
+        !hasVisibleInvalidation ||
+        queryIdentityRef.current !== invalidationQueryIdentity
+      ) {
+        hasVisibleInvalidation = false;
+        invalidationQueryIdentity = null;
+        return;
+      }
+      hasVisibleInvalidation = false;
+      invalidationQueryIdentity = null;
+      void latestRunQuery.current();
+    };
+
+    // The same bounded-visibility rule the grid uses: a metadata event only costs a request when it
+    // names a game a shelf preview is really showing. A whole-library scrape emits one event per
+    // game, and All Systems shows at most a few dozen of them, so the rest cost nothing.
+    const isVisible = (gameId: number) =>
+      shelvesRef.current?.shelves.some((shelf) =>
+        shelf.items.some((item) => item.gameId === gameId),
+      ) === true;
+
+    const subscription = onMetadataStateChanged(({ gameId }) => {
+      if (disposed || !isVisible(gameId)) return;
+      if (!hasVisibleInvalidation) {
+        invalidationQueryIdentity = queryIdentityRef.current;
+        maxTimer = window.setTimeout(flushInvalidation, METADATA_INVALIDATION_MAX_WAIT_MS);
+      }
+      hasVisibleInvalidation = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(flushInvalidation, METADATA_INVALIDATION_DEBOUNCE_MS);
+    })
+      .then((nextUnlisten) => {
+        if (disposed) nextUnlisten();
+        else unlisten = nextUnlisten;
+      })
+      .catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      hasVisibleInvalidation = false;
+      invalidationQueryIdentity = null;
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (maxTimer !== undefined) window.clearTimeout(maxTimer);
+      unlisten?.();
+      void subscription;
+    };
+  }, [enabled]);
+
+  return { shelves, initialLoading, refreshing, resultVersion, error, retry };
+}

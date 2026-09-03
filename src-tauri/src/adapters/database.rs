@@ -148,7 +148,7 @@ mod tests {
             .fetch_one(database.pool())
             .await
             .expect("migration history should be available");
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, 6);
         database.pool().close().await;
 
         let reopened = Database::open(&path)
@@ -165,7 +165,7 @@ mod tests {
                 .fetch_one(reopened.pool())
                 .await
                 .expect("migration history should remain stable");
-        assert_eq!(reopened_migration_count, 5);
+        assert_eq!(reopened_migration_count, 6);
 
         sqlx::migrate!("./migrations")
             .undo(reopened.pool(), 20260825000000)
@@ -424,7 +424,7 @@ mod tests {
             .fetch_one(reopened.pool())
             .await
             .expect("migration history should be available");
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, 6);
         let preserved: i64 = sqlx::query_scalar("SELECT id FROM games")
             .fetch_one(reopened.pool())
             .await
@@ -435,6 +435,149 @@ mod tests {
             .await
             .expect("provider state should persist across a restart");
         assert_eq!(provider_matches, 1);
+    }
+
+    #[tokio::test]
+    async fn the_m8_5_scrape_migration_applies_forward_and_reverts_without_losing_metadata() {
+        let directory = tempdir().expect("temporary database directory should be created");
+        let path = directory.path().join("retrofrontier.sqlite3");
+        let pre_m5 = open_pre_m5_database(&path).await;
+        populate_m4_library(&pre_m5).await;
+        pre_m5.close().await;
+
+        let database = Database::open(&path).await.expect("M8.5 migration applies");
+        sqlx::query(
+            "INSERT INTO provider_matches \
+             (game_id, provider_id, status, match_type, provider_game_id, created_at, updated_at) \
+             VALUES (41, 'screenscraper', 'matched', 'deterministic_sha1', '5001', 40, 40)",
+        )
+        .execute(database.pool())
+        .await
+        .expect("provider match fixture");
+        let run_id: i64 = sqlx::query_scalar(
+            "INSERT INTO metadata_scrape_runs \
+             (provider_id, mode, status, created_at, updated_at) \
+             VALUES ('screenscraper', 'refresh_matched', 'running', 40, 40) RETURNING id",
+        )
+        .fetch_one(database.pool())
+        .await
+        .expect("scrape run fixture");
+        sqlx::query(
+            "INSERT INTO metadata_scrape_run_items (run_id, game_id, state, updated_at) \
+             VALUES (?, 41, 'queued', 40)",
+        )
+        .bind(run_id)
+        .execute(database.pool())
+        .await
+        .expect("scrape run item fixture");
+        sqlx::query(
+            "INSERT INTO metadata_jobs \
+             (game_id, provider_id, kind, state, priority, attempts, bulk_run_id, created_at, \
+              updated_at) \
+             VALUES (41, 'screenscraper', 'refresh_metadata', 'pending', 1200, 0, ?, 40, 40)",
+        )
+        .bind(run_id)
+        .execute(database.pool())
+        .await
+        .expect("bulk job fixture");
+
+        // Only one run may hold a provider at a time, and the database is what enforces it.
+        assert!(
+            sqlx::query(
+                "INSERT INTO metadata_scrape_runs \
+                 (provider_id, mode, status, created_at, updated_at) \
+                 VALUES ('screenscraper', 'missing_metadata', 'running', 40, 40)",
+            )
+            .execute(database.pool())
+            .await
+            .is_err(),
+            "a second active run must be rejected by the active-run index"
+        );
+        // A finished run releases the provider without being deleted.
+        sqlx::query(
+            "UPDATE metadata_scrape_runs SET status = 'stopped', finished_at = 41 WHERE id = ?",
+        )
+        .bind(run_id)
+        .execute(database.pool())
+        .await
+        .expect("a run may finish");
+        sqlx::query(
+            "INSERT INTO metadata_scrape_runs \
+             (provider_id, mode, status, created_at, updated_at) \
+             VALUES ('screenscraper', 'missing_metadata', 'running', 41, 41)",
+        )
+        .execute(database.pool())
+        .await
+        .expect("the next run may start once the previous one has finished");
+
+        // A finished run must record when it finished, and an unfinished one must not.
+        assert!(sqlx::query(
+            "INSERT INTO metadata_scrape_runs \
+             (provider_id, mode, status, created_at, updated_at) \
+             VALUES ('screenscraper', 'missing_metadata', 'completed', 41, 41)",
+        )
+        .execute(database.pool())
+        .await
+        .is_err());
+
+        // Run bookkeeping must never be the reason local library identity cannot be reconciled.
+        // Provider relationships restrain a game on purpose; a run item is only bookkeeping about a
+        // batch operation, so it follows the game out instead of holding it in place.
+        sqlx::query(
+            "INSERT INTO games (id, system_id, local_title, availability, created_at, updated_at) \
+             VALUES (77, 'nes', 'Scratch Entry', 'available', 41, 41)",
+        )
+        .execute(database.pool())
+        .await
+        .expect("bare game fixture");
+        sqlx::query(
+            "INSERT INTO metadata_scrape_run_items (run_id, game_id, state, updated_at) \
+             VALUES (?, 77, 'pending', 41)",
+        )
+        .bind(run_id)
+        .execute(database.pool())
+        .await
+        .expect("scrape run item fixture");
+        sqlx::query("DELETE FROM games WHERE id = 77")
+            .execute(database.pool())
+            .await
+            .expect("a game carrying only run bookkeeping may be removed");
+        let orphaned_items: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM metadata_scrape_run_items WHERE game_id = 77")
+                .fetch_one(database.pool())
+                .await
+                .expect("run items should be queryable");
+        assert_eq!(orphaned_items, 0, "run items follow their game");
+
+        sqlx::migrate!("./migrations")
+            .undo(database.pool(), 20260830000000)
+            .await
+            .expect("the M8.5 down migration should revert only the scrape schema");
+
+        let scrape_tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN \
+             ('metadata_scrape_runs', 'metadata_scrape_run_items')",
+        )
+        .fetch_one(database.pool())
+        .await
+        .expect("schema should remain queryable after the down migration");
+        assert_eq!(scrape_tables, 0);
+        // The M5 queue keeps working without the bulk attribution column.
+        sqlx::query(
+            "INSERT INTO metadata_jobs \
+             (game_id, provider_id, kind, state, priority, attempts, created_at, updated_at) \
+             VALUES (41, 'screenscraper', 'identify', 'pending', 100, 0, 40, 40)",
+        )
+        .execute(database.pool())
+        .await
+        .expect("M5 jobs survive the down migration");
+        let bulk_column: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('metadata_jobs') WHERE name = 'bulk_run_id'",
+        )
+        .fetch_one(database.pool())
+        .await
+        .expect("column list should be readable");
+        assert_eq!(bulk_column, 0);
     }
 
     #[tokio::test]

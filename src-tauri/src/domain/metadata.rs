@@ -620,6 +620,17 @@ impl ProviderFailureClass {
     pub const fn defers_provider(self) -> bool {
         matches!(self.disposition(), FailureDisposition::DeferForProvider)
     }
+
+    /// True when the failure describes RetroFrontier's own configuration rather than the content.
+    ///
+    /// Every `Permanent` class is one of these — a malformed request, an authentication failure, a
+    /// rejected client build, absent credentials — and `Permanent` is defined as "do not retry until
+    /// configuration or content changes". The provider was never actually asked about the game, so a
+    /// job parked this way records that RetroFrontier could not ask, not that an answer exists. That
+    /// distinction matters wherever "already answered" is used to exclude a game from future work.
+    pub const fn blocks_until_configuration_changes(self) -> bool {
+        matches!(self.disposition(), FailureDisposition::Permanent)
+    }
 }
 
 /// Dynamic provider quota/concurrency snapshot.
@@ -784,12 +795,33 @@ pub struct MetadataProviderStatus {
 /// It carries product, version, and platform information, which is what makes HTTP 426-style
 /// client-lifecycle signals actionable, and deliberately carries nothing about the user.
 pub fn application_softname() -> String {
-    format!(
+    provider_safe_identity(&format!(
         "RetroFrontier/{} ({}-{})",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         std::env::consts::ARCH
-    )
+    ))
+}
+
+/// Characters a provider may echo back into its own payload without corrupting it.
+///
+/// The softname is not merely sent; ScreenScraper embeds it in the media URLs inside its JSON
+/// response. Its encoder escapes an underscore as `\_`, which is not one of JSON's escape
+/// sequences, so the whole response becomes unparseable — and `x86_64` put an underscore in every
+/// request this application made. Restricting the identity to an allowlist keeps it from tripping
+/// that, and keeps a future target triple or version suffix from finding the next such character.
+///
+/// This is a conservative outbound choice, not a claim that the provider is right: emitting invalid
+/// JSON is their defect. It is simply not one this application can repair from the receiving end,
+/// and the identity loses nothing legible by avoiding it.
+fn provider_safe_identity(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '/' | '-' | ' ' | '(' | ')' => character,
+            _ => '-',
+        })
+        .collect()
 }
 
 /// HTTP user agent for provider requests. Same identity, HTTP-conventional shape.
@@ -805,17 +837,32 @@ pub fn application_user_agent() -> String {
 /// Local content evidence for one content unit, or the reason it cannot be used.
 ///
 /// This is the only place that decides which M4 content shapes may take part in *automatic*
-/// deterministic matching. Refusals stay conservative: an undocumented canonical representation
-/// is deferred, never guessed.
+/// deterministic matching.
+///
+/// Disc containers used to be refused here, on the grounds that the provider does not document
+/// which bytes are canonical for a CHD or a CUE/BIN set. That refusal answered a question no
+/// working scraper asks: ES-DE and Skyscraper both hash the single file that represents the game
+/// in the library, whatever its format, and send the filename alongside — the provider matches on
+/// a checksum *or* an exact filename. Refusing to produce evidence did not make matching safer, it
+/// only removed the request that would have carried the filename too, which is why no PlayStation
+/// content could ever match by any route.
+///
+/// Producing evidence is therefore no longer a claim that the bytes are canonical. It is a claim
+/// that these are the bytes we have. `classify_deterministic_match` remains the only thing that
+/// decides whether an answer may attach automatically, and it still requires agreeing hashes and
+/// size — so a CHD whose hash the provider has never seen degrades to a candidate the user
+/// confirms, never to a silent wrong match.
+///
+/// A playlist stays refused for a different and still-valid reason: it names other content rather
+/// than being content.
 pub fn evidence_for_unit(unit: &ContentUnit) -> Result<MatchEvidence, UnsupportedContentReason> {
     match unit.kind {
-        ContentUnitKind::Chd => return Err(UnsupportedContentReason::ChdRepresentationUndefined),
-        ContentUnitKind::CueBin => {
-            return Err(UnsupportedContentReason::CueBinRepresentationUndefined)
-        }
-        ContentUnitKind::Gdi => return Err(UnsupportedContentReason::GdiRepresentationUndefined),
+        // A playlist names other content. There is no file here whose bytes are the game, so
+        // hashing one would describe the wrong thing rather than describe it imprecisely.
         ContentUnitKind::M3u => return Err(UnsupportedContentReason::PlaylistIsNotIdentity),
-        ContentUnitKind::SingleFile => {}
+        // Unverified: no Dreamcast content was available to establish what a GDI set hashes to.
+        ContentUnitKind::Gdi => return Err(UnsupportedContentReason::GdiRepresentationUndefined),
+        ContentUnitKind::Chd | ContentUnitKind::CueBin | ContentUnitKind::SingleFile => {}
     }
 
     let primary = unit
@@ -848,12 +895,17 @@ pub fn evidence_for_unit(unit: &ContentUnit) -> Result<MatchEvidence, Unsupporte
     })
 }
 
-/// Single-file extensions whose whole-file bytes are an established provider lookup identity.
+/// Extensions whose whole-file bytes are worth submitting as a lookup subject.
 ///
-/// The list is intentionally an allowlist. The finalized capability matrix confirms automatic
-/// matching only for ordinary single-file ROM content, so a container whose canonical
-/// representation the provider has not published (RVZ, GCM, PBP, CDI, and bare disc tracks on
-/// disc systems) is deferred to heuristic candidates instead of being hashed and hoped for.
+/// Still an allowlist, but it now answers a weaker question than it used to: not "are these bytes
+/// the provider's canonical identity" — nobody publishes that for disc containers — but "is this
+/// one file the thing the library calls the game". A submitted hash that the provider has never
+/// seen costs nothing, because the request carries the filename too and the classifier refuses to
+/// accept a mismatch.
+///
+/// GameCube keeps the narrower rule: RVZ and GCM are re-containerisations whose relationship to
+/// the provider's ISO records is not established, and unlike the CD systems there is no evidence
+/// that submitting them helps.
 fn supports_automatic_deterministic_matching(system: SystemId, relative_path: &str) -> bool {
     let extension = file_extension(relative_path);
     match system {
@@ -881,8 +933,14 @@ fn supports_automatic_deterministic_matching(system: SystemId, relative_path: &s
         ),
         // The provider's GameCube entry lists ISO images; RVZ and GCM are not established.
         SystemId::NintendoGameCube => extension == ".iso",
-        // Disc systems expose only container formats whose canonical identity is undocumented.
-        SystemId::PlayStation | SystemId::SegaSaturn | SystemId::SegaDreamcast => false,
+        // CD systems: the descriptor or the image, whichever the unit's primary file is. A CUE
+        // descriptor is the one that can actually match — the provider's CD records come from
+        // Redump, whose `.cue` files are standard text — while a CHD carries the request's
+        // filename to a name match instead.
+        SystemId::PlayStation | SystemId::SegaSaturn | SystemId::SegaDreamcast => matches!(
+            extension.as_str(),
+            ".cue" | ".chd" | ".iso" | ".bin" | ".img" | ".pbp" | ".cdi"
+        ),
     }
 }
 
@@ -951,19 +1009,16 @@ mod tests {
     }
 
     #[test]
-    fn deferred_container_formats_are_refused_conservatively() {
+    fn content_that_is_not_itself_a_lookup_subject_is_still_refused() {
+        // What survives the disc-container change: a playlist names other content rather than
+        // being content, and no Dreamcast GDI set was available to establish what it hashes to.
+        // GameCube keeps its narrow rule because a re-container has no evidence of helping.
         let cases = [
             (
-                ContentUnitKind::Chd,
+                ContentUnitKind::M3u,
                 SystemId::PlayStation,
-                "PS/game.chd",
-                UnsupportedContentReason::ChdRepresentationUndefined,
-            ),
-            (
-                ContentUnitKind::CueBin,
-                SystemId::PlayStation,
-                "PS/game.cue",
-                UnsupportedContentReason::CueBinRepresentationUndefined,
+                "PS/game.m3u",
+                UnsupportedContentReason::PlaylistIsNotIdentity,
             ),
             (
                 ContentUnitKind::Gdi,
@@ -972,21 +1027,9 @@ mod tests {
                 UnsupportedContentReason::GdiRepresentationUndefined,
             ),
             (
-                ContentUnitKind::M3u,
-                SystemId::PlayStation,
-                "PS/game.m3u",
-                UnsupportedContentReason::PlaylistIsNotIdentity,
-            ),
-            (
                 ContentUnitKind::SingleFile,
                 SystemId::NintendoGameCube,
                 "GC/game.rvz",
-                UnsupportedContentReason::ContainerRepresentationUndefined,
-            ),
-            (
-                ContentUnitKind::SingleFile,
-                SystemId::PlayStation,
-                "PS/game.iso",
                 UnsupportedContentReason::ContainerRepresentationUndefined,
             ),
         ];
@@ -998,6 +1041,71 @@ mod tests {
                 "{path} must not take part in automatic deterministic matching"
             );
         }
+    }
+
+    #[test]
+    fn disc_containers_now_submit_the_bytes_they_have() {
+        // Producing evidence is not a claim that these bytes are the provider's canonical identity
+        // — nobody publishes that for a disc container. It is what puts the request on the wire at
+        // all, and the request carries the filename the provider can match on instead.
+        // `classify_deterministic_match` still decides whether an answer may attach.
+        for (kind, path) in [
+            (ContentUnitKind::CueBin, "PS/game.cue"),
+            (ContentUnitKind::Chd, "PS/game.chd"),
+            (ContentUnitKind::SingleFile, "PS/game.iso"),
+            (ContentUnitKind::SingleFile, "PS/game.bin"),
+        ] {
+            let evidence = evidence_for_unit(&unit(kind, SystemId::PlayStation, path))
+                .unwrap_or_else(|reason| panic!("{path} should submit evidence, got {reason:?}"));
+            assert_eq!(evidence.content_unit_kind, kind);
+            assert!(
+                evidence.sha1.is_some() || evidence.md5.is_some() || evidence.crc32.is_some(),
+                "{path} must carry at least one hash"
+            );
+        }
+    }
+
+    #[test]
+    fn a_disc_unit_submits_its_descriptor_rather_than_a_track() {
+        // A CUE/BIN set is the case that can genuinely match: the provider's CD records come from
+        // Redump, whose `.cue` files are standard text, so the descriptor is the file whose hash
+        // is worth submitting. Ordinal order already puts it first; this pins that it stays so.
+        let mut cue_bin = unit(
+            ContentUnitKind::CueBin,
+            SystemId::PlayStation,
+            "PS/game.cue",
+        );
+        cue_bin.files = vec![
+            ContentFileMembership {
+                ordinal: 0,
+                role: ContentFileRole::Descriptor,
+                file: ContentFile {
+                    id: ContentFileId(1),
+                    relative_path: "PS/game.cue".to_owned(),
+                    size_bytes: 100,
+                    sha1: Some("1111111111111111111111111111111111111111".to_owned()),
+                    ..file("PS/game.cue")
+                },
+            },
+            ContentFileMembership {
+                ordinal: 1,
+                role: ContentFileRole::Track,
+                file: ContentFile {
+                    id: ContentFileId(2),
+                    relative_path: "PS/game.bin".to_owned(),
+                    size_bytes: 517_872_768,
+                    sha1: Some("2222222222222222222222222222222222222222".to_owned()),
+                    ..file("PS/game.bin")
+                },
+            },
+        ];
+
+        let evidence = evidence_for_unit(&cue_bin).expect("a CUE/BIN set should submit evidence");
+        assert_eq!(evidence.size_bytes, 100, "the descriptor, not the track");
+        assert_eq!(
+            evidence.sha1.as_deref(),
+            Some("1111111111111111111111111111111111111111")
+        );
     }
 
     #[test]
@@ -1070,6 +1178,36 @@ mod tests {
     }
 
     #[test]
+    fn the_softname_carries_nothing_a_provider_can_mangle() {
+        let softname = application_softname();
+
+        // The concrete defect this exists for: ScreenScraper escapes an underscore as an invalid
+        // JSON escape when it echoes the softname into media URLs, breaking the whole response.
+        assert!(!softname.contains('_'), "{softname}");
+        assert!(!softname.contains('\\'), "{softname}");
+        assert!(!softname.contains('"'), "{softname}");
+        assert!(
+            softname
+                .chars()
+                .all(|character| character.is_ascii_graphic() || character == ' '),
+            "{softname}"
+        );
+    }
+
+    #[test]
+    fn the_identity_allowlist_preserves_meaning_and_replaces_the_rest() {
+        // Everything a version and target triple legitimately needs survives unchanged.
+        assert_eq!(
+            provider_safe_identity("RetroFrontier/1.2.3-rc.4 (linux-aarch64)"),
+            "RetroFrontier/1.2.3-rc.4 (linux-aarch64)"
+        );
+        // The observed offender, and the two characters that would break a JSON string outright.
+        assert_eq!(provider_safe_identity("x86_64"), "x86-64");
+        assert_eq!(provider_safe_identity("a\"b\\c"), "a-b-c");
+        // A non-ASCII byte cannot reach the provider either.
+        assert_eq!(provider_safe_identity("café"), "caf-");
+    }
+    #[test]
     fn failure_dispositions_separate_permanent_quota_and_transient_classes() {
         assert_eq!(
             ProviderFailureClass::InvalidRequest.disposition(),
@@ -1101,8 +1239,10 @@ mod tests {
 
         assert!(softname.starts_with("RetroFrontier/"));
         assert!(softname.contains(env!("CARGO_PKG_VERSION")));
-        assert!(softname.contains(std::env::consts::OS));
-        assert!(softname.contains(std::env::consts::ARCH));
+        assert!(softname.contains(&provider_safe_identity(std::env::consts::OS)));
+        // The platform is still identified; only characters the provider mangles are replaced, so
+        // this is the sanitized spelling rather than the raw target triple.
+        assert!(softname.contains(&provider_safe_identity(std::env::consts::ARCH)));
         assert_eq!(softname, application_softname());
         assert!(application_user_agent().starts_with("RetroFrontier/"));
     }

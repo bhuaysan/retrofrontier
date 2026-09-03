@@ -10,6 +10,9 @@ use crate::adapters::credentials::SecretString;
 use crate::application::AppState;
 use crate::domain::library::GameId;
 use crate::domain::metadata::{GameMetadataState, MetadataProviderStatus, UserAccountState};
+use crate::domain::metadata_scrape::{
+    MetadataScrapeMode, MetadataScrapePreview, MetadataScrapeStatus,
+};
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 
@@ -139,6 +142,55 @@ pub async fn clear_metadata_provider_credentials(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), AppError> {
     let result = state.metadata().clear_user_credentials().await;
+    log_result(&result);
+    result
+}
+
+/// Whole-library scraper input.
+///
+/// The mode is the entire request. The frontend never sends game identifiers for a batch operation:
+/// eligibility, the fixed target set, feeding, attribution, stopping and completion are all decided
+/// in Rust, where the authoritative state already lives.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataScrapeModeRequest {
+    pub mode: MetadataScrapeMode,
+}
+
+#[tauri::command]
+pub async fn preview_metadata_scrape(
+    request: MetadataScrapeModeRequest,
+    state: tauri::State<'_, AppState>,
+) -> Result<MetadataScrapePreview, AppError> {
+    let result = state.metadata_scrape().preview(request.mode).await;
+    log_result(&result);
+    result
+}
+
+#[tauri::command]
+pub async fn get_metadata_scrape_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<MetadataScrapeStatus, AppError> {
+    let result = state.metadata_scrape().status().await;
+    log_result(&result);
+    result
+}
+
+#[tauri::command]
+pub async fn start_metadata_scrape(
+    request: MetadataScrapeModeRequest,
+    state: tauri::State<'_, AppState>,
+) -> Result<MetadataScrapeStatus, AppError> {
+    let result = state.metadata_scrape().start(request.mode).await;
+    log_result(&result);
+    result
+}
+
+#[tauri::command]
+pub async fn stop_metadata_scrape(
+    state: tauri::State<'_, AppState>,
+) -> Result<MetadataScrapeStatus, AppError> {
+    let result = state.metadata_scrape().stop().await;
     log_result(&result);
     result
 }

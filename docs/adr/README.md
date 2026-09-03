@@ -23,3 +23,5 @@ Status values:
 - [ADR-012: Managed runtime trust and anti-rollback model](ADR-012-runtime-trust-model.md)
 - [ADR-013: SQLite write concurrency for background metadata writes](ADR-013-sqlite-write-concurrency.md)
 - [ADR-014: Browser Gamepad API behind a replaceable input-acquisition boundary](ADR-014-input-acquisition-boundary.md)
+- [ADR-015: Cover presentation profiles measured from delivered artwork](ADR-015-cover-presentation-profiles.md)
+- [ADR-016: Disc content is submitted and judged, not refused](ADR-016-disc-content-lookup.md)

@@ -21,13 +21,18 @@ import { useLaunchFocusReturn } from '../hooks/useLaunchFocusReturn';
 import { useContentRoots } from '../hooks/useContentRoots';
 import { useLibrarySummary } from '../hooks/useLibrarySummary';
 import { useLibraryQuery } from '../hooks/useLibraryQuery';
+import { useLibraryShelves } from '../hooks/useLibraryShelves';
 import { useGameDetail } from '../hooks/useGameDetail';
 import { useGameLaunch, type GameLaunchModel } from '../hooks/useGameLaunch';
 import { useScanState } from '../hooks/useScanState';
 import { useSystemCatalog } from '../hooks/useSystemCatalog';
 import { pickExternalContentRoot } from '../platform/folderPicker';
-import { openManagedRomFolder, type ScanSummary } from '../platform/ipc';
-import { LibraryPage, ScanProgressPanel } from '../features/library/LibraryPage';
+import { openManagedRomFolder, type ScanSummary, type SystemId } from '../platform/ipc';
+import {
+  LibraryPage,
+  ScanProgressPanel,
+  type LibraryFocusReturn,
+} from '../features/library/LibraryPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
 import { systemAccent } from '../features/library/systemAccents';
 import { GameDetailPage } from '../features/library/GameDetailPage';
@@ -184,7 +189,7 @@ function AppShellBody() {
   const gameRouteState = isGameRoute(route) ? route : null;
   const usesPersistentSidebar = isLibraryRoute || isSettingsRoute || gameRouteState !== null;
   const currentGameId = gameRouteState?.gameId ?? null;
-  const [libraryFocusGameId, setLibraryFocusGameId] = useState<number | null>(null);
+  const [libraryFocusReturn, setLibraryFocusReturn] = useState<LibraryFocusReturn | null>(null);
   const {
     summary,
     loading: summaryLoading,
@@ -224,8 +229,23 @@ function AppShellBody() {
   const onFavoriteCommitted = useCallback(() => {
     void refreshSummary();
   }, [refreshSummary]);
+  const libraryPopulated = isLibraryRoute && Boolean(summary && summary.totalGames > 0);
+  // Exactly one of the two Library data owners queries at a time, because exactly one of the two
+  // browse presentations is rendered. `useLibraryQuery` stays authoritative for the paginated
+  // single-system grid *and*, whether or not it is querying, for every user filter choice; the
+  // shelf model is handed those committed choices and owns only its own bounded request. Leaving
+  // both enabled would spend a second bounded query on a page that never renders its result.
   const library = useLibraryQuery({
-    enabled: isLibraryRoute && Boolean(summary && summary.totalGames > 0),
+    enabled: libraryPopulated,
+    queriesAllSystems: false,
+    scanCompletionRunId: libraryScanCompletionRunId,
+  });
+  const shelves = useLibraryShelves({
+    enabled: libraryPopulated && library.systemId === null,
+    search: library.debouncedSearch,
+    favoritesOnly: library.favoritesOnly,
+    hideMissing: library.hideMissing,
+    needsMetadataReview: library.needsMetadataReview,
     scanCompletionRunId: libraryScanCompletionRunId,
   });
   const gameDetail = useGameDetail({
@@ -255,12 +275,32 @@ function AppShellBody() {
   }, []);
 
   const onOpenGame = useCallback(
-    (gameId: number) => {
-      setLibraryFocusGameId(gameId);
+    (gameId: number, systemId: string) => {
+      // The return request records which shelf the game was browsed under, so a return that finds
+      // the game gone can still land on that system rather than at the top of the Library. In the
+      // single-system grid there is no shelf to return to, and `null` says so honestly.
+      setLibraryFocusReturn({
+        gameId,
+        systemId: library.systemId === null ? systemId : null,
+      });
       navigate(gameRoute(gameId));
     },
-    [navigate],
+    [library.systemId, navigate],
   );
+
+  /**
+   * Leaves Settings for the games a scrape run could not decide on its own.
+   *
+   * Every other filter is cleared first: arriving at "14 need review" and seeing four of them,
+   * because a system filter was still set from an earlier visit, would be worse than not offering
+   * the route at all. The filter itself stays visible and clearable in the Library filter bar, so
+   * this is a starting point rather than a mode the user has to escape.
+   */
+  const onReviewMetadataMatches = useCallback(() => {
+    library.resetQuery();
+    library.setNeedsMetadataReview(true);
+    navigate('library');
+  }, [library, navigate]);
 
   const onBackToLibrary = useCallback(() => {
     navigate('library');
@@ -268,14 +308,14 @@ function AppShellBody() {
 
   const navigateFromShell = useCallback(
     (nextRoute: 'library' | 'settings') => {
-      setLibraryFocusGameId(null);
+      setLibraryFocusReturn(null);
       navigate(nextRoute);
     },
     [navigate],
   );
 
   const onLibraryFocusRestored = useCallback(() => {
-    setLibraryFocusGameId(null);
+    setLibraryFocusReturn(null);
   }, []);
 
   // Launch state is application-wide: a game keeps running while the user browses elsewhere, so
@@ -398,6 +438,8 @@ function AppShellBody() {
    */
   const [libraryMainEntry, setLibraryMainEntry] = useState<{
     id: number;
+    /** Which browse presentation the handoff will land in — shelves, or the paginated grid. */
+    showsShelves: boolean;
     settleVersion: number | null;
   } | null>(null);
   const libraryMainEntrySequence = useRef(0);
@@ -406,16 +448,45 @@ function AppShellBody() {
   // handoff is what must be prevented; leaving the resolved request in state is harmless.
   const resolvedLibraryMainEntry = useRef(0);
   const librarySystemId = library.systemId;
-  const libraryResultVersion = library.resultVersion;
+  const libraryShowsShelves = librarySystemId === null;
+  const gridResultVersion = library.resultVersion;
+  const shelfResultVersion = shelves.resultVersion;
   const enterLibraryMain = useCallback(
     (targetSystemId: string | null) => {
+      // The handoff must outlive the query of the presentation it will really land in: entering
+      // All Systems waits for the shelves, entering a system waits for that system's grid. The two
+      // have separate result counters, so the version is captured from the one that will be
+      // consulted — comparing across them would resolve the handoff against the wrong surface.
+      const targetShowsShelves = targetSystemId === null;
       libraryMainEntrySequence.current += 1;
       setLibraryMainEntry({
         id: libraryMainEntrySequence.current,
-        settleVersion: targetSystemId === librarySystemId ? null : libraryResultVersion,
+        showsShelves: targetShowsShelves,
+        settleVersion:
+          targetSystemId === librarySystemId
+            ? null
+            : targetShowsShelves
+              ? shelfResultVersion
+              : gridResultVersion,
       });
     },
-    [libraryResultVersion, librarySystemId],
+    [gridResultVersion, librarySystemId, shelfResultVersion],
+  );
+
+  /**
+   * A shelf's View All.
+   *
+   * It is not a route and not a second kind of navigation: it sets exactly the system filter the
+   * sidebar sets, which is why the sidebar's active row updates by itself and `back` keeps working
+   * unchanged. Focus then enters the committed grid at its first game, through the same handoff a
+   * confirmed sidebar filter uses — there is no "same column" between a shelf and a grid to keep.
+   */
+  const onViewAllSystem = useCallback(
+    (systemId: string) => {
+      library.setSystemId(systemId as SystemId);
+      enterLibraryMain(systemId);
+    },
+    [enterLibraryMain, library],
   );
 
   useEffect(() => {
@@ -426,17 +497,30 @@ function AppShellBody() {
       resolvedLibraryMainEntry.current = libraryMainEntry.id;
       return;
     }
+    // The rendered presentation must already be the one the handoff was made for; a filter change
+    // commits a render before its query settles.
+    if (libraryShowsShelves !== libraryMainEntry.showsShelves) return;
+    const targetResultVersion = libraryMainEntry.showsShelves
+      ? shelfResultVersion
+      : gridResultVersion;
     if (
       libraryMainEntry.settleVersion !== null &&
-      library.resultVersion === libraryMainEntry.settleVersion
+      targetResultVersion === libraryMainEntry.settleVersion
     ) {
       return;
     }
-    if (library.initialLoading || library.refreshing || library.pageLoading) return;
+    if (libraryMainEntry.showsShelves) {
+      if (shelves.initialLoading || shelves.refreshing) return;
+    } else if (library.initialLoading || library.refreshing || library.pageLoading) {
+      return;
+    }
     resolvedLibraryMainEntry.current = libraryMainEntry.id;
-    // The honest first target of the *committed* result: the first game of the selected view, or
-    // the Library heading when that view has none. No focusable element is invented for this.
-    const firstGameId = library.page?.items[0]?.gameId ?? null;
+    // The honest first target of the *committed* result: the first preview game of the first
+    // non-empty shelf in All Systems, the first game of the page in a selected system, and the
+    // Library heading when that view really has none. No focusable element is invented for this.
+    const firstGameId = libraryMainEntry.showsShelves
+      ? (shelves.shelves?.shelves.flatMap((shelf) => shelf.items)[0]?.gameId ?? null)
+      : (library.page?.items[0]?.gameId ?? null);
     if (firstGameId === null || !focus.focusNode(focusNodes.libraryGame(firstGameId))) {
       focus.focusNode(focusNodes.libraryHeading);
     }
@@ -447,9 +531,14 @@ function AppShellBody() {
     library.page,
     library.pageLoading,
     library.refreshing,
-    library.resultVersion,
+    gridResultVersion,
     libraryMainEntry,
+    libraryShowsShelves,
     scanRunning,
+    shelfResultVersion,
+    shelves.initialLoading,
+    shelves.refreshing,
+    shelves.shelves,
   ]);
 
   const librarySidebarZoneRef = useFocusZone({ id: focusZones.librarySidebar });
@@ -707,12 +796,14 @@ function AppShellBody() {
           refreshRoots={refreshRoots}
           systems={catalogSystems}
           library={library}
+          shelves={shelves}
           scan={scan}
           onAddExternalFolder={onAddExternalFolder}
           onOpenManagedFolder={onOpenManagedFolder}
           onManageRoots={() => navigateFromShell('settings')}
           onOpenGame={onOpenGame}
-          restoreFocusGameId={libraryFocusGameId}
+          onViewAllSystem={onViewAllSystem}
+          restoreFocus={libraryFocusReturn}
           onFocusRestored={onLibraryFocusRestored}
           mainZoneRef={libraryMainZoneRef}
         />
@@ -741,6 +832,7 @@ function AppShellBody() {
           onAddExternalFolder={onAddExternalFolder}
           onOpenManagedFolder={onOpenManagedFolder}
           onBackToLibrary={() => navigateFromShell('library')}
+          onReviewMetadataMatches={onReviewMetadataMatches}
         />
       )}
 

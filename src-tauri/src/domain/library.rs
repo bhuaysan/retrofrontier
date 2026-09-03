@@ -373,6 +373,13 @@ pub struct LibraryQuery {
     pub genre: Option<String>,
     pub region: Option<String>,
     pub availability: Option<GameAvailability>,
+    /// Restricts the page to games whose provider match needs a human decision.
+    ///
+    /// One narrow flag rather than a general match-state filter: the only state a user can act on
+    /// from Game Detail is an ambiguous candidate set. A no-match, an unsupported shape or a parked
+    /// failure has no candidate list to choose from, so listing them under "review" would be an
+    /// invitation to do something the UI cannot offer.
+    pub needs_metadata_review: bool,
     pub sort: LibrarySort,
     /// Zero means the bounded default. Values above the backend maximum are capped.
     pub limit: u32,
@@ -438,6 +445,93 @@ pub struct LibraryPage {
     pub total: u64,
     pub offset: u64,
     pub limit: u32,
+}
+
+/// The bounded per-system preview shown by the Library's All Systems browse view.
+///
+/// One shelf per system that really has a match, holding a short preview rather than the system's
+/// whole collection: All Systems is for discovery, and complete traversal belongs to the paginated
+/// single-system grid reached through View All.
+pub const DEFAULT_LIBRARY_SHELF_PREVIEW: u32 = 6;
+/// A hard ceiling on the preview, so the shelf response stays bounded by system count no matter
+/// what a caller asks for. It exists for the same reason `MAX_LIBRARY_PAGE_SIZE` does.
+pub const MAX_LIBRARY_SHELF_PREVIEW: u32 = 12;
+
+/// The All Systems shelf projection request.
+///
+/// It carries only the filters the Library really has and no system filter at all: choosing a
+/// system is what *leaves* shelf mode for the paginated grid. Ordering, search, favorites, and
+/// review semantics are not restated here — the query is derived from `LibraryQuery` so both
+/// surfaces cannot drift apart.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LibraryShelfQuery {
+    pub search: Option<String>,
+    pub favorites_only: bool,
+    /// Restricts every shelf to games whose local content is in the given availability state.
+    ///
+    /// Present here for the same reason as the other filters: All Systems and the paginated grid
+    /// must answer the same question. A shelf that kept showing games the grid hides would make
+    /// the filter look broken on the very view most users browse from.
+    pub availability: Option<GameAvailability>,
+    pub needs_metadata_review: bool,
+    /// Zero means the bounded default. Values above the backend maximum are capped.
+    pub preview_limit: u32,
+}
+
+impl LibraryShelfQuery {
+    pub fn bounded_preview_limit(&self) -> u32 {
+        let limit = if self.preview_limit == 0 {
+            DEFAULT_LIBRARY_SHELF_PREVIEW
+        } else {
+            self.preview_limit
+        };
+        limit.min(MAX_LIBRARY_SHELF_PREVIEW)
+    }
+
+    /// The equivalent ordinary Library query.
+    ///
+    /// This is the single source of truth for shelf filtering: the repository binds the shelf SQL
+    /// from this value through the same predicate the paginated grid uses, so a game can never
+    /// match in one surface and not in the other. `limit`/`offset` are meaningless for a shelf —
+    /// the preview bound is per system, not per response — and `system_id` stays `None` because a
+    /// shelf query spans every system at once.
+    pub fn as_library_query(&self) -> LibraryQuery {
+        LibraryQuery {
+            search: self.search.clone(),
+            system_id: None,
+            favorites_only: self.favorites_only,
+            genre: None,
+            region: None,
+            availability: self.availability,
+            needs_metadata_review: self.needs_metadata_review,
+            sort: LibrarySort::TitleAsc,
+            limit: 0,
+            offset: 0,
+        }
+    }
+}
+
+/// One system's bounded shelf.
+///
+/// `total` is every game of this system matching the active filters; `items` is only the preview.
+/// The two are deliberately different numbers, so the UI can say "84 games" while rendering six.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryShelf {
+    pub system_id: SystemId,
+    pub total: u64,
+    pub items: Vec<LibraryListItem>,
+}
+
+/// Shelves for every system with at least one match, in a deterministic system order.
+///
+/// A system with no match is absent rather than present and empty: a list of empty headings is not
+/// a browse view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryShelves {
+    pub shelves: Vec<LibraryShelf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

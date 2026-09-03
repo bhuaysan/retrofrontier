@@ -7,6 +7,7 @@ import { gameRoute, routePath } from '../../app/routes';
 import { PixelCheck } from '../../components/ui/PixelIcon';
 import { GameCover } from './GameCover';
 import { systemAccentKey } from './systemAccents';
+import { systemCoverPresentation } from './systemCoverPresentation';
 import { systemShortLabel } from './systemLabels';
 
 interface GameCardProps {
@@ -14,7 +15,8 @@ interface GameCardProps {
   systemName: string;
   accent: string;
   selected: boolean;
-  onOpenGame: (gameId: number) => void;
+  /** The system is reported alongside the game so a return can fall back to its own shelf. */
+  onOpenGame: (gameId: number, systemId: string) => void;
   onToggleSelected: (gameId: number) => void;
 }
 
@@ -67,7 +69,7 @@ export function GameCard({
       return;
     }
     event.preventDefault();
-    onOpenGame(item.gameId);
+    onOpenGame(item.gameId, item.systemId);
   };
 
   return (
@@ -76,6 +78,7 @@ export function GameCard({
       className={`game-card${unavailable ? ' game-card--unavailable' : ''}${
         selected ? ' game-card--selected' : ''
       }`}
+      data-cover-presentation={systemCoverPresentation(item.systemId)}
       data-system-accent={systemAccentKey(item.systemId)}
       style={{ '--system-accent': accent } as CSSProperties}
     >

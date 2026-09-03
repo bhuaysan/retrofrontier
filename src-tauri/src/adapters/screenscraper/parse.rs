@@ -52,6 +52,114 @@ pub fn response_object(body: &[u8]) -> Result<Value, MalformedResponse> {
         .ok_or(MalformedResponse)
 }
 
+/// Where the JSON parser stopped, when the body is not valid JSON at all.
+pub fn envelope_syntax_position(body: &[u8]) -> Option<(usize, usize)> {
+    match serde_json::from_slice::<Value>(body) {
+        Ok(_) => None,
+        Err(error) => Some((error.line(), error.column())),
+    }
+}
+
+/// Names why a body could not be read as a provider envelope.
+///
+/// Diagnostic only — it never widens what is accepted. `MalformedResponse` deliberately carries no
+/// detail so no call site can branch on it, but an operator staring at a failing library needs to
+/// know whether the provider sent broken JSON, sent an error envelope, or sent something this
+/// parser does not understand. Those demand completely different responses and the failure class
+/// cannot tell them apart.
+///
+/// The returned text describes structure only: key names, JSON types, and the parser's own
+/// position and message. It never includes a value from the body.
+pub fn describe_envelope_failure(body: &[u8]) -> String {
+    let root: Value = match serde_json::from_slice(body) {
+        Ok(root) => root,
+        Err(error) => {
+            return format!(
+                "body is not valid JSON: {} at line {} column {}",
+                error.classify_text(),
+                error.line(),
+                error.column()
+            )
+        }
+    };
+
+    let Some(object) = root.as_object() else {
+        return format!("root is {}, not an object", json_type_name(&root));
+    };
+    let keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    match object.get("response") {
+        None => format!("root has no `response` key; keys are {keys:?}"),
+        Some(response) => format!(
+            "`response` is {}, not an object; root keys are {keys:?}",
+            json_type_name(response)
+        ),
+    }
+}
+
+/// Characters of the failing line shown either side of the reported column.
+const FAILURE_WINDOW_RADIUS: usize = 90;
+
+/// A bounded window of the failing line, centred on the position the parser stopped at.
+///
+/// Unlike `describe_envelope_failure`, this *does* carry text from the body — that is the point,
+/// because a syntax error is only actionable if you can see the bytes that caused it. It is
+/// therefore bounded to one line and a fixed radius, and the caller must pass it through
+/// `redact_text`: the provider echoes the request URL, credentials included, inside its own
+/// payload, so an arbitrary window can contain one.
+pub fn envelope_failure_window(body: &[u8], line: usize, column: usize) -> Option<String> {
+    if line == 0 {
+        return None;
+    }
+    let text = String::from_utf8_lossy(body);
+    let failing = text.lines().nth(line - 1)?;
+    let characters: Vec<char> = failing.chars().collect();
+    // serde reports a 1-based column, and points just past the offending character.
+    let centre = column.saturating_sub(1).min(characters.len());
+    let start = centre.saturating_sub(FAILURE_WINDOW_RADIUS);
+    let end = (centre + FAILURE_WINDOW_RADIUS).min(characters.len());
+
+    let mut window = String::new();
+    if start > 0 {
+        window.push('…');
+    }
+    window.extend(&characters[start..centre]);
+    // Marks the position the parser rejected, so the exact character is unambiguous in the log.
+    window.push_str("⟪HERE⟫");
+    window.extend(&characters[centre..end]);
+    if end < characters.len() {
+        window.push('…');
+    }
+    Some(window)
+}
+
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+trait ClassifyText {
+    fn classify_text(&self) -> &'static str;
+}
+
+impl ClassifyText for serde_json::Error {
+    fn classify_text(&self) -> &'static str {
+        use serde_json::error::Category;
+        match self.classify() {
+            Category::Io => "read error",
+            Category::Syntax => "syntax error",
+            // The usual cause of this one is a byte sequence that is not valid UTF-8.
+            Category::Data => "unexpected data or encoding",
+            Category::Eof => "unexpected end of input (truncated)",
+        }
+    }
+}
+
 /// Extracts the dynamic quota snapshot.
 ///
 /// Values are merged from the user profile and the server block so a guest profile, a member
@@ -568,6 +676,66 @@ mod tests {
         assert_eq!(record.matched_rom.unwrap().size_bytes, Some(10));
     }
 
+    #[test]
+    fn the_failure_window_is_bounded_and_marks_the_rejected_character() {
+        let mut body = String::from("{\n  \"header\": {},\n");
+        body.push_str(&format!("  \"a\": \"{}\", \n", "p".repeat(400)));
+        // An unescaped quote inside a string is the shape that breaks provider payloads.
+        body.push_str("  \"url\": \"https://x/?devpassword=SECRET\"broken\"\n}\n");
+
+        let (line, column) =
+            envelope_syntax_position(body.as_bytes()).expect("the body must not parse");
+        let window = envelope_failure_window(body.as_bytes(), line, column)
+            .expect("a failing line should yield a window");
+
+        assert!(window.contains("⟪HERE⟫"), "{window}");
+        // One line, bounded either side of the position.
+        assert!(!window.contains('\n'));
+        assert!(
+            window.chars().count() <= FAILURE_WINDOW_RADIUS * 2 + 8,
+            "{window}"
+        );
+
+        // The caller redacts, and the credential the provider echoed back must not survive it.
+        let logged = crate::adapters::screenscraper::redact_text(&window);
+        assert!(!logged.contains("SECRET"), "{logged}");
+    }
+
+    #[test]
+    fn a_body_that_parses_reports_no_syntax_position() {
+        assert_eq!(envelope_syntax_position(br#"{"response":{}}"#), None);
+    }
+
+    #[test]
+    fn an_envelope_failure_is_described_precisely_and_leaks_no_values() {
+        // Broken JSON names the parser's own position.
+        let truncated = describe_envelope_failure(br#"{"header":{"a":1"#);
+        assert!(truncated.contains("not valid JSON"), "{truncated}");
+        assert!(truncated.contains("line"), "{truncated}");
+
+        // A body that parses but is not an envelope names the structure it found instead.
+        let wrong_shape =
+            describe_envelope_failure(br#"{"header":{},"response":"nope","secret":"hunter2"}"#);
+        assert!(
+            wrong_shape.contains("`response` is a string"),
+            "{wrong_shape}"
+        );
+        assert!(wrong_shape.contains("header"), "{wrong_shape}");
+        // Key names are structure; values never are.
+        assert!(!wrong_shape.contains("hunter2"), "{wrong_shape}");
+        assert!(!wrong_shape.contains("nope"), "{wrong_shape}");
+
+        let missing = describe_envelope_failure(br#"{"header":{}}"#);
+        assert!(missing.contains("no `response` key"), "{missing}");
+
+        let not_object = describe_envelope_failure(b"[1,2,3]");
+        assert!(not_object.contains("root is an array"), "{not_object}");
+
+        // Bytes that are not valid UTF-8 are a real provider failure mode, and must be named as
+        // an encoding problem rather than reported as a structural one.
+        let latin1 = describe_envelope_failure(b"{\"response\":{\"nom\":\"caf\xe9\"}}");
+        assert!(latin1.contains("not valid JSON"), "{latin1}");
+    }
     #[test]
     fn malformed_bodies_are_rejected_rather_than_producing_empty_metadata() {
         assert_eq!(response_object(b"not json"), Err(MalformedResponse));

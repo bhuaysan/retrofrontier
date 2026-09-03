@@ -16,6 +16,7 @@ use crate::domain::metadata::{
     ProviderMatchStatus, ProviderMetadataRecord, ProviderQuotaSnapshot, ProviderSchedulerState,
     UnsupportedContentReason, UserAccountState, UserProviderSelection,
 };
+use crate::domain::metadata_scrape::MetadataJobBand;
 use crate::domain::system::SystemId;
 use crate::error::AppError;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
@@ -556,6 +557,15 @@ impl MetadataRepository {
     ///
     /// A completed or failed job of the same kind is reset to pending so a manual request always
     /// has an effect, while a job that is already pending or running is left alone.
+    /// Enqueues interactive provider work, promoting any compatible job already in the queue.
+    ///
+    /// This is the explicit path: a per-game user action, or the automatic evidence-integrity
+    /// sweep. It always lands in the interactive band, and it always clears bulk attribution, so a
+    /// job a scrape run created but the user has since asked for by name is promoted rather than
+    /// duplicated — and a later stop of that run leaves it alone.
+    ///
+    /// A running job keeps its state and its attempt budget: the request in flight is not restarted
+    /// underneath itself, only re-banded and re-attributed.
     pub async fn enqueue_job(
         &self,
         game_id: GameId,
@@ -574,12 +584,14 @@ impl MetadataRepository {
              earliest_next_attempt_at = CASE \
                  WHEN metadata_jobs.state IN ('completed', 'failed') THEN NULL \
                  ELSE metadata_jobs.earliest_next_attempt_at END, \
+             priority = excluded.priority, \
+             bulk_run_id = NULL, \
              updated_at = excluded.updated_at",
         )
         .bind(game_id.0)
         .bind(provider_id.as_db())
         .bind(kind.as_db())
-        .bind(kind.default_priority())
+        .bind(MetadataJobBand::Interactive.priority(kind))
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -815,28 +827,6 @@ impl MetadataRepository {
                 .unwrap_or(None)
                 .unwrap_or_default(),
         })
-    }
-
-    /// Games that have no provider relationship yet, in a bounded batch.
-    pub async fn games_needing_metadata(
-        &self,
-        provider_id: MetadataProviderId,
-        limit: usize,
-    ) -> Result<Vec<GameId>, AppError> {
-        let rows = sqlx::query(
-            "SELECT g.id FROM games g \
-             LEFT JOIN provider_matches pm ON pm.game_id = g.id AND pm.provider_id = ? \
-             LEFT JOIN metadata_jobs mj ON mj.game_id = g.id AND mj.provider_id = ? \
-             WHERE pm.id IS NULL AND mj.id IS NULL ORDER BY g.id ASC LIMIT ?",
-        )
-        .bind(provider_id.as_db())
-        .bind(provider_id.as_db())
-        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(AppError::Database)?;
-
-        Ok(rows.into_iter().map(|row| GameId(row.get("id"))).collect())
     }
 
     /// Games whose accepted match should be revalidated, in a bounded batch.

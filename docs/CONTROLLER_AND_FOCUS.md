@@ -339,11 +339,12 @@ broken; the model simply had no notion of a region, so every boundary crossing w
 | Zone | Container | Contract |
 | --- | --- | --- |
 | `zone:library-sidebar` | The Library route's `<aside>` | Up/Down traverse sidebar entries only. Right does **not** reach a game card. An edge is a stop. |
-| `zone:library-main` | The Library route's `<main>` | The filter bar, the grid, and pagination navigate by rendered geometry as before, and movement never falls back into the sidebar. |
+| `zone:library-main` | The Library route's `<main>` | The filter bar and whichever browse presentation is rendered — All Systems shelves or one system's paginated grid — navigate by rendered geometry as before, and movement never falls back into the sidebar. |
 
 | Transition | Trigger | Behaviour |
 | --- | --- | --- |
-| Sidebar → main | `confirm` on a system-filter row | The filter is applied normally, then focus moves to the first game of the *committed* result for that view, or to `library:heading` when the view has none |
+| Sidebar → main | `confirm` on a system-filter row | The filter is applied normally, then focus moves to the first game of the *committed* result for that view — the first preview game of the first non-empty shelf under All Systems, the page's first game inside a system — or to `library:heading` when the view has none |
+| Shelf → system grid | `confirm` on a shelf's `library:shelf:view-all:<system>` | Sets the same system filter the sidebar sets, then hands focus to the first game of the committed grid. No column is preserved between a shelf and a grid, because none exists |
 | Main → sidebar | `back` | Focus returns to the sidebar entry that is actually selected, falling back to the all-systems row. **A focus transition only:** the Library is the root route and is never navigated away from |
 
 The handoff is **settle-aware**, for the same reason the Library return is. Confirming a *different*
@@ -372,6 +373,44 @@ the header, which is in no zone, movement behaves exactly as before and can ente
 Only the Library declares zones. Game Detail and Settings keep the reviewed M8 behaviour, where the
 sidebar is a legitimate geometric neighbour of the screen's own controls, and the launch scopes on
 Game Detail keep owning `back` unconditionally.
+
+#### M8.6: shelves inside the main zone
+
+Under All Systems the main zone renders bounded shelves — one non-wrapping row per system, each
+ending in a View All control — instead of one flat grid. Nothing about the navigation model changes
+for it: shelves are ordinary content inside the existing zone, and directional movement is resolved
+by the same geometry engine.
+
+That is the whole point. Different systems have different cover presentation profiles, so a SNES
+card is visibly wider than a GameCube card and the rows do **not** line up in columns. Index-based
+navigation would be wrong here in a way it never was in the uniform grid: pressing Down from the
+second card of a wide shelf must land on whatever is really below it, which is frequently not the
+second card of the next shelf. Because movement is geometry-derived, this needs no new code — and a
+regression test lays two shelves out with mismatched card widths to keep it that way.
+
+| Movement | Behaviour |
+| --- | --- |
+| Left / Right | Along the focused shelf; past the last preview game lies that shelf's View All |
+| Up / Down | The geometrically nearest target in the neighbouring shelf, which may be a card of a different index or that shelf's View All — both are ordinary candidates |
+| `confirm` on View All | Selects that system and enters its full grid, footer-labelled `VIEW ALL` |
+| `back` | Unchanged: the active sidebar row, which under All Systems is the all-systems row |
+
+A shelf's bounded preview can be wider than the window, so the row scrolls horizontally. A clipped
+card is still laid out and therefore still a navigation candidate; focusing it scrolls it into view.
+The preview stays bounded either way — the system's complete collection is behind View All, never
+behind a long horizontal scroll.
+
+The games on a shelf keep their ordinary `library:game:<id>` identity. One rendered Library view
+shows a game once, so it needs one semantic identity; a shelf-qualified game identity would only make
+focus restoration guess which representation it meant. View All is genuinely new, so it has one of
+its own.
+
+**Returning from Game Detail** resolves a deterministic chain against the *settled* result, in order:
+the game itself; that game's own shelf's View All, when the game legitimately left the preview; the
+first game the committed view really shows; and `library:heading`. Every step is a declared semantic
+identity, one that is not rendered simply fails, and nothing is queried out of the DOM or retried on
+a timer. The return request records which system the game was browsed under, which is what makes the
+second step possible at all.
 
 #### Reaching Search: an explicit exit, not a leak
 

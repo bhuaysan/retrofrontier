@@ -243,6 +243,8 @@ export interface LibraryQueryRequest {
   genre?: string | null;
   region?: string | null;
   availability?: GameAvailability | null;
+  /** Restricts the page to games whose provider match needs a human decision. */
+  needsMetadataReview?: boolean;
   sort?: LibrarySort;
   limit?: number;
   offset?: number;
@@ -270,6 +272,43 @@ export interface LibraryPage {
   total: number;
   offset: number;
   limit: number;
+}
+
+/**
+ * The All Systems browse request.
+ *
+ * There is deliberately no `systemId`: choosing a system is what leaves shelf mode for the
+ * paginated grid. Only the filters the Library really owns appear here.
+ */
+export interface LibraryShelvesRequest {
+  search?: string | null;
+  favoritesOnly?: boolean;
+  /** Restricts every shelf to games whose local content is in the given availability state. */
+  availability?: GameAvailability | null;
+  /** Restricts every shelf to games whose provider match needs a human decision. */
+  needsMetadataReview?: boolean;
+  /** Zero or absent means the bounded backend default; larger values are capped by the backend. */
+  previewLimit?: number;
+}
+
+/**
+ * One system's bounded shelf. `total` is every matching game of that system; `items` is only the
+ * preview the shelf renders.
+ */
+export interface LibraryShelf {
+  systemId: SystemId;
+  total: number;
+  items: LibraryListItem[];
+}
+
+/**
+ * Shelves for every system with at least one match. Systems with none are absent.
+ *
+ * Backend order is deterministic but is *not* the catalog's presentation order; the frontend
+ * applies that, because the catalog is the authority on how systems are presented.
+ */
+export interface LibraryShelves {
+  shelves: LibraryShelf[];
 }
 
 export interface LibrarySystemCount {
@@ -564,6 +603,62 @@ export interface MetadataProviderStatus {
   pendingJobs: number;
   deferredJobs: number;
   failedJobs: number;
+}
+
+/**
+ * The two whole-library scraper modes.
+ *
+ * `missingMetadata` targets games that have never had a meaningful provider attempt.
+ * `refreshMatched` targets accepted matches whose metadata and cover should be refetched.
+ */
+export type MetadataScrapeMode = 'missingMetadata' | 'refreshMatched';
+
+export type MetadataScrapeRunStatus =
+  'preparing' | 'running' | 'stopping' | 'completed' | 'stopped';
+
+/**
+ * Game-count progress for one run.
+ *
+ * The unit is always games. `processed` is the sum of the five result counts; `running` and
+ * `waiting` are deliberately not part of it, because a game the provider has deferred has not been
+ * processed.
+ */
+export interface MetadataScrapeProgress {
+  totalGames: number;
+  matched: number;
+  needsReview: number;
+  noMatch: number;
+  unsupported: number;
+  failed: number;
+  running: number;
+  waiting: number;
+}
+
+export interface MetadataScrapeRun {
+  id: number;
+  providerId: MetadataProviderId;
+  mode: MetadataScrapeMode;
+  status: MetadataScrapeRunStatus;
+  progress: MetadataScrapeProgress;
+  createdAt: number;
+  updatedAt: number;
+  finishedAt: number | null;
+}
+
+export interface MetadataScrapeStatus {
+  providerId: MetadataProviderId;
+  /** The active run, or the most recent finished one. */
+  run: MetadataScrapeRun | null;
+  active: boolean;
+}
+
+export interface MetadataScrapePreview {
+  mode: MetadataScrapeMode;
+  eligibleGames: number;
+}
+
+export interface MetadataScrapeModeRequest {
+  mode: MetadataScrapeMode;
 }
 
 /** Readable account state. There is deliberately no password field. */
@@ -906,6 +1001,17 @@ export async function queryLibrary(request: LibraryQueryRequest = {}): Promise<L
   }
 }
 
+/** The bounded All Systems shelf projection. One request for every system, never one per system. */
+export async function queryLibraryShelves(
+  request: LibraryShelvesRequest = {},
+): Promise<LibraryShelves> {
+  try {
+    return await invoke<LibraryShelves>('query_library_shelves', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
 export async function getLibrarySummary(): Promise<LibrarySummary> {
   try {
     return await invoke<LibrarySummary>('get_library_summary');
@@ -1071,6 +1177,42 @@ export async function setMetadataProviderCredentials(
 export async function clearMetadataProviderCredentials(): Promise<void> {
   try {
     await invoke('clear_metadata_provider_credentials');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function previewMetadataScrape(
+  request: MetadataScrapeModeRequest,
+): Promise<MetadataScrapePreview> {
+  try {
+    return await invoke<MetadataScrapePreview>('preview_metadata_scrape', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function getMetadataScrapeStatus(): Promise<MetadataScrapeStatus> {
+  try {
+    return await invoke<MetadataScrapeStatus>('get_metadata_scrape_status');
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function startMetadataScrape(
+  request: MetadataScrapeModeRequest,
+): Promise<MetadataScrapeStatus> {
+  try {
+    return await invoke<MetadataScrapeStatus>('start_metadata_scrape', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function stopMetadataScrape(): Promise<MetadataScrapeStatus> {
+  try {
+    return await invoke<MetadataScrapeStatus>('stop_metadata_scrape');
   } catch (error: unknown) {
     throw normalizeIpcError(error);
   }

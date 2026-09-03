@@ -1,4 +1,4 @@
-# RetroFrontier metadata (M5 and M6.1 boundary)
+# RetroFrontier metadata (M5, M6.1, and M8.5 boundary)
 
 This document describes the metadata implementation that ships with M5 and the M6.1 boundary that
 allows the later library UI to consume it. It is an implementation
@@ -207,9 +207,92 @@ reading. This is deliberately not a general networking framework.
   storage failure, for example — it hands its unprocessed jobs straight back to `pending`, and the
   worker's lease sweep re-arms anything that still leaked. Recovery therefore does not depend on
   restarting the process.
+- Jobs run in two scheduling bands. Explicit per-game user actions and the evidence-integrity sweep
+  use the interactive band; whole-library scrape-run work uses the bulk band, one full band-span
+  behind it. The slowest interactive job therefore still outranks the fastest bulk one, so bulk work
+  can never delay something the user just asked for by hand.
+- Enqueueing interactive work promotes any compatible job already in the queue instead of creating a
+  second one: the queue's uniqueness constraint means there is only ever one row per game, provider
+  and kind. Promotion also clears the job's bulk attribution, so stopping the run that created it
+  cannot cancel work the user has claimed. A job already running keeps its state and attempt budget.
 - `MetadataWorker` starts exactly once, runs on the async runtime rather than the UI thread, and
   needs no frontend listener: progress lives in SQLite. It sleeps between rounds (250 ms when busy,
   60 s when idle, at most 300 s while deferred) and stops cleanly on request.
+- Explicitly requested work raises a work signal the sleep selects on, so a user action is not left
+  waiting out an idle minute. A wake-up only shortens the pause: the next round still consults
+  provider deferral, quota, the rolling minute budget and per-job retry timing, so it can bring work
+  forward but never past a wait the provider asked for.
+
+## Library discovery does not scrape
+
+> Library discovery is local and does not automatically trigger first-time metadata scraping.
+
+A library scan finds content on this machine. It does not decide to spend the user's provider budget
+on what it found. First-time metadata for newly discovered games is fetched only by a scrape run the
+user starts in Settings (see below).
+
+> Accepted metadata relationships are still automatically revalidated for evidence integrity.
+
+These are different mechanisms and only the first was removed. Revalidation protects relationships
+the user already has: M4 keeps every local identifier stable across same-path byte replacement, so
+the evidence sweep is the only thing that can notice replaced content, and without it a stale match
+would keep being presented as trusted. It continues to run on its own, in the interactive band.
+
+Work queued by an earlier version is preserved. The change is that no *new* implicit work appears,
+not that existing work is destroyed.
+
+## User-initiated scrape runs (M8.5)
+
+A `MetadataScrapeRun` and a `MetadataJob` answer different questions. The run is *which
+user-initiated batch operation is in progress*; the job is *which concrete provider operation the M5
+pipeline must execute*. The run layer sits above the queue and feeds it; it owns no provider logic,
+no matching policy and no scheduler of its own.
+
+Two whole-library modes:
+
+- **Missing Metadata** — games the provider has never answered about. Usually that means untouched:
+  no provider relationship and no metadata job. It also covers a game whose only recorded outcome is
+  a failure about RetroFrontier's own configuration, because the provider was never actually asked.
+  A build with no ScreenScraper credentials parks every identification with `credentials_unavailable`,
+  and treating that as an answer would hide those games from every future run even after the
+  configuration is fixed. The line is M5's own taxonomy: every `Permanent` failure class is a
+  configuration failure, and `Permanent` already means "do not retry until configuration or content
+  changes". A no-match, an ambiguous candidate set, an unsupported content shape and a genuinely
+  exhausted retry budget *are* answers, so repeated runs do not re-ask them. A game with live work is
+  never eligible either way. It is deliberately not "games without a cover".
+- **Refresh Matched Games** — accepted matches that still name a provider game, the same condition
+  the per-game refresh action requires before it refreshes rather than re-identifies. Ambiguous,
+  no-match and unsupported entries are never refreshed as if they were trusted matches.
+
+Invariants:
+
+- **Fixed membership.** The target set is captured when the run starts and never appended to. Games
+  a later scan discovers belong to a future run, so an active run cannot grow for as long as the
+  library does.
+- **One active run per provider**, enforced by a partial unique index rather than an application
+  check two concurrent starts could both pass. Explicit per-game actions stay available throughout.
+- **Bounded feeding.** A 20,000-game target lives in `metadata_scrape_run_items`; only a window of
+  it is ever a `metadata_job`. The feeder writes both tables in one transaction, so a crash cannot
+  leave a queued job no run is waiting for, or a queued item with no job behind it.
+- **Restart.** Runs live in SQLite, so an active run resumes by identity after a restart and keeps
+  feeding. No React component is the source of truth, and the Settings screen need not stay open.
+- **Cooperative stop.** Stopping detaches the queued work the run still owns exclusively, leaves
+  promoted interactive work alone, and lets a request already in flight finish so its result is
+  still recorded. Metadata already written is kept, and games the run never reached return to being
+  untouched, so a later Missing Metadata run picks them up.
+- **Progress in games.** Run item states are read back from authoritative M5 state rather than
+  pushed from job processing, which makes reconciliation idempotent across a crash. A game is
+  processed only once it has one of five terminal results — matched, needs review, no match,
+  unsupported, failed — and `processed` is the sum of those five. Provider backoff, a retryable
+  error, a queued job and an in-flight request are all explicitly not terminal, so a deferred game
+  is never counted as processed. Refresh needs more than one job per game, which is why the unit is
+  games and not jobs.
+- **Ambiguity stays manual.** A run reports what M5 decided and never resolves a candidate set by
+  preference or ordering. Ambiguous games are surfaced as NEEDS REVIEW, and REVIEW MATCHES leads
+  back into the existing Library and Game Detail candidate workflow rather than a second resolver.
+- **No invented provider timing.** ScreenScraper supplies no reset instant, and RetroFrontier's own
+  waits are locally scheduled probes, so the UI says work is waiting for provider capacity and never
+  when capacity will return. There is no ETA and no completion percentage derived from job counts.
 
 ## Quota handling
 
@@ -297,20 +380,44 @@ A provider refresh replaces normalized metadata and media but never touches a us
 
 ## Content capability matrix
 
+The rule behind this table — disc content is submitted and judged rather than refused before a
+request is built — is recorded in [ADR-016](adr/ADR-016-disc-content-lookup.md).
+
 | Content format            | Automatic deterministic matching | Heuristic candidates | State                            |
 | ------------------------- | -------------------------------- | -------------------- | -------------------------------- |
 | Single-file cartridge ROM | Yes                              | Yes                  | `matched` on agreeing evidence   |
 | GameCube ISO              | Yes                              | Yes                  | `matched` on agreeing evidence   |
-| CHD                       | No                               | Yes                  | `deferred`                       |
-| CUE/BIN                   | No                               | Yes                  | `deferred`                       |
+| CUE/BIN                   | Yes, on the CUE descriptor       | Yes                  | `matched` on agreeing evidence   |
+| CHD                       | Only if its hash is known        | Yes, named by lookup | `ambiguous` in practice          |
+| PlayStation/Saturn/Dreamcast single-file images (`.iso`, `.pbp`, `.cdi`, bare `.bin`) | Yes, when hashes agree | Yes | `matched` on agreeing evidence |
 | GDI                       | No                               | Yes                  | `deferred`                       |
 | M3U / multi-disc          | No                               | Yes                  | `deferred`                       |
 | GameCube RVZ, GCM         | No                               | Yes                  | `deferred`                       |
-| PlayStation/Saturn/Dreamcast single-file images (`.iso`, `.pbp`, `.cdi`, bare `.bin`) | No | Yes | `deferred` |
 
-The eligible set is an allowlist, not a denylist: a container whose canonical provider
-representation is not published is deferred rather than hashed and hoped for. The playlist file is
-never provider identity, and its bytes are never submitted for identification.
+Disc containers were once refused before any request was made, on the grounds that the provider
+does not document which bytes are canonical for a CHD or a CUE/BIN set. That refusal answered a
+question no working scraper asks. ES-DE and Skyscraper both hash the single file that represents
+the game in the library, whatever its format, and send its filename alongside — the provider matches
+on a checksum **or** an exact filename. Refusing to produce evidence did not make matching safer; it
+removed the request that would have carried the filename, which is why no PlayStation content could
+match by any route.
+
+Submitting a hash is therefore not a claim that those bytes are canonical, only that they are the
+bytes we have. What protects the library is unchanged and lives one layer down: `classify_deterministic_match`
+still requires an agreeing size and agreeing hashes before anything attaches. So a CUE descriptor —
+whose bytes the provider really does hold, because its CD records come from Redump — matches like
+any cartridge, while a CHD the provider has never hashed degrades to a **named suggestion the user
+confirms**, never to a silent wrong match.
+
+Two refusals survive, for reasons that still hold. A playlist names other content rather than being
+content, so no file in it is the game. A GDI set is unverified: no Dreamcast content was available
+to establish what it hashes to, and it is left refused rather than guessed at.
+
+When a lookup answers with a game whose content record cannot be compared, that answer becomes the
+candidate offered for confirmation. It is a name match the provider itself made against the file's
+real basename, which is a better suggestion than a fuzzy title search over a local title that still
+carries its filename decorations — so the title search is issued only when the answer names no game
+at all.
 
 ## Stale evidence and revalidation
 
@@ -468,6 +575,20 @@ no provider logic, SQL, filesystem access, or retry behaviour.
 | `set_metadata_provider_credentials`    | Write-only personal credential submission                    |
 | `clear_metadata_provider_credentials`  | Remove the personal account                                  |
 | `get_metadata_provider_account`        | Configured yes/no, state, account name — never a password     |
+| `preview_metadata_scrape`              | Games a mode would target if started now                     |
+| `get_metadata_scrape_status`           | Active run, or the most recent finished one, with progress   |
+| `start_metadata_scrape`                | Start a run in one mode                                      |
+| `stop_metadata_scrape`                 | Begin a cooperative stop of the active run                   |
+
+A scrape command's entire input is the mode. React never sends game identifiers for a batch
+operation: eligibility, the fixed target set, feeding, attribution, stopping and completion are all
+decided in Rust, where the authoritative state already is.
+
+Whole-run progress is read through `get_metadata_scrape_status`, not assembled from
+`metadata-state-changed`. A 20,000-game run emits tens of thousands of those events and the screen
+shows eight numbers, so the status query is one bounded aggregate; per-game invalidation stays for
+Game Detail and the visible Library page. Settings polls it about once a second while a run is
+active and stops when the run finishes, because a finished run is a static summary.
 
 The DTOs have no field for a developer credential, a password, a raw provider payload, an
 authenticated URL, or a SQL/domain internal. The cover is exposed as an opaque native media
@@ -498,9 +619,12 @@ There is no opt-in live provider test in M5. Adding one later would require sepa
 
 ## Known limitations
 
-- Automatic deterministic matching is not available for CHD, CUE/BIN, GDI, M3U/multi-disc, RVZ, or
-  the disc-system single-file images listed above. Heuristic candidates exist for all of them, and
-  none can silently attach.
+- Automatic deterministic matching is not available for GDI, M3U/multi-disc, RVZ, or GCM, and a CHD
+  matches only in the unusual case that the provider already holds that CHD's own hash. Suggestions
+  exist for all of them, and none can silently attach.
+- A CUE descriptor's hash only matches while the file is byte-identical to the provider's copy.
+  Renaming the tracks rewrites the `FILE` lines inside the `.cue` and changes its hash; such a set
+  falls back to the name-based suggestion like a CHD.
 - Broad media scraping is not implemented: one front cover only.
 - Portable export or backup of the provider cache is not implemented.
 - Exact visible attribution is an M6 responsibility. M5 preserves provider identity and the
@@ -508,7 +632,22 @@ There is no opt-in live provider test in M5. Adding one later would require sepa
 - Library title search escapes `\`, `%`, and `_` as literal text, but its SQLite `lower()` matching
   remains ASCII-oriented in the current configuration. Full Unicode case folding is deferred; the
   M6.1 corrective pass adds no folded-search column or replacement search subsystem.
-- ScreenScraper Web API v2 is documented as beta and may change without notice.
+- ScreenScraper Web API v2 is documented as beta and may change without notice. One observed defect
+  shapes the client: the provider embeds the `softname` in the media URLs inside its JSON response
+  and escapes an underscore as `\_`, which is not a JSON escape sequence, so a softname containing
+  one makes every response unparseable. The application identity is therefore restricted to an
+  allowlist of characters the provider echoes back safely. Emitting invalid JSON is the provider's
+  defect; avoiding it is the only repair available from the receiving end, and the parser is not
+  loosened to accept it.
 - Application developer credentials are recoverable from a distributed binary.
 - The provider publishes no authoritative quota reset instant, so re-probing is conservative rather
-  than precisely timed.
+  than precisely timed. Nothing in the UI predicts one.
+- Scrape runs are whole-library only. Scrape-by-system, scrape-by-filter, scrape-by-favorites and
+  scrape-by-selection are deliberate non-goals: they multiply the eligibility surface without
+  changing what the pipeline below does.
+- There is no user-visible pause and resume, and no scrape run history surface. Automatic recovery
+  of a still-running run after a restart is implemented; deliberately resuming a stopped one is not.
+- A run item whose provider work finishes without producing any classifiable relationship — the
+  local game disappeared underneath the request, for instance — is recorded as `failed`. It is the
+  terminal state that keeps the run finishable and the processed total honest, rather than leaving a
+  game suspended in progress forever.

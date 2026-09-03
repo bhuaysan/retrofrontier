@@ -12,6 +12,20 @@ DualSense Edge and Bluetooth DualSense mapping under WebKitGTK is accepted MEDIU
 face-button quirk predicate covers those variants by name, but only the USB DualSense has been
 physically measured, and coverage is not qualification.
 
+M8.5 User-Initiated Settings Metadata Scraper Workflow is implemented on
+`feat/m8-5-settings-scraper`: a library scan no longer scrapes what it finds, and whole-library
+metadata work is started by the user from Settings as a persistent, restartable, stoppable run.
+Accepted-match evidence revalidation is unchanged. See
+[`docs/METADATA.md`](docs/METADATA.md).
+
+M8.6 System-Aware Library Shelves & Cover Profiles is implemented on
+`feat/m8-6-library-shelves`: All Systems browses bounded per-system shelves instead of one flat
+paginated grid, and Library cards frame artwork by system presentation profile without cropping it.
+See [`docs/LIBRARY_BROWSING.md`](docs/LIBRARY_BROWSING.md).
+
+The Library can now hide games whose local content a scan found missing. Removing such a game's
+record for good is deliberately still absent; see *Library Missing-Content Handling*.
+
 **M9 — Saves and Save States is the next implementation milestone.**
 
 The previously documented release gates remain open and unchanged: production key ceremony under
@@ -467,6 +481,89 @@ of physical qualification, and this item must not be closed by reasoning about t
       misreporting engine, it does not redefine the project's action mapping
 
 No M8 controller source is changed for this item; it is recorded as debt deliberately.
+
+## M8.5 — User-Initiated Settings Metadata Scraper Workflow
+
+**Model:** Luna Max.
+
+A library scan discovers content locally. It no longer means "send this to ScreenScraper". Whole-
+library metadata work is an explicit user action started from
+`Settings → Metadata → ScreenScraper → Library Scraper`, and it runs as a persistent scrape run
+above the existing M5 queue rather than as a second pipeline. See
+[`docs/METADATA.md`](docs/METADATA.md).
+
+- [x] scrape-run domain: modes, run states, item states, terminal-result classification
+- [x] persistent runs and a target snapshot fixed at start
+- [x] one active run per provider, enforced by a partial unique index
+- [x] Missing Metadata eligibility — untouched games only; a no-match, ambiguous set, unsupported
+      shape or parked failure is an answer and is not re-asked
+- [x] Refresh Matched eligibility — accepted matches that still name a provider game
+- [x] interactive/bulk scheduling bands, with in-place promotion of a compatible bulk job
+- [x] bounded feeder, transactional across `metadata_jobs` and run items
+- [x] outcome reconciliation read back from authoritative M5 state
+- [x] automatic first-time scraping removed; accepted-match revalidation retained
+- [x] worker wake-up for explicit work, without bypassing quota, deferral or retry timing
+- [x] restart recovery of an active run
+- [x] cooperative stop that keeps written metadata and promoted interactive work
+- [x] scrape IPC surface and the `useMetadataScrape` frontend model
+- [x] Settings Library Scraper UI with game-level progress and truthful provider-wait copy
+- [x] controller and keyboard coverage, including the stop confirmation focus scope
+- [x] Library `needs review` filter and the REVIEW MATCHES route into it
+- [x] scale coverage at 5,000 and 20,000 games with a bounded active queue
+
+Deliberately not in M8.5:
+
+- [ ] scrape by system, filter, favorites, or selection
+- [ ] user-visible pause and resume, and deliberate resumption of a stopped run
+- [ ] scrape run history UI
+- [ ] retry-all no-match, retry-all failed, or resolve-all ambiguous
+- [ ] cover-only bulk operations and broader artwork categories
+- [ ] any ETA, completion percentage from job counts, or predicted provider reset instant
+
+## M8.6 — System-Aware Library Shelves & Cover Profiles
+
+**Model:** Luna Max.
+
+All Systems is a bounded browse view rather than one flat paginated grid of every system mixed
+together, and a system's cover artwork is framed by that system's own presentation profile instead
+of one shared 3:4 box. See [`docs/LIBRARY_BROWSING.md`](docs/LIBRARY_BROWSING.md).
+
+- [x] bounded system shelf projection — one set-oriented query, never one per system
+- [x] shelf semantics derived from the grid's own filter predicate and list projection
+- [x] catalog shelf ordering; empty systems omitted; unknown systems appended, never dropped
+- [x] bounded preview with the system's full match total, and a semantic View All
+- [x] View All sets the same system filter the sidebar sets — no new route
+- [x] Search, Favorites and the M8.5 review filter keep shelf mode and compose
+- [x] focused shelf query model with bounded, coalesced metadata invalidation
+- [x] system cover presentation profiles, applied in shelves and in the full grid alike
+- [x] Library card artwork contained rather than cropped; `GameCover` stays system-agnostic
+- [x] controller shelf navigation on the existing geometric focus engine
+- [x] deterministic Game Detail return chain: game → its shelf's View All → first visible → heading
+- [x] scale coverage at 5,000 and 20,000 games with a response bounded by system count
+
+Deliberately not in M8.6:
+
+- [ ] infinite horizontal scrolling through a full system library
+- [ ] user system ordering, drag-to-reorder, or cover-ratio settings
+- [ ] region-specific box profiles or per-game ratio overrides
+- [ ] automatic ratio detection from image dimensions
+- [ ] recently-played, favorites-only, genre, or custom-collection shelves
+- [ ] carousel animation or shelf autoplay
+
+## Library Missing-Content Handling
+
+**Model:** Luna Max; Sol for the destructive pass, which deletes user data.
+
+Deleting a file never deletes its game: a scan marks the content missing and keeps the record, its
+metadata and every user-owned decision (`DOMAIN.md` invariant 2). Those games stay visible with the
+card's `MISSING` flag and cannot be launched.
+
+- [x] `HIDE MISSING` filter — the existing `availability` predicate, bound on the shelves and the
+  paginated grid alike; a query and never a deletion, reversible by clearing it
+- [ ] explicit, confirmed cleanup that removes the records of games whose content is gone: ordered
+  deletion across every table referencing `games (id)` under restrictive delete behaviour, the
+  cached cover files included, never offered for a root that could not be enumerated, and never
+  automatic
 
 ## M9 — Saves and Save States
 
