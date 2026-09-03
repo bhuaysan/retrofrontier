@@ -1,3 +1,7 @@
+use crate::domain::save_state::SaveStateSlot;
+use crate::services::retroarch_input::{
+    SaveStateHotkeys, ENABLE_HOTKEY_KEY, SAVE_STATE_KEY, SLOT_DECREASE_KEY, SLOT_INCREASE_KEY,
+};
 use crate::services::retroarch_paths::LaunchPaths;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -6,12 +10,39 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
+/// Everything one launch decides about the generated configuration.
+///
+/// It is a struct rather than a positional argument list because M9 added two values that are
+/// genuinely per-launch — which slot starts active, and which managed save-state hotkeys resolved —
+/// and a five-argument `build` would make their order the reader's problem.
+#[derive(Debug, Clone, Copy)]
+pub struct RetroArchConfigRequest<'a> {
+    pub paths: &'a LaunchPaths,
+    /// The managed cores directory inside the verified immutable version tree. RetroArch only
+    /// reads it; every writable path points into RetroFrontier's own data.
+    pub core_directory: &'a Path,
+    /// The verified managed joypad-autoconfig tree, likewise inside the immutable version tree and
+    /// likewise read-only. Both are passed in rather than derived here, because only the runtime
+    /// layer can say which installation is currently verified.
+    pub controller_profiles_root: &'a Path,
+    /// Which RetroArch state slot is active when the game starts.
+    ///
+    /// A normal launch starts on the first managed slot. A save-state launch starts on the loaded
+    /// state's own slot, so saving again lands where the player expects. The previously active slot
+    /// is deliberately never persisted as a RetroFrontier preference.
+    pub state_slot: SaveStateSlot,
+    /// The managed save-state hotkeys, when the authenticated controller profiles resolved them.
+    ///
+    /// `None` writes no hotkey at all rather than a guessed button index, and never fails a launch.
+    pub save_state_hotkeys: Option<&'a SaveStateHotkeys>,
+}
+
 /// The RetroFrontier-owned RetroArch configuration.
 ///
 /// There is exactly one generated file. It contains only RetroFrontier-controlled values, is
-/// deterministic for a given application-data root and installation, and is rewritten before every
-/// launch. Because the core comes from `-L` and the content from `argv`, nothing per-game has to be
-/// written, so RetroFrontier creates no per-game configuration files at all.
+/// deterministic for a given application-data root, installation, and launch, and is rewritten
+/// before every launch. Because the core comes from `-L` and the content from `argv`, nothing
+/// per-game has to be written, so RetroFrontier creates no per-game configuration files at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetroArchConfig {
     entries: Vec<(String, String)>,
@@ -19,18 +50,14 @@ pub struct RetroArchConfig {
 
 impl RetroArchConfig {
     /// Build the configuration for one launch.
-    ///
-    /// `core_directory` is the managed cores directory inside the verified immutable version tree.
-    /// RetroArch only reads it; every writable path points into RetroFrontier's own data.
-    ///
-    /// `controller_profiles_root` is the verified managed joypad-autoconfig tree, likewise inside
-    /// the immutable version tree and likewise read-only. Both are passed in rather than derived
-    /// here, because only the runtime layer can say which installation is currently verified.
-    pub fn build(
-        paths: &LaunchPaths,
-        core_directory: &Path,
-        controller_profiles_root: &Path,
-    ) -> Self {
+    pub fn build(request: &RetroArchConfigRequest<'_>) -> Self {
+        let RetroArchConfigRequest {
+            paths,
+            core_directory,
+            controller_profiles_root,
+            state_slot,
+            save_state_hotkeys,
+        } = *request;
         let mut entries: Vec<(String, String)> = Vec::new();
         let mut set = |key: &str, value: String| entries.push((key.to_owned(), value));
 
@@ -132,6 +159,21 @@ impl RetroArchConfig {
         set("sort_savestates_enable", boolean(true));
         set("savestate_auto_save", boolean(false));
         set("savestate_auto_load", boolean(false));
+
+        // M9 save states.
+        //
+        // `savestate_thumbnail_enable` is what makes RetroArch write `<state path>.png` beside a
+        // state it saves. RetroFrontier associates one only when the controlled launch delta
+        // *proves* the relationship, so enabling it produces a candidate, never an association.
+        set("savestate_thumbnail_enable", boolean(true));
+        // Which slot is active when the game starts. A normal launch starts on slot 1; a
+        // save-state launch starts on the loaded state's own slot.
+        //
+        // `--entryslot` is the documented mechanism and remains the launch contract, but this
+        // generated file is RetroFrontier's single control path over RetroArch's behaviour, so the
+        // active slot is stated here as well rather than left to be inferred. The file is rewritten
+        // before every launch, so saying it costs nothing and makes the invariant deterministic.
+        set("state_slot", state_slot.get().to_string());
         set("auto_overrides_enable", boolean(false));
         set("auto_remaps_enable", boolean(false));
         set("auto_shaders_enable", boolean(false));
@@ -155,6 +197,23 @@ impl RetroArchConfig {
         // request at all, and it never shows an intermediate window. `video_fullscreen_x/y` apply
         // only to the exclusive path and are therefore deliberately not written.
         set("video_windowed_fullscreen", boolean(true));
+
+        // The managed save-state hotkeys, derived from the authenticated controller profiles.
+        //
+        // Select + R1 saves; Select + D-Pad Right/Left changes slot. There is deliberately **no**
+        // `input_load_state_btn`: controlled loading happens through Game Detail, where the exact
+        // historical core binary, content unit, and file identity can be re-proved first, and a
+        // hotkey could prove none of that.
+        //
+        // When the profiles did not resolve, nothing is written. A guessed button index would bind
+        // "Save State" to whatever that number happens to be on the player's pad, and a launch must
+        // not fail merely because a save hotkey could not be derived.
+        if let Some(hotkeys) = save_state_hotkeys {
+            set(ENABLE_HOTKEY_KEY, escape(&hotkeys.enable_hotkey));
+            set(SAVE_STATE_KEY, escape(&hotkeys.save_state));
+            set(SLOT_INCREASE_KEY, escape(&hotkeys.slot_increase));
+            set(SLOT_DECREASE_KEY, escape(&hotkeys.slot_decrease));
+        }
 
         entries.sort_by(|left, right| left.0.cmp(&right.0));
         Self { entries }
@@ -240,7 +299,9 @@ fn escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::RetroArchConfig;
+    use super::{RetroArchConfig, RetroArchConfigRequest};
+    use crate::domain::save_state::SaveStateSlot;
+    use crate::services::retroarch_input::SaveStateHotkeys;
     use crate::services::retroarch_paths::LaunchPaths;
     use std::path::Path;
     use tempfile::tempdir;
@@ -289,11 +350,44 @@ mod tests {
     const SYNTHETIC_PROFILES: &str =
         "/synthetic/app-data/runtime/versions/install-1/runtime/support/joypad-autoconfig";
 
+    /// The four values the real authenticated DualSense profile declares for the M9 roles.
+    fn synthetic_hotkeys() -> SaveStateHotkeys {
+        SaveStateHotkeys {
+            enable_hotkey: "8".to_owned(),
+            save_state: "5".to_owned(),
+            slot_increase: "h0right".to_owned(),
+            slot_decrease: "h0left".to_owned(),
+        }
+    }
+
+    fn config_for(
+        paths: &LaunchPaths,
+        core_directory: &Path,
+        controller_profiles_root: &Path,
+        state_slot: u16,
+        save_state_hotkeys: Option<&SaveStateHotkeys>,
+    ) -> RetroArchConfig {
+        RetroArchConfig::build(&RetroArchConfigRequest {
+            paths,
+            core_directory,
+            controller_profiles_root,
+            state_slot: SaveStateSlot::new(state_slot).unwrap(),
+            save_state_hotkeys,
+        })
+    }
+
     fn synthetic_config() -> (LaunchPaths, RetroArchConfig) {
         let paths = LaunchPaths::new("/synthetic/app-data");
         let core_directory =
             Path::new("/synthetic/app-data/runtime/versions/install-1/cores/nestopia");
-        let config = RetroArchConfig::build(&paths, core_directory, Path::new(SYNTHETIC_PROFILES));
+        let hotkeys = synthetic_hotkeys();
+        let config = config_for(
+            &paths,
+            core_directory,
+            Path::new(SYNTHETIC_PROFILES),
+            1,
+            Some(&hotkeys),
+        );
         (paths, config)
     }
 
@@ -353,10 +447,12 @@ mod tests {
     /// B3: `joypad_autoconfig_dir` follows the installation it was built for and nothing else.
     #[test]
     fn the_controller_profile_directory_is_the_verified_tree_it_was_given() {
-        let config = RetroArchConfig::build(
+        let config = config_for(
             &LaunchPaths::new("/other/root"),
             Path::new("/other/root/runtime/versions/install-9/cores/dolphin"),
             Path::new("/other/root/runtime/versions/install-9/runtime/support/joypad-autoconfig"),
+            1,
+            None,
         );
 
         assert_eq!(
@@ -488,16 +584,20 @@ mod tests {
     /// B3: the fullscreen request depends on nothing outside RetroFrontier's own generated file.
     #[test]
     fn the_fullscreen_request_is_independent_of_any_host_or_user_retroarch_state() {
-        let first = RetroArchConfig::build(
+        let first = config_for(
             &LaunchPaths::new("/synthetic/app-data"),
             Path::new("/synthetic/app-data/runtime/versions/install-1/cores/nestopia"),
             Path::new(SYNTHETIC_PROFILES),
+            1,
+            None,
         );
         // A completely different application-data root and installation: only paths may differ.
-        let second = RetroArchConfig::build(
+        let second = config_for(
             &LaunchPaths::new("/other/root"),
             Path::new("/other/root/runtime/versions/install-9/cores/beetle-psx"),
             Path::new("/other/root/runtime/versions/install-9/runtime/support/joypad-autoconfig"),
+            1,
+            None,
         );
 
         for key in ["video_fullscreen", "video_windowed_fullscreen"] {
@@ -535,10 +635,12 @@ mod tests {
     #[test]
     fn a_quote_in_an_application_data_path_cannot_break_out_of_a_configuration_value() {
         let paths = LaunchPaths::new("/synthetic/we\"ird\\path");
-        let config = RetroArchConfig::build(
+        let config = config_for(
             &paths,
             Path::new("/synthetic/cores"),
             Path::new("/synthetic/profiles"),
+            1,
+            None,
         );
 
         let rendered = config.render();
@@ -556,10 +658,12 @@ mod tests {
         let directory = tempdir().unwrap();
         let paths = LaunchPaths::new(directory.path().join("RetroFrontier"));
         paths.prepare().unwrap();
-        let config = RetroArchConfig::build(
+        let config = config_for(
             &paths,
             Path::new("/synthetic/cores"),
             Path::new("/synthetic/profiles"),
+            1,
+            None,
         );
 
         config.write(&paths.config_file()).unwrap();
@@ -583,5 +687,154 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(leftovers, vec!["retroarch.cfg".to_owned()]);
+    }
+
+    /// M9: the controlled save-state configuration.
+    #[test]
+    fn the_generated_configuration_owns_every_save_state_behaviour_retrofrontier_decides() {
+        let (paths, config) = synthetic_config();
+
+        // States are written where RetroFrontier owns them, never beside user ROMs.
+        assert_eq!(
+            config.value("savestate_directory").map(Path::new),
+            Some(paths.states_root())
+        );
+        assert_eq!(config.value("savestates_in_content_dir"), Some("false"));
+        // RetroArch never saves or loads a state behind the player's back: M9's whole provenance
+        // model depends on every managed state coming from a deliberate save.
+        assert_eq!(config.value("savestate_auto_save"), Some("false"));
+        assert_eq!(config.value("savestate_auto_load"), Some("false"));
+        // And it writes `<state path>.png` beside a state it saves, which is what makes a
+        // *provable* thumbnail candidate exist at all.
+        assert_eq!(config.value("savestate_thumbnail_enable"), Some("true"));
+    }
+
+    #[test]
+    fn a_normal_launch_starts_on_the_first_managed_slot_and_a_save_state_launch_on_its_own() {
+        let (_paths, normal) = synthetic_config();
+        assert_eq!(normal.value("state_slot"), Some("1"));
+
+        let hotkeys = synthetic_hotkeys();
+        for slot in [1_u16, 2, 42, 999] {
+            let config = config_for(
+                &LaunchPaths::new("/synthetic/app-data"),
+                Path::new("/synthetic/cores"),
+                Path::new(SYNTHETIC_PROFILES),
+                slot,
+                Some(&hotkeys),
+            );
+            assert_eq!(config.value("state_slot"), Some(slot.to_string().as_str()));
+        }
+    }
+
+    #[test]
+    fn the_managed_save_state_hotkeys_are_exactly_the_derived_profile_values() {
+        let (_paths, config) = synthetic_config();
+
+        // Select + R1 saves; Select + D-Pad Right/Left changes slot. The values are the
+        // authenticated profile's own, hat notation included.
+        assert_eq!(config.value("input_enable_hotkey_btn"), Some("8"));
+        assert_eq!(config.value("input_save_state_btn"), Some("5"));
+        assert_eq!(
+            config.value("input_state_slot_increase_btn"),
+            Some("h0right")
+        );
+        assert_eq!(
+            config.value("input_state_slot_decrease_btn"),
+            Some("h0left")
+        );
+
+        // A different derived set produces different values: nothing here is a constant.
+        let other = SaveStateHotkeys {
+            enable_hotkey: "6".to_owned(),
+            save_state: "7".to_owned(),
+            slot_increase: "h1right".to_owned(),
+            slot_decrease: "h1left".to_owned(),
+        };
+        let config = config_for(
+            &LaunchPaths::new("/synthetic/app-data"),
+            Path::new("/synthetic/cores"),
+            Path::new(SYNTHETIC_PROFILES),
+            1,
+            Some(&other),
+        );
+        assert_eq!(config.value("input_enable_hotkey_btn"), Some("6"));
+        assert_eq!(config.value("input_save_state_btn"), Some("7"));
+        assert_eq!(
+            config.value("input_state_slot_increase_btn"),
+            Some("h1right")
+        );
+        assert_eq!(
+            config.value("input_state_slot_decrease_btn"),
+            Some("h1left")
+        );
+    }
+
+    /// There is deliberately no RetroFrontier-provided ingame Load State hotkey.
+    ///
+    /// Controlled loading happens through Game Detail, where the exact historical core binary, the
+    /// exact content unit, and the exact file identity are all re-proved first. A hotkey could
+    /// prove none of that, so no input under any configuration may bind one.
+    #[test]
+    fn no_ingame_load_state_hotkey_is_ever_written() {
+        let hotkeys = synthetic_hotkeys();
+        for save_state_hotkeys in [Some(&hotkeys), None] {
+            let config = config_for(
+                &LaunchPaths::new("/synthetic/app-data"),
+                Path::new("/synthetic/cores"),
+                Path::new(SYNTHETIC_PROFILES),
+                1,
+                save_state_hotkeys,
+            );
+            for (key, _) in config.entries() {
+                assert!(
+                    !key.contains("load_state"),
+                    "no configuration key may bind an ingame load ({key})"
+                );
+            }
+            assert!(config.value("input_load_state_btn").is_none());
+            assert!(!config.render().contains("load_state"));
+        }
+    }
+
+    /// When the authenticated profiles do not resolve, nothing is guessed.
+    #[test]
+    fn an_unresolved_hotkey_set_writes_no_hotkey_rather_than_a_guessed_button_index() {
+        let config = config_for(
+            &LaunchPaths::new("/synthetic/app-data"),
+            Path::new("/synthetic/cores"),
+            Path::new(SYNTHETIC_PROFILES),
+            1,
+            None,
+        );
+
+        for key in [
+            "input_enable_hotkey_btn",
+            "input_save_state_btn",
+            "input_state_slot_increase_btn",
+            "input_state_slot_decrease_btn",
+        ] {
+            assert!(config.value(key).is_none(), "{key} must be absent entirely");
+        }
+        // The rest of the configuration is unaffected, so a launch still proceeds normally.
+        assert_eq!(config.value("savestate_thumbnail_enable"), Some("true"));
+        assert_eq!(config.value("state_slot"), Some("1"));
+        assert_eq!(config.value("video_fullscreen"), Some("true"));
+    }
+
+    #[test]
+    fn the_save_state_configuration_is_deterministic_and_still_sorted() {
+        let (_paths, first) = synthetic_config();
+        let (_paths, second) = synthetic_config();
+
+        assert_eq!(first.render(), second.render());
+        let keys: Vec<_> = first.entries().iter().map(|(key, _)| key).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted);
+        assert!(first.render().contains("state_slot = \"1\"\n"));
+        assert!(first
+            .render()
+            .contains("input_state_slot_increase_btn = \"h0right\"\n"));
     }
 }

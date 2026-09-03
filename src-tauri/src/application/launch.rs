@@ -392,6 +392,7 @@ impl LaunchApplicationService {
             content_path: &content_path,
             bios_files: &bios_files,
             controller_profiles_root: &controller_profiles_root,
+            entry_slot: None,
         })?;
 
         let session = self

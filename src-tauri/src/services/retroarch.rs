@@ -9,10 +9,12 @@ use crate::domain::core::{current_core_target, CoreId};
 use crate::domain::launch::{LaunchDiagnostic, LaunchErrorCode, LaunchFailure};
 use crate::domain::library::{ContentFileRole, ContentUnit, ContentUnitAvailability};
 use crate::domain::runtime::SafeIdentifier;
+use crate::domain::save_state::SaveStateSlot;
 use crate::domain::system::{SystemCatalog, SystemId};
-use crate::services::retroarch_config::RetroArchConfig;
+use crate::services::retroarch_config::{RetroArchConfig, RetroArchConfigRequest};
 use crate::services::retroarch_env::{build_child_environment, host_environment};
 use crate::services::retroarch_host::HostPrerequisiteInspector;
+use crate::services::retroarch_input::resolve_managed_save_state_hotkeys;
 use crate::services::retroarch_paths::LaunchPaths;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -64,6 +66,11 @@ pub struct LaunchPreparation<'a> {
     pub bios_files: &'a [(String, PathBuf)],
     /// The verified managed controller-profile root, from `resolve_controller_profiles`.
     pub controller_profiles_root: &'a Path,
+    /// The save state this launch should enter from, when it is a save-state launch.
+    ///
+    /// `Some` adds `--entryslot N` and makes that slot active; `None` is an ordinary game launch,
+    /// which starts on the first managed slot and passes no entry argument at all.
+    pub entry_slot: Option<SaveStateSlot>,
 }
 
 /// Builds and starts one controlled managed RetroArch launch.
@@ -282,11 +289,30 @@ impl RetroArchService {
             .ok_or_else(config_failed)?
             .to_path_buf();
         let config_path = self.paths.config_file();
-        RetroArchConfig::build(
-            &self.paths,
-            &core_directory,
+        // Derived from the authenticated managed profiles, or `None` — in which case no hotkey is
+        // written at all. A launch is never failed for it: a game whose controller works must keep
+        // starting, and losing the save hotkey is a smaller failure than losing the game.
+        let save_state_hotkeys = resolve_managed_save_state_hotkeys(
             request.controller_profiles_root,
-        )
+            MANAGED_JOYPAD_DRIVER,
+        );
+        if save_state_hotkeys.is_none() {
+            tracing::info!(
+                "the managed save-state hotkeys could not be derived from the authenticated \
+                 controller profiles; none were written"
+            );
+        }
+        RetroArchConfig::build(&RetroArchConfigRequest {
+            paths: &self.paths,
+            core_directory: &core_directory,
+            controller_profiles_root: request.controller_profiles_root,
+            // A save-state launch starts on the loaded state's own slot; an ordinary launch starts
+            // on the first managed slot.
+            state_slot: request
+                .entry_slot
+                .unwrap_or_else(SaveStateSlot::default_launch_slot),
+            save_state_hotkeys: save_state_hotkeys.as_ref(),
+        })
         .write(&config_path)
         .map_err(|_| config_failed())?;
 
@@ -300,14 +326,22 @@ impl RetroArchService {
             diagnostics.push(LaunchDiagnostic::new(prerequisite));
         }
 
+        // `AppRun --config <cfg> -L <core> [--entryslot N] <content>`. The content target stays
+        // last, and an ordinary launch is byte-identical to the M7 contract.
+        let mut arguments = vec![
+            OsString::from("--config"),
+            config_path.clone().into_os_string(),
+            OsString::from("-L"),
+            request.core.core_path.clone().into_os_string(),
+        ];
+        if let Some(slot) = request.entry_slot {
+            arguments.push(OsString::from("--entryslot"));
+            arguments.push(OsString::from(slot.get().to_string()));
+        }
+        arguments.push(request.content_path.to_path_buf().into_os_string());
+
         Ok(LaunchContext {
-            arguments: vec![
-                OsString::from("--config"),
-                config_path.clone().into_os_string(),
-                OsString::from("-L"),
-                request.core.core_path.clone().into_os_string(),
-                request.content_path.to_path_buf().into_os_string(),
-            ],
+            arguments,
             program: request.app_run_path.to_path_buf(),
             environment,
             // A RetroFrontier-owned working directory means a relative path can never resolve
@@ -409,10 +443,12 @@ mod tests {
         GameId,
     };
     use crate::domain::runtime::{RuntimeStatus, SafeIdentifier, Sha256Digest};
+    use crate::domain::save_state::SaveStateSlot;
     use crate::domain::system::{SystemCatalog, SystemId};
     use crate::services::retroarch_host::HostPrerequisiteInspector;
     use crate::services::retroarch_paths::LaunchPaths;
     use std::collections::{BTreeMap, BTreeSet};
+    use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -909,6 +945,7 @@ mod tests {
                 content_path: &content.path().join("NES/Game.nes"),
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
             })
             .unwrap();
 
@@ -966,6 +1003,7 @@ mod tests {
                 content_path: &content_path,
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
             })
             .unwrap();
 
@@ -1043,6 +1081,7 @@ mod tests {
                 content_path: &content.path().join("GC/Game.rvz"),
                 bios_files: &[("scph5501.bin".to_owned(), bios_path.clone())],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
             })
             .unwrap();
 
@@ -1068,6 +1107,7 @@ mod tests {
                 content_path: &content.path().join("GC/Game.rvz"),
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
             })
             .unwrap();
         assert!(!system_root.join("scph5501.bin").exists());
@@ -1103,6 +1143,7 @@ mod tests {
                 content_path: &content_path,
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
             })
         };
 
@@ -1156,6 +1197,7 @@ mod tests {
                 content_path: &content.path().join("PS1/Game.chd"),
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
             })
             .unwrap();
 
@@ -1189,5 +1231,76 @@ mod tests {
 
         assert_eq!(identifiers.len(), 1);
         assert!(resolved.core_path.is_absolute());
+    }
+
+    /// The launch argument contract, for both shapes.
+    ///
+    /// `--entryslot=NUMBER` is documented by the managed RetroArch 1.22.2 binary itself
+    /// (`-e, --entryslot=NUMBER  Slot from which to load an entry state.`), and an ordinary game
+    /// launch stays byte-identical to the M7 contract.
+    #[test]
+    fn a_save_state_launch_adds_entryslot_and_an_ordinary_launch_is_unchanged() {
+        let directory = TempDir::new().unwrap();
+        let service = service(directory.path(), Vec::new());
+        let (runtime, app_run) =
+            launch_runtime(directory.path(), "nestopia", &[SystemId::Nes], None);
+        let core =
+            RetroArchService::resolve_core(&SystemCatalog::v1(), SystemId::Nes, None, &runtime)
+                .unwrap();
+        let profiles = profiles_root(&runtime);
+        let content = directory.path().join("content.nes");
+        std::fs::write(&content, b"synthetic").unwrap();
+
+        let ordinary = service
+            .prepare(LaunchPreparation {
+                app_run_path: &app_run,
+                core: &core,
+                content_path: &content,
+                bios_files: &[],
+                controller_profiles_root: &profiles,
+                entry_slot: None,
+            })
+            .unwrap();
+        assert_eq!(
+            ordinary.arguments,
+            vec![
+                OsString::from("--config"),
+                ordinary.config_path.clone().into_os_string(),
+                OsString::from("-L"),
+                core.core_path.clone().into_os_string(),
+                content.clone().into_os_string(),
+            ]
+        );
+
+        for slot in [1_u16, 42, 999] {
+            let save_state = service
+                .prepare(LaunchPreparation {
+                    app_run_path: &app_run,
+                    core: &core,
+                    content_path: &content,
+                    bios_files: &[],
+                    controller_profiles_root: &profiles,
+                    entry_slot: Some(SaveStateSlot::new(slot).unwrap()),
+                })
+                .unwrap();
+            assert_eq!(
+                save_state.arguments,
+                vec![
+                    OsString::from("--config"),
+                    save_state.config_path.clone().into_os_string(),
+                    OsString::from("-L"),
+                    core.core_path.clone().into_os_string(),
+                    OsString::from("--entryslot"),
+                    OsString::from(slot.to_string()),
+                    // The content target stays last.
+                    content.clone().into_os_string(),
+                ],
+                "slot {slot}"
+            );
+            // The generated configuration agrees about the active slot, so the invariant does not
+            // depend on the argument alone.
+            let rendered = std::fs::read_to_string(&save_state.config_path).unwrap();
+            assert!(rendered.contains(&format!("state_slot = \"{slot}\"\n")));
+        }
     }
 }
