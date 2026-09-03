@@ -111,12 +111,65 @@ impl TrustedReleaseSource for UnavailableTrustedReleaseSource {
 }
 
 /// One authenticated managed core component, resolved to its absolute installed path.
+///
+/// `binary_sha256` is the **authenticated** digest of the core's executable, taken from the
+/// release manifest's installed-file inventory — the same map `verify_tree` re-hashes the installed
+/// tree against. It is deliberately *not* recomputed from whatever `.so` happens to sit at
+/// `core_path`: hashing an arbitrary file proves only what that file is, never that it is trusted.
+/// `RuntimeComponent::sha256` is the *archive* digest and is a different value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedCoreComponent {
     pub component_id: SafeIdentifier,
     pub core_path: PathBuf,
     /// The systems the authenticated release approves this core for.
     pub systems: Vec<SafeIdentifier>,
+    /// The decisive core identity for save-state provenance.
+    pub binary_sha256: Sha256Digest,
+    pub binary_size_bytes: u64,
+    /// Trustworthy human-readable labels from the authenticated manifest. Recorded so a save state
+    /// stays describable after its originating Runtime Release is gone; never a load identity.
+    pub display_version: Option<String>,
+    pub source_revision: Option<String>,
+}
+
+/// Project one authenticated core component, taking its binary identity from the release
+/// inventory rather than from the filesystem.
+///
+/// Returns `None` when the component declares no executable, or when the authenticated inventory
+/// does not describe that executable as an executable file carrying a digest. Both are refusals
+/// rather than fallbacks: the whole point of this projection is that the digest it reports was
+/// *authenticated*, so there is no honest way to supply one by hashing whatever is on disk.
+///
+/// `RuntimeManifest::validate_for_linux_x86_64` already requires the entry to exist and to be an
+/// executable file, and `verify_tree` re-hashes the installed tree against it. Re-checking here
+/// rather than unwrapping keeps this a pure projection that introduces no trust assumption of its
+/// own.
+fn managed_core_component(
+    manifest: &RuntimeManifest,
+    component: &crate::domain::runtime::RuntimeComponent,
+    install_path: &Path,
+) -> Option<ManagedCoreComponent> {
+    use crate::domain::runtime::InstalledEntryType;
+
+    let executable = component.executable_relative_path.as_ref()?;
+    let inventory_path = component.install_path.join(executable.as_str()).ok()?;
+    let entry = manifest
+        .release
+        .inventory
+        .iter()
+        .find(|entry| entry.path == inventory_path)?;
+    if entry.entry_type != InstalledEntryType::File || !entry.executable {
+        return None;
+    }
+    Some(ManagedCoreComponent {
+        component_id: component.id.clone(),
+        core_path: install_path.join(executable.to_path_buf()),
+        systems: component.systems.clone(),
+        binary_sha256: entry.sha256?,
+        binary_size_bytes: entry.size_bytes,
+        display_version: component.display_version.clone(),
+        source_revision: component.source_revision.clone(),
+    })
 }
 
 /// The read-only launch view of the verified active managed runtime.
@@ -129,6 +182,29 @@ pub struct VerifiedLaunchRuntime {
     pub app_run_path: PathBuf,
     pub cores: BTreeMap<SafeIdentifier, ManagedCoreComponent>,
     pub support_assets: BTreeMap<SafeIdentifier, PathBuf>,
+}
+
+/// One exact authenticated core binary, located in whichever trusted installation currently holds
+/// it.
+///
+/// A Save State is bound to the core binary that produced it. Loading one therefore needs *that*
+/// binary — not the same `CoreId`, and not the same component with different bytes. The original
+/// Runtime Release stays recorded provenance, but it is not required: another currently installed,
+/// authenticated, allowed installation carrying the identical binary satisfies the load. The
+/// historical core is then a one-shot launch override and nothing more; it never becomes the
+/// game's persisted preference, never re-activates an installation, and never lowers a trust floor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticatedCoreBinary {
+    pub component_id: SafeIdentifier,
+    pub core_path: PathBuf,
+    pub binary_sha256: Sha256Digest,
+    pub binary_size_bytes: u64,
+    pub systems: Vec<SafeIdentifier>,
+    pub display_version: Option<String>,
+    pub source_revision: Option<String>,
+    /// Where the binary was actually found — which may not be the release that produced the state.
+    pub installation_id: SafeIdentifier,
+    pub release_id: SafeIdentifier,
 }
 
 #[derive(Clone)]
@@ -575,19 +651,16 @@ impl RuntimeManager {
             let install_path = version_path.join(component.install_path.to_path_buf());
             match component.kind {
                 crate::domain::runtime::ComponentKind::Core => {
-                    // A core with no authenticated executable cannot be loaded; skipping it makes
-                    // the launch report `coreNotInstalled` instead of guessing a filename.
-                    let Some(executable) = component.executable_relative_path.as_ref() else {
+                    // A core with no authenticated executable, or one whose executable the
+                    // authenticated inventory does not describe, cannot be loaded. Skipping it
+                    // makes the launch report `coreNotInstalled` instead of guessing a filename or
+                    // hashing an untrusted file.
+                    let Some(core) =
+                        managed_core_component(&installation.manifest, component, &install_path)
+                    else {
                         continue;
                     };
-                    cores.insert(
-                        component.id.clone(),
-                        ManagedCoreComponent {
-                            component_id: component.id.clone(),
-                            core_path: install_path.join(executable.to_path_buf()),
-                            systems: component.systems.clone(),
-                        },
-                    );
+                    cores.insert(component.id.clone(), core);
                 }
                 crate::domain::runtime::ComponentKind::SupportAsset => {
                     support_assets.insert(component.id.clone(), install_path);
@@ -604,6 +677,90 @@ impl RuntimeManager {
             cores,
             support_assets,
         })
+    }
+
+    /// Locate one **exact** authenticated core binary across every currently trusted installation.
+    ///
+    /// The active installation is preferred, because that is the ordinary case and the one whose
+    /// verification the caller already paid for. Otherwise every other trusted, fully verified
+    /// installation is searched, so a Save State stays loadable when its core survived a runtime
+    /// update in a retained release.
+    ///
+    /// Trust is recomputed here rather than cached, and nothing about this method mutates state:
+    /// it never activates, re-downloads, resurrects, or pins an installation. A revoked release, a
+    /// release below the persisted security floor, or an installation whose manifest digest the
+    /// trust state does not permit is skipped **even when the bytes on disk match**, because
+    /// save-state recovery never overrides Runtime security policy.
+    pub fn locate_authenticated_core_binary(
+        &self,
+        component_id: &SafeIdentifier,
+        binary_sha256: Sha256Digest,
+    ) -> Result<AuthenticatedCoreBinary, RuntimeError> {
+        let trust_state = self.trust_store.load()?;
+        let mut candidates = Vec::new();
+        // The active installation first, when there is a trustworthy one at all.
+        if let Ok(Some(pointer)) = read_active_pointer(&self.paths) {
+            if let Ok(active) =
+                self.load_verified_installation_with_state(&pointer.installation_id, &trust_state)
+            {
+                candidates.push(active);
+            }
+        }
+        let active_id = candidates
+            .first()
+            .map(|installation| installation.installation_id.clone());
+        candidates.extend(
+            self.list_verified_installations_with_state_except(&trust_state, active_id.as_ref())?,
+        );
+
+        for installation in candidates {
+            let version_path = self.paths.version_path(&installation.installation_id);
+            let Some(component) =
+                installation
+                    .manifest
+                    .release
+                    .components
+                    .iter()
+                    .find(|component| {
+                        component.id == *component_id
+                            && component.kind == crate::domain::runtime::ComponentKind::Core
+                    })
+            else {
+                continue;
+            };
+            let install_path = version_path.join(component.install_path.to_path_buf());
+            let Some(core) =
+                managed_core_component(&installation.manifest, component, &install_path)
+            else {
+                continue;
+            };
+            // The same component id with a different binary does **not** satisfy the load. This is
+            // the check that keeps a "compatible-looking" substitution from happening silently.
+            if core.binary_sha256 != binary_sha256 {
+                continue;
+            }
+            if !std::fs::symlink_metadata(&core.core_path)
+                .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+            {
+                continue;
+            }
+            return Ok(AuthenticatedCoreBinary {
+                component_id: core.component_id,
+                core_path: core.core_path,
+                binary_sha256: core.binary_sha256,
+                binary_size_bytes: core.binary_size_bytes,
+                systems: core.systems,
+                display_version: core.display_version,
+                source_revision: core.source_revision,
+                installation_id: installation.installation_id.clone(),
+                release_id: installation.manifest.release.release_id.clone(),
+            });
+        }
+
+        Err(RuntimeError::InstalledTree(
+            "no trusted managed runtime installation carries the exact requested core binary"
+                .to_owned(),
+        ))
     }
 
     /// Hand the launch service the same OS-backed lock runtime mutation uses.
@@ -1115,8 +1272,8 @@ mod tests {
     use crate::domain::runtime::{
         ArchiveFormat, ComponentKind, InstalledEntry, InstalledEntryType, RelativePath,
         ReleaseChannel, RuntimeArchitecture, RuntimeCompatibility, RuntimeComponent, RuntimeError,
-        RuntimeManifest, RuntimePlatform, RuntimeRelease, RuntimeState, SafeIdentifier,
-        Sha256Digest,
+        RuntimeManifest, RuntimePlatform, RuntimeRelease, RuntimeState, RuntimeTrustState,
+        SafeIdentifier, Sha256Digest,
     };
     use std::collections::BTreeMap;
     use std::fs::{self, File, OpenOptions};
@@ -2029,5 +2186,441 @@ mod tests {
         let result = second_thread.join().unwrap();
         assert!(matches!(result, Err(RuntimeError::Lock(_))));
         drop(lock);
+    }
+
+    // ------------------------------------------- M9: exact authenticated core-binary provenance
+
+    /// The synthetic extractor writes these exact bytes as every core, so its authenticated
+    /// digest is reproducible from the test itself.
+    const SYNTHETIC_CORE_BYTES: &[u8] = b"synthetic core";
+
+    fn synthetic_core_id() -> SafeIdentifier {
+        SafeIdentifier::new("synthetic-core").unwrap()
+    }
+
+    fn rewrite_trust_state(manager: &RuntimeManager, edit: impl FnOnce(&mut RuntimeTrustState)) {
+        let path = manager.paths().trust_state();
+        let mut state: RuntimeTrustState =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        edit(&mut state);
+        fs::write(path, serde_json::to_vec(&state).unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_launch_projection_exposes_the_authenticated_core_binary_digest_and_labels() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager_with_core(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+        manager.install("manifests/release-1.json").await.unwrap();
+
+        let launch = manager.verified_launch_runtime().unwrap();
+        let core = launch
+            .cores
+            .get(&synthetic_core_id())
+            .expect("managed core");
+
+        // The digest is the authenticated *inventory* value for the component's executable — the
+        // same map `verify_tree` re-hashes the installed tree against.
+        assert_eq!(core.binary_sha256, sha256_bytes(SYNTHETIC_CORE_BYTES));
+        assert_eq!(core.binary_size_bytes, SYNTHETIC_CORE_BYTES.len() as u64);
+
+        // And it is deliberately *not* the component's archive digest, which is a different value
+        // describing a different artefact.
+        let manifest = crate::adapters::runtime_installed::read_manifest(
+            &manager.paths().version_path(&launch.installation_id),
+        )
+        .unwrap()
+        .0;
+        let component = manifest
+            .release
+            .components
+            .iter()
+            .find(|component| component.id == synthetic_core_id())
+            .unwrap();
+        assert_ne!(core.binary_sha256, component.sha256);
+        assert_eq!(core.display_version, component.display_version);
+        assert_eq!(core.source_revision, component.source_revision);
+
+        // The projection reports the installation and release it came from, unchanged.
+        assert_eq!(launch.release_id.as_str(), "release-1");
+    }
+
+    /// A core whose executable the authenticated inventory does not describe can never reach the
+    /// projection, because such a manifest does not parse at all.
+    ///
+    /// This is why the projection may refuse rather than fall back to hashing whatever sits at
+    /// `core_path`: there is no trusted manifest in which that situation exists.
+    #[test]
+    fn a_manifest_whose_core_executable_is_absent_from_the_inventory_is_refused_outright() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager_with_core(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+        let _ = &manager;
+
+        let app_run = b"#!/bin/sh\nexit 0\n";
+        let core = SYNTHETIC_CORE_BYTES;
+        let mut manifest = RuntimeManifest {
+            schema_version: 1,
+            manifest_id: SafeIdentifier::new("manifest-x").unwrap(),
+            channel: ReleaseChannel::Stable,
+            min_retrofrontier_version: "0.1.0".to_owned(),
+            release: RuntimeRelease {
+                release_id: SafeIdentifier::new("release-x").unwrap(),
+                release_sequence: 1,
+                retrofrontier_runtime_version: "1".to_owned(),
+                retroarch_version: "1.22.2".to_owned(),
+                platform: RuntimePlatform::Linux,
+                architecture: RuntimeArchitecture::X86_64,
+                components: vec![
+                    RuntimeComponent {
+                        id: SafeIdentifier::new("retroarch").unwrap(),
+                        kind: ComponentKind::Runtime,
+                        target_name: "targets/runtime.appimage".to_owned(),
+                        source_id: None,
+                        source_url: None,
+                        archive_format: ArchiveFormat::AppImage,
+                        archive_size_bytes: 1,
+                        sha256: sha256_bytes(b"archive"),
+                        install_path: RelativePath::new("runtime/app").unwrap(),
+                        expected_root: None,
+                        payload_filename: None,
+                        executable_relative_path: None,
+                        display_version: None,
+                        source_revision: None,
+                        source_pinning: None,
+                        license: "GPL-3.0-or-later".to_owned(),
+                        systems: Vec::new(),
+                    },
+                    RuntimeComponent {
+                        id: synthetic_core_id(),
+                        kind: ComponentKind::Core,
+                        target_name: "targets/core.zip".to_owned(),
+                        source_id: None,
+                        source_url: None,
+                        archive_format: ArchiveFormat::Zip,
+                        archive_size_bytes: 1,
+                        sha256: sha256_bytes(b"core archive"),
+                        install_path: RelativePath::new("cores/synthetic-core").unwrap(),
+                        expected_root: None,
+                        payload_filename: None,
+                        executable_relative_path: Some(RelativePath::new("core.so").unwrap()),
+                        display_version: Some("1.2.3".to_owned()),
+                        source_revision: Some("cafebabe".to_owned()),
+                        source_pinning: None,
+                        license: "MIT".to_owned(),
+                        systems: vec![SafeIdentifier::new("nes").unwrap()],
+                    },
+                ],
+                app_run_path: RelativePath::new("runtime/app/AppRun").unwrap(),
+                inventory: vec![
+                    InstalledEntry {
+                        path: RelativePath::new("runtime").unwrap(),
+                        entry_type: InstalledEntryType::Directory,
+                        size_bytes: 0,
+                        sha256: None,
+                        executable: false,
+                        link_target: None,
+                    },
+                    InstalledEntry {
+                        path: RelativePath::new("runtime/app").unwrap(),
+                        entry_type: InstalledEntryType::Directory,
+                        size_bytes: 0,
+                        sha256: None,
+                        executable: false,
+                        link_target: None,
+                    },
+                    InstalledEntry {
+                        path: RelativePath::new("runtime/app/AppRun").unwrap(),
+                        entry_type: InstalledEntryType::File,
+                        size_bytes: app_run.len() as u64,
+                        sha256: Some(sha256_bytes(app_run)),
+                        executable: true,
+                        link_target: None,
+                    },
+                    InstalledEntry {
+                        path: RelativePath::new("cores").unwrap(),
+                        entry_type: InstalledEntryType::Directory,
+                        size_bytes: 0,
+                        sha256: None,
+                        executable: false,
+                        link_target: None,
+                    },
+                    InstalledEntry {
+                        path: RelativePath::new("cores/synthetic-core").unwrap(),
+                        entry_type: InstalledEntryType::Directory,
+                        size_bytes: 0,
+                        sha256: None,
+                        executable: false,
+                        link_target: None,
+                    },
+                    InstalledEntry {
+                        path: RelativePath::new("cores/synthetic-core/core.so").unwrap(),
+                        entry_type: InstalledEntryType::File,
+                        size_bytes: core.len() as u64,
+                        sha256: Some(sha256_bytes(core)),
+                        executable: true,
+                        link_target: None,
+                    },
+                ],
+                extraction: Default::default(),
+            },
+            compatibility: RuntimeCompatibility {
+                retroarch_core_api: "1".to_owned(),
+                save_state_policy: "isolated".to_owned(),
+            },
+        };
+        // As declared, it parses.
+        assert!(RuntimeManifest::parse(&serde_json::to_vec(&manifest).unwrap()).is_ok());
+
+        // Remove exactly the core executable's inventory entry: there is then no authenticated
+        // digest for the binary, and the manifest is refused rather than accepted with a hole.
+        manifest
+            .release
+            .inventory
+            .retain(|entry| entry.path.as_str() != "cores/synthetic-core/core.so");
+        let refused = RuntimeManifest::parse(&serde_json::to_vec(&manifest).unwrap());
+        assert!(matches!(refused, Err(RuntimeError::Manifest(_))));
+
+        // A non-executable entry is refused for the same reason.
+        manifest.release.inventory.push(InstalledEntry {
+            path: RelativePath::new("cores/synthetic-core/core.so").unwrap(),
+            entry_type: InstalledEntryType::File,
+            size_bytes: core.len() as u64,
+            sha256: Some(sha256_bytes(core)),
+            executable: false,
+            link_target: None,
+        });
+        assert!(matches!(
+            RuntimeManifest::parse(&serde_json::to_vec(&manifest).unwrap()),
+            Err(RuntimeError::Manifest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_exact_authenticated_core_binary_is_located_in_the_active_installation() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager_with_core(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+        manager.install("manifests/release-1.json").await.unwrap();
+        let digest = sha256_bytes(SYNTHETIC_CORE_BYTES);
+
+        let located = manager
+            .locate_authenticated_core_binary(&synthetic_core_id(), digest)
+            .expect("the active installation carries the exact binary");
+
+        assert_eq!(located.component_id, synthetic_core_id());
+        assert_eq!(located.binary_sha256, digest);
+        assert_eq!(located.binary_size_bytes, SYNTHETIC_CORE_BYTES.len() as u64);
+        assert!(located.core_path.is_absolute());
+        assert!(located.core_path.is_file());
+        assert!(located
+            .core_path
+            .starts_with(manager.paths().version_path(&located.installation_id)));
+        assert_eq!(located.release_id.as_str(), "release-1");
+        assert_eq!(located.systems, vec![SafeIdentifier::new("nes").unwrap()]);
+    }
+
+    /// The original Runtime Release is recorded provenance, not a requirement.
+    ///
+    /// A newer release may have replaced the active installation without carrying the same core.
+    /// While *any* currently installed, authenticated, allowed installation holds the identical
+    /// binary, the save state stays loadable.
+    #[tokio::test]
+    async fn the_exact_binary_is_located_in_another_retained_trusted_installation() {
+        let directory = tempdir().unwrap();
+        let inspector = StaticManagedProcessInspector::default();
+        let with_core = fixture_manager_with_core(directory.path(), 1, inspector.clone());
+        with_core.install("manifests/release-1.json").await.unwrap();
+        let core_installation = read_active_pointer(with_core.paths())
+            .unwrap()
+            .unwrap()
+            .installation_id;
+
+        // A newer release without the core becomes active; the older one is retained.
+        let without_core = fixture_manager(directory.path(), 2, inspector);
+        without_core
+            .install("manifests/release-2.json")
+            .await
+            .unwrap();
+        let active = read_active_pointer(without_core.paths())
+            .unwrap()
+            .unwrap()
+            .installation_id;
+        assert_ne!(active, core_installation);
+        assert!(without_core
+            .verified_launch_runtime()
+            .unwrap()
+            .cores
+            .is_empty());
+
+        let located = without_core
+            .locate_authenticated_core_binary(
+                &synthetic_core_id(),
+                sha256_bytes(SYNTHETIC_CORE_BYTES),
+            )
+            .expect("a retained trusted installation still carries the binary");
+
+        assert_eq!(located.installation_id, core_installation);
+        assert_eq!(located.release_id.as_str(), "release-1");
+        assert!(located.core_path.is_file());
+    }
+
+    #[tokio::test]
+    async fn the_same_component_with_a_different_binary_digest_never_satisfies_a_lookup() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager_with_core(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+        manager.install("manifests/release-1.json").await.unwrap();
+
+        // The component id matches and the core really is installed, but the recorded save state
+        // was produced by different bytes. Substituting them would be exactly the silent
+        // "looks like the right core" failure M9 refuses.
+        let refused = manager.locate_authenticated_core_binary(
+            &synthetic_core_id(),
+            sha256_bytes(b"a different core build"),
+        );
+        assert!(matches!(refused, Err(RuntimeError::InstalledTree(_))));
+
+        // An unknown component id is likewise not satisfied by the installed core.
+        let refused = manager.locate_authenticated_core_binary(
+            &SafeIdentifier::new("some-other-core").unwrap(),
+            sha256_bytes(SYNTHETIC_CORE_BYTES),
+        );
+        assert!(refused.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_revoked_or_below_floor_release_never_satisfies_a_lookup_even_when_the_bytes_match() {
+        let directory = tempdir().unwrap();
+        let inspector = StaticManagedProcessInspector::default();
+        let with_core = fixture_manager_with_core(directory.path(), 1, inspector.clone());
+        with_core.install("manifests/release-1.json").await.unwrap();
+        let without_core = fixture_manager(directory.path(), 2, inspector);
+        without_core
+            .install("manifests/release-2.json")
+            .await
+            .unwrap();
+        let digest = sha256_bytes(SYNTHETIC_CORE_BYTES);
+        assert!(without_core
+            .locate_authenticated_core_binary(&synthetic_core_id(), digest)
+            .is_ok());
+
+        // Revoking the release that carries the core removes it from every lookup, even though
+        // the bytes on disk are untouched. Save-state recovery never overrides Runtime security
+        // policy, and the component is never reactivated to load a state.
+        rewrite_trust_state(&without_core, |state| {
+            state
+                .revoked_release_ids
+                .push(SafeIdentifier::new("release-1").unwrap());
+        });
+        assert!(without_core
+            .locate_authenticated_core_binary(&synthetic_core_id(), digest)
+            .is_err());
+        // The bytes themselves are untouched: a revocation blocks the *load*, it does not delete
+        // the state's core or the state.
+        assert!(
+            with_core
+                .paths()
+                .versions_root()
+                .read_dir()
+                .unwrap()
+                .count()
+                >= 2
+        );
+
+        // The anti-rollback floor has the same effect: a release below it is not permitted.
+        rewrite_trust_state(&without_core, |state| {
+            state.revoked_release_ids.clear();
+            state.minimum_safe_release_sequence = 2;
+        });
+        assert!(without_core
+            .locate_authenticated_core_binary(&synthetic_core_id(), digest)
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_core_binary_is_reported_rather_than_substituted() {
+        let directory = tempdir().unwrap();
+        let manager = fixture_manager(
+            directory.path(),
+            1,
+            StaticManagedProcessInspector::default(),
+        );
+
+        // Nothing installed at all.
+        assert!(manager
+            .locate_authenticated_core_binary(
+                &synthetic_core_id(),
+                sha256_bytes(SYNTHETIC_CORE_BYTES)
+            )
+            .is_err());
+
+        // A runtime with no such core installed.
+        manager.install("manifests/release-1.json").await.unwrap();
+        assert!(manager
+            .locate_authenticated_core_binary(
+                &synthetic_core_id(),
+                sha256_bytes(SYNTHETIC_CORE_BYTES)
+            )
+            .is_err());
+    }
+
+    /// Locating a historical core is a pure read. It never becomes an activation.
+    #[tokio::test]
+    async fn locating_a_core_binary_mutates_no_pointer_no_trust_state_and_no_installation() {
+        let directory = tempdir().unwrap();
+        let inspector = StaticManagedProcessInspector::default();
+        let with_core = fixture_manager_with_core(directory.path(), 1, inspector.clone());
+        with_core.install("manifests/release-1.json").await.unwrap();
+        let manager = fixture_manager(directory.path(), 2, inspector);
+        manager.install("manifests/release-2.json").await.unwrap();
+
+        let pointer_before = fs::read(manager.paths().active_pointer()).unwrap();
+        let trust_before = fs::read(manager.paths().trust_state()).unwrap();
+        let installations_before = {
+            let mut names: Vec<_> = fs::read_dir(manager.paths().versions_root())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+
+        manager
+            .locate_authenticated_core_binary(
+                &synthetic_core_id(),
+                sha256_bytes(SYNTHETIC_CORE_BYTES),
+            )
+            .expect("the retained installation carries the binary");
+
+        assert_eq!(
+            fs::read(manager.paths().active_pointer()).unwrap(),
+            pointer_before
+        );
+        assert_eq!(
+            fs::read(manager.paths().trust_state()).unwrap(),
+            trust_before
+        );
+        let installations_after = {
+            let mut names: Vec<_> = fs::read_dir(manager.paths().versions_root())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(installations_after, installations_before);
     }
 }

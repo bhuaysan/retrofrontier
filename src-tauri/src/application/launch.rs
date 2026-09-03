@@ -838,6 +838,7 @@ mod tests {
     use crate::domain::library::{ContentUnitId, GameId};
     use crate::domain::runtime::{
         ManagedProcessPhase, RuntimeError, RuntimeState, RuntimeStatus, SafeIdentifier,
+        Sha256Digest,
     };
     use crate::domain::system::{SystemCatalog, SystemId};
     use crate::repositories::launch::LaunchRepository;
@@ -1215,6 +1216,10 @@ mod tests {
                         component_id: SafeIdentifier::new(component).unwrap(),
                         core_path,
                         systems: vec![SafeIdentifier::new(system.as_str()).unwrap()],
+                        binary_sha256: Sha256Digest::from_hex(&"a".repeat(64)).unwrap(),
+                        binary_size_bytes: 4,
+                        display_version: Some("synthetic-1.0".to_owned()),
+                        source_revision: Some("0123456".to_owned()),
                     },
                 )]),
                 support_assets,

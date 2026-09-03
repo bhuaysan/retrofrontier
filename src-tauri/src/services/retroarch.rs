@@ -408,7 +408,7 @@ mod tests {
         ContentRootId, ContentUnit, ContentUnitAvailability, ContentUnitId, ContentUnitKind,
         GameId,
     };
-    use crate::domain::runtime::{RuntimeStatus, SafeIdentifier};
+    use crate::domain::runtime::{RuntimeStatus, SafeIdentifier, Sha256Digest};
     use crate::domain::system::{SystemCatalog, SystemId};
     use crate::services::retroarch_host::HostPrerequisiteInspector;
     use crate::services::retroarch_paths::LaunchPaths;
@@ -553,6 +553,10 @@ mod tests {
                             .iter()
                             .map(|system| SafeIdentifier::new(system.as_str()).unwrap())
                             .collect(),
+                        binary_sha256: Sha256Digest::from_hex(&"a".repeat(64)).unwrap(),
+                        binary_size_bytes: 4,
+                        display_version: Some("synthetic-1.0".to_owned()),
+                        source_revision: Some("0123456".to_owned()),
                     },
                 )]),
                 support_assets,
