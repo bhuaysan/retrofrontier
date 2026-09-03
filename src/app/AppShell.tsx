@@ -24,6 +24,7 @@ import { useLibraryQuery } from '../hooks/useLibraryQuery';
 import { useLibraryShelves } from '../hooks/useLibraryShelves';
 import { useGameDetail } from '../hooks/useGameDetail';
 import { useGameLaunch, type GameLaunchModel } from '../hooks/useGameLaunch';
+import { useSaveStates } from '../hooks/useSaveStates';
 import { useScanState } from '../hooks/useScanState';
 import { useSystemCatalog } from '../hooks/useSystemCatalog';
 import { pickExternalContentRoot } from '../platform/folderPicker';
@@ -331,6 +332,16 @@ function AppShellBody() {
     running: gameLaunch.running,
     blocked: gameLaunch.blocked,
     pendingGameId: gameLaunch.pendingGameId,
+  });
+  // The Save-State projection of the open Game Detail route. The launch facts are handed over
+  // rather than read again inside the hook: a managed game in progress refuses both a load and a
+  // delete, and the session that just ended may have written the states this list is about.
+  const saveStates = useSaveStates({
+    enabled: gameRouteState !== null && currentGameId !== null,
+    gameId: currentGameId,
+    launchBlocked: gameLaunch.blocked,
+    launchRunning: gameLaunch.running !== null,
+    launchPending: gameLaunch.pendingGameId !== null,
   });
   const onInputAction = useCallback(
     (action: InputAction) => focus.dispatch(action, 'gamepad'),
@@ -811,6 +822,7 @@ function AppShellBody() {
         <GameDetailPage
           detail={gameDetail}
           launch={launchForGameDetail}
+          saveStates={saveStates}
           gameId={currentGameId}
           onBackToLibrary={onBackToLibrary}
           onRetryReadiness={() => void refreshCatalog()}

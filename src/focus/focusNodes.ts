@@ -46,6 +46,13 @@ export const focusNodes = {
   detailCandidate: (providerGameId: string): FocusNodeId => `detail:candidate:${providerGameId}`,
   /** A launch content choice, identified by its `ContentUnitId`. */
   launchContent: (contentUnitId: number): FocusNodeId => `launch:content:${contentUnitId}`,
+  /** The Save States section heading — the deterministic fallback for the section. */
+  saveStatesHeading: 'save-states:heading' as FocusNodeId,
+  /** A Save State card, identified by its SaveStateId and never by array position. */
+  saveState: (saveStateId: number): FocusNodeId => `save-state:${saveStateId}`,
+  /** An action inside a Save State's own options or delete-confirmation surface. */
+  saveStateAction: (saveStateId: number, action: string): FocusNodeId =>
+    `save-state:${saveStateId}:${action}`,
   settings: (action: string): FocusNodeId => `settings:${action}`,
   /** The managed-runtime primary action. Its label and activatability follow runtime state. */
   settingsRuntime: (action: string): FocusNodeId => `settings:runtime:${action}`,
@@ -63,6 +70,11 @@ export const focusScopes = {
   metadataAccountClear: 'scope:settings-metadata-clear' as FocusScopeId,
   /** Confirming a scraper stop. Temporary, and it owns `back` while it is open. */
   metadataScrapeStop: 'scope:settings-scrape-stop' as FocusScopeId,
+  /** One Save State's Options surface. Temporary, and it owns `back` while it is open. */
+  saveStateOptions: (saveStateId: number): FocusScopeId =>
+    `scope:save-state-options:${saveStateId}`,
+  /** Confirming a Save State deletion. Temporary; entry focus is deliberately Cancel. */
+  saveStateDelete: (saveStateId: number): FocusScopeId => `scope:save-state-delete:${saveStateId}`,
 } as const;
 
 export const focusZones = {

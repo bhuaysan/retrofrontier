@@ -36,6 +36,11 @@ export function launchFailureTitle(code: LaunchErrorCode): string {
       return 'A GAME IS ALREADY RUNNING';
     case 'processExitedDuringLaunch':
       return 'RETROARCH STOPPED IMMEDIATELY';
+    // A refusal *before* anything was spawned: RetroFrontier could not prepare save-state
+    // tracking for the session, so it declined to start the game rather than run one it could not
+    // account for. Nothing about the game, its content, or the runtime is implicated.
+    case 'saveStateBaselineFailed':
+      return 'SAVE STATE TRACKING UNAVAILABLE';
     case 'configPreparationFailed':
     case 'spawnFailed':
     case 'processIdentityFailed':
@@ -69,6 +74,8 @@ export function launchFailureHint(code: LaunchErrorCode): string | null {
       return 'Close the running game before starting another one.';
     case 'processExitedDuringLaunch':
       return 'The RetroArch log in the RetroFrontier logs folder has the details.';
+    case 'saveStateBaselineFailed':
+      return 'The game was not started and nothing was changed. Try again; the RetroFrontier logs folder has the details if it persists.';
     case 'contentSelectionRequired':
     case 'configPreparationFailed':
     case 'spawnFailed':

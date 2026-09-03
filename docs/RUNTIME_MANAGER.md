@@ -170,6 +170,12 @@ deletes the active runtime, the selected fallback, an unsafe path, or anything o
 root. If pointer state is not authoritative, complete installations are preserved for explicit
 repair rather than guessed or deleted.
 
+**Save States never pin a Runtime Release.** A save state records the release that produced it as
+provenance, but loading it requires only that *some* currently installed, authenticated, allowed
+installation carries the identical core binary. Routine cleanup may therefore remove the last copy
+of a required core: the state is preserved, stays visible while its own file is valid, and only its
+Load action becomes unavailable. A vulnerable or superseded runtime is never held open by one.
+
 Rollback is monotonic. `rollback()` selects the highest-sequence trusted and fully verified
 installation whose release sequence is strictly lower than the active release. It never rolls
 forward to a newer retained installation. Status uses this exact same eligibility predicate, so
@@ -212,6 +218,23 @@ core component, and the absolute paths of support-asset components such as Dolph
 status, installed core availability, and launch paths therefore never come from separate
 verifications. A runtime that is not `Ready`/`RollbackAvailable` has no launch target at all, and a
 core component with no authenticated executable is omitted rather than guessed at.
+
+M9 added the exact **core-binary identity** a save state needs to be loadable again.
+`verified_launch_runtime()` now also reports each core component's authenticated executable digest
+and size — taken from the release manifest's installed-file inventory, the same map `verify_tree`
+re-hashes the installed tree against — plus the manifest's display version and source revision. It
+is deliberately never recomputed from whatever `.so` sits at the core path: hashing an arbitrary
+file proves what that file is, never that it is trusted, and a component's own `sha256` is the
+*archive* digest, a different value. A core whose executable the authenticated inventory does not
+describe is omitted rather than guessed at.
+
+`locate_authenticated_core_binary()` finds one exact binary across every currently trusted, fully
+verified installation, preferring the active one, and `declares_authenticated_core_binary()` answers
+the same question cheaply from manifests alone for a UI capability snapshot. Both recompute trust
+rather than caching it, and both are pure reads: a revoked release, a release below the persisted
+anti-rollback floor, and a matching component id with different bytes are all refused even when the
+bytes on disk match, and nothing is activated, resurrected, downloaded, or pinned. **Save-state
+recovery never overrides Runtime security policy.**
 
 `lock_for_launch()` hands `LaunchApplicationService` the existing OS-backed runtime mutation lock, so
 ADR-011's serialization of game launch and runtime mutation is enforced by that one lock rather than

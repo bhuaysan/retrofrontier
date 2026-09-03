@@ -26,7 +26,13 @@ See [`docs/LIBRARY_BROWSING.md`](docs/LIBRARY_BROWSING.md).
 The Library can now hide games whose local content a scan found missing. Removing such a game's
 record for good is deliberately still absent; see *Library Missing-Content Handling*.
 
-**M9 — Saves and Save States is the next implementation milestone.**
+M9 Saves and Save States is implemented on `feat/m9-save-states` and awaiting review. RetroArch save
+states are now provenance-based domain objects: a state exists because a controlled launch proved
+its game, content unit, core binary, and exact bytes, and every load or delete re-proves the current
+filesystem target before acting. Normal SaveData stays opaque. See
+[`docs/SAVE_STATES.md`](docs/SAVE_STATES.md).
+
+**M10 — Packaging and V1 is the next implementation milestone.**
 
 The previously documented release gates remain open and unchanged: production key ceremony under
 independent custody, public runtime hosting, immutable upstream mirroring, GPL source-offer
@@ -569,14 +575,33 @@ card's `MISSING` flag and cannot be launched.
 
 **Model:** Luna Max; Sol only for risky compatibility/migration design.
 
-- [ ] controlled save dirs
-- [ ] preserve saves across runtime replacement
-- [ ] save-state discovery
-- [ ] save-state metadata
-- [ ] core version
-- [ ] runtime release
-- [ ] screenshots where supported
-- [ ] compatibility warning/fallback design
+Implemented on `feat/m9-save-states`. See [`docs/SAVE_STATES.md`](docs/SAVE_STATES.md).
+
+- [x] controlled save dirs — `saves/`, `states/`, and `screenshots/` outside every runtime version
+- [x] preserve saves across runtime replacement, and keep normal SaveData **opaque**: never
+  interpreted, enumerated, sliced into slots, or deleted by RetroFrontier
+- [x] save-state discovery through a **provenance-based controlled launch delta** — a durable
+  pre-launch baseline plus a certainly observed process end, not a filesystem importer
+- [x] save-state metadata bound to the exact game, content unit, play session, slot, and physical
+  bytes, with a four-value lifecycle (`available`, `missing`, `superseded`, `deleted`)
+- [x] core version — the authenticated core-binary SHA-256 as the decisive identity, plus a
+  human-readable label that is never a load identity
+- [x] runtime release recorded as provenance, without pinning it: retention may remove the core, and
+  the state then stays visible and deletable while only Load becomes unavailable
+- [x] state thumbnails, associated only when the session's own delta proves the relationship
+- [x] loadability instead of a compatibility claim: `ready`, `coreUnavailable`,
+  `temporarilyBlocked`, with no current-core fallback and no "try another core anyway"
+- [x] safe deletion that removes exactly the previously verified file, or nothing
+
+Deliberately not in M9:
+
+- [ ] SaveData browsing, SaveData deletion, or SaveData compatibility logic
+- [ ] manual assignment of legacy or orphan states, and any heuristic import
+- [ ] AUTO-slot or slot-0 support
+- [ ] save-state version history, backups, cloud saves, or state synchronization
+- [ ] an ingame RetroFrontier Load State hotkey
+- [ ] managed save-state hotkeys for controllers outside the qualified profiles (B10)
+- [ ] safe deletion on Windows and macOS, which fails closed until their packaging milestone
 
 ## M10 — Packaging and V1
 

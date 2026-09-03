@@ -100,6 +100,15 @@ cargo test --manifest-path src-tauri/Cargo.toml adapters::runtime_process
 cargo test --manifest-path src-tauri/Cargo.toml adapters::game_process
 cargo test --manifest-path src-tauri/Cargo.toml repositories::launch
 pnpm vitest run src/hooks/useGameLaunch.test.tsx src/features/library/GameDetailPage.test.tsx
+
+# M9 save states
+cargo test --manifest-path src-tauri/Cargo.toml domain::save_state
+cargo test --manifest-path src-tauri/Cargo.toml repositories::save_state
+cargo test --manifest-path src-tauri/Cargo.toml services::save_state_fs
+cargo test --manifest-path src-tauri/Cargo.toml services::retroarch_input
+cargo test --manifest-path src-tauri/Cargo.toml application::save_state
+pnpm vitest run src/hooks/useSaveStates.test.tsx src/features/library/SaveStatesSection.test.tsx \
+  src/features/library/SaveStatesFocus.test.tsx src/features/library/saveStateCopy.test.ts
 ```
 
 RetroFrontier-owned RetroArch paths live under the OS application-data directory in `runtime-user/`,

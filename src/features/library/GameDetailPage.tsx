@@ -9,6 +9,7 @@ import { focusNodes, focusScopes } from '../../focus/focusNodes';
 import { getMetadataAction, hasSelectableCandidates, metadataStateCopy } from './metadataActions';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
 import type { GameLaunchModel } from '../../hooks/useGameLaunch';
+import type { SaveStatesModel } from '../../hooks/useSaveStates';
 import { launchFailureHint, launchFailureTitle } from './launchStatus';
 import type {
   GameMetadataState,
@@ -21,6 +22,7 @@ import type {
   UnsupportedContentReason,
 } from '../../platform/ipc';
 import { GameCover } from './GameCover';
+import { SaveStatesSection } from './SaveStatesSection';
 
 import {
   getOverallReadiness,
@@ -40,6 +42,7 @@ interface GameDetailPageProps {
   readinessLoading?: boolean;
   readinessError: IpcError | null;
   launch: GameLaunchModel;
+  saveStates: SaveStatesModel;
   onRetryReadiness: () => void;
   onBackToLibrary: () => void;
 }
@@ -926,6 +929,7 @@ export function GameDetailPage({
   readinessLoading = false,
   readinessError,
   launch,
+  saveStates,
   onRetryReadiness,
   onBackToLibrary,
 }: GameDetailPageProps) {
@@ -1124,6 +1128,9 @@ export function GameDetailPage({
           />
           <MetadataSection detail={detail} />
           {localDetail ? <LocalContentSection detail={localDetail} /> : null}
+          {/* A Save State belongs to a real local game and to a real `GameId`; with either missing
+              there is nothing the section could honestly ask the backend about. */}
+          {localDetail && gameId !== null ? <SaveStatesSection saveStates={saveStates} /> : null}
         </>
       )}
     </main>
