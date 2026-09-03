@@ -148,7 +148,7 @@ mod tests {
             .fetch_one(database.pool())
             .await
             .expect("migration history should be available");
-        assert_eq!(migration_count, 6);
+        assert_eq!(migration_count, 7);
         database.pool().close().await;
 
         let reopened = Database::open(&path)
@@ -165,7 +165,7 @@ mod tests {
                 .fetch_one(reopened.pool())
                 .await
                 .expect("migration history should remain stable");
-        assert_eq!(reopened_migration_count, 6);
+        assert_eq!(reopened_migration_count, 7);
 
         sqlx::migrate!("./migrations")
             .undo(reopened.pool(), 20260825000000)
@@ -424,7 +424,7 @@ mod tests {
             .fetch_one(reopened.pool())
             .await
             .expect("migration history should be available");
-        assert_eq!(migration_count, 6);
+        assert_eq!(migration_count, 7);
         let preserved: i64 = sqlx::query_scalar("SELECT id FROM games")
             .fetch_one(reopened.pool())
             .await
@@ -868,5 +868,67 @@ mod tests {
             .await
             .expect("provider rows should be readable");
         assert_eq!(written, 20);
+    }
+
+    /// M9 adds its own schema without touching the M4-M8 tables, and reverts cleanly.
+    #[tokio::test]
+    async fn the_m9_migration_adds_save_state_schema_and_reverts_without_touching_earlier_tables() {
+        let directory = tempdir().expect("temporary directory should be created");
+        let path = directory.path().join("retrofrontier.sqlite3");
+        let database = Database::open(&path).await.expect("database should open");
+
+        let m9_tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN \
+             ('save_states', 'launch_state_baselines', 'launch_state_baseline_entries')",
+        )
+        .fetch_one(database.pool())
+        .await
+        .expect("M9 tables should exist");
+        assert_eq!(m9_tables, 3);
+        let m9_indexes: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN \
+             ('idx_save_states_session_identity', 'idx_save_states_available_path', \
+              'idx_save_states_game_recent')",
+        )
+        .fetch_one(database.pool())
+        .await
+        .expect("M9 indexes should exist");
+        assert_eq!(m9_indexes, 3);
+        database.pool().close().await;
+
+        let reopened = Database::open(&path).await.expect("database should reopen");
+        sqlx::migrate!("./migrations")
+            .undo(reopened.pool(), 20260901000000)
+            .await
+            .expect("the M9 down migration should revert only M9 schema");
+        let m9_after_down: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN \
+             ('save_states', 'launch_state_baselines', 'launch_state_baseline_entries')",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .expect("schema should remain queryable after the M9 down migration");
+        assert_eq!(m9_after_down, 0);
+        // Everything M9 builds on is untouched.
+        let earlier_tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN \
+             ('games', 'content_units', 'play_sessions', 'game_launch_overrides', \
+              'provider_matches', 'metadata_scrape_runs')",
+        )
+        .fetch_one(reopened.pool())
+        .await
+        .expect("earlier schema should be intact");
+        assert_eq!(earlier_tables, 6);
+        reopened.pool().close().await;
+
+        // And it applies again, so the down migration is not a one-way door.
+        let reapplied = Database::open(&path).await.expect("M9 should apply again");
+        let m9_again: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'save_states'",
+        )
+        .fetch_one(reapplied.pool())
+        .await
+        .expect("M9 tables should exist again");
+        assert_eq!(m9_again, 1);
     }
 }
