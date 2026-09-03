@@ -55,6 +55,10 @@ url = "2"
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 rand = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
+# Directory-handle-relative, no-follow filesystem primitives (`openat`, `renameat`, `unlinkat`).
+# M9 must be able to delete *exactly* the save-state file it verified, or nothing, and `std` has
+# no `*at` family. Already resolved transitively, so this adds no new supply-chain surface.
+rustix = { version = "1.1", features = ["fs"] }
 keyring = "4.1"
 
 [dev-dependencies]

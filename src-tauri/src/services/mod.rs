@@ -11,3 +11,4 @@ pub mod retroarch_config;
 pub mod retroarch_env;
 pub mod retroarch_host;
 pub mod retroarch_paths;
+pub mod save_state_fs;

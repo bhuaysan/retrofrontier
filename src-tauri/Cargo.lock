@@ -3764,6 +3764,7 @@ dependencies = [
  "notify",
  "rand",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sevenz-rust2",
