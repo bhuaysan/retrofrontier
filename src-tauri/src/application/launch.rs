@@ -1041,7 +1041,11 @@ pub fn is_process_authority(_session: &PlaySession) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{LaunchApplicationService, LaunchConfig, LaunchEventSink, LaunchRuntime};
+    use super::{
+        LaunchApplicationService, LaunchConfig, LaunchEventSink, LaunchRuntime,
+        SaveStateLaunchPlan,
+    };
+    use crate::domain::save_state::SaveStateSlot;
     use crate::adapters::database::Database;
     use crate::adapters::game_process::{
         GameProcessLauncher, LinuxGameProcessLauncher, ProcessFaults, SpawnRequest, SpawnedGame,
@@ -1171,6 +1175,29 @@ mod tests {
         }
     }
 
+    /// A launcher that records how many children it was asked to create.
+    ///
+    /// It exists so "nothing was spawned" can be *proved* rather than inferred from the absence of
+    /// side effects — which is exactly the claim a pre-spawn refusal has to make.
+    #[derive(Default)]
+    struct CountingLauncher {
+        spawns: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingLauncher {
+        fn spawns(&self) -> usize {
+            self.spawns.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl GameProcessLauncher for CountingLauncher {
+        fn spawn(&self, request: &SpawnRequest) -> Result<SpawnedGame, std::io::Error> {
+            self.spawns
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            LinuxGameProcessLauncher.spawn(request)
+        }
+    }
+
     /// The M7 suite never loads a save state, so no historical core lookup should ever succeed
     /// here. Answering "no" rather than stubbing a binary keeps that explicit.
     struct NoManagedCores;
@@ -1215,6 +1242,7 @@ mod tests {
         events: Arc<RecordingEvents>,
         save_state_repository: SaveStateRepository,
         states_root: std::path::PathBuf,
+        pool: sqlx::SqlitePool,
     }
 
     impl Harness {
@@ -1313,8 +1341,9 @@ mod tests {
                 config,
                 service,
                 events,
-                save_state_repository: SaveStateRepository::new(pool),
+                save_state_repository: SaveStateRepository::new(pool.clone()),
                 states_root: states_root_path,
+                pool,
             }
         }
 
@@ -1389,6 +1418,25 @@ mod tests {
 
         fn stop(&self) {
             fs::write(&self.stop_file, b"stop").unwrap();
+        }
+
+        /// Forget that a previous synthetic runtime announced itself, so a second launch's
+        /// `await_started` really waits for *its* child.
+        fn clear_started(&self) {
+            let _ = fs::remove_file(&self.started_file);
+            let _ = fs::remove_file(&self.stop_file);
+        }
+
+        /// Wait until no managed session is active any more — the state every M9 mutation needs.
+        async fn await_idle(&self) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while self.service.is_managed_session_active() && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(
+                !self.service.is_managed_session_active(),
+                "a managed session never became idle"
+            );
         }
 
         async fn await_blocked(&self, service: &LaunchApplicationService) {
@@ -2436,4 +2484,407 @@ mod tests {
             nestopia
         );
     }
+
+    // ============================================================ M9: the save-state launch plan
+
+    /// A save-state plan whose core is the harness's own synthetic core.
+    ///
+    /// The digest is the one `synthetic_runtime` declares, so `resolve_historical_core` sees a
+    /// genuinely authenticated component rather than a fabricated one.
+    fn save_state_plan(
+        harness: &Harness,
+        slot: u16,
+        content_unit_id: ContentUnitId,
+        system: SystemId,
+    ) -> SaveStateLaunchPlan {
+        let component = SafeIdentifier::new(default_component(system)).unwrap();
+        SaveStateLaunchPlan {
+            save_state_id: crate::domain::save_state::SaveStateId(1),
+            game_id: GameId(1),
+            content_unit_id,
+            core: AuthenticatedCoreBinary {
+                component_id: component.clone(),
+                core_path: harness.core_path(default_component(system)),
+                binary_sha256: Sha256Digest::from_hex(&"a".repeat(64)).unwrap(),
+                binary_size_bytes: 4,
+                systems: vec![SafeIdentifier::new(system.as_str()).unwrap()],
+                display_version: Some("synthetic-1.0".to_owned()),
+                source_revision: Some("0123456".to_owned()),
+                installation_id: SafeIdentifier::new("install-1").unwrap(),
+                release_id: SafeIdentifier::new("release-1").unwrap(),
+            },
+            slot: SaveStateSlot::new(slot).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_normal_launch_starts_on_slot_one_and_a_save_state_launch_on_its_stored_slot() {
+        let harness = Harness::build(SystemId::Nes, Vec::new()).await;
+        harness.set_app_run("sleep 5");
+
+        let started = harness.service.launch_game(GameId(1), None).await;
+        let config = std::fs::read_to_string(harness.retroarch.paths().config_file()).unwrap();
+        assert!(config.contains("state_slot = \"1\""));
+        assert!(matches!(started, LaunchResponse::Started { .. }));
+        harness.stop();
+        harness.await_idle().await;
+
+        for slot in [1_u16, 7, 999] {
+            let started = harness
+                .service
+                .launch_save_state(save_state_plan(
+                    &harness,
+                    slot,
+                    ContentUnitId(1),
+                    SystemId::Nes,
+                ))
+                .await;
+            assert!(matches!(started, LaunchResponse::Started { .. }), "slot {slot}");
+            let config = std::fs::read_to_string(harness.retroarch.paths().config_file()).unwrap();
+            assert!(
+                config.contains(&format!("state_slot = \"{slot}\"")),
+                "slot {slot}"
+            );
+            harness.stop();
+            harness.await_idle().await;
+        }
+    }
+
+    /// A save-state launch uses the exact historical core binary from its plan and never the
+    /// game's stored preference — and it never writes that preference either.
+    #[tokio::test]
+    async fn a_save_state_launch_ignores_the_stored_override_and_never_mutates_it() {
+        let harness = Harness::build(SystemId::Nes, Vec::new()).await;
+        harness.set_app_run("sleep 5");
+        // A stored override that is deliberately *not* the core this plan carries. It is written
+        // straight through the repository, so no validation can quietly normalise it away.
+        let stored = CoreId::new("bsnes-mercury-balanced").unwrap();
+        harness
+            .launch_repository
+            .set_core_override(GameId(1), &stored)
+            .await
+            .unwrap();
+        let before = harness
+            .launch_repository
+            .core_override(GameId(1))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let started = harness
+            .service
+            .launch_save_state(save_state_plan(
+                &harness,
+                3,
+                ContentUnitId(1),
+                SystemId::Nes,
+            ))
+            .await;
+
+        // The plan's core was used, not the stored preference.
+        let session = harness
+            .launch_repository
+            .session(started_session(&started))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.core_id, CoreId::new("nestopia").unwrap());
+        assert_ne!(session.core_id, stored);
+        // And the historical core is a one-shot launch override: the persisted preference is
+        // byte-identical afterwards, timestamp included.
+        let after = harness
+            .launch_repository
+            .core_override(GameId(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after, before);
+        harness.stop();
+        harness.await_idle().await;
+    }
+
+    /// There is no fallback: an unapproved historical core refuses the load rather than quietly
+    /// launching the game's current core instead.
+    #[tokio::test]
+    async fn an_unapproved_historical_core_refuses_the_load_and_never_falls_back() {
+        let harness = Harness::build(SystemId::Nes, Vec::new()).await;
+        harness.set_app_run("sleep 5");
+
+        // The release that carries the binary does not approve it for this system.
+        let mut plan = save_state_plan(&harness, 1, ContentUnitId(1), SystemId::Nes);
+        plan.core.systems = vec![SafeIdentifier::new("playstation").unwrap()];
+        assert_eq!(
+            failure_code(&harness.service.launch_save_state(plan).await),
+            LaunchErrorCode::CoreNotApproved
+        );
+
+        // A component the catalog knows nothing about is likewise refused.
+        let mut plan = save_state_plan(&harness, 1, ContentUnitId(1), SystemId::Nes);
+        plan.core.component_id = SafeIdentifier::new("not-an-approved-core").unwrap();
+        assert_eq!(
+            failure_code(&harness.service.launch_save_state(plan).await),
+            LaunchErrorCode::CoreNotApproved
+        );
+
+        // A binary that is no longer a regular file on disk is `coreNotInstalled`.
+        let mut plan = save_state_plan(&harness, 1, ContentUnitId(1), SystemId::Nes);
+        plan.core.core_path = plan.core.core_path.with_file_name("absent.so");
+        assert_eq!(
+            failure_code(&harness.service.launch_save_state(plan).await),
+            LaunchErrorCode::CoreNotInstalled
+        );
+
+        // Nothing was started by any of them, and no session was opened.
+        assert!(harness.launch_repository.open_sessions().await.unwrap().is_empty());
+        assert_eq!(harness.service.get_launch_state().running, None);
+    }
+
+    /// The whole file contains no path that turns a refused save-state launch into a normal one.
+    #[test]
+    fn no_code_path_downgrades_a_save_state_launch_into_an_ordinary_one() {
+        let source = include_str!("launch.rs");
+        let production = source.split_once("#[cfg(test)]").unwrap().0;
+        // `launch_save_state` builds exactly one plan and hands it straight to the shared pipeline.
+        assert_eq!(production.matches("LaunchPlan::SaveState(Box::new(plan))").count(), 1);
+        // And core resolution for that plan never consults the stored override.
+        let save_state_arm = production
+            .split("LaunchPlan::SaveState(plan) => {")
+            .nth(1)
+            .expect("the save-state core arm exists")
+            .split("\n            }\n        };")
+            .next()
+            .unwrap();
+        assert!(!save_state_arm.contains("core_override"));
+        assert!(!save_state_arm.contains("resolve_core("));
+        assert!(save_state_arm.contains("resolve_historical_core"));
+    }
+
+    /// A save-state launch must start the exact recorded content unit.
+    #[tokio::test]
+    async fn a_save_state_launch_requires_its_exact_recorded_content_unit() {
+        // Game 2 has two launchable units, so this proves the recorded unit is *used* rather than
+        // selected, and that a foreign unit is refused instead of substituted.
+        let harness = Harness::build(SystemId::Nes, Vec::new()).await;
+        harness.set_app_run("sleep 5");
+
+        let units = harness
+            .library_repository
+            .game_content_units(GameId(2))
+            .await
+            .unwrap();
+        assert_eq!(units.len(), 2, "game 2 is the multi-unit fixture");
+        let second = units[1].id;
+
+        let mut plan = save_state_plan(&harness, 1, second, SystemId::Nes);
+        plan.game_id = GameId(2);
+        let started = harness.service.launch_save_state(plan).await;
+        // No content selection is ever offered: the unit is recorded provenance.
+        let session = harness
+            .launch_repository
+            .session(started_session(&started))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.content_unit_id, second);
+        harness.stop();
+        harness.await_idle().await;
+
+        // A unit that belongs to another game is refused without substituting one that would work.
+        let mut plan = save_state_plan(&harness, 1, ContentUnitId(1), SystemId::Nes);
+        plan.game_id = GameId(2);
+        assert_eq!(
+            failure_code(&harness.service.launch_save_state(plan).await),
+            LaunchErrorCode::ContentUnavailable
+        );
+    }
+
+    // ============================================================ M9: durable baselines
+
+    #[tokio::test]
+    async fn every_launch_captures_a_durable_baseline_before_the_process_record_and_the_spawn() {
+        let harness = Harness::build(SystemId::Nes, Vec::new()).await;
+        harness.set_app_run_until_stopped();
+
+        let started = harness.service.launch_game(GameId(1), None).await;
+        let session_id = started_session(&started);
+        harness.await_started();
+
+        // The baseline exists and names this session's provenance.
+        let baseline = harness
+            .save_state_repository
+            .baseline(session_id)
+            .await
+            .unwrap()
+            .expect("a launch captures a durable baseline");
+        assert_eq!(baseline.provenance.play_session_id, session_id);
+        assert_eq!(baseline.provenance.game_id, GameId(1));
+        assert_eq!(baseline.provenance.core_id, CoreId::new("nestopia").unwrap());
+        // The authenticated core-binary digest the runtime projection reported, not a hash of
+        // whatever is on disk.
+        assert_eq!(
+            baseline.provenance.core_binary_sha256,
+            Sha256Digest::from_hex(&"a".repeat(64)).unwrap()
+        );
+        assert_eq!(baseline.provenance.core_display_version.as_deref(), Some("synthetic-1.0"));
+        assert_eq!(baseline.attempts, 0);
+
+        harness.stop();
+        harness.await_idle().await;
+        // Once the session ends certainly, reconciliation consumes the baseline.
+        assert!(harness
+            .save_state_repository
+            .baseline(session_id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// A baseline that cannot be created durably fails the launch **before** anything is spawned.
+    ///
+    /// The spawn is proved absent from the launcher itself rather than inferred: the recording
+    /// launcher counts every child it was asked to create, and the count must still be zero.
+    #[tokio::test]
+    async fn a_baseline_that_cannot_be_created_fails_the_launch_before_any_spawn() {
+        let launcher = Arc::new(CountingLauncher::default());
+        let harness = Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
+        harness.set_app_run("sleep 5");
+        // Durable baseline persistence is made to fail. Nothing else about the launch is touched,
+        // so this isolates the baseline from every other precondition.
+        for statement in [
+            "DROP TABLE launch_state_baseline_entries",
+            "DROP TABLE launch_state_baselines",
+        ] {
+            sqlx::query(statement).execute(&harness.pool).await.unwrap();
+        }
+
+        let response = harness.service.launch_game(GameId(1), None).await;
+
+        assert_eq!(
+            failure_code(&response),
+            LaunchErrorCode::SaveStateBaselineFailed
+        );
+        // Nothing was spawned at all.
+        assert_eq!(launcher.spawns(), 0);
+        // The session is closed as a failed start, no durable process record survives to block
+        // the next launch, and launching is available again.
+        assert!(harness
+            .launch_repository
+            .open_sessions()
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(read_process_record(&harness.runtime.runtime_paths())
+            .unwrap()
+            .is_none());
+        assert!(!harness.service.is_managed_session_active());
+    }
+
+    /// A states tree that cannot be honestly described also fails the launch closed.
+    ///
+    /// It is refused one step earlier, by the owned-directory preparation the M7 configuration
+    /// step already performs, which is why the code is `configPreparationFailed`. Either way
+    /// nothing is spawned: a launch whose "before" is unknowable does not happen.
+    #[tokio::test]
+    async fn a_states_tree_that_cannot_be_described_also_refuses_the_launch_before_any_spawn() {
+        let launcher = Arc::new(CountingLauncher::default());
+        let harness = Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
+        harness.set_app_run("sleep 5");
+        let states_root = harness.states_root.clone();
+        std::fs::create_dir_all(states_root.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&states_root);
+        std::fs::write(&states_root, b"not a directory").unwrap();
+
+        let response = harness.service.launch_game(GameId(1), None).await;
+
+        assert_eq!(
+            failure_code(&response),
+            LaunchErrorCode::ConfigPreparationFailed
+        );
+        assert_eq!(launcher.spawns(), 0);
+        assert!(harness
+            .launch_repository
+            .open_sessions()
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(!harness.service.is_managed_session_active());
+    }
+
+    /// A save-state launch is a new managed play session, and gets its own baseline.
+    #[tokio::test]
+    async fn a_save_state_launch_is_a_new_session_with_its_own_baseline() {
+        let harness = Harness::build(SystemId::Nes, Vec::new()).await;
+        harness.set_app_run_until_stopped();
+
+        let first = harness.service.launch_game(GameId(1), None).await;
+        let first_session = started_session(&first);
+        harness.await_started();
+        harness.stop();
+        harness.await_idle().await;
+
+        harness.set_app_run_until_stopped();
+        harness.clear_started();
+        let second = harness
+            .service
+            .launch_save_state(save_state_plan(
+                &harness,
+                4,
+                ContentUnitId(1),
+                SystemId::Nes,
+            ))
+            .await;
+        let second_session = started_session(&second);
+        harness.await_started();
+
+        assert_ne!(first_session, second_session);
+        let baseline = harness
+            .save_state_repository
+            .baseline(second_session)
+            .await
+            .unwrap()
+            .expect("a save-state launch captures its own baseline");
+        assert_eq!(baseline.provenance.play_session_id, second_session);
+        // And its durable process record is the new session's, not the old one's.
+        let record = read_process_record(&harness.runtime.runtime_paths())
+            .unwrap()
+            .expect("a running record");
+        assert_eq!(record.play_session_id, second_session.0);
+        harness.stop();
+        harness.await_idle().await;
+    }
+
+    /// Reconciliation follows the *certainly observed* end, and nothing else.
+    #[tokio::test]
+    async fn an_uncertain_process_end_attributes_nothing_until_absence_is_proven() {
+        let launcher = Arc::new(FaultyLauncher::default());
+        // A child whose `wait` fails: its end can never be positively observed.
+        launcher.faults.fail_wait(true);
+        launcher.faults.fail_try_exit(true);
+        let harness =
+            Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
+        harness.set_app_run_until_stopped();
+
+        let started = harness.service.launch_game(GameId(1), None).await;
+        let session_id = started_session(&started);
+
+        // The session stays open and the baseline stays put: no attribution while the end is
+        // unproven, and the "before" is kept so the eventual retry still has it.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(harness
+            .save_state_repository
+            .baseline(session_id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(harness
+            .launch_repository
+            .session(session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .outcome
+            .is_open());
+        assert!(harness.service.is_managed_session_active());
+    }
+
 }
