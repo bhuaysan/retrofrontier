@@ -380,6 +380,9 @@ A provider refresh replaces normalized metadata and media but never touches a us
 
 ## Content capability matrix
 
+The rule behind this table — disc content is submitted and judged rather than refused before a
+request is built — is recorded in [ADR-016](adr/ADR-016-disc-content-lookup.md).
+
 | Content format            | Automatic deterministic matching | Heuristic candidates | State                            |
 | ------------------------- | -------------------------------- | -------------------- | -------------------------------- |
 | Single-file cartridge ROM | Yes                              | Yes                  | `matched` on agreeing evidence   |

@@ -1,6 +1,9 @@
 # ADR-007: Metadata provider abstraction with ScreenScraper first
 
 - Status: Accepted
+- Amended by: [ADR-016](ADR-016-disc-content-lookup.md), which reverses this record's treatment of
+  disc containers. The container-format clauses below are kept as written for the history; read
+  ADR-016 for what the code does now.
 
 ## Context
 

@@ -117,6 +117,9 @@ because nothing renders its result.
 
 ## Cover presentation profiles
 
+The rule these follow — ratios measured from the artwork a provider delivers, never from physical
+packaging — is recorded in [ADR-015](adr/ADR-015-cover-presentation-profiles.md).
+
 One 3:4 frame served DVD-shaped systems well and everything else badly. Artwork whose natural shape
 did not match was cropped to fill the frame.
 
