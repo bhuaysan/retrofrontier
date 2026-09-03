@@ -352,6 +352,12 @@ frontend renders a neutral placeholder.
 The WebView receives an opaque `rfmedia` reference keyed by `SaveStateId`, exactly as a cached cover
 does, and the bytes are served only after the registered size and digest are re-proved.
 
+**The bytes come back from the descriptor that verified them.** "Verify, then read the path again"
+is two operations: the second resolves the name afresh and follows symbolic links, so a same-user
+attacker could swap in a link to another file of the same length between them and have *its* bytes
+served into the WebView. Reading holds the same line deletion does — one `O_NOFOLLOW` descriptor,
+never re-resolved — and the read is bounded by the registered length.
+
 ## Delete safety
 
 ```text

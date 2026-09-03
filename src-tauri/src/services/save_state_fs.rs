@@ -436,6 +436,44 @@ pub fn verify_managed_file(
     })
 }
 
+/// Read one managed file's bytes **from the descriptor that verified them**.
+///
+/// This exists because "verify, then read the path again" is not the same operation. `std::fs::read`
+/// resolves the pathname afresh and *follows symbolic links*, so between a successful verification
+/// and that second open, a same-user attacker can replace the file with a link to any file of the
+/// same length and have its bytes served instead. Deletion already refuses to be fooled that way;
+/// reading has to hold the same line, so the digest is computed and the bytes are returned from one
+/// descriptor that was opened `O_NOFOLLOW` and never re-resolved.
+///
+/// `expected_size` bounds the read, so the caller decides how much it is willing to hold.
+pub fn read_verified_managed_file(
+    states_root: &Path,
+    relative_path: &RelativePath,
+    expected_size: u64,
+    expected_sha256: Sha256Digest,
+) -> Result<Vec<u8>, SaveStateError> {
+    let opened = open_managed_file(states_root, relative_path)?;
+    if opened.identity.size_bytes != expected_size {
+        return Err(SaveStateError::IntegrityMismatch);
+    }
+    let capacity = usize::try_from(expected_size).map_err(|_| SaveStateError::IntegrityMismatch)?;
+    let mut file = opened.file;
+    let mut bytes = Vec::with_capacity(capacity);
+    // One byte beyond the expected size is already a mismatch, so the read is bounded by the
+    // registered length rather than by whatever the file now claims to be.
+    file.by_ref()
+        .take(expected_size.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| SaveStateError::UnsafeFilesystemTarget)?;
+    if bytes.len() != capacity {
+        return Err(SaveStateError::IntegrityMismatch);
+    }
+    if crate::adapters::runtime_integrity::sha256_bytes(&bytes) != expected_sha256 {
+        return Err(SaveStateError::IntegrityMismatch);
+    }
+    Ok(bytes)
+}
+
 /// The cheap re-check the Save-State listing performs.
 ///
 /// Containment, file type, and size only — hashing every state on every list would read the whole
@@ -1231,6 +1269,94 @@ mod tests {
             assert!(
                 RelativePath::new(unsafe_path).is_err(),
                 "{unsafe_path} must never become a relative path"
+            );
+        }
+    }
+
+    /// Reading must not re-resolve the pathname after verifying it.
+    ///
+    /// "Verify, then `std::fs::read(path)`" is two operations: the second resolves the name afresh
+    /// and follows symbolic links, so a same-user attacker can swap in a link to another file of
+    /// the same length between them and have *its* bytes served. This asserts the bytes come from
+    /// the descriptor that verified them.
+    #[test]
+    fn reading_a_verified_file_cannot_be_redirected_by_a_symlink_swapped_in_afterwards() {
+        let root = states_root();
+        let outside = tempdir().unwrap();
+        let registered = b"the registered thumbnail";
+        // Exactly the same length, so a length check alone would not notice the substitution.
+        let secret = b"the attacker's secret!!!";
+        assert_eq!(registered.len(), secret.len());
+        write(root.path(), "Nestopia/Synthetic.state1.png", registered);
+        write(outside.path(), "secret", secret);
+        let relative = path("Nestopia/Synthetic.state1.png");
+
+        // The honest read returns the registered bytes.
+        assert_eq!(
+            read_verified_managed_file(
+                root.path(),
+                &relative,
+                registered.len() as u64,
+                digest_of(registered)
+            )
+            .unwrap(),
+            registered
+        );
+
+        // Now the file is replaced by a link to a file outside the managed root entirely.
+        let target = root.path().join("Nestopia/Synthetic.state1.png");
+        fs::remove_file(&target).unwrap();
+        symlink(outside.path().join("secret"), &target).unwrap();
+
+        // The open is `O_NOFOLLOW`, so the link is refused outright — the secret is never read,
+        // and nothing about its length or content can make it deliverable.
+        assert_eq!(
+            read_verified_managed_file(
+                root.path(),
+                &relative,
+                registered.len() as u64,
+                digest_of(registered)
+            ),
+            Err(SaveStateError::UnsafeFilesystemTarget)
+        );
+        // And a link whose target's digest would match is refused for the same reason.
+        write(outside.path(), "clone", registered);
+        fs::remove_file(&target).unwrap();
+        symlink(outside.path().join("clone"), &target).unwrap();
+        assert_eq!(
+            read_verified_managed_file(
+                root.path(),
+                &relative,
+                registered.len() as u64,
+                digest_of(registered)
+            ),
+            Err(SaveStateError::UnsafeFilesystemTarget)
+        );
+    }
+
+    #[test]
+    fn a_read_is_bounded_by_the_registered_length_and_refuses_a_changed_file() {
+        let root = states_root();
+        let bytes = b"registered";
+        write(root.path(), "Nestopia/Synthetic.state1.png", bytes);
+        let relative = path("Nestopia/Synthetic.state1.png");
+
+        // Grown, shrunk, and same-length-but-different all refuse rather than deliver.
+        for replacement in [
+            &b"registered and then some more"[..],
+            b"short",
+            b"REGISTERED",
+        ] {
+            write(root.path(), "Nestopia/Synthetic.state1.png", replacement);
+            assert_eq!(
+                read_verified_managed_file(
+                    root.path(),
+                    &relative,
+                    bytes.len() as u64,
+                    digest_of(bytes)
+                ),
+                Err(SaveStateError::IntegrityMismatch),
+                "{replacement:?}"
             );
         }
     }

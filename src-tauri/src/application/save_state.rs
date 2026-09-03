@@ -853,14 +853,14 @@ impl SaveStateApplicationService {
         Ok(())
     }
 
-    /// The verified thumbnail bytes of one Save State, for the native media protocol.
+    /// The verified thumbnail **bytes** of one Save State, for the native media protocol.
     ///
     /// Resolved from durable state by identity, never from a caller-supplied path, and re-verified
-    /// in full before any byte leaves Rust.
-    pub async fn verified_thumbnail(
-        &self,
-        id: SaveStateId,
-    ) -> Result<(PathBuf, u64), SaveStateError> {
+    /// in full before any byte leaves Rust. It deliberately returns the bytes rather than a path:
+    /// handing a path back would force the caller to open it a second time, and a second open
+    /// resolves the name afresh and follows symbolic links — the exact substitution window the
+    /// delete path refuses to leave open.
+    pub async fn verified_thumbnail(&self, id: SaveStateId) -> Result<Vec<u8>, SaveStateError> {
         let state = self
             .save_states
             .save_state(id)
@@ -871,16 +871,12 @@ impl SaveStateApplicationService {
             return Err(SaveStateError::Unavailable);
         }
         let thumbnail = state.thumbnail.ok_or(SaveStateError::NotFound)?;
-        crate::services::save_state_fs::verify_managed_file(
+        crate::services::save_state_fs::read_verified_managed_file(
             &self.states_root,
             &thumbnail.relative_path,
             thumbnail.size_bytes,
             thumbnail.sha256,
-        )?;
-        Ok((
-            self.states_root.join(thumbnail.relative_path.to_path_buf()),
-            thumbnail.size_bytes,
-        ))
+        )
     }
 }
 

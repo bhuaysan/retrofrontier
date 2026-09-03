@@ -90,20 +90,13 @@ impl SaveStateThumbnailDelivery {
         &self,
         id: crate::domain::save_state::SaveStateId,
     ) -> Result<DeliveredCover, CoverDeliveryError> {
-        let (path, expected_size) = self
-            .save_states
-            .verified_thumbnail(id)
-            .await
-            .map_err(|error| {
-                tracing::debug!(save_state_id = %id, code = error.as_str(), "no deliverable save-state thumbnail");
-                CoverDeliveryError::NotFound
-            })?;
-        let bytes = std::fs::read(&path).map_err(|_| CoverDeliveryError::NotFound)?;
-        // The digest was verified a moment ago; the length is re-checked here so a concurrent
-        // rewrite cannot deliver a different number of bytes than the one that was proved.
-        if bytes.len() as u64 != expected_size {
-            return Err(CoverDeliveryError::NotFound);
-        }
+        // The bytes come back from the descriptor that verified them. Asking for a path and
+        // reading it here would re-resolve the name and follow a symbolic link, which is exactly
+        // the substitution a same-user attacker would use to have another file's bytes served.
+        let bytes = self.save_states.verified_thumbnail(id).await.map_err(|error| {
+            tracing::debug!(save_state_id = %id, code = error.as_str(), "no deliverable save-state thumbnail");
+            CoverDeliveryError::NotFound
+        })?;
         Ok(DeliveredCover {
             bytes,
             // RetroArch writes its state thumbnails as PNG. The value is fixed rather than sniffed,
