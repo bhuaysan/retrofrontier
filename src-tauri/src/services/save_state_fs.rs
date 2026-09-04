@@ -218,77 +218,150 @@ pub fn thumbnail_relative_path(state_path: &RelativePath) -> Option<RelativePath
 ///
 /// Only regular files are recorded. A symbolic link is never followed and never recorded, so a
 /// link planted inside the tree cannot smuggle a foreign file into a delta.
+///
+/// **Descriptor-relative, like every other operation in this module (HIGH-3).** Each directory is
+/// opened exactly once, `O_DIRECTORY | O_NOFOLLOW`, and every child — file or directory — is then
+/// examined and, if it is itself a directory, opened *relative to that already-open descriptor*.
+/// Nothing here ever re-resolves a pathname built by string concatenation (`states_root.join(...)`)
+/// a second time the way the previous implementation did: that re-resolution was exactly the
+/// window in which a directory observed as a real directory could be replaced by a symlink before
+/// the recursive step followed it. Here, if that replacement happens, the subsequent `openat` with
+/// `O_NOFOLLOW` simply fails — the walk never has a second pathname lookup to be fooled by.
 pub fn snapshot_state_tree(states_root: &Path) -> StateTreeSnapshot {
+    snapshot_state_tree_inner(states_root, &SnapshotRaceHooks::default())
+}
+
+fn snapshot_state_tree_inner(
+    states_root: &Path,
+    hooks: &SnapshotRaceHooks<'_>,
+) -> StateTreeSnapshot {
     let mut snapshot = StateTreeSnapshot {
         entries: BTreeMap::new(),
         complete: true,
     };
-    walk(states_root, "", 0, &mut snapshot);
+    match rustix::fs::open(states_root, DIRECTORY_OPEN_FLAGS, rustix::fs::Mode::empty()) {
+        Ok(root) => walk_fd(root, "", 0, &mut snapshot, hooks),
+        // A missing, symlinked, or otherwise unopenable root is uncertainty, not an empty tree.
+        Err(_) => snapshot.complete = false,
+    }
     snapshot
 }
 
-fn walk(states_root: &Path, prefix: &str, depth: usize, snapshot: &mut StateTreeSnapshot) {
+fn walk_fd(
+    directory: rustix::fd::OwnedFd,
+    prefix: &str,
+    depth: usize,
+    snapshot: &mut StateTreeSnapshot,
+    hooks: &SnapshotRaceHooks<'_>,
+) {
     if depth > MAX_SNAPSHOT_DEPTH {
         snapshot.complete = false;
         return;
     }
-    let directory = if prefix.is_empty() {
-        states_root.to_path_buf()
-    } else {
-        states_root.join(prefix)
-    };
-    let Ok(read) = std::fs::read_dir(&directory) else {
+    // Borrows the descriptor to read its entries; it does not consume or re-resolve it.
+    let Ok(entries) = rustix::fs::Dir::read_from(&directory) else {
         // An unreadable directory is uncertainty, not absence.
         snapshot.complete = false;
         return;
     };
-    for entry in read {
+    for entry in entries {
         let Ok(entry) = entry else {
             snapshot.complete = false;
             continue;
         };
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        let Ok(name) = name.to_str() else {
             // A non-UTF-8 name cannot become a validated relative path, so the tree cannot be
             // described completely.
             snapshot.complete = false;
             continue;
         };
+        // The entry's type and identity, read *relative to the directory descriptor already
+        // opened above* — never by re-joining `states_root` with a path string.
+        let Ok(stat) = rustix::fs::statat(&directory, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+        else {
+            snapshot.complete = false;
+            continue;
+        };
         let relative = if prefix.is_empty() {
-            name.clone()
+            name.to_owned()
         } else {
             format!("{prefix}/{name}")
         };
-        let Ok(metadata) = entry.path().symlink_metadata() else {
-            snapshot.complete = false;
-            continue;
-        };
-        let file_type = metadata.file_type();
-        if file_type.is_symlink() {
-            // A symbolic link in a directory RetroFrontier owns is an anomaly. It is not part of
-            // the managed tree, and the enumeration is reported incomplete so the anomaly can
-            // never contribute to a destructive decision.
-            snapshot.complete = false;
-            continue;
+        let file_type = rustix::fs::FileType::from_raw_mode(stat.st_mode);
+        // Test seam only: fires after the type above is known but before it is acted on, so an
+        // adversarial test can substitute a symlink in exactly that window.
+        hooks.after_type_observed();
+        match file_type {
+            rustix::fs::FileType::Symlink => {
+                // A symbolic link in a directory RetroFrontier owns is an anomaly. It is not part
+                // of the managed tree, and the enumeration is reported incomplete so the anomaly
+                // can never contribute to a destructive decision.
+                snapshot.complete = false;
+            }
+            rustix::fs::FileType::Directory => {
+                // Opened relative to `directory`'s own descriptor, `O_NOFOLLOW`: if this entry was
+                // replaced by a symlink since the `statat` above, this fails outright instead of
+                // following it — there is no pathname here to have been substituted.
+                match rustix::fs::openat(
+                    &directory,
+                    name,
+                    DIRECTORY_OPEN_FLAGS,
+                    rustix::fs::Mode::empty(),
+                ) {
+                    Ok(child) => walk_fd(child, &relative, depth + 1, snapshot, hooks),
+                    Err(_) => snapshot.complete = false,
+                }
+            }
+            rustix::fs::FileType::RegularFile => {
+                let Ok(relative_path) = RelativePath::new(relative) else {
+                    snapshot.complete = false;
+                    continue;
+                };
+                if snapshot.entries.len() >= MAX_SNAPSHOT_ENTRIES {
+                    snapshot.complete = false;
+                    return;
+                }
+                snapshot.entries.insert(
+                    relative_path,
+                    PhysicalIdentity {
+                        size_bytes: stat.st_size as u64,
+                        mtime_nanos: i128::from(stat.st_mtime) * 1_000_000_000
+                            + i128::from(stat.st_mtime_nsec),
+                        inode: stat.st_ino,
+                    },
+                );
+            }
+            _ => {
+                snapshot.complete = false;
+            }
         }
-        if file_type.is_dir() {
-            walk(states_root, &relative, depth + 1, snapshot);
-            continue;
+    }
+}
+
+/// The one adversarial window HIGH-3 closes: after a directory entry's type is observed, before
+/// that observation is acted on. Production passes the default (a no-op).
+#[cfg(test)]
+#[derive(Default)]
+struct SnapshotRaceHooks<'a> {
+    after_type_observed: Option<&'a (dyn Fn() + Send + Sync)>,
+}
+
+#[cfg(not(test))]
+#[derive(Default)]
+struct SnapshotRaceHooks<'a> {
+    marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl SnapshotRaceHooks<'_> {
+    fn after_type_observed(&self) {
+        #[cfg(test)]
+        if let Some(hook) = self.after_type_observed {
+            hook();
         }
-        if !file_type.is_file() {
-            snapshot.complete = false;
-            continue;
-        }
-        let Ok(relative_path) = RelativePath::new(relative) else {
-            snapshot.complete = false;
-            continue;
-        };
-        if snapshot.entries.len() >= MAX_SNAPSHOT_ENTRIES {
-            snapshot.complete = false;
-            return;
-        }
-        snapshot
-            .entries
-            .insert(relative_path, physical_identity(&metadata));
     }
 }
 
@@ -1048,6 +1121,46 @@ mod tests {
         assert!(!snapshot.contains(&path("Nestopia/linked.state2")));
         assert!(!snapshot.contains(&path("linked-directory/foreign.state1")));
         // And the anomaly suppresses every destructive decision the snapshot could drive.
+        assert!(!snapshot.is_complete());
+    }
+
+    /// HIGH-3 regression: a directory substituted for a symlink *between* the walker observing its
+    /// type and recursing into it must never be followed.
+    ///
+    /// The previous, path-based walker observed a directory's type via `symlink_metadata`, then
+    /// recursed by re-joining `states_root` with the accumulated relative path and calling
+    /// `read_dir` on that string a second time. Swapping the directory for a symlink in exactly
+    /// that window made the second lookup resolve the link. The descriptor-relative walker has no
+    /// second lookup to exploit: it opens the child `O_NOFOLLOW` *relative to the parent's already-
+    /// open descriptor*, so the same swap simply makes that `openat` fail.
+    #[test]
+    fn a_directory_swapped_for_a_symlink_between_observation_and_traversal_is_never_followed() {
+        let root = states_root();
+        let outside = tempdir().unwrap();
+        write(outside.path(), "Foreign.state1", b"foreign content");
+        write(root.path(), "RealDir/Synthetic.state1", b"real content");
+
+        let real_dir = root.path().join("RealDir");
+        let outside_path = outside.path().to_path_buf();
+        let swap = move || {
+            fs::remove_dir_all(&real_dir).unwrap();
+            symlink(&outside_path, &real_dir).unwrap();
+        };
+
+        let snapshot = snapshot_state_tree_inner(
+            root.path(),
+            &SnapshotRaceHooks {
+                after_type_observed: Some(&swap),
+            },
+        );
+
+        // The foreign content behind the substituted symlink was never smuggled in...
+        assert!(!snapshot.contains(&path("RealDir/Foreign.state1")));
+        // ...and neither was the original directory's own content, since the walker never
+        // resolved "RealDir" a second time to find it either.
+        assert!(!snapshot.contains(&path("RealDir/Synthetic.state1")));
+        // The substitution makes the enumeration provably incomplete — never falsely "complete",
+        // which is the one input that may drive a destructive `missing` transition.
         assert!(!snapshot.is_complete());
     }
 
