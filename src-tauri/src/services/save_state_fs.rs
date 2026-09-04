@@ -44,9 +44,9 @@
 //! `O_DIRECTORY | O_NOFOLLOW`, opens the final component `O_NOFOLLOW`, and reads its identity from
 //! that descriptor. Deletion — and the startup quarantine sweep, which finishes an interrupted one
 //! — additionally renames the file to a private same-directory quarantine name and re-proves the
-//! inode, the device, the size, and the digest *there* before unlinking. The durable record that
-//! authorizes that unlink is retired first, never after, because an inode number outlives nothing
-//! but is reusable the moment its last link is gone — see `sweep_delete_quarantine`.
+//! inode, the device, the size, and the digest *there* before unlinking. **Every** durable record
+//! that authorizes that object is retired first, never after, because an inode number outlives
+//! nothing but is reusable the moment its last link is gone — see `sweep_delete_quarantine`.
 //!
 //! What that guarantees, precisely:
 //!
@@ -732,9 +732,10 @@ pub fn delete_verified_managed_file(
 /// a replaced pathname is fully defeated.
 ///
 /// Naming an inode only holds the invariant while that inode exists, which is what the terminal
-/// ordering below is for: an inode number is reusable once its last link is gone, so the record is
-/// retired before the object rather than after it (HIGH-8). The invariant therefore survives inode
-/// reuse — not because reuse is prevented, but because no record is ever left to be reused against.
+/// ordering below is for: an inode number is reusable once its last link is gone, so *every* record
+/// naming the object is retired before the object rather than after it (HIGH-8, HIGH-9). The
+/// invariant therefore survives inode reuse — not because reuse is prevented, but because no record
+/// is ever left to be reused against.
 ///
 /// ## HIGH-6: verifying a descriptor does not license unlinking a *name*
 ///
@@ -752,20 +753,19 @@ pub fn delete_verified_managed_file(
 /// race window is carried to the second stage instead, fails that re-proof, is renamed back to
 /// where it was found, and is never unlinked.
 ///
-/// ## MEDIUM-5, HIGH-7 and HIGH-8: when evidence is kept, and when it is retired
+/// ## MEDIUM-5, HIGH-7, HIGH-8 and HIGH-9: when evidence is kept, and when it is retired
 ///
 /// Evidence is kept through every non-terminal failure and retired the moment it would become
-/// stale authority — first over a freed pathname, and finally over a freed *inode*. The ownership
-/// chain is:
+/// stale authority — and at the terminal boundary that means *all* of it. The ownership chain is:
 ///
 /// ```text
 /// J1 names object A at the first-stage name Q1
 ///   J2 is written, naming the same physical A, before anything moves
 ///   Q1 → Q2 (NOREPLACE)
 ///   Q2 is re-proved against the journaled identity
-///   J1 is retired — Q1 is free again, and a record pointing at a free name is
-///   authority over whatever comes to occupy it
-///   J2 is retired, durably                       ← the terminal transition (HIGH-8)
+///   every record naming A — J1, J2, and any redundant record an earlier
+///   interrupted generation left — is retired together, durably
+///                                                ← the terminal transition (HIGH-8, HIGH-9)
 ///   Q2 is unlinked
 /// ```
 ///
@@ -781,14 +781,27 @@ pub fn delete_verified_managed_file(
 /// **The last step reverses that priority, and it has to.** `(device, inode)` identifies an object
 /// only while the object exists; once its last link is gone the inode number is eligible for reuse,
 /// so a record that outlives its object is a capability that some future, unrelated file could
-/// satisfy. J2 is therefore retired *before* the unlink rather than after it, and if it cannot be
-/// retired the unlink is not attempted at all. The asymmetry that produces is intended:
+/// satisfy. The authorizing records are therefore retired *before* the unlink rather than after it,
+/// and if they cannot all be retired the unlink is not attempted at all.
+///
+/// HIGH-9 is why that is stated over the *object* rather than over one stage's id. J1 names the
+/// same physical object as J2 for as long as the second stage is being proved, and it used to be
+/// removed here best-effort by a helper that returns nothing and discards filesystem errors — so a
+/// J1 that refused to go outlived the inode it authenticated while J2 retired cleanly and the
+/// object was unlinked. The condition enforced is therefore:
+///
+/// > Before the final link of a quarantined physical object is removed, no durable delete-journal
+/// > record may remain anywhere that authorizes that same physical object identity.
+///
+/// which is a property of the whole journal, proved by enumerating it, and not of whichever id this
+/// pass happens to hold. The asymmetry that produces is intended:
 ///
 /// | Crash point | State | Meaning |
 /// | --- | --- | --- |
-/// | before the final re-proof | Q2 + J2 | recoverable; the next startup retries |
-/// | after the re-proof, before J2 is retired | Q2 + J2 | recoverable; the next startup retries |
-/// | after J2 is retired, before the unlink | Q2 only | inert orphan, never swept again |
+/// | before the final re-proof | Q2 + J1 + J2 | recoverable; the next startup retries |
+/// | after the re-proof, before retirement | Q2 + J1 + J2 | recoverable; the next startup retries |
+/// | during retirement (partial, or not provable) | Q2 + whatever records remain | nothing is unlinked; the object is kept |
+/// | after retirement, before the unlink | Q2 only | inert orphan, never swept again |
 /// | after the unlink | neither | done |
 ///
 /// RetroFrontier would rather leak one tiny owned orphan than keep a record that could later
@@ -797,6 +810,13 @@ pub fn delete_verified_managed_file(
 /// or any database row — doing so would rebuild precisely the stale authority this ordering
 /// removes. It stays inert: it cannot parse as a state or a thumbnail, so nothing attributes,
 /// lists, or loads it either.
+///
+/// A retirement that removes some records and then cannot prove the rest lands in the same family
+/// of outcomes rather than a new one: **the object is kept**, whatever is left of its evidence is
+/// left exactly as it is, and nothing is manufactured to replace what has gone. If the record
+/// naming the object's current name is still there, a later startup simply retries; if it was among
+/// those already removed, the object becomes an inert orphan of the kind above. Both are
+/// fail-closed, and neither can produce a record without its object.
 ///
 /// This makes the sweep idempotent and safe to run on every startup: a genuine RetroFrontier
 /// delete that crashed between its rename and its unlink is completed exactly as it would have
@@ -929,14 +949,6 @@ fn sweep_delete_quarantine_inner(states_root: &Path, hooks: &SweepRaceHooks<'_>)
             continue;
         }
 
-        // Ownership has now been safely established at the second stage: the object is there, and
-        // its own durable entry names it. Only now is the first-stage entry retired, and it must be
-        // — the first-stage *name* is free again, and a durable record left pointing at it would be
-        // stale authority over whatever later occupies it. A crash between here and the unlink
-        // below simply leaves the second stage to the next startup, which is the same conservative
-        // recovery this pass began with.
-        remove_journal_entry(states_root, id);
-
         // HIGH-8: the terminal transition. Up to this point the object was a *recoverable
         // delete-in-progress* and MEDIUM-5's rule applied — keep the evidence, because it is the
         // only thing that makes a retry possible. Re-proving the exact object at its final name
@@ -944,13 +956,19 @@ fn sweep_delete_quarantine_inner(states_root: &Path, hooks: &SweepRaceHooks<'_>)
         // reverses. A record that outlives its object is a capability over a reusable inode
         // number; losing automatic cleanup of one file is not.
         //
-        // So the authorizing record is retired *before* the unlink, durably. If it cannot be
-        // retired, nothing is unlinked: object and record both stay, which is the safe retryable
-        // state this branch came from.
-        if !retire_journal_entry(states_root, &second_stage_id) {
+        // HIGH-9: and what must be retired is the *capability over this physical object*, not one
+        // stage's id. The first-stage entry still names the very same object — same device, same
+        // inode, same size, same digest — and it used to be removed here best-effort with its
+        // failure ignored, so a first-stage entry that refused to go survived the destruction of
+        // the inode it authenticated: exactly the stale capability this ordering exists to remove,
+        // merely one generation older. Retirement is therefore identity-wide, durable, and
+        // all-or-nothing, and the unlink is reached only once *no* record anywhere in the journal
+        // authorizes this object. A partial or unprovable retirement keeps the object instead.
+        if retire_all_authorizing_journal_entries(states_root, ownership).is_err() {
             tracing::warn!(
-                "a quarantined save-state file's ownership record could not be retired, so its \
-                 removal was not attempted; both are intact and the next startup will retry"
+                "a quarantined save-state file's ownership retirement could not be proven \
+                 complete, so its removal was not attempted and the object was left in place; \
+                 some of its records may already be gone, and none are ever recreated"
             );
             continue;
         }
@@ -1268,6 +1286,27 @@ fn push_forced_quarantine_id(id: impl Into<String>) {
     FORCED_QUARANTINE_IDS.with(|ids| ids.borrow_mut().push_back(id.into()));
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Journal entries whose removal must fail, so a test can make the retirement of *one*
+    /// specific record fail while every other record would retire successfully (HIGH-9).
+    static FORCED_JOURNAL_UNLINK_FAILURES: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Whether committing the journal directory must fail, so a test can prove that a retirement
+    /// whose durability cannot be proven refuses the unlink.
+    static FORCED_JOURNAL_FSYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn force_journal_unlink_failure(id: impl Into<String>) {
+    FORCED_JOURNAL_UNLINK_FAILURES.with(|ids| ids.borrow_mut().insert(id.into()));
+}
+
+#[cfg(test)]
+fn force_journal_fsync_failure() {
+    FORCED_JOURNAL_FSYNC_FAILURE.with(|failing| failing.set(true));
+}
+
 /// A collision-resistant, unguessable quarantine identifier — never a predictable `<pid>-<counter>`
 /// (HIGH-4).
 fn quarantine_id() -> String {
@@ -1390,51 +1429,171 @@ fn quarantine_verified_file(
     Err(SaveStateError::DeleteFailed)
 }
 
-/// Read back one journal entry's recorded physical identity, or `None` if it does not exist, is
-/// unsafe, is oversized, or does not parse strictly — every one of those is treated as "not
-/// proven", never as a fact to act on, and never as something to repair.
-fn read_journal_entry(states_root: &Path, id: &str) -> Option<QuarantineOwnership> {
-    // Journal ids are always produced by `quarantine_id`, but this is read at sweep time from a
-    // filename, so it is revalidated as a safe single path component rather than trusted.
-    if id.is_empty() || id.contains('/') || id.contains('\0') {
+/// One journal entry's name as a single safe path component.
+///
+/// Journal ids are always produced by `quarantine_id`, but they are read back at sweep time from a
+/// *filename*, so a name is revalidated here rather than trusted: never empty, never a path, and
+/// never NUL-bearing. Nothing derived from a journal entry's *contents* ever reaches this.
+fn journal_entry_name(id: &str) -> Option<std::ffi::CString> {
+    if id.is_empty() || id.contains('/') {
         return None;
     }
-    let journal = open_delete_journal_dir(states_root).ok()?;
+    std::ffi::CString::new(id).ok()
+}
+
+/// Read back one journal entry's recorded physical identity, relative to an already-open journal
+/// directory descriptor.
+///
+/// The distinction between the two negative answers is load-bearing at the terminal boundary:
+///
+/// - `Ok(None)` — this entry provably authorizes nothing: it is gone, it is not a regular file, it
+///   is oversized, or it does not parse strictly. None of those are ever repaired or half-trusted.
+/// - `Err(..)` — this entry could not be *read*, so what it authorizes is unknown. A caller
+///   deciding whether a destructive unlink is safe must treat that as no answer, never as a no.
+fn journal_record_at(
+    journal: &rustix::fd::OwnedFd,
+    name: &std::ffi::CStr,
+) -> Result<Option<QuarantineOwnership>, SaveStateError> {
     let descriptor =
-        rustix::fs::openat(&journal, id, FILE_OPEN_FLAGS, rustix::fs::Mode::empty()).ok()?;
-    let mut file = std::fs::File::from(descriptor);
-    let metadata = file.metadata().ok()?;
+        match rustix::fs::openat(journal, name, FILE_OPEN_FLAGS, rustix::fs::Mode::empty()) {
+            Ok(descriptor) => descriptor,
+            // Already absent: it authorizes nothing, which is a fact and not an uncertainty.
+            Err(rustix::io::Errno::NOENT) => return Ok(None),
+            // A symbolic link is the same kind of fact: every reader of the journal opens
+            // `NOFOLLOW`, so a link can never be read as a record by any code path here. Treating
+            // it as undecidable instead would let one stray link block every future delete.
+            Err(rustix::io::Errno::LOOP) => return Ok(None),
+            Err(_) => return Err(SaveStateError::DeleteFailed),
+        };
+    let file = std::fs::File::from(descriptor);
+    let metadata = file.metadata().map_err(|_| SaveStateError::DeleteFailed)?;
     if !metadata.file_type().is_file() || metadata.len() > MAX_JOURNAL_ENTRY_BYTES {
-        return None;
+        return Ok(None);
     }
-    let mut contents = String::new();
-    file.read_to_string(&mut contents).ok()?;
-    QuarantineOwnership::parse(&contents)
+    // Bounded at the read as well as at the `stat`, so a file that grew in between is refused
+    // rather than read. A bounded regular file that cannot be read *at all* is indeterminate, not
+    // empty — but contents that are not even text are a fact: no reader here could ever parse them
+    // into a record, so they authorize nothing.
+    let mut contents = Vec::new();
+    file.take(MAX_JOURNAL_ENTRY_BYTES + 1)
+        .read_to_end(&mut contents)
+        .map_err(|_| SaveStateError::DeleteFailed)?;
+    if contents.len() as u64 > MAX_JOURNAL_ENTRY_BYTES {
+        return Ok(None);
+    }
+    let Ok(contents) = std::str::from_utf8(&contents) else {
+        return Ok(None);
+    };
+    Ok(QuarantineOwnership::parse(contents))
+}
+
+/// Read back one journal entry's recorded physical identity by id, or `None` if it does not exist,
+/// cannot be read, is unsafe, is oversized, or does not parse strictly — every one of those is
+/// treated as "not proven", never as a fact to act on, and never as something to repair.
+fn read_journal_entry(states_root: &Path, id: &str) -> Option<QuarantineOwnership> {
+    let name = journal_entry_name(id)?;
+    let journal = open_delete_journal_dir(states_root).ok()?;
+    journal_record_at(&journal, &name).ok().flatten()
+}
+
+/// Remove one journal entry by name, relative to an open journal directory.
+///
+/// Every removal of an *established* record goes through here — the non-terminal cleanups and the
+/// terminal retirement alike — so there is exactly one seam a test has to influence to make one
+/// specific record refuse to go. (`quarantine_verified_file` rolling back a marker it has only just
+/// created is not that: nothing has ever depended on that marker.)
+fn unlink_journal_entry(
+    journal: &rustix::fd::OwnedFd,
+    name: &std::ffi::CStr,
+) -> Result<(), rustix::io::Errno> {
+    #[cfg(test)]
+    {
+        let name: &str = &name.to_string_lossy();
+        if FORCED_JOURNAL_UNLINK_FAILURES.with(|ids| ids.borrow().contains(name)) {
+            return Err(rustix::io::Errno::IO);
+        }
+    }
+    rustix::fs::unlinkat(journal, name, rustix::fs::AtFlags::empty())
+}
+
+/// Commit the journal directory's own entries. The seam exists so a test can prove that a
+/// retirement whose *durability* cannot be proven still refuses to unlink the object.
+fn fsync_journal_dir(journal: &rustix::fd::OwnedFd) -> Result<(), rustix::io::Errno> {
+    #[cfg(test)]
+    if FORCED_JOURNAL_FSYNC_FAILURE.with(std::cell::Cell::get) {
+        return Err(rustix::io::Errno::IO);
+    }
+    rustix::fs::fsync(journal)
 }
 
 /// Remove one journal entry, if it exists. Best-effort: a leftover entry is never mistaken for
 /// proof of anything by itself — only a matching `.rf-delete-*` name together with its entry is.
 ///
 /// Used for the *non-terminal* cleanups, where the entry has stopped describing anything the sweep
-/// will ever look at — a restored file back at its own name, a first-stage name that has been
-/// handed on to a proven second stage. The terminal case uses `retire_journal_entry` instead,
-/// because there the ordering itself is a security property.
+/// will ever look at — a restored file back at its own name whose second-stage record now names
+/// nothing. The terminal case uses `retire_all_authorizing_journal_entries` instead, because there
+/// both the ordering *and* the completeness of the retirement are security properties.
 fn remove_journal_entry(states_root: &Path, id: &str) {
-    if let Ok(journal) = open_delete_journal_dir(states_root) {
-        let _ = rustix::fs::unlinkat(&journal, id, rustix::fs::AtFlags::empty());
+    if let (Some(name), Ok(journal)) =
+        (journal_entry_name(id), open_delete_journal_dir(states_root))
+    {
+        let _ = unlink_journal_entry(&journal, &name);
     }
 }
 
-/// Retire the one entry that still authorizes a destructive unlink, and report whether that
-/// retirement actually reached the filesystem (HIGH-8).
+/// Every journal entry currently authorizing one exact physical object, enumerated
+/// descriptor-relatively.
 ///
-/// This is a security boundary, not a tidy-up. `(device, inode)` identifies an object only while
-/// that object exists: once the last link is gone the inode number becomes eligible for reuse, so a
-/// record that survives its own object is a capability a future unrelated file could satisfy. The
-/// record must therefore be gone *before* the object is, and a caller that cannot retire it must
-/// not proceed to the unlink.
+/// An incomplete enumeration is an error rather than a short list: "no record authorizes this
+/// object" is a claim about the *whole* journal, so an unreadable directory or an entry whose
+/// contents cannot be determined must not be reported as an absence.
 ///
-/// **Durability, stated precisely.** The entry is unlinked and the journal *directory* is then
+/// Journal *contents* are never used as a filesystem path — the returned names come from the
+/// directory itself, and only from it. A malformed entry matches nothing and is left exactly as
+/// found: it is never adopted, repaired, or rewritten.
+fn authorizing_journal_entries(
+    journal: &rustix::fd::OwnedFd,
+    ownership: QuarantineOwnership,
+) -> Result<Vec<std::ffi::CString>, SaveStateError> {
+    // Borrows the descriptor to read its entries; it does not consume or re-resolve it.
+    let entries = rustix::fs::Dir::read_from(journal).map_err(|_| SaveStateError::DeleteFailed)?;
+    let mut authorizing = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|_| SaveStateError::DeleteFailed)?;
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        if journal_record_at(journal, name)? == Some(ownership) {
+            authorizing.push(name.to_owned());
+        }
+    }
+    Ok(authorizing)
+}
+
+/// Retire **every** record that authorizes one physical object, durably, and report success only
+/// when zero authorizing records are left (HIGH-8, HIGH-9).
+///
+/// This is a security boundary, not a tidy-up, and the condition it enforces is deliberately about
+/// the object rather than about one stage's id:
+///
+/// > Before the final link of a quarantined physical object is removed, no durable delete-journal
+/// > record may remain anywhere that authorizes that same physical object identity.
+///
+/// `(device, inode)` identifies an object only while that object exists: once the last link is gone
+/// the inode number becomes eligible for reuse, so *any* surviving record naming it is a capability
+/// a future unrelated file could satisfy. Retiring only the id this stage happens to hold is not
+/// enough, because a recovery has more than one stage — the first-stage record still names the same
+/// physical object while the second stage is being proved, and a crash can leave further redundant
+/// records naming it as well. Identity-wide retirement handles all of them without needing to track
+/// a predecessor chain.
+///
+/// The whole set is one decision. If the journal cannot be opened, if the enumeration is
+/// incomplete, if any matching record cannot be removed, or if the commit below cannot be proven,
+/// this fails and the caller must not unlink anything. "The record this stage created is gone" is
+/// explicitly *not* the success condition.
+///
+/// **Durability, stated precisely.** The entries are unlinked and the journal *directory* is then
 /// `fsync`ed, which is what POSIX offers for committing a directory-entry removal, so on a
 /// filesystem and storage stack that honour `fsync` the retirement is durable before the object's
 /// own unlink is even attempted. RetroFrontier does not claim more than that: on a stack that
@@ -1442,18 +1601,33 @@ fn remove_journal_entry(states_root: &Path, id: &str) {
 /// this ordering is structurally correct for regardless, and which is the window the finding
 /// actually described.
 ///
-/// `ENOENT` is success: the entry is already gone, which is precisely the state being asked for.
-fn retire_journal_entry(states_root: &Path, id: &str) -> bool {
-    let Ok(journal) = open_delete_journal_dir(states_root) else {
-        return false;
-    };
-    match rustix::fs::unlinkat(&journal, id, rustix::fs::AtFlags::empty()) {
-        Ok(()) | Err(rustix::io::Errno::NOENT) => {}
-        Err(_) => return false,
+/// A failure here says only that retirement could not be *proven* complete; it does not promise the
+/// records are still there. Removals already issued may well have taken effect, and that is
+/// harmless — the object is kept, nothing is destroyed, and no record is ever manufactured to
+/// replace one that has gone.
+///
+/// `ENOENT` on a removal is success: the entry is already gone, which is precisely the state being
+/// asked for.
+fn retire_all_authorizing_journal_entries(
+    states_root: &Path,
+    ownership: QuarantineOwnership,
+) -> Result<(), SaveStateError> {
+    let journal = open_delete_journal_dir(states_root)?;
+    for name in authorizing_journal_entries(&journal, ownership)? {
+        match unlink_journal_entry(&journal, &name) {
+            Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+            Err(_) => return Err(SaveStateError::DeleteFailed),
+        }
     }
-    // The removal has to be committed, not merely issued, before the object it authorizes is
-    // destroyed — otherwise a crash could still surface the record without the object.
-    rustix::fs::fsync(&journal).is_ok()
+    // The removals have to be committed, not merely issued, before the object they authorize is
+    // destroyed — otherwise a crash could still surface a record without the object.
+    fsync_journal_dir(&journal).map_err(|_| SaveStateError::DeleteFailed)?;
+    // Proven, not assumed: the terminal invariant is re-read from the filesystem after the commit,
+    // so an entry that reappeared or was missed refuses the unlink instead of being unlinked past.
+    if !authorizing_journal_entries(&journal, ownership)?.is_empty() {
+        return Err(SaveStateError::DeleteFailed);
+    }
+    Ok(())
 }
 
 /// The windows an attacker racing a delete can act in. Production passes `None` for all of them.
@@ -1646,14 +1820,17 @@ fn delete_verified_managed_file_inner(
     // whatever object comes to hold that number next. If the record cannot be retired, nothing is
     // unlinked: the file is restored and the delete fails, which leaves the same safe, retryable
     // state every other refusal here leaves.
-    let quarantine_id = quarantine
-        .strip_prefix(QUARANTINE_PREFIX)
-        .unwrap_or_default()
-        .to_owned();
-    if !retire_journal_entry(states_root, &quarantine_id) {
+    //
+    // HIGH-9: retirement is identity-wide on this path too, and uses the same helper the sweep
+    // uses. An uninterrupted live delete writes exactly one record, so in the ordinary case this
+    // retires that one record and nothing else; the reason it is not narrowed to that id is that
+    // the security condition is "no record authorizes this object", which is a property of the
+    // journal rather than of this call — and asserting the same terminal invariant on both
+    // destructive paths costs one directory scan of a directory that is normally empty.
+    if retire_all_authorizing_journal_entries(states_root, ownership).is_err() {
         tracing::warn!(
-            "a save-state delete could not retire its ownership record, so the file was not \
-             removed; it was restored and the delete was refused"
+            "a save-state delete could not prove its ownership retirement complete, so the file \
+             was not removed; the object was left in place and no record is ever recreated"
         );
         restore(&quarantine);
         return Err(SaveStateError::DeleteFailed);
@@ -3496,6 +3673,332 @@ mod tests {
         assert_eq!(sweep_delete_quarantine(root.path()), 0);
     }
 
+    // ======================================= HIGH-9: the terminal invariant is journal-wide
+
+    /// What the filesystem looked like at the instant before the *final* unlink, stated as the
+    /// HIGH-9 invariant rather than as "one id is gone".
+    #[derive(Debug)]
+    struct AtFinalUnlink {
+        /// The object about to be destroyed, as it physically is at this instant.
+        object: QuarantineOwnership,
+        /// Every valid journal record anywhere in the journal that authorizes that exact object.
+        authorizing_records: Vec<String>,
+        /// Everything still in the journal, whether it authorizes this object or not.
+        journal_entries: Vec<String>,
+    }
+
+    /// Observe the terminal invariant from the outside: find the object that is about to be
+    /// unlinked, read its *actual* physical identity, and then ask the whole journal whether
+    /// anything still authorizes it.
+    ///
+    /// The ownership is deliberately recomputed from the live object rather than remembered from a
+    /// record, so the comparison is against the physical thing being destroyed.
+    fn observe_at_final_unlink(root: &Path, bytes: &[u8]) -> AtFinalUnlink {
+        let object = surviving_quarantine_path(root);
+        assert!(object.exists(), "the object must still exist at the unlink");
+        let ownership = ownership_of(&object, bytes);
+        AtFinalUnlink {
+            object: ownership,
+            authorizing_records: authorizing_journal_ids(root, ownership),
+            journal_entries: journal_ids(root),
+        }
+    }
+
+    /// HIGH-9 regression: a *previous-stage* record whose retirement fails must stop the final
+    /// unlink, even when the current stage's record would have retired perfectly well.
+    ///
+    /// A recovery has two live records at its terminal boundary. `J2` names the object at its
+    /// second-stage name and is retired durably before the unlink (HIGH-8). `J1` names the *same
+    /// physical object* — same device, same inode, same size, same digest — and used to be removed
+    /// here best-effort, by a helper that returns nothing and discards filesystem errors. So this
+    /// state was reachable: `J1`'s removal fails and is ignored, `J2` retires, the object is
+    /// unlinked, and `J1` survives as a durable capability over an inode number that is now free
+    /// for reuse. That is precisely the class HIGH-8 was meant to eliminate, one generation older.
+    ///
+    /// The failure is injected at the single point where a journal entry is removed, for exactly
+    /// one id, so `J1` cannot be retired while everything else could be.
+    #[test]
+    fn a_previous_stage_journal_failure_prevents_final_unlink() {
+        let root = states_root();
+        let owned = b"the quarantined bytes";
+        write(
+            root.path(),
+            "nestopia/Sibling.state1",
+            b"an unrelated state",
+        );
+        write(root.path(), "nestopia/ToQuarantine.state1", owned);
+        let (quarantine, first_stage) =
+            interrupted_delete(root.path(), "nestopia/ToQuarantine.state1", owned);
+        let object = ownership_of(&root.path().join("nestopia").join(&quarantine), owned);
+
+        // Only the first-stage record refuses to go; the second-stage record the sweep is about to
+        // write would retire without trouble.
+        force_journal_unlink_failure(&first_stage);
+
+        let removed = sweep_delete_quarantine(root.path());
+
+        // The invariant, stated exactly as the finding states it: the system must never reach
+        // "object destroyed, while a record still authorizes that object's physical identity".
+        let surviving = authorizing_journal_ids(root.path(), object);
+        if no_quarantine_files(root.path()) == 0 {
+            assert!(
+                surviving.is_empty(),
+                "the object was unlinked while {surviving:?} still authorized its physical identity"
+            );
+        }
+
+        assert_eq!(removed, 0, "nothing may be reported as finished");
+        assert_eq!(
+            no_quarantine_files(root.path()),
+            1,
+            "the physical object must survive an incomplete retirement"
+        );
+        let object_path = surviving_quarantine_path(root.path());
+        assert_eq!(fs::read(&object_path).unwrap(), owned);
+        assert_eq!(
+            ownership_of(&object_path, owned),
+            object,
+            "it is still the same physical object, not a replacement"
+        );
+        // And it survived *because* the previous-stage record is still authorizing it.
+        assert!(
+            surviving.contains(&first_stage),
+            "the un-retirable first-stage record must still be present, got {surviving:?}"
+        );
+        // Nothing unrelated was touched.
+        assert_eq!(
+            fs::read(root.path().join("nestopia/Sibling.state1")).unwrap(),
+            b"an unrelated state"
+        );
+
+        // Repeating recovery keeps refusing: it never destroys the object while a record for it
+        // cannot be retired, and it never manufactures a replacement record either.
+        for _ in 0..3 {
+            assert_eq!(sweep_delete_quarantine(root.path()), 0);
+            assert_eq!(no_quarantine_files(root.path()), 1);
+            let object_path = surviving_quarantine_path(root.path());
+            assert_eq!(fs::read(&object_path).unwrap(), owned);
+            assert!(authorizing_journal_ids(root.path(), object).contains(&first_stage));
+        }
+    }
+
+    /// HIGH-9 regression, stated as the terminal invariant itself:
+    ///
+    /// > Immediately before the final unlink, no valid journal record exists anywhere whose
+    /// > `QuarantineOwnership` equals the physical object about to be destroyed.
+    ///
+    /// This deliberately does **not** check that one particular id is absent. It reads the object's
+    /// real physical identity off the object that is about to be destroyed, parses *every* valid
+    /// record in the journal, and requires that none of them names it.
+    ///
+    /// The startup sweep is the multi-record path: `J1` from the interrupted delete, `J2` written
+    /// for the second stage, plus — planted here — a redundant duplicate record of the kind a crash
+    /// between generations can leave, all naming the same object. An uninterrupted live delete
+    /// writes exactly one record, which is asserted below as well, on the same invariant.
+    #[test]
+    fn no_authorizing_record_exists_for_the_object_at_final_unlink() {
+        // --- the startup sweep, with several records naming one object.
+        let root = states_root();
+        let owned = b"the quarantined bytes";
+        write(root.path(), "nestopia/ToQuarantine.state1", owned);
+        let (quarantine, first_stage) =
+            interrupted_delete(root.path(), "nestopia/ToQuarantine.state1", owned);
+        let object = ownership_of(&root.path().join("nestopia").join(&quarantine), owned);
+
+        // A redundant record naming the same physical object, as an interrupted earlier generation
+        // would have left behind. It authorizes the object just as fully as the others do.
+        let redundant = "0123456789abcdef0123456789abcdef";
+        fs::write(
+            root.path().join(DELETE_JOURNAL_DIR).join(redundant),
+            object.render(),
+        )
+        .unwrap();
+        assert_eq!(
+            authorizing_journal_ids(root.path(), object).len(),
+            2,
+            "the sweep must start with more than one authorizing record"
+        );
+
+        let observed = std::sync::Mutex::new(None);
+        let observe = || {
+            *observed.lock().unwrap() = Some(observe_at_final_unlink(root.path(), owned));
+        };
+        assert_eq!(
+            sweep_delete_quarantine_inner(
+                root.path(),
+                &SweepRaceHooks {
+                    before_unlink: Some(&observe),
+                    ..SweepRaceHooks::default()
+                },
+            ),
+            1
+        );
+
+        let at_unlink = observed.lock().unwrap().take().expect("the hook fired");
+        assert_eq!(
+            at_unlink.object, object,
+            "the object at the unlink is the one the records named"
+        );
+        assert!(
+            at_unlink.authorizing_records.is_empty(),
+            "no record may authorize this object at the final unlink, got {:?} of {:?}",
+            at_unlink.authorizing_records,
+            at_unlink.journal_entries
+        );
+        // Every generation went, not merely the current one.
+        assert!(!at_unlink.journal_entries.contains(&first_stage.to_string()));
+        assert!(!at_unlink.journal_entries.contains(&redundant.to_owned()));
+        assert_eq!(no_quarantine_files(root.path()), 0);
+        assert!(journal_ids(root.path()).is_empty());
+
+        // --- the live delete. It can only ever create one record for the object it quarantines,
+        // because it quarantines a file it has just verified under its own registered name; the
+        // same journal-wide invariant is required of it regardless.
+        let live = b"the registered state bytes";
+        write(root.path(), "nestopia/Live.state1", live);
+        let observed = std::sync::Mutex::new(None);
+        let observe = || {
+            *observed.lock().unwrap() = Some(observe_at_final_unlink(root.path(), live));
+        };
+        delete_verified_managed_file_inner(
+            root.path(),
+            &path("nestopia/Live.state1"),
+            live.len() as u64,
+            digest_of(live),
+            &DeleteRaceHooks {
+                before_unlink: Some(&observe),
+                ..DeleteRaceHooks::default()
+            },
+        )
+        .unwrap();
+
+        let at_unlink = observed.lock().unwrap().take().expect("the hook fired");
+        assert!(
+            at_unlink.authorizing_records.is_empty(),
+            "no record may authorize this object at the final unlink, got {:?} of {:?}",
+            at_unlink.authorizing_records,
+            at_unlink.journal_entries
+        );
+        assert!(!root.path().join("nestopia/Live.state1").exists());
+        assert_eq!(no_quarantine_files(root.path()), 0);
+        assert!(journal_ids(root.path()).is_empty());
+    }
+
+    /// HIGH-9: the retirement set is one security decision, and *proving* it is part of the
+    /// decision. A retirement whose durability cannot be proven must not be treated as a
+    /// retirement, even though its removals may already have taken effect in the current
+    /// filesystem view.
+    ///
+    /// This is also the case the failure logging must not overclaim: the object is left in place,
+    /// but the records are not promised to still be there.
+    #[test]
+    fn a_retirement_that_cannot_be_proven_durable_never_unlinks_the_object() {
+        let root = states_root();
+        let owned = b"the quarantined bytes";
+        write(root.path(), "nestopia/ToQuarantine.state1", owned);
+        interrupted_delete(root.path(), "nestopia/ToQuarantine.state1", owned);
+
+        // The removals are allowed to happen; committing them is not.
+        force_journal_fsync_failure();
+
+        assert_eq!(sweep_delete_quarantine(root.path()), 0);
+
+        // The object stays — that is the whole point of failing closed here.
+        assert_eq!(no_quarantine_files(root.path()), 1);
+        let object = surviving_quarantine_path(root.path());
+        assert_eq!(fs::read(&object).unwrap(), owned);
+
+        // Whatever survived of the journal, no ownership is ever manufactured for the object from
+        // its name, size, digest, or currently observed inode.
+        let ownership = ownership_of(&object, owned);
+        for _ in 0..3 {
+            assert_eq!(sweep_delete_quarantine(root.path()), 0);
+            assert_eq!(no_quarantine_files(root.path()), 1);
+            assert_eq!(
+                fs::read(surviving_quarantine_path(root.path())).unwrap(),
+                owned
+            );
+            assert_eq!(
+                ownership_of(&surviving_quarantine_path(root.path()), owned),
+                ownership,
+                "the object is never replaced or re-adopted"
+            );
+        }
+    }
+
+    /// The journal-wide retirement removes exactly the records that authorize the object, and
+    /// nothing else — and an entry it cannot parse neither authorizes the object nor blocks it.
+    ///
+    /// Both halves matter. If an unparseable entry counted as authority, one stray file in the
+    /// journal directory would block every delete forever; if it were "repaired", the module would
+    /// be manufacturing ownership. It is instead treated as what it is: no proof, and no business
+    /// of this operation's.
+    #[test]
+    fn a_malformed_journal_entry_neither_authorizes_nor_blocks_the_terminal_retirement() {
+        let root = states_root();
+        let owned = b"the quarantined bytes";
+        write(root.path(), "nestopia/ToQuarantine.state1", owned);
+        interrupted_delete(root.path(), "nestopia/ToQuarantine.state1", owned);
+
+        let journal = root.path().join(DELETE_JOURNAL_DIR);
+        let planted: Vec<(&str, Vec<u8>)> = vec![
+            ("not-a-record", b"rfdj1:nonsense".to_vec()),
+            ("not-even-text", vec![0xff, 0xfe, 0x00, 0x01]),
+            (
+                "far-too-large",
+                vec![b'x'; MAX_JOURNAL_ENTRY_BYTES as usize + 1],
+            ),
+        ];
+        for (name, bytes) in &planted {
+            fs::write(journal.join(name), bytes).unwrap();
+        }
+        // A symbolic link is unreadable to every reader here, so it can never be a record either.
+        std::os::unix::fs::symlink("../nestopia", journal.join("a-link")).unwrap();
+
+        assert_eq!(
+            sweep_delete_quarantine(root.path()),
+            1,
+            "unparseable clutter must not block a proven recovery"
+        );
+        assert_eq!(no_quarantine_files(root.path()), 0);
+
+        // Everything the retirement had no authority over is still there, byte for byte.
+        for (name, bytes) in &planted {
+            assert_eq!(&fs::read(journal.join(name)).unwrap(), bytes, "{name}");
+        }
+        assert!(fs::symlink_metadata(journal.join("a-link"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    /// The same live-delete refusal, from the caller's side: an unprovable retirement fails the
+    /// delete rather than removing the file.
+    #[test]
+    fn a_live_delete_refuses_when_its_retirement_cannot_be_proven() {
+        let root = states_root();
+        let bytes = b"the registered state bytes";
+        write(root.path(), "nestopia/Synthetic.state1", bytes);
+
+        force_journal_fsync_failure();
+
+        assert_eq!(
+            delete_verified_managed_file(
+                root.path(),
+                &path("nestopia/Synthetic.state1"),
+                bytes.len() as u64,
+                digest_of(bytes),
+            ),
+            Err(SaveStateError::DeleteFailed)
+        );
+        // The verified file was put back under its own name, and it is still the state it was.
+        assert_eq!(
+            fs::read(root.path().join("nestopia/Synthetic.state1")).unwrap(),
+            bytes
+        );
+        assert_eq!(no_quarantine_files(root.path()), 0);
+    }
+
     fn inode_of(path: &Path) -> u64 {
         use std::os::unix::fs::MetadataExt;
         fs::symlink_metadata(path).unwrap().ino()
@@ -3521,6 +4024,43 @@ mod tests {
         entries
             .filter_map(|entry| Some(entry.ok()?.file_name().to_str()?.to_owned()))
             .collect()
+    }
+
+    /// Every journal id whose record is valid *and* names one exact physical object.
+    ///
+    /// This reads and parses the journal itself rather than asking the adapter about one id: the
+    /// HIGH-9 invariant is a statement about the whole journal, so the test has to enumerate it.
+    fn authorizing_journal_ids(root: &Path, ownership: QuarantineOwnership) -> Vec<String> {
+        let mut ids: Vec<String> = journal_ids(root)
+            .into_iter()
+            .filter(|id| {
+                fs::read_to_string(root.join(DELETE_JOURNAL_DIR).join(id))
+                    .ok()
+                    .and_then(|record| QuarantineOwnership::parse(&record))
+                    == Some(ownership)
+            })
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// The path of the single quarantine object left in the tree.
+    fn surviving_quarantine_path(root: &Path) -> std::path::PathBuf {
+        let snapshot = snapshot_state_tree(root);
+        let mut paths: Vec<std::path::PathBuf> = snapshot
+            .entries()
+            .filter(|(relative_path, _)| {
+                relative_path
+                    .as_str()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .starts_with(QUARANTINE_PREFIX)
+            })
+            .map(|(relative_path, _)| root.join(relative_path.as_str()))
+            .collect();
+        assert_eq!(paths.len(), 1);
+        paths.pop().unwrap()
     }
 
     /// The journal id of the single quarantine object left in the tree.
