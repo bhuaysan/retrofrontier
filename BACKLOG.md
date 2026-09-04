@@ -44,7 +44,7 @@ converted three previously vague gates into precisely identified V1 blockers:
   buildbot metadata examined. libretro's own build infrastructure may still be able to identify it,
   so asking is a live option. Either way RetroFrontier cannot meet the obligation from what it can
   obtain today, so public redistribution is blocked — for the four *already approved* systems too.
-  This is a provenance blocker, not a policy one.
+  This is a provenance blocker, not a policy one. **Narrowed by M10.3 — see below.**
 - **Mega Drive has no approvable core.** Genesis Plus GX and PicoDrive both carry a non-commercial
   licence term, which conflicts with the freedoms this project's `GPL-3.0-or-later` licence grants
   downstream. Engineering status: blocked for V1 under current policy, legal compatibility review
@@ -60,6 +60,35 @@ NES and SNES remain the only systems qualified end-to-end, GameCube remains part
 PlayStation remains unqualified. See [`docs/CORE_MATRIX.md`](docs/CORE_MATRIX.md),
 [`docs/BIOS_MATRIX.md`](docs/BIOS_MATRIX.md) and
 [`docs/SOURCE_PROVENANCE.md`](docs/SOURCE_PROVENANCE.md).
+
+M10.3 (core provenance recovery and build-strategy decision) is documentation and research only: it
+created no Runtime Release, approved no core, changed no trust semantics and left Release 002
+byte-identical. It re-verified all four core SHA-256 and GNU build-id values against `main`, then
+narrowed the corresponding-source blocker considerably:
+
+- **Dolphin's exact revision is recovered and proven**: `libretro/dolphin` @
+  `fd1aca3af7db75504ed7512406d8a4cf4187110a`, read from the shipped binary's own build-generated SCM
+  constants, verified as an ancestor of the libretro fork's `master` and not of upstream Dolphin's.
+  Its 33 submodule pins — which that commit determines — are recorded. M10.2's "not recoverable from
+  the shipped binaries" finding was correct for three cores and wrong for this one.
+- **Nestopia, bsnes-mercury Balanced and Beetle PSX have named candidate revisions**, derived from
+  libretro's *public* GitLab CI pipeline records on `git.libretro.com` — a primary source M10.2 did
+  not examine. They are **candidates, not corresponding source**, and must not be written into
+  `source_revision`: nothing public binds a bundle member's bytes to a specific CI job, job artefacts
+  expire after 10 minutes, and job logs require authentication.
+- The **outreach to libretro is now cheap and precise** — three yes/no confirmations against named
+  revisions, with Dolphin already resolved as a correctness check. Ready-to-post text is in the
+  document. It is **unsent**; outreach is not resolution.
+- **Strategy C is cheaper than M10.2 assumed.** libretro's public CI templates are a working
+  reference build for all four V1 targets: Windows is cross-compiled from Linux via MXE, and one
+  Apple Silicon machine covers both macOS architectures. Three of four targets need only Linux
+  containers.
+- **Decision: B-then-C.** Send the request; start only low-regret Strategy C foundations. Strategy B
+  cannot close macOS (an acquisition problem, not a provenance one) or Mega Drive, so C must begin
+  regardless.
+
+"Built from a pinned revision" is **not** a reproducible build; no byte-for-byte reproducibility has
+been demonstrated and none may be claimed. See [`docs/CORE_BUILD_PROVENANCE.md`](docs/CORE_BUILD_PROVENANCE.md).
 
 The remaining release gates are unchanged and still open: production key ceremony under independent
 custody, public runtime hosting, immutable upstream mirroring, and cross-platform and
@@ -226,7 +255,10 @@ presentation are explicitly non-blocking deferred capabilities. The pre-M5 ident
       but corresponding source, the GPLv3-host separate-work question, Mega Drive licensing and
       macOS acquisition all remain open; no core has an approved public distribution path
 - [ ] close the corresponding-source gap for the four redistributed cores (M10.2 blocker; public
-      redistribution is blocked until then)
+      redistribution is blocked until then). M10.3: **Dolphin closed** — proven revision
+      `fd1aca3af7db75504ed7512406d8a4cf4187110a` plus its 33 submodule pins, recovered from the
+      binary itself. Nestopia, bsnes-mercury and Beetle PSX have named **candidates only** and stay
+      open; see [`docs/CORE_BUILD_PROVENANCE.md`](docs/CORE_BUILD_PROVENANCE.md)
 - [x] platform/architecture availability model
 - [x] BIOS requirements
 - [x] BIOS discovery
@@ -659,15 +691,30 @@ Deliberately not in M9:
       approved, no Runtime Release was created, Release 002 is unchanged). See
       [`docs/CORE_MATRIX.md`](docs/CORE_MATRIX.md), [`docs/BIOS_MATRIX.md`](docs/BIOS_MATRIX.md),
       [`docs/SOURCE_PROVENANCE.md`](docs/SOURCE_PROVENANCE.md)
-- [ ] **V1 blocker:** corresponding source for the four redistributed cores is unknown and not
-      recoverable from the published bundle, shipped binaries, core-info metadata or public buildbot
-      metadata examined; public redistribution is blocked. Try asking libretro for build provenance
-      before committing to a self-build pipeline
+- [x] M10.3 core provenance recovery and build-strategy decision (research/documentation only; no
+      Runtime Release, no core approved, no trust semantics changed, Release 002 unchanged). See
+      [`docs/CORE_BUILD_PROVENANCE.md`](docs/CORE_BUILD_PROVENANCE.md)
+- [ ] **V1 blocker:** corresponding source for **three** of the four redistributed cores is still not
+      established; public redistribution stays blocked. M10.3 proved Dolphin's revision from the
+      binary itself and identified named candidates for Nestopia, bsnes-mercury and Beetle PSX from
+      libretro's public CI records — candidates are **not** corresponding source and must not be
+      written into `source_revision`
+- [ ] send the M10.3 libretro provenance request (ready-to-post text in
+      [`docs/CORE_BUILD_PROVENANCE.md`](docs/CORE_BUILD_PROVENANCE.md) §5.3) — **requires product
+      owner authorisation**; unsent, and an unanswered request closes nothing
+- [ ] Strategy C low-regret foundations: archive source at the four identified revisions into
+      immutable RetroFrontier-controlled storage, specify the build-record schema, and prototype
+      exactly one core on one platform (Nestopia, Linux x86_64) to measure real cost before
+      committing to four cores × four platforms
 - [ ] **V1 blocker:** Mega Drive has no approvable core — Genesis Plus GX and PicoDrive both carry a
       non-commercial licence term (blocked for V1 under current policy; legal compatibility review
       required); BlastEm is the only GPL-compatible candidate and is unqualified
 - [ ] **V1 blocker:** no immutable macOS core acquisition path exists — libretro publishes no
-      macOS core bundle at any architecture, only rolling nightly per-core archives
+      macOS core bundle at any architecture, only rolling nightly per-core archives. M10.3: asking
+      libretro for provenance **cannot** close this, because it is an acquisition problem, not a
+      provenance one; only RetroFrontier-built cores (Strategy C) close it, and one Apple Silicon
+      machine covers both macOS architectures. This is separate from signing/notarization, which
+      stays open below
 - [ ] legal review: whether `dlopen`-loaded libretro cores are separate works from the GPLv3
       RetroArch host — gates PlayStation independently of corresponding source, because `beetle-psx`
       is `GPL-2.0-only`

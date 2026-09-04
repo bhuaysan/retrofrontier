@@ -8,6 +8,16 @@ Produced by M10.2 alongside [`docs/CORE_MATRIX.md`](CORE_MATRIX.md) and
 not perform production legal distribution, and it is not legal advice. Points requiring professional
 review are marked **Legal review required**.
 
+> **Partially superseded by M10.3.** [`docs/CORE_BUILD_PROVENANCE.md`](CORE_BUILD_PROVENANCE.md)
+> recovered **Dolphin's exact source revision** — `libretro/dolphin` @
+> `fd1aca3af7db75504ed7512406d8a4cf4187110a` — from the shipped binary itself, which embeds its own
+> build-generated SCM constants. §2 check 2 below ("the shipped binaries carry no embedded upstream
+> revision") is therefore **correct for three cores and wrong for Dolphin**, and the headline's
+> "all four" scope is overstated. M10.3 also identified named **candidate** revisions for the other
+> three from libretro's public GitLab CI records, which M10.2 did not examine. Those three remain
+> unproven, so the operative conclusion below — that RetroFrontier cannot meet the obligation and
+> public redistribution stays blocked — is unchanged. Read this document with M10.3 alongside it.
+
 ## Headline finding
 
 > RetroFrontier cannot currently satisfy GPL corresponding-source obligations for the four

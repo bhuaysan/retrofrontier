@@ -85,7 +85,7 @@ false green matrix.
 | PlayStation | Beetle PSX (`mednafen_psx_libretro`) | **Approved** (M7) | https://github.com/libretro/beetle-psx-libretro | `GPL-2.0` (aggregate; see §5.3) | **Unknown** (§5.3) | Implemented (Release 002) | **Not qualified** — blocked on an approved BIOS dump and legal test content |
 | Saturn | Beetle Saturn (`mednafen_saturn_libretro`) | **Candidate** | https://github.com/libretro/beetle-saturn-libretro | `GPL-2.0-or-later` | Unknown | Not implemented | Research-only |
 | Dreamcast | Flycast (`flycast_libretro`) | **Candidate** | https://github.com/flyinghead/flycast | `GPL-2.0-or-later` | Unknown | Not implemented | Research-only |
-| GameCube | Dolphin (`dolphin_libretro`) | **Approved** (M7) | https://github.com/libretro/dolphin (upstream dolphin-emu/dolphin) | `GPL-2.0-or-later` | **Unknown** (§5.3) | Implemented (Release 002) | **Partially qualified** — runtime/core/`Sys` path verified; content execution **not confirmed** |
+| GameCube | Dolphin (`dolphin_libretro`) | **Approved** (M7) | https://github.com/libretro/dolphin (upstream dolphin-emu/dolphin) | `GPL-2.0-or-later` | **`fd1aca3af7db75504ed7512406d8a4cf4187110a`** — recovered and proven by M10.3 from the shipped binary's own SCM constants | Implemented (Release 002) | **Partially qualified** — runtime/core/`Sys` path verified; content execution **not confirmed** |
 
 The four Approved rows are **unchanged by M10.2**. M10.2 did not replace them and found no evidence
 requiring their replacement. Their *policy* approval survives; their *redistribution* status is
@@ -177,7 +177,7 @@ distribution policy. None is a legal conclusion, and none authorises distributio
 | PlayStation | **Blocked for V1** | Corresponding source unknown (§5.3); **and** the GPL-2.0-only / GPLv3-host separate-work question is open (§5.4). |
 | Saturn | Blocked for V1 | Corresponding source; content-format mismatch (§4.2); not implemented. |
 | Dreamcast | Blocked for V1 | Corresponding source; the catalog BIOS entry contradicts the *candidate* core's documentation (§4.3); not implemented. |
-| GameCube | **Blocked for V1** | Corresponding source unknown (§5.3). |
+| GameCube | **Blocked for V1** | Corresponding source for the *core* is **established** (M10.3: revision `fd1aca3a…` plus its 33 submodule pins), but not yet archived or published, and the `dolphin-sys` support asset still has no revision and a non-immutable upstream. See [`docs/CORE_BUILD_PROVENANCE.md`](CORE_BUILD_PROVENANCE.md). |
 
 Every V1 system is currently blocked from public redistribution. For NES, SNES and GameCube the
 blocker is provenance, not policy. PlayStation carries a second, independent legal-review gate on
@@ -315,6 +315,13 @@ unmeasured maturity are.
 owner decision required (§7).
 
 ### 5.3 The four redistributed cores have no corresponding source available to RetroFrontier
+
+> **Partially superseded by M10.3** ([`docs/CORE_BUILD_PROVENANCE.md`](CORE_BUILD_PROVENANCE.md)).
+> Dolphin's exact revision — `fd1aca3af7db75504ed7512406d8a4cf4187110a` — **was** recovered, from
+> the shipped binary's own SCM constants, so the "shipped binaries" check below is wrong for Dolphin.
+> The other three now have named **candidate** revisions from libretro's public GitLab CI records
+> (a source M10.2 did not examine); those remain unproven and must not be treated as corresponding
+> source. The operative conclusion in this section is unchanged.
 
 Release 002 records `"source_revision": null` for `nestopia`, `bsnes-mercury-balanced`,
 `beetle-psx` and `dolphin`.
