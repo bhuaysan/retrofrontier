@@ -129,18 +129,21 @@ impl SaveStateLaunchPort for LaunchApplicationService {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SaveStateConfig {
-    /// How many times one baseline may reconcile without reaching a deterministic outcome before
-    /// it is dropped. Bounded so a permanently indeterminate baseline cannot leak forever.
-    pub max_reconciliation_attempts: u32,
     /// How many files a pre-launch state tree may contain. A larger tree fails the launch closed
     /// rather than recording a baseline RetroFrontier cannot reason about.
+    ///
+    /// There is deliberately no retry-count limit on how many times an indeterminate baseline may
+    /// reconcile before it is dropped (MEDIUM-1): a baseline is the only proof a session's Save
+    /// States exist, and a retry-count cutoff would discard that evidence for a state that merely
+    /// hasn't finished settling yet. An indeterminate baseline is retained until reconciliation
+    /// reaches a deterministic outcome, or `session_was_superseded` proves a later session has
+    /// since written to the tree and made attribution impossible.
     pub max_baseline_entries: usize,
 }
 
 impl Default for SaveStateConfig {
     fn default() -> Self {
         Self {
-            max_reconciliation_attempts: 3,
             max_baseline_entries: 20_000,
         }
     }
@@ -784,22 +787,31 @@ impl SaveStateApplicationService {
         }
 
         if indeterminate {
+            // MEDIUM-1: a baseline is the only proof this session's Save States exist, so it is
+            // kept durably pending for as long as reconciliation stays indeterminate — there is no
+            // retry-count cutoff that discards it. `attempts` is retained purely as a diagnostic
+            // counter now, not as a deletion trigger: a permanently indeterminate baseline would
+            // previously leak an unbounded number of *log lines*, and that is bounded here by
+            // throttling the warning rather than by destroying the only attribution evidence for
+            // states a temporarily unreadable tree, a slow filesystem, or a still-settling write
+            // simply hasn't finished proving yet. The only things that ever end this baseline's
+            // life are a deterministic reconciliation (below) and `session_was_superseded` proving
+            // a later session has since written to the tree and made attribution impossible.
             let attempts = self
                 .save_states
                 .increment_baseline_attempts(session_id)
                 .await
                 .map_err(storage)?;
-            if attempts < self.config.max_reconciliation_attempts {
-                // Keep the baseline: the next startup reconciliation tries again.
-                return Ok(());
+            if attempts == 1 || attempts.is_power_of_two() {
+                tracing::warn!(
+                    play_session_id = %session_id,
+                    game_id = %baseline.provenance.game_id,
+                    attempts,
+                    "save-state reconciliation is still indeterminate; the baseline remains \
+                     retained and will be retried"
+                );
             }
-            // Bounded, so a permanently indeterminate baseline cannot leak forever. Nothing extra
-            // is registered and nothing is deleted; what was proved stays proved.
-            self.save_states
-                .delete_baseline(session_id)
-                .await
-                .map_err(storage)?;
-            return Err(SaveStateError::ReconciliationFailed);
+            return Ok(());
         }
 
         self.save_states
@@ -1293,6 +1305,15 @@ mod tests {
     impl ScriptedStability {
         fn unstable(&self, relative_path: &str) {
             self.unstable.lock().unwrap().push(relative_path.to_owned());
+        }
+
+        /// Reverse an earlier `unstable` declaration, so a test can prove a baseline that was
+        /// indeterminate for a while still reconciles normally once the condition resolves.
+        fn make_stable(&self, relative_path: &str) {
+            self.unstable
+                .lock()
+                .unwrap()
+                .retain(|path| path != relative_path);
         }
     }
 
@@ -1850,39 +1871,49 @@ mod tests {
         std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
+    /// MEDIUM-1 regression: there is no retry-count cutoff that discards an indeterminate
+    /// baseline. It is retried well past the old destructive limit (3) and survives every single
+    /// time, attributes nothing while it stays pending, and still reconciles normally the moment
+    /// the underlying condition resolves — proving genuine retention, not merely "not yet
+    /// deleted".
     #[tokio::test]
-    async fn a_permanently_indeterminate_baseline_is_dropped_rather_than_leaking_forever() {
+    async fn an_indeterminate_baseline_is_retained_indefinitely_until_it_can_reconcile() {
         let fixture = Fixture::build().await;
         fixture.stability.unstable("Nestopia/Synthetic.state1");
         let session = fixture.begin_session(CORE_A, 1).await;
-        fixture.write("Nestopia/Synthetic.state1", b"never settles");
+        fixture.write("Nestopia/Synthetic.state1", b"not yet settled");
         fixture
             .end_session(session, PlaySessionOutcome::Completed)
             .await;
 
-        // The baseline survives every attempt but the last, so a transient problem always gets
-        // its retries.
-        let attempts = SaveStateConfig::default().max_reconciliation_attempts;
-        for _ in 1..attempts {
+        for attempt in 1..=12 {
             fixture.service.reconcile_session(session).await;
-            assert!(fixture
-                .save_states
-                .baseline(session)
-                .await
-                .unwrap()
-                .is_some());
+            assert!(
+                fixture
+                    .save_states
+                    .baseline(session)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "the baseline must survive attempt {attempt}, well past the old cutoff of 3"
+            );
         }
-        // The last one gives up, so a permanently indeterminate baseline cannot leak forever.
+        // Nothing was falsely attributed and nothing on disk was touched while it stayed pending.
+        assert!(fixture.states().await.is_empty());
+        assert!(fixture.exists("Nestopia/Synthetic.state1"));
+
+        // Once the underlying condition resolves, the very same baseline reconciles normally.
+        fixture.stability.make_stable("Nestopia/Synthetic.state1");
         fixture.service.reconcile_session(session).await;
 
+        let state = fixture.only_state().await;
+        assert_eq!(state.provenance.play_session_id, session);
         assert!(fixture
             .save_states
             .baseline(session)
             .await
             .unwrap()
             .is_none());
-        assert!(fixture.states().await.is_empty());
-        assert!(fixture.exists("Nestopia/Synthetic.state1"));
     }
 
     /// **A stale baseline must never attribute a later session's files.**
