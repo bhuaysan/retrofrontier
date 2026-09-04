@@ -221,7 +221,10 @@ Derived from this analysis, for whichever strategy is chosen:
 1. For every redistributed component: exact licence identifier and full licence text.
 2. Complete copyright notices for each upstream project.
 3. For every GPL component: corresponding source at the **exact** revision that produced the binary,
-   or a valid written offer — currently unsatisfiable for the four cores under strategies A/B.
+   or a valid written offer. This is **currently unsatisfied** for the four Release 002 cores,
+   because RetroFrontier does not yet possess that provenance. Strategy A cannot close this gap;
+   strategy B closes it only if libretro supplies the exact build provenance; strategy C closes it by
+   construction.
 4. Build recipes and any RetroFrontier-applied patches sufficient to reproduce each binary.
    RetroFrontier applies **no** patches today: every component is an unmodified digest-pinned
    extraction, which is worth stating explicitly in the notices.
