@@ -1045,6 +1045,16 @@ impl SaveStateApplicationService {
                         existing.id,
                         &RefreshedSaveState {
                             play_session_id: provenance.play_session_id,
+                            // MEDIUM-4: the Runtime Release that actually produced *these* bytes,
+                            // from this session's own baseline — never the one the first version
+                            // happened to be written on. Leaving it behind produced a row that
+                            // contradicted itself: bytes and `play_session_id` from session 25,
+                            // originating runtime from session 10. The core binary digest above is
+                            // untouched precisely because this branch is the one where it did not
+                            // change.
+                            originating_runtime_release_id: provenance
+                                .originating_runtime_release_id
+                                .clone(),
                             state: new.state.clone(),
                             // MEDIUM-3: the state's bytes just changed, so the strict thumbnail
                             // rule applies to *this* version exactly as it does to a brand-new
@@ -1506,7 +1516,22 @@ mod tests {
             core: &[u8],
             content_unit_id: i64,
         ) -> PlaySessionId {
+            self.begin_session_on(core_id, "release-1", core, content_unit_id)
+                .await
+        }
+
+        /// The same, on a named Runtime Release — the managed RetroArch that is actually running
+        /// this session, which a save-state load can legitimately change without changing the core
+        /// binary (MEDIUM-4).
+        async fn begin_session_on(
+            &self,
+            core_id: &str,
+            runtime_release_id: &str,
+            core: &[u8],
+            content_unit_id: i64,
+        ) -> PlaySessionId {
             let core_id = CoreId::new(core_id).unwrap();
+            let release = SafeIdentifier::new(runtime_release_id).unwrap();
             let session = self
                 .sessions
                 .start_session(&NewPlaySession {
@@ -1514,7 +1539,7 @@ mod tests {
                     content_unit_id: ContentUnitId(content_unit_id),
                     core_id: core_id.clone(),
                     runtime_installation_id: "install-1".to_owned(),
-                    runtime_release_id: "release-1".to_owned(),
+                    runtime_release_id: release.to_string(),
                 })
                 .await
                 .unwrap();
@@ -1529,7 +1554,7 @@ mod tests {
                     core_display_version: Some("1.53".to_owned()),
                     core_source_revision: Some("deadbeef".to_owned()),
                     runtime_installation_id: SafeIdentifier::new("install-1").unwrap(),
-                    runtime_release_id: SafeIdentifier::new("release-1").unwrap(),
+                    runtime_release_id: release,
                 })
                 .await
                 .expect("the baseline is captured");
@@ -1562,7 +1587,21 @@ mod tests {
             content_unit_id: i64,
             writes: &[(&str, &[u8])],
         ) -> PlaySessionId {
-            let id = self.begin_session_as(core_id, core, content_unit_id).await;
+            self.run_session_on(core_id, "release-1", core, content_unit_id, writes)
+                .await
+        }
+
+        async fn run_session_on(
+            &self,
+            core_id: &str,
+            runtime_release_id: &str,
+            core: &[u8],
+            content_unit_id: i64,
+            writes: &[(&str, &[u8])],
+        ) -> PlaySessionId {
+            let id = self
+                .begin_session_on(core_id, runtime_release_id, core, content_unit_id)
+                .await;
             for (path, bytes) in writes {
                 self.write(path, bytes);
             }
@@ -1906,6 +1945,70 @@ mod tests {
         // Only the physical facts and the producing session moved on.
         assert_eq!(updated.state.sha256, sha256_bytes(b"second save!"));
         assert_eq!(updated.provenance.play_session_id, second);
+        assert_eq!(fixture.states().await.len(), 1);
+    }
+
+    /// MEDIUM-4 regression: a same-core refresh must record the runtime that produced the *new*
+    /// bytes, not the one that produced the bytes they replaced.
+    ///
+    /// The core binary is genuinely immutable here — that is what makes this a refresh rather than
+    /// a supersession — but the Runtime Release is not: a save-state load runs the exact historical
+    /// core binary on whatever managed RetroArch is currently installed, so the two legitimately
+    /// diverge. Leaving the runtime behind produced a row that contradicted itself: bytes and
+    /// `play_session_id` from the new session, originating runtime from the old one.
+    #[tokio::test]
+    async fn a_same_core_refresh_records_the_runtime_that_produced_the_new_version() {
+        let fixture = Fixture::build().await;
+
+        // Version A: the first session, on Runtime Release R1, with core binary X.
+        let first = fixture
+            .run_session_on(
+                "nestopia",
+                "release-1",
+                CORE_A,
+                1,
+                &[("nestopia/Synthetic.state1", b"version A")],
+            )
+            .await;
+        let original = fixture.only_state().await;
+        assert_eq!(original.provenance.play_session_id, first);
+        assert_eq!(
+            original.provenance.originating_runtime_release_id.as_str(),
+            "release-1"
+        );
+
+        // Version B: a later session, on Runtime Release R3, with the very same core binary X,
+        // the same game, the same content unit, and the same physical slot.
+        let second = fixture
+            .run_session_on(
+                "nestopia",
+                "release-3",
+                CORE_A,
+                1,
+                &[("nestopia/Synthetic.state1", b"version B")],
+            )
+            .await;
+
+        let refreshed = fixture.only_state().await;
+        assert_eq!(refreshed.id, original.id, "the object keeps its identity");
+        assert_eq!(refreshed.created_at, original.created_at);
+        // Immutable: this is the same core binary, and its identity is never rewritten.
+        assert_eq!(
+            refreshed.provenance.core_binary_sha256,
+            sha256_bytes(CORE_A)
+        );
+        assert_eq!(refreshed.provenance.core_id, original.provenance.core_id);
+        assert_eq!(
+            refreshed.provenance.core_component_id,
+            original.provenance.core_component_id
+        );
+        // Moved, together, because they all describe the new physical version.
+        assert_eq!(refreshed.state.sha256, sha256_bytes(b"version B"));
+        assert_eq!(refreshed.provenance.play_session_id, second);
+        assert_eq!(
+            refreshed.provenance.originating_runtime_release_id.as_str(),
+            "release-3"
+        );
         assert_eq!(fixture.states().await.len(), 1);
     }
 

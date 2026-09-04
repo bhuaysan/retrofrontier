@@ -55,11 +55,23 @@ pub struct NewSaveState {
 
 /// The proved physical content a state row is being refreshed to.
 ///
-/// Used only when the *same* core binary overwrote its own slot: identity and immutable core
-/// provenance are untouched, and only the physical facts plus the producing session move on.
+/// Used only when the *same* core binary overwrote its own slot: the object's identity and its
+/// **core** provenance — core id, core component, core binary digest, display version, source
+/// revision — are immutable and untouched. What moves on is everything that describes the new
+/// physical version: its bytes, its thumbnail, the session that produced it, and the Runtime
+/// Release whose managed RetroArch executable actually produced it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefreshedSaveState {
     pub play_session_id: PlaySessionId,
+    /// MEDIUM-4: the Runtime Release that produced *this* version of the bytes.
+    ///
+    /// A refresh used to leave `originating_runtime_release_id` at whatever the first version
+    /// recorded, which produced provenance that contradicted itself: state bytes written by
+    /// session 25 on runtime R3, filed under session 25 but attributed to session 10's runtime R1.
+    /// The core binary digest stays immutable because the refresh is *defined* by the core being
+    /// the same one; the producing runtime is not, and a save-state load can legitimately run an
+    /// old core binary on a newer managed RetroArch.
+    pub originating_runtime_release_id: SafeIdentifier,
     pub state: SaveStateFileIdentity,
     pub thumbnail: Option<SaveStateThumbnailIdentity>,
 }
@@ -210,13 +222,19 @@ impl SaveStateRepository {
     ) -> Result<Option<SaveState>, AppError> {
         let now = now_timestamp();
         let affected = sqlx::query(
+            // MEDIUM-4: `originating_runtime_release_id` moves with the bytes it describes. The
+            // core columns — `core_id`, `core_component_id`, `core_binary_sha256`,
+            // `core_display_version`, `core_source_revision` — are deliberately absent from this
+            // statement: the same-core refresh is *defined* by them being unchanged.
             "UPDATE save_states SET \
-                play_session_id = ?, state_sha256 = ?, state_size = ?, \
+                play_session_id = ?, originating_runtime_release_id = ?, \
+                state_sha256 = ?, state_size = ?, \
                 thumbnail_relative_path = ?, thumbnail_sha256 = ?, thumbnail_size = ?, \
                 updated_at = ? \
              WHERE id = ? AND status = 'available'",
         )
         .bind(refreshed.play_session_id.0)
+        .bind(refreshed.originating_runtime_release_id.as_str())
         .bind(refreshed.state.sha256.to_hex())
         .bind(refreshed.state.size_bytes as i64)
         .bind(
@@ -1045,16 +1063,19 @@ mod tests {
     #[tokio::test]
     async fn no_repository_method_rewrites_immutable_core_binary_provenance() {
         // The statements themselves are the guarantee: nothing that runs UPDATE mentions the
-        // immutable provenance columns.
+        // immutable columns. `core_id` is checked last and as a whole word, because
+        // `core_component_id` and `core_binary_sha256` both contain it as a substring.
         let source = include_str!("save_state.rs");
         let production = source.split_once("#[cfg(test)]").unwrap().0;
+        let mut writes_runtime_release = 0;
         for statement in production.split("UPDATE save_states").skip(1) {
             let statement = statement.split("WHERE").next().unwrap_or_default();
             for immutable in [
                 "core_binary_sha256",
                 "core_component_id",
                 "core_id",
-                "originating_runtime_release_id",
+                "core_display_version",
+                "core_source_revision",
                 "slot",
                 "game_id",
                 "content_unit_id",
@@ -1066,7 +1087,18 @@ mod tests {
                     "an UPDATE must never write {immutable}"
                 );
             }
+            // MEDIUM-4: `originating_runtime_release_id` is deliberately *not* on that list. It
+            // describes which managed RetroArch produced the bytes the row currently holds, so it
+            // has to move when those bytes do. Exactly one statement may write it — the same-core
+            // refresh — and this counts them so a second, unreviewed writer cannot appear.
+            if statement.contains("originating_runtime_release_id") {
+                writes_runtime_release += 1;
+            }
         }
+        assert_eq!(
+            writes_runtime_release, 1,
+            "only the same-core refresh may move the originating runtime release"
+        );
     }
 
     // ---------------------------------------------------------------- lifecycle
@@ -1119,6 +1151,7 @@ mod tests {
                     state.id,
                     &RefreshedSaveState {
                         play_session_id: session_id,
+                        originating_runtime_release_id: SafeIdentifier::new("release-3").unwrap(),
                         state: SaveStateFileIdentity {
                             relative_path: RelativePath::new(&path).unwrap(),
                             sha256: digest('d'),
@@ -1160,6 +1193,9 @@ mod tests {
                 original.id,
                 &RefreshedSaveState {
                     play_session_id: second_session,
+                    // MEDIUM-4: this version was produced on a *different* Runtime Release than
+                    // the one the original was registered under (`release-2`).
+                    originating_runtime_release_id: SafeIdentifier::new("release-3").unwrap(),
                     state: SaveStateFileIdentity {
                         relative_path: RelativePath::new(path).unwrap(),
                         sha256: digest('d'),
@@ -1186,13 +1222,31 @@ mod tests {
         );
         assert_eq!(refreshed.provenance.core_id, original.provenance.core_id);
         assert_eq!(
-            refreshed.provenance.originating_runtime_release_id,
-            original.provenance.originating_runtime_release_id
+            refreshed.provenance.core_component_id,
+            original.provenance.core_component_id
         );
-        // Only the physical facts and the session that produced them moved.
+        assert_eq!(
+            refreshed.provenance.core_display_version,
+            original.provenance.core_display_version
+        );
+        assert_eq!(
+            refreshed.provenance.core_source_revision,
+            original.provenance.core_source_revision
+        );
+        // MEDIUM-4: the physical facts, the session that produced them, and the Runtime Release
+        // that actually produced them all moved together. Leaving the runtime behind produced a
+        // row whose bytes and session came from one launch and whose runtime came from another.
         assert_eq!(refreshed.state.sha256, digest('d'));
         assert_eq!(refreshed.state.size_bytes, 8192);
         assert_eq!(refreshed.provenance.play_session_id, second_session);
+        assert_eq!(
+            refreshed.provenance.originating_runtime_release_id,
+            SafeIdentifier::new("release-3").unwrap()
+        );
+        assert_ne!(
+            refreshed.provenance.originating_runtime_release_id,
+            original.provenance.originating_runtime_release_id
+        );
         assert!(refreshed.updated_at >= original.updated_at);
         assert!(refreshed.thumbnail.is_some());
     }
