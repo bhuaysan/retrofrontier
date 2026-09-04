@@ -325,6 +325,22 @@ impl SaveStateApplicationService {
             .collect())
     }
 
+    /// The library's own stored relative path to one baseline's exact recorded content unit
+    /// (HIGH-2) — the same file RetroFrontier hands RetroArch as its content argument, and so the
+    /// same basename RetroArch derives its state-file namespace from. `None` when the game or the
+    /// exact content unit can no longer be resolved at all.
+    async fn content_relative_path(&self, provenance: &SaveStateProvenance) -> Option<String> {
+        let units = self
+            .library
+            .game_content_units(provenance.game_id)
+            .await
+            .ok()?;
+        units
+            .into_iter()
+            .find(|unit| unit.id == provenance.content_unit_id)
+            .map(|unit| unit.primary_relative_path)
+    }
+
     fn view(
         &self,
         state: SaveState,
@@ -449,6 +465,27 @@ impl SaveStateApplicationService {
             .ok_or(SaveStateError::Unavailable)?;
         if unit.availability != ContentUnitAvailability::Available {
             return Err(SaveStateError::Unavailable);
+        }
+
+        // HIGH-2: prove the registered file is exactly the file RetroArch would target for this
+        // content and slot, before ever authorizing a load of it. RetroFrontier verifies file A
+        // (the registered `state_relative_path`) but only ever hands RetroArch a *slot*; RetroArch
+        // itself derives the path it actually opens from the content basename and the core's own
+        // reported namespace. Registration (`observe_delta`) already restricts attribution to
+        // exactly this content's basename, so an ordinarily-registered row can never fail this —
+        // this is defense in depth against a row whose provenance was established some other way
+        // (a direct database write, a future migration, a bug elsewhere) ever being loaded as if
+        // it belonged to content it does not.
+        if !crate::services::save_state_fs::state_basename_matches_content(
+            &state.state.relative_path,
+            &unit.primary_relative_path,
+        ) {
+            tracing::warn!(
+                save_state_id = %id,
+                "the registered save-state path does not match this content's own basename; the \
+                 load was refused rather than risk loading the wrong file"
+            );
+            return Err(SaveStateError::UnsafeFilesystemTarget);
         }
 
         // A cheap early refusal only: the exact historical core binary must be located in a
@@ -752,6 +789,14 @@ impl SaveStateApplicationService {
             return Ok(());
         }
 
+        // HIGH-2: resolve the exact content this baseline's session launched, so attribution below
+        // can be restricted to states whose own basename is that content — never merely a
+        // `.stateN` file found somewhere in the owned tree. `None` when the content unit can no
+        // longer be resolved at all, which must make this round indeterminate rather than silently
+        // attributing nothing and discarding the baseline: the content may simply be unavailable
+        // right now, not gone forever.
+        let content_relative_path = self.content_relative_path(&baseline.provenance).await;
+
         // The filesystem phase blocks — the stability probe sleeps between observations, and
         // hashing reads whole files. It runs from the process monitor and, on a failed launch,
         // from inside `launch_locked` while the sequence lock and the OS runtime-mutation lock are
@@ -759,12 +804,14 @@ impl SaveStateApplicationService {
         // busiest moment.
         let service = self.clone();
         let for_observation = baseline.clone();
-        let observed = tokio::task::spawn_blocking(move || service.observe_delta(&for_observation))
-            .await
-            .map_err(|error| {
-                tracing::warn!(error = %error, "the save-state observation task stopped");
-                SaveStateError::ReconciliationFailed
-            })?;
+        let observed = tokio::task::spawn_blocking(move || {
+            service.observe_delta(&for_observation, content_relative_path.as_deref())
+        })
+        .await
+        .map_err(|error| {
+            tracing::warn!(error = %error, "the save-state observation task stopped");
+            SaveStateError::ReconciliationFailed
+        })?;
 
         let mut indeterminate = observed.indeterminate;
         for candidate in &observed.candidates {
@@ -830,19 +877,45 @@ impl SaveStateApplicationService {
     }
 
     /// The filesystem half: snapshot, delta, supported candidates, stability, digests, thumbnails.
-    fn observe_delta(&self, baseline: &LaunchStateBaseline) -> ObservedDelta {
+    /// `content_relative_path` is `None` exactly when HIGH-2's content resolution above could not
+    /// establish what this session's content even was — never a reason to attribute anything, and
+    /// the caller marks the whole round indeterminate rather than deterministic-with-nothing-found
+    /// in that case, so a temporarily unresolvable content unit gets retried rather than silently
+    /// losing its baseline.
+    fn observe_delta(
+        &self,
+        baseline: &LaunchStateBaseline,
+        content_relative_path: Option<&str>,
+    ) -> ObservedDelta {
         let snapshot = snapshot_state_tree(&self.states_root);
         let delta = state_tree_delta(&baseline.entries, &snapshot);
         let changed: std::collections::BTreeSet<&RelativePath> = delta.iter().collect();
 
         let mut candidates = Vec::new();
-        let mut indeterminate = false;
+        let mut indeterminate = content_relative_path.is_none();
         for relative_path in &delta {
             // Only supported numbered slots are states. A thumbnail in the delta is picked up
             // through the state it belongs to, never on its own, and everything else is ignored.
             let StateCandidate::ManagedSlot(slot) = parse_state_candidate(relative_path) else {
                 continue;
             };
+            // HIGH-2: attribution requires the file's own basename to be the exact content this
+            // session launched — never merely a `.stateN` file anywhere in the owned tree. A file
+            // shaped exactly like a valid managed slot but under a foreign namespace (a different
+            // basename, regardless of directory) is left completely unattributed and untouched.
+            if !content_relative_path.is_some_and(|content| {
+                crate::services::save_state_fs::state_basename_matches_content(
+                    relative_path,
+                    content,
+                )
+            }) {
+                tracing::info!(
+                    relative_path = %relative_path,
+                    "a save-state candidate's basename is not this session's own content; it was \
+                     left unattributed and untouched"
+                );
+                continue;
+            }
             // A pathname existing is not evidence RetroArch finished writing it.
             if !self.stability.is_stable(&self.states_root, relative_path) {
                 tracing::info!(
@@ -1178,12 +1251,12 @@ mod tests {
     use crate::domain::library::{ContentUnitId, GameId};
     use crate::domain::runtime::{RelativePath, RuntimeError, SafeIdentifier, Sha256Digest};
     use crate::domain::save_state::{
-        DeleteSaveStateResponse, LoadSaveStateResponse, SaveStateError, SaveStateId,
-        SaveStateLoadability, SaveStateStatus,
+        DeleteSaveStateResponse, LoadSaveStateResponse, SaveStateError, SaveStateFileIdentity,
+        SaveStateId, SaveStateLoadability, SaveStateProvenance, SaveStateSlot, SaveStateStatus,
     };
     use crate::repositories::launch::{LaunchRepository, NewPlaySession};
     use crate::repositories::library::LibraryRepository;
-    use crate::repositories::save_state::SaveStateRepository;
+    use crate::repositories::save_state::{NewSaveState, SaveStateRepository};
     use crate::services::save_state_fs::StabilityProbe;
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1468,6 +1541,17 @@ mod tests {
             assert_eq!(states.len(), 1, "expected exactly one available state");
             states.remove(0)
         }
+
+        /// Override a seeded content unit's own basename, for tests that deliberately need a
+        /// specific (or colliding) content basename rather than the seed default.
+        async fn set_content_path(&self, content_unit_id: i64, relative_path: &str) {
+            sqlx::query("UPDATE content_units SET primary_relative_path = ? WHERE id = ?")
+                .bind(relative_path)
+                .bind(content_unit_id)
+                .execute(&self.pool)
+                .await
+                .unwrap();
+        }
     }
 
     /// One game with two content units — the multi-disc case — plus a second game.
@@ -1496,7 +1580,7 @@ mod tests {
             .unwrap();
         }
         for (id, game_id, title, path) in [
-            (1_i64, 1_i64, "Disc 1", "NES/disc1.nes"),
+            (1_i64, 1_i64, "Disc 1", "NES/Synthetic.nes"),
             (2, 1, "Disc 2", "NES/disc2.nes"),
             (3, 2, "Other", "NES/other.nes"),
         ] {
@@ -1600,7 +1684,7 @@ mod tests {
         // A legacy file shaped exactly like a valid RetroArch state, present before the launch.
         fixture.write("Nestopia/Legacy.state1", b"pre-existing");
         fixture
-            .run_session(CORE_A, 1, &[("Nestopia/New.state2", b"written now")])
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state2", b"written now")])
             .await;
 
         let states = fixture.states().await;
@@ -1611,7 +1695,7 @@ mod tests {
         );
         assert_eq!(
             states[0].state.relative_path.as_str(),
-            "Nestopia/New.state2"
+            "Nestopia/Synthetic.state2"
         );
         // The legacy file stays exactly where it is: untouched, unimported, invisible.
         assert!(fixture.exists("Nestopia/Legacy.state1"));
@@ -1621,15 +1705,15 @@ mod tests {
     #[tokio::test]
     async fn an_unstable_candidate_is_skipped_while_its_siblings_are_still_registered() {
         let fixture = Fixture::build().await;
-        fixture.stability.unstable("Nestopia/Unstable.state2");
+        fixture.stability.unstable("Nestopia/Synthetic.state2");
 
         let session = fixture
             .run_session(
                 CORE_A,
                 1,
                 &[
-                    ("Nestopia/Stable.state1", b"complete"),
-                    ("Nestopia/Unstable.state2", b"still being written"),
+                    ("Nestopia/Synthetic.state1", b"complete"),
+                    ("Nestopia/Synthetic.state2", b"still being written"),
                 ],
             )
             .await;
@@ -1639,10 +1723,10 @@ mod tests {
         assert_eq!(states.len(), 1);
         assert_eq!(
             states[0].state.relative_path.as_str(),
-            "Nestopia/Stable.state1"
+            "Nestopia/Synthetic.state1"
         );
         // The unstable file is left untouched and unregistered.
-        assert!(fixture.exists("Nestopia/Unstable.state2"));
+        assert!(fixture.exists("Nestopia/Synthetic.state2"));
         // And the baseline is kept, because the outcome was not deterministic.
         assert!(fixture
             .save_states
@@ -1819,7 +1903,7 @@ mod tests {
         // Deleted outside RetroFrontier, then a later controlled session reconciles.
         std::fs::remove_file(fixture.states_root.join("Nestopia/Synthetic.state1")).unwrap();
         fixture
-            .run_session(CORE_A, 1, &[("Nestopia/Other.state2", b"unrelated")])
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state2", b"unrelated")])
             .await;
 
         assert_eq!(
@@ -1835,7 +1919,10 @@ mod tests {
         // Nothing looked for a similarly named replacement: the other state is its own object.
         let live = fixture.only_state().await;
         assert_ne!(live.id, original.id);
-        assert_eq!(live.state.relative_path.as_str(), "Nestopia/Other.state2");
+        assert_eq!(
+            live.state.relative_path.as_str(),
+            "Nestopia/Synthetic.state2"
+        );
     }
 
     #[tokio::test]
@@ -1932,6 +2019,8 @@ mod tests {
     #[tokio::test]
     async fn a_baseline_a_later_session_has_written_past_attributes_nothing() {
         let fixture = Fixture::build().await;
+        fixture.set_content_path(1, "NES/GameA.nes").await;
+        fixture.set_content_path(3, "NES/GameB.nes").await;
 
         // Session 1 ends indeterminate, so its baseline is retained.
         fixture.stability.unstable("Nestopia/GameA.state1");
@@ -1991,6 +2080,8 @@ mod tests {
     #[tokio::test]
     async fn a_colliding_state_path_from_another_game_supersedes_rather_than_refreshing() {
         let fixture = Fixture::build().await;
+        fixture.set_content_path(1, "NES/Tetris.nes").await;
+        fixture.set_content_path(3, "GBA/Tetris.gba").await;
         // Game 1 saves at this path...
         fixture
             .run_session(CORE_A, 1, &[("Nestopia/Tetris.state1", b"game one")])
@@ -2137,6 +2228,7 @@ mod tests {
     #[tokio::test]
     async fn a_thumbnail_is_associated_only_when_this_session_proved_it() {
         let fixture = Fixture::build().await;
+        fixture.set_content_path(1, "NES/New.nes").await;
         // A pre-existing image that is *not* part of the session's delta, and a thumbnail of a
         // state this session did not write.
         fixture.write("Nestopia/Old.state9", b"old state");
@@ -2205,6 +2297,8 @@ mod tests {
     #[tokio::test]
     async fn the_listing_reports_only_available_states_with_honest_capabilities() {
         let fixture = Fixture::build().await;
+        fixture.set_content_path(1, "NES/A.nes").await;
+        fixture.set_content_path(2, "NES/B.nes").await;
         fixture
             .run_session(CORE_A, 1, &[("Nestopia/A.state1", b"from core A")])
             .await;
@@ -2253,6 +2347,7 @@ mod tests {
     #[tokio::test]
     async fn a_single_content_unit_game_shows_no_disc_label() {
         let fixture = Fixture::build().await;
+        fixture.set_content_path(3, "NES/Other.nes").await;
         fixture
             .run_session(CORE_A, 3, &[("Nestopia/Other.state1", b"other game")])
             .await;
@@ -2330,6 +2425,7 @@ mod tests {
     #[tokio::test]
     async fn a_controlled_load_resolves_every_fact_from_the_identity_alone() {
         let fixture = Fixture::build().await;
+        fixture.set_content_path(2, "SNES/Synthetic.sfc").await;
         fixture
             .run_session(
                 CORE_A,
@@ -3013,5 +3109,93 @@ mod tests {
             SaveStateLoadability::TemporarilyBlocked
         );
         assert!(!views[0].capabilities.deletable);
+    }
+
+    // ================================================================ HIGH-2: content binding
+
+    /// HIGH-2 regression (foreign namespace during session): a perfectly valid-looking managed
+    /// slot that appears in the very same delta window must never be attributed to this session
+    /// merely because it showed up at the same time — only the exact basename this session's own
+    /// content derives is ever registered.
+    #[tokio::test]
+    async fn a_foreign_content_states_own_slot_is_never_attributed_during_another_sessions_delta() {
+        let fixture = Fixture::build().await;
+        let session = fixture
+            .run_session(
+                CORE_A,
+                1,
+                &[
+                    // This session's own content, written under its own basename.
+                    ("Nestopia/Synthetic.state1", b"this session's own save"),
+                    // A perfectly valid, fully-settled managed slot that just happens to land in
+                    // the same delta — but under a foreign game's basename, nothing this
+                    // session's own content ever produces.
+                    ("Nestopia/Foreign.state1", b"someone else's save"),
+                ],
+            )
+            .await;
+
+        let states = fixture.states().await;
+        assert_eq!(
+            states.len(),
+            1,
+            "only this session's own content basename is registered"
+        );
+        assert_eq!(
+            states[0].state.relative_path.as_str(),
+            "Nestopia/Synthetic.state1"
+        );
+        assert_eq!(states[0].provenance.play_session_id, session);
+        // The foreign file is left exactly where it is: untouched, unimported, unregistered.
+        assert!(fixture.exists("Nestopia/Foreign.state1"));
+        assert_eq!(
+            fixture.read("Nestopia/Foreign.state1"),
+            b"someone else's save"
+        );
+    }
+
+    /// HIGH-2 regression (verified-path-vs-loaded-path): a row whose file is byte-for-byte
+    /// verified must still never be loaded if its own recorded path does not belong to the
+    /// content it claims. Ordinary registration (`observe_delta`) can never produce such a row —
+    /// it is constructed directly here to prove the load-time check is real defense in depth
+    /// against a row established some other way (a direct database write, a future migration, a
+    /// bug elsewhere), not merely a restatement of what registration already guarantees.
+    #[tokio::test]
+    async fn a_verified_file_at_a_path_foreign_to_its_own_content_never_loads() {
+        let fixture = Fixture::build().await;
+        let session_id = fixture.begin_session(CORE_A, 1).await;
+
+        fixture.write("Nestopia/Foreign.state1", b"bytes that verify fine");
+        let bytes = fixture.read("Nestopia/Foreign.state1");
+        let row = fixture
+            .save_states
+            .register_state(&NewSaveState {
+                provenance: SaveStateProvenance {
+                    game_id: GameId(1),
+                    content_unit_id: ContentUnitId(1),
+                    play_session_id: session_id,
+                    core_id: CoreId::new("nestopia").unwrap(),
+                    core_component_id: SafeIdentifier::new("nestopia").unwrap(),
+                    core_binary_sha256: sha256_bytes(CORE_A),
+                    core_display_version: Some("1.53".to_owned()),
+                    core_source_revision: Some("deadbeef".to_owned()),
+                    originating_runtime_release_id: SafeIdentifier::new("release-1").unwrap(),
+                },
+                slot: SaveStateSlot::new(1).unwrap(),
+                state: SaveStateFileIdentity {
+                    relative_path: RelativePath::new("Nestopia/Foreign.state1").unwrap(),
+                    sha256: sha256_bytes(&bytes),
+                    size_bytes: bytes.len() as u64,
+                },
+                thumbnail: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture.service.load_save_state(row.id).await,
+            LoadSaveStateResponse::refused(SaveStateError::UnsafeFilesystemTarget)
+        );
+        assert!(fixture.launch.plans.lock().unwrap().is_empty());
     }
 }

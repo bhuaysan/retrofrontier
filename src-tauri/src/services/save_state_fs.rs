@@ -213,6 +213,51 @@ pub fn thumbnail_relative_path(state_path: &RelativePath) -> Option<RelativePath
     RelativePath::new(format!("{}{THUMBNAIL_SUFFIX}", state_path.as_str())).ok()
 }
 
+// ------------------------------------------------------------------ content binding (HIGH-2)
+
+/// The exact expected RetroArch state-file basename for one piece of content, per the pinned
+/// RetroArch 1.22.2 layout: the content file's own basename, without its extension.
+///
+/// `content_relative_path` is the library's own stored relative path to the primary content
+/// file — the same file RetroFrontier hands RetroArch as its content argument. RetroArch derives
+/// its state base from that file's basename; this reproduces exactly that derivation and nothing
+/// more, so it stays in this adapter rather than becoming a domain assumption.
+fn content_state_basename(content_relative_path: &str) -> Option<&str> {
+    let name = content_relative_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(content_relative_path);
+    let base = name.rsplit_once('.').map_or(name, |(base, _)| base);
+    (!base.is_empty()).then_some(base)
+}
+
+/// Whether one state-tree relative path's own basename is the exact content a controlled session
+/// launched (HIGH-2) — never merely a `.stateN` file found somewhere in the owned tree.
+///
+/// Only the filename is examined. The directory a state sits under still carries no meaning, for
+/// the same reason `parse_state_candidate` never interprets it: RetroFrontier has no
+/// authenticated source for the core-reported `library_name` subdirectory a real RetroArch
+/// process would place it under. What this closes is the much broader hole a bare `parse_
+/// state_candidate` match leaves open — attribution (at reconciliation) and authorization (at
+/// load) of a file whose basename is not this session's own content at all.
+pub fn state_basename_matches_content(
+    relative_path: &RelativePath,
+    content_relative_path: &str,
+) -> bool {
+    let Some(expected) = content_state_basename(content_relative_path) else {
+        return false;
+    };
+    let name = relative_path
+        .as_str()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
+    match name.rsplit_once(STATE_SUFFIX) {
+        Some((base, _slot)) => base == expected,
+        None => false,
+    }
+}
+
 /// Enumerate the RetroFrontier-owned state tree.
 ///
 /// Only regular files are recorded. A symbolic link is never followed and never recorded, so a
