@@ -407,25 +407,29 @@ impl SaveStateApplicationService {
             return Err(SaveStateError::Unavailable);
         }
 
-        // The exact historical core binary, in a currently installed, authenticated, allowed
-        // installation. A revoked, blocked, or below-floor component never satisfies this, and
-        // there is deliberately no fallback to the game's current core.
-        let core = self
-            .runtime
-            .locate_authenticated_core_binary(
-                &state.provenance.core_component_id,
-                state.provenance.core_binary_sha256,
-            )
-            .map_err(|error| {
-                tracing::info!(
-                    save_state_id = %id,
-                    core_id = %state.provenance.core_id,
-                    core_component_id = %state.provenance.core_component_id,
-                    error = %error,
-                    "the exact historical core binary is unavailable"
-                );
-                SaveStateError::CoreUnavailable
-            })?;
+        // A cheap early refusal only: the exact historical core binary must be located in a
+        // currently installed, authenticated, allowed installation. A revoked, blocked, or
+        // below-floor component never satisfies this. **This result is not carried forward.** It
+        // exists purely so an obviously-doomed load fails fast with `CoreUnavailable` instead of
+        // going all the way through the launch pipeline; it is not a durable authorization, and
+        // the plan below carries only the immutable component id and binary digest needed to
+        // *locate* the binary again. Trust policy can change between this check and the moment
+        // the launch pipeline actually authorizes and spawns a process, so the decisive lookup is
+        // redone from scratch inside `launch_locked`, under the runtime mutation lock, and this
+        // call's result is discarded once it has answered "plausible" or "not now".
+        if let Err(error) = self.runtime.locate_authenticated_core_binary(
+            &state.provenance.core_component_id,
+            state.provenance.core_binary_sha256,
+        ) {
+            tracing::info!(
+                save_state_id = %id,
+                core_id = %state.provenance.core_id,
+                core_component_id = %state.provenance.core_component_id,
+                error = %error,
+                "the exact historical core binary is unavailable"
+            );
+            return Err(SaveStateError::CoreUnavailable);
+        }
 
         // Again, because a session may have started while the checks above ran. The launch
         // pipeline re-checks it a third time under the runtime mutation lock, which is the one
@@ -438,7 +442,8 @@ impl SaveStateApplicationService {
             save_state_id: state.id,
             game_id: state.provenance.game_id,
             content_unit_id: state.provenance.content_unit_id,
-            core,
+            core_component_id: state.provenance.core_component_id.clone(),
+            core_binary_sha256: state.provenance.core_binary_sha256,
             slot: state.slot,
         })
     }
@@ -2215,7 +2220,7 @@ mod tests {
         assert_eq!(plan.game_id, GameId(1));
         // The exact recorded content unit — a Disc 2 state is never offered as Disc 1.
         assert_eq!(plan.content_unit_id, ContentUnitId(2));
-        assert_eq!(plan.core.binary_sha256, sha256_bytes(CORE_A));
+        assert_eq!(plan.core_binary_sha256, sha256_bytes(CORE_A));
         assert_eq!(plan.slot, state.slot);
     }
 

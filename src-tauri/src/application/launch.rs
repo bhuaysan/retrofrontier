@@ -48,6 +48,20 @@ pub trait LaunchRuntime: Send + Sync {
     fn lock_for_launch(&self) -> Result<RuntimeMutationLock, RuntimeError>;
     fn ensure_no_active_game(&self) -> Result<(), RuntimeError>;
     fn runtime_paths(&self) -> RuntimePaths;
+    /// The decisive historical-core lookup, re-evaluated fresh every call against the current
+    /// trust state, revocations, and security floor.
+    ///
+    /// This must only ever be called by `launch_locked`, **after** the runtime mutation lock is
+    /// held: a lookup performed earlier — while preparing a Save-State load, for instance — can be
+    /// stale by the time a process is actually created, because trust policy can change in
+    /// between. Nothing before spawn may treat an earlier lookup's result as a durable
+    /// authorization; only this call, made under the lock that protects the
+    /// verification-to-spawn window, decides.
+    fn locate_authenticated_core_binary(
+        &self,
+        component_id: &SafeIdentifier,
+        binary_sha256: Sha256Digest,
+    ) -> Result<AuthenticatedCoreBinary, RuntimeError>;
 }
 
 impl LaunchRuntime for RuntimeManager {
@@ -70,6 +84,14 @@ impl LaunchRuntime for RuntimeManager {
     fn runtime_paths(&self) -> RuntimePaths {
         self.paths().clone()
     }
+
+    fn locate_authenticated_core_binary(
+        &self,
+        component_id: &SafeIdentifier,
+        binary_sha256: Sha256Digest,
+    ) -> Result<AuthenticatedCoreBinary, RuntimeError> {
+        RuntimeManager::locate_authenticated_core_binary(self, component_id, binary_sha256)
+    }
 }
 
 pub trait LaunchEventSink: Send + Sync {
@@ -81,14 +103,26 @@ pub trait LaunchEventSink: Send + Sync {
 /// Every value was already re-proved by `SaveStateApplicationService` against durable provenance
 /// and the current filesystem. The pipeline still validates them again — a plan is an instruction,
 /// not a licence — but it never *derives* them from the game's current preferences.
+///
+/// **This plan deliberately carries no resolved `AuthenticatedCoreBinary` and no filesystem path.**
+/// It carries only the immutable identity needed to *locate* the historical core binary —
+/// `core_component_id` and `core_binary_sha256` — because a resolved binary (with its already-open
+/// trust decision and already-resolved path) is not a durable authorization capability: Runtime
+/// trust policy (revocation, the security floor) can change between the moment this plan is built
+/// and the moment `launch_locked` actually authorizes and spawns a process. The decisive lookup is
+/// therefore always redone, fresh, inside `launch_locked` — after the runtime mutation lock is
+/// held — and never trusted from an earlier resolution.
 #[derive(Debug, Clone)]
 pub struct SaveStateLaunchPlan {
     pub save_state_id: SaveStateId,
     pub game_id: GameId,
     /// The exact recorded content unit. A Disc 1 state is never launched as Disc 2.
     pub content_unit_id: ContentUnitId,
-    /// The exact historical core binary, located in a currently trusted installation.
-    pub core: AuthenticatedCoreBinary,
+    /// The exact historical core-component identity a load requires.
+    pub core_component_id: SafeIdentifier,
+    /// The exact historical core-binary digest a load requires. There is no fallback: a component
+    /// whose currently installed, trusted binary has a different digest never satisfies this.
+    pub core_binary_sha256: Sha256Digest,
     pub slot: SaveStateSlot,
 }
 
@@ -536,19 +570,44 @@ impl LaunchApplicationService {
                 (core, None, provenance)
             }
             LaunchPlan::SaveState(plan) => {
+                // The decisive re-authorization. `runtime_lock` has been held since the top of
+                // this function, so this lookup — and everything after it, through process
+                // creation — runs entirely inside the same critical section ADR-011 uses to
+                // protect the verification-to-spawn window. Trust state is re-read from disk here,
+                // not reused from whatever `SaveStateApplicationService` observed earlier: a
+                // revocation or a raised security floor recorded between that earlier check and
+                // this one must be honored, even though the historical binary's bytes are still
+                // physically present on disk. There is no fallback to the game's current core.
+                let historical = self
+                    .runtime
+                    .locate_authenticated_core_binary(
+                        &plan.core_component_id,
+                        plan.core_binary_sha256,
+                    )
+                    .map_err(|error| {
+                        tracing::info!(
+                            save_state_id = %plan.save_state_id,
+                            core_component_id = %plan.core_component_id,
+                            error = %error,
+                            "the historical core binary is no longer authorized under the runtime \
+                             mutation lock; the save-state load was refused"
+                        );
+                        LaunchFailure::new(LaunchErrorCode::CoreNotInstalled)
+                            .with_system(game.system_id)
+                    })?;
                 let core = RetroArchService::resolve_historical_core(
                     &self.catalog,
                     game.system_id,
-                    &plan.core,
+                    &historical,
                     &launch_runtime,
                 )?;
                 let provenance = CoreBinaryProvenance {
-                    sha256: plan.core.binary_sha256,
-                    display_version: plan.core.display_version.clone(),
-                    source_revision: plan.core.source_revision.clone(),
+                    sha256: historical.binary_sha256,
+                    display_version: historical.display_version.clone(),
+                    source_revision: historical.source_revision.clone(),
                     // The release recorded for the *new* session is the one the binary was found
                     // in, which may not be the release that produced the state being loaded.
-                    release_id: plan.core.release_id.clone(),
+                    release_id: historical.release_id.clone(),
                 };
                 (core, Some(plan.slot), provenance)
             }
@@ -1093,6 +1152,11 @@ mod tests {
         paths: RuntimePaths,
         launch: Mutex<Option<VerifiedLaunchRuntime>>,
         state: Mutex<RuntimeState>,
+        /// What `locate_authenticated_core_binary` currently authorizes — the synthetic stand-in
+        /// for the persisted Runtime trust state. Tests mutate this directly to simulate a
+        /// revocation or a raised security floor happening *between* an earlier lookup and the
+        /// launch pipeline's own, later, lock-protected lookup.
+        historical: Mutex<Option<AuthenticatedCoreBinary>>,
     }
 
     impl LaunchRuntime for TestRuntime {
@@ -1124,6 +1188,26 @@ mod tests {
 
         fn runtime_paths(&self) -> RuntimePaths {
             self.paths.clone()
+        }
+
+        fn locate_authenticated_core_binary(
+            &self,
+            component_id: &SafeIdentifier,
+            binary_sha256: Sha256Digest,
+        ) -> Result<AuthenticatedCoreBinary, RuntimeError> {
+            match self.historical.lock().unwrap().clone() {
+                Some(binary)
+                    if binary.component_id == *component_id
+                        && binary.binary_sha256 == binary_sha256 =>
+                {
+                    Ok(binary)
+                }
+                _ => Err(RuntimeError::InstalledTree(
+                    "no trusted managed runtime installation carries the exact requested core \
+                     binary"
+                        .to_owned(),
+                )),
+            }
         }
     }
 
@@ -1274,11 +1358,29 @@ mod tests {
                 system,
                 system == SystemId::NintendoGameCube,
             );
+            // The default historical core a save-state load resolves: the same binary the
+            // synthetic runtime already declares as installed, so a plan built from it authorizes
+            // exactly as a normal launch's core resolution would.
+            let default_historical = launch_runtime
+                .cores
+                .get(&SafeIdentifier::new(component).unwrap())
+                .map(|core| AuthenticatedCoreBinary {
+                    component_id: core.component_id.clone(),
+                    core_path: core.core_path.clone(),
+                    binary_sha256: core.binary_sha256,
+                    binary_size_bytes: core.binary_size_bytes,
+                    systems: core.systems.clone(),
+                    display_version: core.display_version.clone(),
+                    source_revision: core.source_revision.clone(),
+                    installation_id: SafeIdentifier::new("install-1").unwrap(),
+                    release_id: SafeIdentifier::new("release-1").unwrap(),
+                });
 
             let runtime = Arc::new(TestRuntime {
                 paths: runtime_paths,
                 launch: Mutex::new(Some(launch_runtime)),
                 state: Mutex::new(RuntimeState::Ready),
+                historical: Mutex::new(default_historical),
             });
             let catalog = SystemCatalog::v1();
             let bios = BiosService::from_catalog(&bios_root, &catalog).unwrap();
@@ -1465,6 +1567,13 @@ mod tests {
         fn edit_launch_runtime(&self, edit: impl FnOnce(&mut VerifiedLaunchRuntime)) {
             let mut runtime = self.runtime.launch.lock().unwrap();
             edit(runtime.as_mut().expect("a verified launch runtime"));
+        }
+
+        /// Replace what a save-state load's historical-core lookup currently authorizes — the
+        /// synthetic stand-in for a Runtime trust-state change (a revocation, a raised security
+        /// floor, or a repair) taking effect.
+        fn set_historical_core(&self, binary: Option<AuthenticatedCoreBinary>) {
+            *self.runtime.historical.lock().unwrap() = binary;
         }
 
         fn core_path(&self, component: &str) -> PathBuf {
@@ -2488,31 +2597,41 @@ mod tests {
 
     /// A save-state plan whose core is the harness's own synthetic core.
     ///
-    /// The digest is the one `synthetic_runtime` declares, so `resolve_historical_core` sees a
-    /// genuinely authenticated component rather than a fabricated one.
+    /// The digest is the one `synthetic_runtime` declares and `Harness::build_with` registers as
+    /// the default historical core, so the launch pipeline's own lock-protected lookup sees a
+    /// genuinely authenticated component rather than a fabricated one. The plan itself carries
+    /// only the component id and digest — never a resolved binary or path — matching what
+    /// `SaveStateApplicationService::prepare_load` actually hands the pipeline.
     fn save_state_plan(
-        harness: &Harness,
+        _harness: &Harness,
         slot: u16,
         content_unit_id: ContentUnitId,
         system: SystemId,
     ) -> SaveStateLaunchPlan {
-        let component = SafeIdentifier::new(default_component(system)).unwrap();
         SaveStateLaunchPlan {
             save_state_id: crate::domain::save_state::SaveStateId(1),
             game_id: GameId(1),
             content_unit_id,
-            core: AuthenticatedCoreBinary {
-                component_id: component.clone(),
-                core_path: harness.core_path(default_component(system)),
-                binary_sha256: Sha256Digest::from_hex(&"a".repeat(64)).unwrap(),
-                binary_size_bytes: 4,
-                systems: vec![SafeIdentifier::new(system.as_str()).unwrap()],
-                display_version: Some("synthetic-1.0".to_owned()),
-                source_revision: Some("0123456".to_owned()),
-                installation_id: SafeIdentifier::new("install-1").unwrap(),
-                release_id: SafeIdentifier::new("release-1").unwrap(),
-            },
+            core_component_id: SafeIdentifier::new(default_component(system)).unwrap(),
+            core_binary_sha256: Sha256Digest::from_hex(&"a".repeat(64)).unwrap(),
             slot: SaveStateSlot::new(slot).unwrap(),
+        }
+    }
+
+    /// The `AuthenticatedCoreBinary` `save_state_plan` above expects the harness's historical-core
+    /// lookup to hand back — the shape `Harness::build_with` installs by default.
+    fn synthetic_historical_core(harness: &Harness, system: SystemId) -> AuthenticatedCoreBinary {
+        let component = SafeIdentifier::new(default_component(system)).unwrap();
+        AuthenticatedCoreBinary {
+            component_id: component,
+            core_path: harness.core_path(default_component(system)),
+            binary_sha256: Sha256Digest::from_hex(&"a".repeat(64)).unwrap(),
+            binary_size_bytes: 4,
+            systems: vec![SafeIdentifier::new(system.as_str()).unwrap()],
+            display_version: Some("synthetic-1.0".to_owned()),
+            source_revision: Some("0123456".to_owned()),
+            installation_id: SafeIdentifier::new("install-1").unwrap(),
+            release_id: SafeIdentifier::new("release-1").unwrap(),
         }
     }
 
@@ -2613,28 +2732,36 @@ mod tests {
         harness.set_app_run("sleep 5");
 
         // The release that carries the binary does not approve it for this system.
-        let mut plan = save_state_plan(&harness, 1, ContentUnitId(1), SystemId::Nes);
-        plan.core.systems = vec![SafeIdentifier::new("playstation").unwrap()];
+        let mut historical = synthetic_historical_core(&harness, SystemId::Nes);
+        historical.systems = vec![SafeIdentifier::new("playstation").unwrap()];
+        harness.set_historical_core(Some(historical));
+        let plan = save_state_plan(&harness, 1, ContentUnitId(1), SystemId::Nes);
         assert_eq!(
             failure_code(&harness.service.launch_save_state(plan).await),
             LaunchErrorCode::CoreNotApproved
         );
 
         // A component the catalog knows nothing about is likewise refused.
+        let mut historical = synthetic_historical_core(&harness, SystemId::Nes);
+        historical.component_id = SafeIdentifier::new("not-an-approved-core").unwrap();
+        harness.set_historical_core(Some(historical));
         let mut plan = save_state_plan(&harness, 1, ContentUnitId(1), SystemId::Nes);
-        plan.core.component_id = SafeIdentifier::new("not-an-approved-core").unwrap();
+        plan.core_component_id = SafeIdentifier::new("not-an-approved-core").unwrap();
         assert_eq!(
             failure_code(&harness.service.launch_save_state(plan).await),
             LaunchErrorCode::CoreNotApproved
         );
 
         // A binary that is no longer a regular file on disk is `coreNotInstalled`.
-        let mut plan = save_state_plan(&harness, 1, ContentUnitId(1), SystemId::Nes);
-        plan.core.core_path = plan.core.core_path.with_file_name("absent.so");
+        let mut historical = synthetic_historical_core(&harness, SystemId::Nes);
+        historical.core_path = historical.core_path.with_file_name("absent.so");
+        harness.set_historical_core(Some(historical));
+        let plan = save_state_plan(&harness, 1, ContentUnitId(1), SystemId::Nes);
         assert_eq!(
             failure_code(&harness.service.launch_save_state(plan).await),
             LaunchErrorCode::CoreNotInstalled
         );
+        harness.set_historical_core(Some(synthetic_historical_core(&harness, SystemId::Nes)));
 
         // Nothing was started by any of them, and no session was opened.
         assert!(harness
@@ -2644,6 +2771,59 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(harness.service.get_launch_state().running, None);
+    }
+
+    /// CRITICAL-1 regression: a historical core authorized when a plan was prepared must not still
+    /// be usable once trust policy has revoked it before the launch pipeline actually runs.
+    ///
+    /// This reproduces the vulnerable ordering exactly: a plan is built while the historical core
+    /// is authorized (mirroring `SaveStateApplicationService::prepare_load`'s own early lookup,
+    /// which happens before the runtime mutation lock is ever taken), and only *then* — before the
+    /// launch pipeline is invoked at all — does the runtime's trust state change to no longer
+    /// authorize that exact component/digest pair (mirroring a revocation or a raised security
+    /// floor recorded by a concurrent Runtime operation). The historical core binary file itself
+    /// is left physically present and untouched on disk throughout: only the trust decision
+    /// changes. Before this fix, `launch_locked` never repeated the lookup — it trusted the
+    /// `AuthenticatedCoreBinary` already carried inside the plan — so the now-forbidden binary
+    /// would still have been executed. The fix makes `launch_locked` re-run
+    /// `locate_authenticated_core_binary` itself, inside the runtime mutation lock, so the stale
+    /// plan can no longer authorize anything.
+    #[tokio::test]
+    async fn a_historical_core_revoked_after_the_plan_was_built_never_spawns() {
+        let launcher = Arc::new(CountingLauncher::default());
+        let harness = Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
+        harness.set_app_run("sleep 5");
+
+        // The plan is built while the historical core is still authorized — exactly what
+        // `prepare_load` would have produced a moment earlier.
+        let plan = save_state_plan(&harness, 3, ContentUnitId(1), SystemId::Nes);
+
+        // Trust policy changes before the launch pipeline ever runs: the exact component/digest
+        // this plan names is no longer authorized by any currently trusted installation. The
+        // binary file on disk is untouched — only the runtime's trust decision changed.
+        harness.set_historical_core(None);
+        assert!(
+            harness.core_path("nestopia").exists(),
+            "the historical core file must remain physically present"
+        );
+
+        let response = harness.service.launch_save_state(plan).await;
+
+        assert_eq!(failure_code(&response), LaunchErrorCode::CoreNotInstalled);
+        // No managed process was spawned, and the forbidden historical core was never executed.
+        assert_eq!(launcher.spawns(), 0);
+        assert!(harness
+            .launch_repository
+            .open_sessions()
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(harness.service.get_launch_state().running, None);
+        assert!(!harness.service.is_managed_session_active());
+        // And there is no fallback: the game's current core (a normal launch's own resolution)
+        // was never substituted in. The failure code proves the historical arm was taken and
+        // refused, not silently downgraded to an ordinary launch.
+        assert_ne!(failure_code(&response), LaunchErrorCode::GameAlreadyRunning);
     }
 
     /// The whole file contains no path that turns a refused save-state launch into a normal one.
