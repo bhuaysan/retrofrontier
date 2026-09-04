@@ -33,7 +33,9 @@ ever handed the `states/` root, so `saves/` is unreachable from it by constructi
 
 ```text
 React (useSaveStates / SaveStatesSection on Game Detail)
-  -> list_save_states / load_save_state / delete_save_state      (identities only)
+  -> list_save_states / load_save_state / delete_save_state      (identities only, plus the
+                                                                    confirmed active-controller id
+                                                                    on load — see Ingame hotkeys)
   -> SaveStateApplicationService          (application/save_state.rs)
        -> SaveStateRepository             (repositories/save_state.rs)  provenance, lifecycle, baselines
        -> save_state_fs                   (services/save_state_fs.rs)   RetroArch layout, snapshots,
@@ -175,8 +177,20 @@ where provable, and only then remove the baseline.
   eventual retry still has its "before".
 - **Absence is only actionable from a complete enumeration.** An unreadable subdirectory, a symbolic
   link anywhere in the tree, a non-UTF-8 name, or a tree beyond the entry and depth bounds all make
-  the snapshot *incomplete*, and an incomplete snapshot never drives a `missing` transition.
-- A baseline that stays indeterminate is dropped after bounded retries rather than leaking forever.
+  the snapshot *incomplete*, and an incomplete snapshot never drives a `missing` transition. The
+  snapshot walk itself is descriptor-relative — every directory is opened with
+  `O_DIRECTORY | O_NOFOLLOW` and walked by the resulting handle, never by re-resolving a pathname a
+  second time — so a symlink swapped into the tree between listing and reading it cannot redirect
+  what the snapshot observes.
+- **A baseline that stays indeterminate is retained indefinitely**, retried at every subsequent
+  startup, until it either reconciles or a later session's baseline supersedes it (above). There is
+  no attempt-count cutoff: a baseline is never discarded merely because reconciliation has failed
+  some number of times, since doing so would destructively give up on save states that later
+  resolve themselves once the underlying condition (a slow write, a momentarily unreadable
+  subdirectory) clears.
+- **Only this session's own content basename is ever attributed.** A candidate whose filename
+  basename does not match the exact content unit the baseline recorded is left unattributed and
+  untouched, however valid-looking its slot suffix is — see *Same path, different games* below.
 
 ### Same path, different games
 
@@ -187,6 +201,23 @@ whose ROMs share a basename — the same dump added from two content roots, or t
 as a different binary does. Matching on the binary alone would move the first game's row onto the
 second game's bytes while keeping the first game's ids, so its detail page would list a state that
 is really the other game's and loading it would boot the wrong ROM.
+
+Attribution goes one step further: a delta candidate is only ever attributed when its own filename
+basename matches the basename RetroFrontier's own `ContentUnit.primary_relative_path` derives —
+the same basename the launched content's own filename produces, and so the same namespace RetroArch
+itself would use for that content's states. A perfectly valid-looking managed slot that lands in
+the same delta window under a *different* basename is left unattributed and untouched; nothing about
+timing or slot shape alone is ever enough. The same check runs again, as defense in depth, the
+moment a load is attempted: a registered row whose path's basename does not belong to its own
+recorded content unit is refused with `unsafeFilesystemTarget` before a process is ever authorized,
+so a row established some other way than ordinary attribution — a direct database write, a future
+migration, a bug elsewhere — cannot be loaded as if it belonged to content it does not.
+
+This binds the *basename* only. RetroArch's `<library name>` directory segment is the core's own
+self-reported `sysinfo->library_name` (see the layout note below), which RetroFrontier has no
+authenticated way to verify or reverse-map to a `CoreId` — so the directory segment is not, and
+cannot be, part of this proof. The core-binary and content-unit checks above are what close that
+gap: they are what refuses a match, not the directory name.
 
 ### Same slot, different cores
 
@@ -218,17 +249,30 @@ describable after its originating Runtime Release is gone. Neither is a load ide
 When loading:
 
 1. The exact recorded core binary is required.
-2. The original Runtime Release ID stays recorded provenance.
-3. The original release is **not** required: another currently installed, authenticated, allowed
-   installation carrying the identical binary satisfies the load.
-4. If the exact binary is unavailable, the state is not loadable.
-5. There is no silent fallback to the game's currently configured core.
-6. There is no "try another core anyway" escape hatch.
-7. A revoked, blocked, below-security-floor, or otherwise untrusted component is **never**
+2. The release that happened to *supply* that historical binary is **not** recorded provenance and
+   is not required at load time: any currently installed, authenticated, allowed installation
+   carrying the identical binary satisfies the load. `originating_runtime_release_id` instead
+   records the runtime release that actually **launches** this session — the same value an ordinary
+   launch would record — never the historical release the core binary happened to come from. The
+   two can differ (a retained older release still carrying a core a newer release also ships), and
+   conflating them would misreport which release a session actually ran under.
+3. If the exact binary is unavailable, the state is not loadable.
+4. There is no silent fallback to the game's currently configured core.
+5. There is no "try another core anyway" escape hatch.
+6. A revoked, blocked, below-security-floor, or otherwise untrusted component is **never**
    reactivated to load a state. Save-state recovery never overrides Runtime security policy.
 
 The historical core is a **one-shot launch override**. Loading a Save State never reads and never
 writes the game's persisted per-game core preference.
+
+**Authorization timing.** `prepare_load` performs a cheap, early lookup of the historical core
+purely so an obviously-doomed load fails fast rather than going all the way through the launch
+pipeline — but that lookup is explicitly **not** the authorization, and nothing about its result is
+carried forward. The decisive lookup is redone from scratch — trust state re-read fresh from disk,
+never reused from what the early check observed — inside `launch_locked`, under the same runtime
+mutation lock ADR-011 uses to serialize launch against activation. A revocation or a security-floor
+change recorded between the early check and that lock therefore still refuses the load: a historical
+core cannot be revoked in the window between "looks loadable" and "is actually authorized to spawn."
 
 ### Loadability is not compatibility
 
@@ -267,23 +311,31 @@ save-state load therefore never offers a content choice.
 ## Controlled load
 
 ```text
-load_save_state(save_state_id)
+load_save_state(save_state_id, active_gamepad_id?)
 ```
 
-React supplies an identity and nothing else — no state path, thumbnail path, core path, runtime
+React supplies an identity, and optionally the frontend's own confirmed active-controller identity
+(see *Ingame hotkeys* below) — nothing else. No state path, thumbnail path, core path, runtime
 path, digest, requested slot, or requested `CoreId`. `deny_unknown_fields` means such a field is
 *rejected* rather than ignored.
 
 Before loading, the backend re-proves: no managed session is active; the state exists and is
 `available`; its file exists; its validated relative path stays inside the managed states root; it
 is a regular non-symlink file; its size and digest still match; the game and content unit are valid
-and available; and the exact historical core binary is available, authenticated, and currently
-allowed.
+and available; the state's own registered path belongs to that exact content unit's basename (see
+*Same path, different games*); and the exact historical core binary is available, authenticated, and
+currently allowed (subject to the re-authorization inside the runtime mutation lock described above).
 
 **The active-session check comes first, and that ordering is load-bearing.** Verification marks a
 mismatched state `missing`, and a running RetroArch is entitled to be mid-write on exactly that
 file — the session that ends reconciles it properly. Verifying first would let a live emulator's
 ordinary in-progress save turn a good Save State into `missing`.
+
+A load and a concurrent Save-State delete are mutually exclusive: both enter the very same
+in-process exclusion `LaunchApplicationService` uses to serialize an ordinary launch against a
+delete, so a load can never race a delete that is mid-decision about destroying the file the load
+would need. Whichever side enters that section first excludes the other for its entire
+authorization-to-action window; the loser is refused immediately rather than interleaved.
 
 The load then goes through the **existing managed launch pipeline**. M9 builds no second launcher.
 
@@ -344,11 +396,26 @@ whatever that index happens to be on the player's pad. The real qualified DualSe
 Select as `8`, R1 as `5`, and its D-Pad as `h0left`/`h0right`; hat notation is carried through
 verbatim. No host RetroArch location is ever consulted and nothing is downloaded.
 
-If a qualified profile is absent, is a symlink, is oversized, omits a role, declares one twice,
-carries a value that is not a joypad bind, or disagrees with the other qualified profile, **no
-hotkey is written at all**. RetroArch's hotkey binds are one global set, so picking one of two
-disagreeing profiles would silently mis-bind the other pad. An unresolved set never fails a launch:
-losing the save hotkey is a smaller failure than losing the game.
+**The qualified profile files existing and agreeing is not, by itself, proof they apply.** They are
+part of the immutable managed database and are present and agree regardless of what is actually
+connected, so deriving hotkeys from that agreement alone would silently bind "Save State" to
+DualSense button numbers on a launch whose actual pad is something else entirely. Resolution
+additionally requires the frontend's own confirmed identity of the controller RetroFrontier
+currently accepts for navigation — the same `Gamepad.id` (via the browser Gamepad API; ADR-014)
+`useControllerInput` already selects, read once at the moment a launch or a save-state load is
+issued and passed as `active_gamepad_id` — to name a physically qualified DualSense before the
+profile files are even consulted. RetroFrontier's native code never reads a controller device
+directly; this frontend-confirmed identity is the only proof it ever has.
+
+If `active_gamepad_id` does not name a qualified DualSense, or a qualified profile is absent, is a
+symlink, is oversized, omits a role, declares one twice, carries a value that is not a joypad bind,
+or disagrees with the other qualified profile, **no hotkey is written at all**. RetroArch's hotkey
+binds are one global set, so picking one of two disagreeing profiles would silently mis-bind the
+other pad. An unresolved set never fails a launch: losing the save hotkey is a smaller failure than
+losing the game. Matching an active identity to "qualified DualSense" is narrow by design — a
+DualSense **Edge** id, or any device whose name does not carry the physically-verified `dualsense`
+token, resolves nothing either, matching the fact that only the ordinary DualSense has been
+physically qualified (see *Qualification status*).
 
 While RetroArch runs, RetroFrontier does not consume the controller. The M8 ownership boundary is
 unchanged, and M9 introduces no focus path around it.
@@ -363,7 +430,11 @@ unreachable from it by construction. Temporal proximity is never used.
 
 Thumbnail identity is stored independently of the state's: its own validated relative path, SHA-256,
 and size. A valid state with no provable thumbnail stays valid, exposes no thumbnail, and the
-frontend renders a neutral placeholder.
+frontend renders a neutral placeholder. This holds on every refresh, not only on first creation:
+when the same core binary overwrites its own slot and *this* session's delta does not itself prove a
+thumbnail for the new bytes, the exposed thumbnail becomes `None` rather than continuing to show the
+*previous* version's proved image. A stale image would misrepresent content it was never proved to
+belong to; losing the thumbnail is the honest outcome, not a bug to route around.
 
 The WebView receives an opaque `rfmedia` reference keyed by `SaveStateId`, exactly as a cached cover
 does, and the bytes are served only after the registered size and digest are re-proved.
@@ -383,7 +454,10 @@ delete_save_state(save_state_id)
 No path or slot input from React. UI confirmation is a courtesy to the user, **not** the security
 boundary. Immediately before deleting, the backend re-proves the row, its expected relative path,
 managed-root containment, regular file type, absence of a symlink escape, expected size, expected
-SHA-256, and that no managed session is active. Any failure fails closed.
+SHA-256, and that no managed session is active. Any failure fails closed. A delete also enters the
+same in-process exclusion a launch does (see *Controlled load* above), so it cannot interleave with
+a concurrent launch attempt either: whichever side enters first holds the section for its whole
+authorization-to-action window.
 
 The architectural invariant is:
 
@@ -403,13 +477,19 @@ name is replaced, and the removal would then delete whatever occupies the *pathn
 - a hard-linked file is refused, because its content is reachable under a name RetroFrontier does
   not own;
 - deletion then **renames the verified inode to a private same-directory quarantine name**,
-  re-verifies `(dev, ino, size)` *there*, and only then unlinks. A replacement racing the delete can
-  only end up owning the old name, which is no longer touched; on any mismatch the original name is
-  restored and nothing is deleted.
+  re-verifies `(dev, ino, size)` there, re-hashes its content one final time, and only then unlinks.
+  A replacement racing the delete can only end up owning the old name, which is no longer touched;
+  on any mismatch the original name is restored and nothing is deleted.
 
 A quarantine name cannot parse as a state or a thumbnail, so a crash between the rename and the
-unlink leaves an inert file that is never attributed, never listed, and never loaded.
-`sweep_delete_quarantine` removes such leftovers at startup and touches nothing else.
+unlink leaves an inert file that is never attributed, never listed, and never loaded. But a bare
+quarantine-shaped name is not, by itself, proof RetroFrontier is the one that put it there: before
+the rename, a small durable **ownership-proof journal entry** is written first, under a random
+128-bit id, recording the exact size and content digest RetroFrontier itself verified.
+`sweep_delete_quarantine` at startup only ever finishes or removes a quarantine-shaped file whose
+journal entry it can find *and* whose current content still matches that recorded proof — a file
+that merely happens to carry the same name pattern, planted or coincidental, is left alone rather
+than assumed to be RetroFrontier's own and swept regardless.
 
 Deletion is the irreversible primary action, so ordering is: verify → delete the state file → delete
 the verified thumbnail if safe → persist `deleted`. If persistence fails afterwards, the row briefly
@@ -457,7 +537,8 @@ identity and its history.
 `unsafeFilesystemTarget`, `indeterminate`, `reconciliationFailed`, `launchFailed`, `deleteFailed`.
 
 `indeterminate` is deliberately distinct from `unsafeFilesystemTarget`. The latter is a *proof* —
-the file is gone, or the target is not the managed regular file it must be. The former means the
+the file is gone, the target is not the managed regular file it must be, or (HIGH-2) the target's
+own basename does not belong to the exact content unit the row claims. The former means the
 observation itself failed: the process is out of descriptors, a read errored, the tree was
 momentarily unreadable. **Only a proof may close a lifecycle**, because `missing` is never
 reopened; an inconclusive observation leaves the row exactly as it is.
@@ -501,16 +582,28 @@ controlled launch.
 - **A restore that cannot reclaim its own name leaves the file quarantined.** If something takes the
   original name in the window after the quarantine rename, the restore refuses to overwrite it —
   destroying a file RetroFrontier never verified would break the same invariant the quarantine
-  exists to keep. The verified file then stays under its inert quarantine name until the next
-  startup sweep removes it.
+  exists to keep. The verified file then stays under its inert quarantine name, with its ownership-
+  proof journal entry still recording what RetroFrontier itself verified, until the next startup
+  sweep re-verifies and removes it.
+- **A same-inode concurrent writer narrows, rather than fully closes, the deletion window.** POSIX
+  and Linux offer no dependable, portable, non-mandatory-locking way to exclude a writer that already
+  holds an open, writable descriptor to the exact same inode RetroFrontier is deleting — advisory
+  locks bind only cooperating processes, and there is no cross-platform mandatory-locking primitive
+  to reach for instead. Re-hashing the quarantined file's content immediately before the final
+  `unlinkat` narrows the exploitable window from "the whole delete" to the instant between that
+  re-hash and the unlink itself — it does not close it. A same-user hostile process capable of
+  winning that instant-wide race already has unrestricted filesystem access regardless, so this is
+  documented as a narrowed limitation rather than a claimed guarantee.
 - **Safe deletion is Unix-only.** The no-follow, directory-handle-relative implementation is
   `#[cfg(unix)]`. On a non-Unix target the stub returns `unsafeFilesystemTarget` unconditionally, so
   Windows and macOS fail *closed* rather than weakening the invariant. Implementing it there is
   packaging work.
-- **Managed save-state hotkeys cover the qualified controller path only.** RetroArch's hotkey binds
-  are one global set, so exactly one device's numbers can be written per launch. A pad outside the
-  qualified profiles gets no RetroFrontier hotkeys in M9 and can still save through RetroArch's own
-  menu. Broader per-controller coverage is B10 work.
+- **Managed save-state hotkeys cover the qualified controller path only, and only when it is the
+  confirmed active controller.** RetroArch's hotkey binds are one global set, so exactly one
+  device's numbers can be written per launch. A pad outside the qualified profiles — or a qualified
+  pad that is not the frontend's own confirmed active controller for that launch — gets no
+  RetroFrontier hotkeys in M9 and can still save through RetroArch's own menu. Broader
+  per-controller coverage is B10 work.
 - **A state tree with an unreadable subdirectory blocks launching.** A baseline cannot be captured
   from a tree that cannot be honestly described, and M9 would rather refuse a launch than lose the
   player's save states. `states/` is RetroFrontier-owned and `0700`, so this is a genuinely
