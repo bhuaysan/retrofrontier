@@ -944,12 +944,18 @@ impl SaveStateApplicationService {
                         &RefreshedSaveState {
                             play_session_id: provenance.play_session_id,
                             state: new.state.clone(),
-                            // A refresh that proved no thumbnail keeps the one already recorded.
-                            // Clearing it would orphan the file: nothing revisits it, and a later
-                            // delete only removes the thumbnail the row still names, so it could
-                            // never be cleaned up or attributed again. Keeping it is also the
-                            // truthful record — that image is still on disk.
-                            thumbnail: new.thumbnail.clone().or_else(|| existing.thumbnail.clone()),
+                            // MEDIUM-3: the state's bytes just changed, so the strict thumbnail
+                            // rule applies to *this* version exactly as it does to a brand-new
+                            // one — a thumbnail is exposed only when this controlled launch's own
+                            // delta proved the relationship for it. Falling back to the previous
+                            // version's thumbnail here would let newly written state bytes stay
+                            // associated with an image that was only ever proved for the bytes
+                            // they replaced. If no thumbnail was proved this time, the exposed
+                            // thumbnail becomes `None` and the frontend renders the placeholder;
+                            // the previous image simply becomes an untracked orphan file, exactly
+                            // as a state's thumbnail already does whenever it fails its own
+                            // re-verification during a delete.
+                            thumbnail: new.thumbnail.clone(),
                         },
                     )
                     .await
@@ -2085,12 +2091,10 @@ mod tests {
         assert_eq!(updated.state.sha256, sha256_bytes(b"the finished save"));
     }
 
-    /// A refresh that proved no thumbnail keeps the one already recorded.
-    ///
-    /// Clearing it would orphan the file — nothing revisits it, and a later delete only removes the
-    /// thumbnail the row still names, so it could never be cleaned up again.
+    /// MEDIUM-3 regression: a refresh that proves no thumbnail exposes no thumbnail — it never
+    /// keeps presenting the *previous* version's proved image as if it belonged to the new bytes.
     #[tokio::test]
-    async fn a_refresh_without_a_proved_thumbnail_keeps_the_recorded_one() {
+    async fn a_refresh_without_a_proved_thumbnail_exposes_none_rather_than_the_previous_ones() {
         let fixture = Fixture::build().await;
         fixture
             .run_session(
@@ -2119,10 +2123,13 @@ mod tests {
             .await;
 
         let refreshed = fixture.only_state().await;
-        assert_eq!(refreshed.id, original.id);
+        assert_eq!(refreshed.id, original.id, "identity and history are preserved");
         assert_eq!(refreshed.state.sha256, sha256_bytes(b"second save"));
-        // The recorded thumbnail identity survived, so the file stays reachable for a later delete.
-        assert_eq!(refreshed.thumbnail, original.thumbnail);
+        // The new bytes are not associated with the previous version's proved thumbnail — this
+        // controlled launch never proved that relationship for *these* bytes, so the exposed
+        // thumbnail is `None` and the frontend renders the placeholder rather than a stale image.
+        assert_eq!(refreshed.thumbnail, None);
+        assert_ne!(refreshed.thumbnail, original.thumbnail);
     }
 
     // ================================================================ thumbnails
