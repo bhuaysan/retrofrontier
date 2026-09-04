@@ -32,14 +32,35 @@ its game, content unit, core binary, and exact bytes, and every load or delete r
 filesystem target before acting. Normal SaveData stays opaque. See
 [`docs/SAVE_STATES.md`](docs/SAVE_STATES.md).
 
-**M10 — Packaging and V1 is the next implementation milestone.**
+**M10 — Packaging and V1 is the current implementation milestone.**
 
-The previously documented release gates remain open and unchanged: production key ceremony under
-independent custody, public runtime hosting, immutable upstream mirroring, GPL source-offer
-obligations, core policy for the remaining seven V1 systems, and cross-platform and
+M10.1 (detached immutable Runtime inventory) is merged. M10.2 (core, BIOS, licence and source-policy
+closure) is documentation and policy only: it approved no new core, created no Runtime Release, and
+left Release 002 unchanged. It closed the licence and BIOS research questions and, more importantly,
+converted three previously vague gates into precisely identified V1 blockers:
+
+- **Corresponding source.** The exact source revision of the four redistributed cores is not
+  published by libretro and is not recoverable from the artefacts. Public redistribution of the
+  managed runtime is blocked — for the four *already approved* systems too. This is a provenance
+  blocker, not a policy one.
+- **Mega Drive has no redistributable core.** Genesis Plus GX and PicoDrive both forbid commercial
+  redistribution and are GPL-incompatible with this project's `GPL-3.0-or-later` licence. BlastEm is
+  the only GPL-compatible candidate and is unqualified.
+- **macOS has no immutable core acquisition path at all.** libretro publishes no macOS core bundle
+  at any architecture — only rolling nightly per-core archives, which ADR-004 rejects. This affects
+  every core equally and cannot be solved by choosing a different one.
+
+Seven systems moved from unresearched to Candidate or Unresolved with recorded primary-source
+evidence and named blockers. See [`docs/CORE_MATRIX.md`](docs/CORE_MATRIX.md),
+[`docs/BIOS_MATRIX.md`](docs/BIOS_MATRIX.md) and
+[`docs/SOURCE_PROVENANCE.md`](docs/SOURCE_PROVENANCE.md).
+
+The remaining release gates are unchanged and still open: production key ceremony under independent
+custody, public runtime hosting, immutable upstream mirroring, and cross-platform and
 cross-distribution qualification (Windows and macOS launch and controller support, the Linux device
-matrix, confirmed GameCube content execution, and PlayStation BIOS/content). No public-distribution
-claim is made.
+matrix, confirmed GameCube content execution, and PlayStation BIOS/content). Windows and macOS
+support, packaging, production TUF, application updates and V1 release readiness are **not**
+complete. No public-distribution claim is made.
 
 ## M0 — Planning and Repository Foundation
 
@@ -190,14 +211,23 @@ presentation are explicitly non-blocking deferred capabilities. The pre-M5 ident
 - [x] system registry with stable identifiers and aliases
 - [x] supported file extensions in the system catalog
 - [x] default/approved-core policy model with explicit unresolved decisions
-- [ ] resolve the default-core matrix
-- [ ] core licenses and approved distribution sources
+- [ ] resolve the default-core matrix (M10.2: four systems Approved, seven researched to Candidate
+      or Unresolved with named blockers; Mega Drive is a hard licence blocker)
+- [x] core licenses and approved distribution sources (M10.2: every licence verified against the
+      upstream licence file and per-file headers; see [`docs/SOURCE_PROVENANCE.md`](docs/SOURCE_PROVENANCE.md))
+- [ ] close the corresponding-source gap for the four redistributed cores (M10.2 blocker; public
+      redistribution is blocked until then)
 - [x] platform/architecture availability model
 - [x] BIOS requirements
 - [x] BIOS discovery
 - [x] BIOS hashing/validation when authoritative identities exist
 - [x] per-system BIOS/readiness status UI
-- [ ] map user BIOS folders to any future core-required internal layout
+- [ ] map user BIOS folders to any future core-required internal layout (M10.2: Flycast's `dc/`
+      subdirectory is the first real case; it is a hard precondition of Dreamcast approval)
+- [ ] correct the Dreamcast BIOS catalog entry, which contradicts the approved core documentation
+      (M10.2: currently Required + `dc_flash.bin` at top level; Flycast documents Optional
+      `dc/dc_boot.bin`; see [`docs/BIOS_MATRIX.md`](docs/BIOS_MATRIX.md) §4)
+- [ ] adopt authoritative Saturn and Game Boy family BIOS identities when their cores are approved
 
 M3 research still open: the repository's core matrix does not approve a default or alternative
 core for any system, and it does not provide authoritative BIOS identities/hashes. The catalog
@@ -609,6 +639,21 @@ Deliberately not in M9:
 **Model:** Luna Max implementation; Sol Max release-readiness review.
 
 - [x] M10.1 detached immutable Runtime inventory target (ADR-012 scalable inventory representation)
+- [x] M10.2 core, BIOS, licence and source-policy closure (research/documentation only; no core was
+      approved, no Runtime Release was created, Release 002 is unchanged). See
+      [`docs/CORE_MATRIX.md`](docs/CORE_MATRIX.md), [`docs/BIOS_MATRIX.md`](docs/BIOS_MATRIX.md),
+      [`docs/SOURCE_PROVENANCE.md`](docs/SOURCE_PROVENANCE.md)
+- [ ] **V1 blocker:** corresponding source for the four redistributed cores is unknown and not
+      recoverable from libretro's stable bundle; public redistribution is blocked
+- [ ] **V1 blocker:** Mega Drive has no redistributable core — Genesis Plus GX and PicoDrive are
+      both non-commercial/non-free and GPL-incompatible; BlastEm is unqualified
+- [ ] **V1 blocker:** no immutable macOS core acquisition path exists — libretro publishes no
+      macOS core bundle at any architecture, only rolling nightly per-core archives
+- [ ] resolve the Nintendo 64 licence identity conflict (repo LICENSE/LICENSES say GPLv2, per-file
+      headers say GPLv2-or-later, libretro documentation says GPLv3)
+- [ ] decide the PlayStation and Saturn `.iso` catalog mismatch (advertised but not loadable)
+- [ ] correct the four imprecise core licence strings in `SystemCatalog::v1_cores()`
+- [ ] mirror the non-version-addressed `dolphin-sys` upstream asset into immutable storage
 - [ ] Windows packaging
 - [ ] macOS arm64
 - [ ] macOS x86_64
