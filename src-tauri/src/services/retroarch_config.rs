@@ -25,6 +25,13 @@ pub struct RetroArchConfigRequest<'a> {
     /// likewise read-only. Both are passed in rather than derived here, because only the runtime
     /// layer can say which installation is currently verified.
     pub controller_profiles_root: &'a Path,
+    /// The exact directory this launch's save states live in: `<states root>/<CoreId>`, from
+    /// `save_state_fs::state_directory` (HIGH-2).
+    ///
+    /// It is passed in rather than derived here because only the launch layer knows which core
+    /// actually resolved, and because the *same* function that computes the path RetroFrontier
+    /// later proves against must be the one that tells RetroArch where to write.
+    pub save_state_directory: &'a Path,
     /// Which RetroArch state slot is active when the game starts.
     ///
     /// A normal launch starts on the first managed slot. A save-state launch starts on the loaded
@@ -55,6 +62,7 @@ impl RetroArchConfig {
             paths,
             core_directory,
             controller_profiles_root,
+            save_state_directory,
             state_slot,
             save_state_hotkeys,
         } = *request;
@@ -109,7 +117,11 @@ impl RetroArchConfig {
 
         // Where RetroArch may write.
         set("savefile_directory", path_value(paths.saves_root()));
-        set("savestate_directory", path_value(paths.states_root()));
+        // HIGH-2: `<states root>/<CoreId>`, not the states root itself. Together with
+        // `sort_savestates_enable = false` below, this makes the whole state path RetroFrontier's
+        // own composition, so the file a controlled launch resolves is exactly the file
+        // `save_state_fs::state_target` names.
+        set("savestate_directory", path_value(save_state_directory));
         set("screenshot_directory", path_value(paths.screenshots_root()));
         set("cache_directory", path_value(&paths.cache_root()));
         set("playlist_directory", path_value(&paths.playlists_root()));
@@ -156,7 +168,21 @@ impl RetroArchConfig {
         set("systemfiles_in_content_dir", boolean(false));
         set("screenshots_in_content_dir", boolean(false));
         set("sort_savefiles_enable", boolean(true));
-        set("sort_savestates_enable", boolean(true));
+        // HIGH-2: **off**, and that is a security setting rather than a layout preference.
+        //
+        // With it on, RetroArch inserts the core-reported `sysinfo->library_name` between
+        // `savestate_directory` and the state base — a string RetroFrontier reads out of the core
+        // and can neither predict nor authenticate. RetroFrontier would then verify one file and
+        // hand RetroArch a slot that resolves to a different one. With it off, RetroArch inserts
+        // nothing, `savestate_directory` above is the entire directory, and the exact target is
+        // computable and provable.
+        //
+        // Per-core separation is not lost, it is just RetroFrontier's to define: the `<CoreId>`
+        // segment in `savestate_directory` does the same job under a name RetroFrontier controls.
+        //
+        // `sort_savefiles_enable` is deliberately left alone. SaveData is opaque to M9, lives under
+        // its own `savefile_directory`, and nothing verifies a path into it.
+        set("sort_savestates_enable", boolean(false));
         set("savestate_auto_save", boolean(false));
         set("savestate_auto_load", boolean(false));
 
@@ -367,10 +393,15 @@ mod tests {
         state_slot: u16,
         save_state_hotkeys: Option<&SaveStateHotkeys>,
     ) -> RetroArchConfig {
+        let save_state_directory = crate::services::save_state_fs::state_directory(
+            paths.states_root(),
+            &crate::domain::core::CoreId::new("nestopia").unwrap(),
+        );
         RetroArchConfig::build(&RetroArchConfigRequest {
             paths,
             core_directory,
             controller_profiles_root,
+            save_state_directory: &save_state_directory,
             state_slot: SaveStateSlot::new(state_slot).unwrap(),
             save_state_hotkeys,
         })
@@ -694,11 +725,15 @@ mod tests {
     fn the_generated_configuration_owns_every_save_state_behaviour_retrofrontier_decides() {
         let (paths, config) = synthetic_config();
 
-        // States are written where RetroFrontier owns them, never beside user ROMs.
+        // States are written where RetroFrontier owns them, never beside user ROMs — and HIGH-2:
+        // into the launching core's own RetroFrontier-composed namespace below the states root,
+        // with RetroArch's own sorting disabled so it inserts nothing of its own. Those two values
+        // together are what make the state target computable rather than merely expected.
         assert_eq!(
             config.value("savestate_directory").map(Path::new),
-            Some(paths.states_root())
+            Some(paths.states_root().join("nestopia").as_path())
         );
+        assert_eq!(config.value("sort_savestates_enable"), Some("false"));
         assert_eq!(config.value("savestates_in_content_dir"), Some("false"));
         // RetroArch never saves or loads a state behind the player's back: M9's whole provenance
         // model depends on every managed state coming from a deliberate save.

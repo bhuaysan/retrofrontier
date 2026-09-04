@@ -346,6 +346,14 @@ impl RetroArchService {
             .ok_or_else(config_failed)?
             .to_path_buf();
         let config_path = self.paths.config_file();
+        // HIGH-2: the one directory this launch may write states into, composed by the same
+        // function that later proves a registered path *is* this launch's target. It is created
+        // here rather than left to RetroArch, so the target exists before the process does.
+        let save_state_directory = crate::services::save_state_fs::state_directory(
+            self.paths.states_root(),
+            &request.core.core_id,
+        );
+        fs::create_dir_all(&save_state_directory).map_err(|_| config_failed())?;
         // Derived from the authenticated managed profiles, or `None` — in which case no hotkey is
         // written at all. A launch is never failed for it: a game whose controller works must keep
         // starting, and losing the save hotkey is a smaller failure than losing the game.
@@ -364,6 +372,7 @@ impl RetroArchService {
             paths: &self.paths,
             core_directory: &core_directory,
             controller_profiles_root: request.controller_profiles_root,
+            save_state_directory: &save_state_directory,
             // A save-state launch starts on the loaded state's own slot; an ordinary launch starts
             // on the first managed slot.
             state_slot: request

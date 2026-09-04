@@ -24,7 +24,7 @@ use crate::domain::library::{
     ContentRootAvailability, ContentUnit, ContentUnitId, GameAvailability, GameId,
 };
 use crate::domain::runtime::{
-    ManagedProcessPhase, RuntimeError, RuntimeStatus, SafeIdentifier, Sha256Digest,
+    ManagedProcessPhase, RelativePath, RuntimeError, RuntimeStatus, SafeIdentifier, Sha256Digest,
 };
 use crate::domain::save_state::{SaveStateError, SaveStateId, SaveStateSlot};
 use crate::domain::system::SystemCatalog;
@@ -123,7 +123,17 @@ pub struct SaveStateLaunchPlan {
     /// The exact historical core-binary digest a load requires. There is no fallback: a component
     /// whose currently installed, trusted binary has a different digest never satisfies this.
     pub core_binary_sha256: Sha256Digest,
+    /// The core this state's provenance records. It is the `savestate_directory` segment a
+    /// controlled launch composes, so `launch_locked` refuses outright if the core it actually
+    /// resolves is not this one — a different core would resolve a different state target.
+    pub core_id: CoreId,
     pub slot: SaveStateSlot,
+    /// The exact verified physical path of the state to load, relative to the states root (HIGH-2).
+    ///
+    /// `launch_locked` re-derives the state target from the core, content, and slot it really
+    /// resolved and refuses unless it equals this path. Without that, RetroFrontier could verify
+    /// one file and authorize RetroArch to open another.
+    pub state_relative_path: RelativePath,
     /// The frontend's own confirmed active-controller identity for this exact load attempt (see
     /// `LaunchApplicationService::launch_game`), or `None`. Carried on the plan itself so a
     /// save-state load needs no separate parameter to reach the same hotkey-derivation gate an
@@ -676,6 +686,33 @@ impl LaunchApplicationService {
                 // `CoreBinaryProvenance`. It is not the runtime that is actually launching this
                 // session; `launch_runtime.release_id`, used below when the baseline is captured,
                 // is.
+                // HIGH-2, the decisive binding. `core.core_id` is what `RetroArchService::prepare`
+                // writes into `savestate_directory`, and `unit.primary_relative_path` is the
+                // content it hands RetroArch, so this composes the *actual* file `--entryslot
+                // <slot>` will resolve for the process about to be created — not the file some
+                // earlier check happened to look at. Unless that is byte-for-byte the physical path
+                // whose identity was verified, nothing is spawned.
+                //
+                // It is checked here, under the runtime mutation lock, for the same reason the
+                // historical-core re-authorization is: `prepare_load`'s copy of this check spoke
+                // about the core the *provenance* records, and only this one speaks about the core
+                // that actually resolved.
+                if !crate::services::save_state_fs::is_state_target(
+                    &plan.state_relative_path,
+                    &core.core_id,
+                    &unit.primary_relative_path,
+                    plan.slot,
+                ) {
+                    tracing::warn!(
+                        save_state_id = %plan.save_state_id,
+                        core_id = %core.core_id,
+                        recorded_core_id = %plan.core_id,
+                        slot = plan.slot.get(),
+                        "the verified save-state file is not the state target this launch's core, \
+                         content, and slot resolve; no process was started"
+                    );
+                    return Err(LaunchFailure::new(LaunchErrorCode::InternalLaunchFailure));
+                }
                 let provenance = CoreBinaryProvenance {
                     sha256: historical.binary_sha256,
                     display_version: historical.display_version.clone(),
@@ -1208,8 +1245,8 @@ mod tests {
     };
     use crate::domain::library::{ContentUnitId, GameId};
     use crate::domain::runtime::{
-        ManagedProcessPhase, RuntimeError, RuntimeState, RuntimeStatus, SafeIdentifier,
-        Sha256Digest,
+        ManagedProcessPhase, RelativePath, RuntimeError, RuntimeState, RuntimeStatus,
+        SafeIdentifier, Sha256Digest,
     };
     use crate::domain::save_state::SaveStateSlot;
     use crate::domain::system::{SystemCatalog, SystemId};
@@ -2693,15 +2730,43 @@ mod tests {
         content_unit_id: ContentUnitId,
         system: SystemId,
     ) -> SaveStateLaunchPlan {
+        let core_id = CoreId::new(default_component(system)).unwrap();
+        let slot = SaveStateSlot::new(slot).unwrap();
         SaveStateLaunchPlan {
             save_state_id: crate::domain::save_state::SaveStateId(1),
             game_id: GameId(1),
             content_unit_id,
             core_component_id: SafeIdentifier::new(default_component(system)).unwrap(),
             core_binary_sha256: Sha256Digest::from_hex(&"a".repeat(64)).unwrap(),
-            slot: SaveStateSlot::new(slot).unwrap(),
+            // HIGH-2: the plan carries the exact state target the seeded content and this core
+            // resolve, which is what a real `prepare_load` would have verified and passed on.
+            state_relative_path: crate::services::save_state_fs::state_target(
+                &core_id,
+                &seeded_content_relative_path(content_unit_id, system),
+                slot,
+            )
+            .unwrap(),
+            core_id,
+            slot,
             active_gamepad_id: None,
         }
+    }
+
+    /// The `primary_relative_path` `seed_library` gave one content unit.
+    fn seeded_content_relative_path(unit: ContentUnitId, system: SystemId) -> String {
+        let extension = match system {
+            SystemId::Nes => "nes",
+            SystemId::Snes => "sfc",
+            SystemId::PlayStation => "chd",
+            _ => "rvz",
+        };
+        let name = match unit.0 {
+            1 => "one",
+            2 => "two-a",
+            3 => "two-b",
+            _ => "gone",
+        };
+        format!("Games/{name}.{extension}")
     }
 
     /// The `AuthenticatedCoreBinary` `save_state_plan` above expects the harness's historical-core
@@ -2910,6 +2975,61 @@ mod tests {
         // was never substituted in. The failure code proves the historical arm was taken and
         // refused, not silently downgraded to an ordinary launch.
         assert_ne!(failure_code(&response), LaunchErrorCode::GameAlreadyRunning);
+    }
+
+    /// HIGH-2 regression: the file whose identity was verified must be exactly the file this
+    /// launch's RetroArch resolves for its slot, and the pipeline proves that itself.
+    ///
+    /// Every plan below verifies fine as a *file* — it is only the state target that disagrees:
+    /// a foreign namespace with the right basename and slot, a different slot in the right
+    /// namespace, and a right-looking path composed for a different core's namespace. None of them
+    /// may create a process, because `--entryslot N` would open a different file than the one
+    /// RetroFrontier proved.
+    #[tokio::test]
+    async fn a_plan_whose_path_is_not_this_launchs_state_target_never_spawns() {
+        let launcher = Arc::new(CountingLauncher::default());
+        let harness = Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
+        harness.set_app_run("sleep 5");
+
+        // The launch this plan describes resolves `nestopia/one.state3` for content unit 1.
+        let target = save_state_plan(&harness, 3, ContentUnitId(1), SystemId::Nes);
+        assert_eq!(target.state_relative_path.as_str(), "nestopia/one.state3");
+
+        for foreign in [
+            // Same basename, same slot, foreign namespace — the exact HIGH-2 substitution.
+            "ForeignNamespace/one.state3",
+            // The right namespace, the wrong slot: `--entryslot 3` would not open it.
+            "nestopia/one.state1",
+            // Another core's namespace, composed to look entirely plausible.
+            "bsnes-mercury-balanced/one.state3",
+            // No namespace at all — the pre-binding layout.
+            "one.state3",
+        ] {
+            let mut plan = save_state_plan(&harness, 3, ContentUnitId(1), SystemId::Nes);
+            plan.state_relative_path = RelativePath::new(foreign).unwrap();
+            let response = harness.service.launch_save_state(plan).await;
+
+            assert_eq!(
+                failure_code(&response),
+                LaunchErrorCode::InternalLaunchFailure,
+                "{foreign} must be refused"
+            );
+            assert_eq!(launcher.spawns(), 0, "{foreign} must never spawn");
+            assert!(harness
+                .launch_repository
+                .open_sessions()
+                .await
+                .unwrap()
+                .is_empty());
+            assert_eq!(harness.service.get_launch_state().running, None);
+        }
+
+        // And the exact target still launches: the check is a binding, not a blanket refusal.
+        assert!(matches!(
+            harness.service.launch_save_state(target).await,
+            LaunchResponse::Started { .. }
+        ));
+        assert_eq!(launcher.spawns(), 1);
     }
 
     /// The whole file contains no path that turns a refused save-state launch into a normal one.
@@ -3154,7 +3274,12 @@ mod tests {
 
         let started = harness
             .service
-            .launch_save_state(save_state_plan(&harness, 2, ContentUnitId(1), SystemId::Nes))
+            .launch_save_state(save_state_plan(
+                &harness,
+                2,
+                ContentUnitId(1),
+                SystemId::Nes,
+            ))
             .await;
         let session_id = started_session(&started);
         harness.await_started();

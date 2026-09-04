@@ -9,13 +9,25 @@
 //! ## The pinned layout
 //!
 //! RetroArch builds its state base from the content basename plus `.state`, inside
-//! `savestate_directory`. With `sort_savestates_enable` — which the generated configuration sets —
-//! it inserts the **core-reported `sysinfo->library_name`** as a subdirectory. On the qualified
-//! managed runtime that produced `states/Nestopia/`, `states/bsnes-mercury/`, and
-//! `states/dolphin-emu/`, which are emphatically *not* the RetroFrontier `CoreId`s `nestopia`,
-//! `bsnes-mercury-balanced`, and `dolphin`. **Nothing here reverse-maps a directory name to a
-//! core.** The parse result carries no core field at all; core provenance comes from the
-//! controlled launch that produced the file.
+//! `savestate_directory`, and appends the slot number for a numbered slot. What that base is
+//! depends on one setting RetroFrontier owns:
+//!
+//! - with `sort_savestates_enable`, RetroArch inserts the **core-reported `sysinfo->library_name`**
+//!   as a subdirectory. That is a value RetroFrontier has no authenticated source for: on the
+//!   qualified managed runtime it produced `states/Nestopia/`, `states/bsnes-mercury/`, and
+//!   `states/dolphin-emu/`, which are emphatically *not* the RetroFrontier `CoreId`s `nestopia`,
+//!   `bsnes-mercury-balanced`, and `dolphin`;
+//! - **without it, RetroArch inserts nothing at all**, and the base is exactly
+//!   `<savestate_directory>/<content basename>.state`.
+//!
+//! HIGH-2: the generated configuration therefore sets `sort_savestates_enable = false` and points
+//! `savestate_directory` at `<states root>/<CoreId>` — a segment RetroFrontier *writes* rather than
+//! reads back. Both halves of the target are then RetroFrontier's own, so `state_target` below can
+//! compute the exact path a controlled launch will resolve, and every attribution and every
+//! authorization compares against that one path rather than against a basename. **Nothing here
+//! reverse-maps a directory name to a core**, and the parse result still carries no core field:
+//! a directory that merely *looks* like a `CoreId` proves nothing, and only equality with the
+//! computed target does.
 //!
 //! | Slot | File |
 //! | --- | --- |
@@ -30,13 +42,23 @@
 //! and the removal would then delete whatever occupies the *pathname* rather than the file that was
 //! verified. Every operation here therefore walks the states root by directory handle with
 //! `O_DIRECTORY | O_NOFOLLOW`, opens the final component `O_NOFOLLOW`, and reads its identity from
-//! that descriptor. Deletion additionally renames the file to a private same-directory quarantine
-//! name and re-verifies the inode *there* before unlinking, which closes the window entirely:
+//! that descriptor. Deletion — and the startup quarantine sweep, which finishes an interrupted one
+//! — additionally renames the file to a private same-directory quarantine name and re-proves the
+//! inode, the device, the size, and the digest *there* before unlinking.
+//!
+//! What that guarantees, precisely:
 //!
 //! > RetroFrontier deletes exactly the previously verified regular file under its owned Save-State
-//! > root, or deletes nothing.
+//! > root, or deletes nothing — against pathname replacement, symbolic-link traversal, hard links,
+//! > a wrong inode, a wrong digest, and ordinary TOCTOU substitution.
+//!
+//! What it does **not** claim: a hostile *same-user* writer that already holds an open writable
+//! descriptor onto the exact inode can still change the file's bytes after the final re-hash, in
+//! the instant before the `unlinkat`. That is a documented POSIX limitation, not a closed window —
+//! see `delete_verified_managed_file_inner` for the full statement of the accepted threat model.
 
 use crate::adapters::runtime_integrity::HASH_BUFFER_BYTES;
+use crate::domain::core::CoreId;
 use crate::domain::runtime::{RelativePath, Sha256Digest};
 use crate::domain::save_state::{
     LaunchStateBaselineEntry, SaveStateError, SaveStateSlot, MAX_MANAGED_SLOT, MIN_MANAGED_SLOT,
@@ -213,7 +235,7 @@ pub fn thumbnail_relative_path(state_path: &RelativePath) -> Option<RelativePath
     RelativePath::new(format!("{}{THUMBNAIL_SUFFIX}", state_path.as_str())).ok()
 }
 
-// ------------------------------------------------------------------ content binding (HIGH-2)
+// ------------------------------------------------------------------ state target binding (HIGH-2)
 
 /// The exact expected RetroArch state-file basename for one piece of content, per the pinned
 /// RetroArch 1.22.2 layout: the content file's own basename, without its extension.
@@ -231,31 +253,69 @@ fn content_state_basename(content_relative_path: &str) -> Option<&str> {
     (!base.is_empty()).then_some(base)
 }
 
-/// Whether one state-tree relative path's own basename is the exact content a controlled session
-/// launched (HIGH-2) — never merely a `.stateN` file found somewhere in the owned tree.
+/// The absolute directory a controlled launch of `core_id` must be given as its
+/// `savestate_directory` (HIGH-2).
 ///
-/// Only the filename is examined. The directory a state sits under still carries no meaning, for
-/// the same reason `parse_state_candidate` never interprets it: RetroFrontier has no
-/// authenticated source for the core-reported `library_name` subdirectory a real RetroArch
-/// process would place it under. What this closes is the much broader hole a bare `parse_
-/// state_candidate` match leaves open — attribution (at reconciliation) and authorization (at
-/// load) of a file whose basename is not this session's own content at all.
-pub fn state_basename_matches_content(
-    relative_path: &RelativePath,
+/// The generated configuration disables `sort_savestates_enable`, so this directory is the *whole*
+/// of the state path RetroArch composes below the states root: it inserts nothing of its own. The
+/// segment is the RetroFrontier `CoreId`, which `CoreId::new` already restricts to ASCII
+/// alphanumerics, `-`, `_`, and `.` with an alphanumeric first character — so it is always exactly
+/// one safe path component, can never be `.`, `..`, or a hidden name, and can never collide with
+/// the `.rf-delete-*` quarantine names or the `.rf-delete-journal` directory.
+pub fn state_directory(states_root: &Path, core_id: &CoreId) -> std::path::PathBuf {
+    states_root.join(core_id.as_str())
+}
+
+/// The exact state-tree relative path a controlled RetroArch launch resolves for one
+/// (core, content, slot) triple — the *only* file such a launch can read or write for that slot.
+///
+/// This is the HIGH-2 binding, and it is an equality, not a heuristic. Every input is a fact
+/// RetroFrontier controls or has recorded:
+///
+/// - `core_id` is the core this launch resolved, and it is written verbatim into the generated
+///   configuration's `savestate_directory` by [`state_directory`];
+/// - `content_relative_path` is the primary content file this launch hands RetroArch;
+/// - `slot` is the managed slot, which reaches RetroArch as `--entryslot` and `state_slot`.
+///
+/// Verified against a real RetroArch 1.22.x binary rather than assumed: with
+/// `sort_savestates_enable = false` and `savestate_directory = D`, the frontend logs
+/// `Redirecting save state to "D/<content basename>.state"`, and `--entryslot 3` then resolves
+/// `D/<content basename>.state3`. With sorting *enabled* the same run resolves
+/// `D/Nestopia/<content basename>.state3` — the core-reported `library_name` segment this design
+/// exists to stop depending on. See `M9_REVIEW.md`.
+///
+/// `None` means no target can be named at all (a content path with no usable basename, or a
+/// composed path the domain would refuse), which is always a refusal, never a fallback.
+pub fn state_target(
+    core_id: &CoreId,
     content_relative_path: &str,
+    slot: SaveStateSlot,
+) -> Option<RelativePath> {
+    let base = content_state_basename(content_relative_path)?;
+    RelativePath::new(format!(
+        "{}/{base}{STATE_SUFFIX}{}",
+        core_id.as_str(),
+        slot.get()
+    ))
+    .ok()
+}
+
+/// Whether one state-tree relative path *is* the exact target a controlled launch of this core,
+/// content, and slot resolves (HIGH-2) — never merely a `.stateN` file found somewhere in the
+/// owned tree, and never merely one whose basename happens to match.
+///
+/// A file under a foreign directory — a leftover `Nestopia/` tree from before this binding, another
+/// frontend's states, or a hostile namespace planted to look managed — is not this target and is
+/// therefore neither attributable at reconciliation nor loadable at launch, however correct its
+/// basename, slot, and digest are.
+pub fn is_state_target(
+    relative_path: &RelativePath,
+    core_id: &CoreId,
+    content_relative_path: &str,
+    slot: SaveStateSlot,
 ) -> bool {
-    let Some(expected) = content_state_basename(content_relative_path) else {
-        return false;
-    };
-    let name = relative_path
-        .as_str()
-        .rsplit('/')
-        .next()
-        .unwrap_or_default();
-    match name.rsplit_once(STATE_SUFFIX) {
-        Some((base, _slot)) => base == expected,
-        None => false,
-    }
+    state_target(core_id, content_relative_path, slot)
+        .is_some_and(|target| target == *relative_path)
 }
 
 /// Enumerate the RetroFrontier-owned state tree.
@@ -992,8 +1052,8 @@ fn read_journal_entry(states_root: &Path, id: &str) -> Option<(u64, Sha256Digest
         return None;
     }
     let journal = open_delete_journal_dir(states_root).ok()?;
-    let descriptor = rustix::fs::openat(&journal, id, FILE_OPEN_FLAGS, rustix::fs::Mode::empty())
-        .ok()?;
+    let descriptor =
+        rustix::fs::openat(&journal, id, FILE_OPEN_FLAGS, rustix::fs::Mode::empty()).ok()?;
     let mut file = std::fs::File::from(descriptor);
     let metadata = file.metadata().ok()?;
     if !metadata.file_type().is_file() || metadata.len() > MAX_JOURNAL_ENTRY_BYTES {
@@ -1174,7 +1234,8 @@ fn delete_verified_managed_file_inner(
     // against every actor path substitution, hard links, symlinks, and directory swaps can
     // produce; for a hostile same-inode writer, the remaining window is narrowed to the instant
     // between this re-hash and the `unlinkat` immediately below, not the whole delete.
-    let content_matches = matches!(hash_descriptor(quarantined), Ok(sha256) if sha256 == expected_sha256);
+    let content_matches =
+        matches!(hash_descriptor(quarantined), Ok(sha256) if sha256 == expected_sha256);
     if !content_matches {
         restore(&quarantine);
         return Err(SaveStateError::UnsafeFilesystemTarget);
@@ -1361,6 +1422,126 @@ mod tests {
                 parse_state_candidate(&path("Synthetic.state1")),
                 StateCandidate::ManagedSlot(SaveStateSlot::new(1).unwrap())
             );
+        }
+
+        /// HIGH-2: the exact state target a controlled launch resolves.
+        ///
+        /// Pinned against a real RetroArch 1.22.x binary, not inferred. Run with
+        /// `sort_savestates_enable = false`, `savestate_directory = D`, content
+        /// `<...>/Synthetic Probe.nes` and `--entryslot 3`, RetroArch logs:
+        ///
+        /// ```text
+        /// [INFO] [Override] Redirecting save state to "D/Synthetic Probe.state".
+        /// [INFO] [State] Entry state found in "D/Synthetic Probe.state3".
+        /// ```
+        ///
+        /// The same run with sorting *enabled* resolves `D/Nestopia/Synthetic Probe.state3`
+        /// instead — the core-reported `library_name` segment RetroFrontier cannot authenticate,
+        /// and the reason the generated configuration turns sorting off.
+        #[test]
+        fn the_state_target_is_the_core_namespace_the_content_basename_and_the_slot() {
+            let core = CoreId::new("nestopia").unwrap();
+            let slot = SaveStateSlot::new(3).unwrap();
+
+            // The directory RetroArch is given, and the path RetroFrontier proves against, are the
+            // same composition.
+            assert_eq!(
+                state_directory(Path::new("/app-data/states"), &core),
+                Path::new("/app-data/states/nestopia")
+            );
+            assert_eq!(
+                state_target(&core, "NES/Synthetic Probe.nes", slot).unwrap(),
+                path("nestopia/Synthetic Probe.state3")
+            );
+            // The extension is dropped, further directories in the content path are irrelevant,
+            // and a basename carrying its own dots keeps everything but the last extension.
+            for (content, expected) in [
+                ("Synthetic.nes", "nestopia/Synthetic.state3"),
+                ("a/b/c/Synthetic.nes", "nestopia/Synthetic.state3"),
+                (
+                    "PS1/Final Fantasy VII (Disc 1).chd",
+                    "nestopia/Final Fantasy VII (Disc 1).state3",
+                ),
+                ("NoExtension", "nestopia/NoExtension.state3"),
+            ] {
+                assert_eq!(
+                    state_target(&core, content, slot).unwrap(),
+                    path(expected),
+                    "{content}"
+                );
+            }
+            // Every slot the layout manages composes the same way.
+            for number in [MIN_MANAGED_SLOT, 2, 42, MAX_MANAGED_SLOT] {
+                let slot = SaveStateSlot::new(number).unwrap();
+                assert_eq!(
+                    state_target(&core, "NES/Synthetic.nes", slot).unwrap(),
+                    path(&format!("nestopia/Synthetic.state{number}"))
+                );
+            }
+            // A content path with no usable basename names no target, which is a refusal.
+            assert!(state_target(&core, "NES/.nes", slot).is_none());
+            assert!(state_target(&core, "", slot).is_none());
+        }
+
+        /// The binding is an equality. A file that is merely *shaped* like the target — right
+        /// basename, right slot, wrong namespace — is not the target, and neither is the right
+        /// namespace with the wrong slot or basename.
+        #[test]
+        fn only_the_exact_target_path_satisfies_the_binding() {
+            let core = CoreId::new("nestopia").unwrap();
+            let slot = SaveStateSlot::new(1).unwrap();
+            let content = "NES/Synthetic.nes";
+
+            assert!(is_state_target(
+                &path("nestopia/Synthetic.state1"),
+                &core,
+                content,
+                slot
+            ));
+            for foreign in [
+                // The core-reported `library_name` directory sorting would have produced.
+                "Nestopia/Synthetic.state1",
+                "ForeignNamespace/Synthetic.state1",
+                "bsnes-mercury-balanced/Synthetic.state1",
+                // No namespace at all.
+                "Synthetic.state1",
+                // Nested below the right namespace is still not the right path.
+                "nestopia/sub/Synthetic.state1",
+                // Right namespace, wrong slot.
+                "nestopia/Synthetic.state2",
+                // Right namespace, wrong content.
+                "nestopia/Foreign.state1",
+            ] {
+                assert!(
+                    !is_state_target(&path(foreign), &core, content, slot),
+                    "{foreign} must not satisfy the binding"
+                );
+            }
+        }
+
+        /// A `CoreId` is always exactly one safe path component, so the namespace segment can
+        /// never escape the states root or collide with RetroFrontier's own private names.
+        #[test]
+        fn a_core_namespace_is_always_one_safe_component() {
+            for core_id in [
+                "nestopia",
+                "bsnes-mercury-balanced",
+                "beetle-psx",
+                "dolphin",
+                "a",
+            ] {
+                let core = CoreId::new(core_id).unwrap();
+                let composed = state_target(&core, "Synthetic.nes", SaveStateSlot::new(1).unwrap())
+                    .expect("a valid core id always composes a target");
+                assert_eq!(composed.as_str().split('/').count(), 2, "{core_id}");
+                assert!(!core_id.starts_with('.'), "{core_id}");
+                assert!(!core_id.starts_with(QUARANTINE_PREFIX), "{core_id}");
+                assert_ne!(core_id, DELETE_JOURNAL_DIR);
+            }
+            // The domain refuses everything that would not be one component in the first place.
+            for unsafe_id in ["..", ".", "a/b", "", ".hidden", "a\\b", "a b"] {
+                assert!(CoreId::new(unsafe_id).is_err(), "{unsafe_id}");
+            }
         }
 
         /// The quarantine name a delete uses can never be mistaken for content.
@@ -2256,7 +2437,11 @@ mod tests {
     fn a_fake_quarantine_file_with_no_journal_entry_survives_the_sweep() {
         let root = states_root();
         write(root.path(), "Nestopia/Synthetic.state1", b"real state");
-        write(root.path(), "Nestopia/.rf-delete-fake", b"a user's own file");
+        write(
+            root.path(),
+            "Nestopia/.rf-delete-fake",
+            b"a user's own file",
+        );
 
         // It is not attributable, so reconciliation would never register it either.
         assert_eq!(

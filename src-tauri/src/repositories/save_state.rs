@@ -899,7 +899,10 @@ mod tests {
         let repository = SaveStateRepository::new(pool.clone());
         let older = session(&pool, 1).await;
         let never_spawned = session(&pool, 1).await;
-        assert!(never_spawned.0 > older.0, "the later session has a higher id");
+        assert!(
+            never_spawned.0 > older.0,
+            "the later session has a higher id"
+        );
 
         sqlx::query(
             "UPDATE play_sessions SET outcome = 'failed_to_start', exit_code = NULL, \

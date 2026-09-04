@@ -506,16 +506,26 @@ async fn a_constructed_release_installs_and_launches_through_the_real_tuf_path()
     let launch_paths = crate::services::retroarch_paths::LaunchPaths::new(app_data.path());
     // The M9 hotkeys are derived from the same verified profile database, so a real release also
     // proves that the qualified profiles it ships resolve the managed save-state combinations.
+    //
+    // MEDIUM-2: they resolve only for a controller the shipped database itself names, so the
+    // frontend-confirmed identity handed in here is the profile's own `input_device` value.
     let hotkeys = crate::services::retroarch_input::resolve_managed_save_state_hotkeys(
         &resolved,
         crate::services::retroarch::MANAGED_JOYPAD_DRIVER,
+        Some("Sony Interactive Entertainment DualSense Wireless Controller"),
     )
     .expect("the shipped profile database resolves the managed save-state hotkeys");
+    // HIGH-2: the state directory a real launch of this core would be given.
+    let save_state_directory = crate::services::save_state_fs::state_directory(
+        launch_paths.states_root(),
+        &crate::domain::core::CoreId::new("nestopia").unwrap(),
+    );
     let generated = crate::services::retroarch_config::RetroArchConfig::build(
         &crate::services::retroarch_config::RetroArchConfigRequest {
             paths: &launch_paths,
             core_directory: core.core_path.parent().unwrap(),
             controller_profiles_root: &resolved,
+            save_state_directory: &save_state_directory,
             state_slot: crate::domain::save_state::SaveStateSlot::default_launch_slot(),
             save_state_hotkeys: Some(&hotkeys),
         },
