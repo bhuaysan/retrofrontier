@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { GameMetadataState, LibraryGameDetail, SystemStatus } from '../../platform/ipc';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
 import type { GameLaunchModel } from '../../hooks/useGameLaunch';
+import type { SaveStatesModel } from '../../hooks/useSaveStates';
 import { GameDetailPage } from './GameDetailPage';
 
 const localDetail: LibraryGameDetail = {
@@ -140,6 +141,27 @@ function detailModel(overrides: Partial<GameDetailModel> = {}): GameDetailModel 
   };
 }
 
+/**
+ * An empty Save-States channel. Game Detail always has one; these suites are about the launch and
+ * focus behaviour around it, so the section stays in its truthful empty state here.
+ */
+function saveStatesModel(overrides: Partial<SaveStatesModel> = {}): SaveStatesModel {
+  return {
+    states: [],
+    loaded: true,
+    loading: false,
+    error: null,
+    deletePendingId: null,
+    actionFailure: null,
+    loadPendingId: null,
+    retry: vi.fn().mockResolvedValue(undefined),
+    load: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn().mockResolvedValue(undefined),
+    dismissActionFailure: vi.fn(),
+    ...overrides,
+  };
+}
+
 function launchModel(overrides: Partial<GameLaunchModel> = {}): GameLaunchModel {
   return {
     phase: 'idle',
@@ -169,6 +191,7 @@ function renderDetail(
       detail={model}
       gameId={7}
       launch={launch}
+      saveStates={saveStatesModel()}
       onBackToLibrary={vi.fn()}
       onRetryReadiness={vi.fn()}
       readinessLoading={readinessLoading}
@@ -212,9 +235,11 @@ describe('GameDetailPage', () => {
     expect(within(readiness).getByText('PARTIALLY AVAILABLE')).toBeInTheDocument();
     expect(within(readiness).getAllByText('AVAILABLE')).toHaveLength(3);
     expect(within(readiness).queryByText('NOT REQUIRED')).not.toBeInTheDocument();
-    // M7 owns the Play action; save states and controller mapping remain later milestones.
+    // M7 owns the Play action and M9 added the Save States section beside it; controller mapping
+    // remains a later milestone. The launch control is unchanged by that addition.
     expect(screen.getByRole('button', { name: /^play /i })).toBeInTheDocument();
-    expect(screen.queryByText(/save state/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'SAVE STATES' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Load SLOT/ })).not.toBeInTheDocument();
     expect(screen.queryByText('provider-id-hidden')).not.toBeInTheDocument();
     expect(screen.queryByText('must-not-render')).not.toBeInTheDocument();
   });
@@ -482,6 +507,7 @@ describe('GameDetailPage', () => {
         detail={detailModel({ metadataActionPending: true })}
         launch={launchModel()}
         gameId={7}
+        saveStates={saveStatesModel()}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={vi.fn()}
         readinessError={null}
@@ -493,6 +519,7 @@ describe('GameDetailPage', () => {
         detail={detailModel()}
         launch={launchModel()}
         gameId={7}
+        saveStates={saveStatesModel()}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={vi.fn()}
         readinessError={null}
@@ -563,6 +590,7 @@ describe('GameDetailPage', () => {
         detail={detailModel({ metadata: { ...metadata, jobs: [] } })}
         launch={launchModel()}
         gameId={7}
+        saveStates={saveStatesModel()}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={vi.fn()}
         readinessError={null}
@@ -800,6 +828,7 @@ describe('GameDetailPage', () => {
         detail={detailModel()}
         launch={launchModel()}
         gameId={7}
+        saveStates={saveStatesModel()}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={retryReadiness}
         readinessError={{ code: 'runtime_unavailable', message: 'Runtime unavailable.' } as never}
@@ -820,6 +849,7 @@ describe('GameDetailPage', () => {
         detail={detailModel({ localDetail: null })}
         launch={launchModel()}
         gameId={7}
+        saveStates={saveStatesModel()}
         onBackToLibrary={onBackToLibrary}
         onRetryReadiness={vi.fn()}
         readinessError={null}
@@ -1013,6 +1043,7 @@ describe('GameDetailPage — B6 hero fidelity', () => {
         detail={detailModel()}
         launch={launchModel()}
         gameId={7}
+        saveStates={saveStatesModel()}
         onBackToLibrary={onBackToLibrary}
         onRetryReadiness={vi.fn()}
         readinessError={null}
@@ -1191,6 +1222,7 @@ describe('GameDetailPage — local-only hero', () => {
         } as Partial<GameDetailModel>)}
         gameId={21}
         launch={launchModel()}
+        saveStates={saveStatesModel()}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={vi.fn()}
         readinessError={null}
@@ -1254,9 +1286,11 @@ describe('GameDetailPage — local-only hero', () => {
     expect(within(hero).queryByText('RELEASE')).toBeNull();
 
     expect(screen.queryByRole('button', { name: /^(start|play|launch|run game)$/i })).toBeNull();
-    expect(
-      screen.queryByText(/playtime|last played|save state|screenshot|coming soon/i),
-    ).toBeNull();
+    expect(screen.queryByText(/playtime|last played|screenshot|coming soon/i)).toBeNull();
+    // A save state is invented no more than metadata is: the section exists, and it says plainly
+    // that this game has none rather than showing a placeholder card.
+    expect(screen.getByText('NO SAVE STATES YET')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Load SLOT/ })).toBeNull();
 
     // The C4 accent placeholder stands in for the missing cover; no provider cover is claimed.
     expect(
@@ -1400,6 +1434,34 @@ describe('GameDetailPage launch interaction', () => {
     expect(launch.dismissFailure).toHaveBeenCalled();
   });
 
+  it('says a refused save-state baseline started nothing, without blaming the game', () => {
+    const launch = launchModel({
+      failure: {
+        code: 'saveStateBaselineFailed',
+        message: 'RetroFrontier could not prepare save-state tracking for this session.',
+        context: {
+          systemId: 'playstation',
+          coreId: null,
+          biosRequirementIds: [],
+          runtimeState: null,
+          hostPrerequisite: null,
+          exitCode: null,
+          contentOptions: [],
+        },
+      },
+    });
+    renderDetail(detailModel(), systemStatus(), false, launch);
+
+    const surface = screen.getByRole('group', { name: 'Launch failed' });
+    expect(within(surface).getByText('SAVE STATE TRACKING UNAVAILABLE')).toBeInTheDocument();
+    expect(within(surface).getByRole('alert')).toHaveTextContent('The game was not started');
+    // A refusal before the spawn is not a crash, and nothing about the game, its content, or the
+    // managed runtime is implicated by it.
+    expect(within(surface).getByRole('alert').textContent ?? '').not.toMatch(
+      /crash|broken|corrupt|exited/i,
+    );
+  });
+
   it('offers the launchable versions and relaunches with the chosen unit', () => {
     const launch = launchModel({
       contentOptions: [
@@ -1451,6 +1513,7 @@ describe('GameDetailPage launch interaction', () => {
             startedAt: 1_756_000_000_000,
           },
         })}
+        saveStates={saveStatesModel()}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={vi.fn()}
         readinessError={null}
@@ -1464,6 +1527,7 @@ describe('GameDetailPage launch interaction', () => {
         detail={detailModel()}
         gameId={7}
         launch={launchModel()}
+        saveStates={saveStatesModel()}
         onBackToLibrary={vi.fn()}
         onRetryReadiness={vi.fn()}
         readinessError={null}

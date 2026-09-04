@@ -6,10 +6,12 @@ import { FocusProvider } from '../../focus/FocusProvider';
 import { useFocusApi } from '../../focus/focusContext';
 import type { GameDetailModel } from '../../hooks/useGameDetail';
 import type { GameLaunchModel } from '../../hooks/useGameLaunch';
+import type { SaveStatesModel } from '../../hooks/useSaveStates';
 import type {
   LaunchContentOption,
   LaunchFailure,
   LibraryGameDetail,
+  SaveStateView,
   SystemStatus,
 } from '../../platform/ipc';
 import { installRectStub, layoutColumn } from '../../test/geometry';
@@ -114,6 +116,27 @@ function detailModel(): GameDetailModel {
   };
 }
 
+/**
+ * An empty Save-States channel. Game Detail always has one; these suites are about the launch and
+ * focus behaviour around it, so the section stays in its truthful empty state here.
+ */
+function saveStatesModel(overrides: Partial<SaveStatesModel> = {}): SaveStatesModel {
+  return {
+    states: [],
+    loaded: true,
+    loading: false,
+    error: null,
+    deletePendingId: null,
+    actionFailure: null,
+    loadPendingId: null,
+    retry: vi.fn().mockResolvedValue(undefined),
+    load: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn().mockResolvedValue(undefined),
+    dismissActionFailure: vi.fn(),
+    ...overrides,
+  };
+}
+
 function launchModel(overrides: Partial<GameLaunchModel> = {}): GameLaunchModel {
   return {
     phase: 'idle',
@@ -192,6 +215,7 @@ function renderWithSelection(cancelContentSelection = vi.fn()) {
               setOpen(false);
             },
           })}
+          saveStates={saveStatesModel()}
           onBackToLibrary={vi.fn()}
           onRetryReadiness={vi.fn()}
           readinessError={null}
@@ -231,6 +255,7 @@ interface FailureHarnessOptions {
   blocked?: boolean;
   onBackToLibrary?: () => void;
   detail?: GameDetailModel;
+  saveStates?: SaveStatesModel;
 }
 
 function renderWithFailure(options: FailureHarnessOptions = {}) {
@@ -277,6 +302,7 @@ function renderWithFailure(options: FailureHarnessOptions = {}) {
                 setFailed(false);
               },
             })}
+            saveStates={options.saveStates ?? saveStatesModel()}
             onBackToLibrary={options.onBackToLibrary ?? vi.fn()}
             onRetryReadiness={vi.fn()}
             readinessError={null}
@@ -417,6 +443,72 @@ describe('Game Detail launch failure scope', () => {
   });
 });
 
+/**
+ * M7/M8 regression under M9.
+ *
+ * The Save States section is a new sibling of the launch controls on the same screen, so the
+ * interactions M7 and M8 established are re-asserted with real cards rendered beside them: the
+ * launch scopes must still own `back` and still refuse reach-through, and PLAY must still be the
+ * one control that starts a game.
+ */
+describe('Game Detail launch interaction with save states rendered', () => {
+  const savedState: SaveStateView = {
+    id: 4,
+    gameId: 7,
+    contentUnitId: 11,
+    slot: 2,
+    coreId: 'beetle_psx',
+    coreDisplayVersion: '0.9.44',
+    coreSourceRevision: null,
+    contentUnitLabel: null,
+    createdAt: new Date(2026, 8, 1, 9, 15).getTime(),
+    updatedAt: new Date(2026, 8, 3, 14, 32).getTime(),
+    thumbnailRef: null,
+    capabilities: { loadability: 'ready', deletable: true },
+  };
+
+  it('still starts the game from PLAY and never from a save state', () => {
+    const launch = vi.fn().mockResolvedValue(undefined);
+    const load = vi.fn();
+    render(
+      <FocusProvider>
+        <Dispatcher />
+        <GameDetailPage
+          detail={detailModel()}
+          gameId={7}
+          launch={launchModel({ launch })}
+          saveStates={saveStatesModel({ states: [savedState], load })}
+          onBackToLibrary={vi.fn()}
+          onRetryReadiness={vi.fn()}
+          readinessError={null}
+          systemStatus={systemStatus}
+        />
+      </FocusProvider>,
+    );
+
+    act(() => playAction().focus());
+    send('confirm');
+
+    expect(launch).toHaveBeenCalledWith(7);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('refuses a save-state action reached through an open launch-failure surface', async () => {
+    const load = vi.fn();
+    renderWithFailure({ saveStates: saveStatesModel({ states: [savedState], load }) });
+    await waitFor(() => expect(dismissAction()).toHaveFocus());
+
+    // A pointer or Tab may legitimately leave the non-modal failure surface; a controller may not
+    // act out there, and a save state is no more reachable through it than the Favorite action is.
+    act(() => screen.getByRole('button', { name: /^Load SLOT 2/ }).focus());
+    send('confirm');
+    send('context');
+
+    expect(load).not.toHaveBeenCalled();
+    expect(failureGone()).toBeInTheDocument();
+  });
+});
+
 describe('Game Detail launch content selection scope', () => {
   it('moves focus into the selection surface when it opens', async () => {
     renderWithSelection();
@@ -473,6 +565,7 @@ describe('Game Detail launch content selection scope', () => {
             detail={detailModel()}
             gameId={7}
             launch={launchModel({ contentOptions: open ? contentOptions : null, launch })}
+            saveStates={saveStatesModel()}
             onBackToLibrary={vi.fn()}
             onRetryReadiness={vi.fn()}
             readinessError={null}
@@ -579,6 +672,7 @@ describe('Game Detail launch from a content option', () => {
             },
             cancelContentSelection: () => setOpen(false),
           })}
+          saveStates={saveStatesModel()}
           onBackToLibrary={vi.fn()}
           onRetryReadiness={vi.fn()}
           readinessError={null}

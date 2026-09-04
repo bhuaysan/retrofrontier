@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { publishActiveControllerOwner, resetActiveControllerOwner } from './activeController';
 import { GAMEPAD_BUTTON_INDEX, type GamepadSnapshot } from './gamepadAdapter';
 import {
+  activeControllerIdentity,
   detectInputRuntime,
   gamepadLayoutQuirk,
   normalizeGamepadSnapshot,
@@ -283,5 +285,47 @@ describe('normalizeGamepads', () => {
     expect(pressedCanonicalIndices(dualsense as GamepadSnapshot)).toEqual([
       GAMEPAD_BUTTON_INDEX.search,
     ]);
+  });
+});
+
+describe('activeControllerIdentity', () => {
+  afterEach(() => {
+    resetActiveControllerOwner();
+  });
+
+  it('returns the id of the controller that actually owns input', () => {
+    publishActiveControllerOwner(pad({ id: DUALSENSE_USB_ID }));
+    expect(activeControllerIdentity()).toBe(DUALSENSE_USB_ID);
+  });
+
+  it('returns null when no owner has been proven', () => {
+    expect(activeControllerIdentity()).toBeNull();
+  });
+
+  it('returns null once the acquisition boundary releases ownership', () => {
+    publishActiveControllerOwner(pad({ id: DUALSENSE_USB_ID }));
+    publishActiveControllerOwner(null);
+    expect(activeControllerIdentity()).toBeNull();
+  });
+
+  /**
+   * MEDIUM-2 regression. It does **not** re-select a controller of its own: it reports whoever the
+   * input layer says currently owns input, even when that is not the lowest connected index. The
+   * previous implementation called `selectActiveGamepad(pads, null)` here and would have answered
+   * `'DualSense at index 0'` while the UI was being driven by the pad at index 1.
+   */
+  it('never re-selects: a lower-index pad does not take the reported identity', () => {
+    // The input layer's own ownership decision: the pad at index 1 got there first and keeps it.
+    publishActiveControllerOwner(pad({ index: 1, id: 'Xbox Wireless Controller' }));
+    // A second pad appears at a lower index. Nothing about ownership changed.
+    vi.stubGlobal('navigator', {
+      ...window.navigator,
+      getGamepads: () => [
+        pad({ index: 0, id: DUALSENSE_USB_ID }),
+        pad({ index: 1, id: 'Xbox Wireless Controller' }),
+      ],
+    });
+    expect(activeControllerIdentity()).toBe('Xbox Wireless Controller');
+    vi.unstubAllGlobals();
   });
 });

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { activeControllerIdentity } from '../input/gamepadQuirks';
 import {
   getLaunchState,
   launchGame,
@@ -191,6 +192,7 @@ export function useGameLaunch(): GameLaunchModel {
         const response = await launchGame({
           gameId,
           contentUnitId: contentUnitId ?? null,
+          activeGamepadId: activeControllerIdentity(),
         });
         if (!owns()) return;
         switch (response.status) {

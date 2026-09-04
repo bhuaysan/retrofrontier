@@ -235,13 +235,35 @@ identity.
 
 Normal emulator-managed persistent save data such as SRAM or memory-card data.
 
-Save Data is user data and must survive runtime replacement.
+Save Data is user data and must survive runtime replacement. M9 keeps it RetroFrontier-*located*
+and otherwise **opaque**: it is never interpreted, never enumerated as individual files, never
+assigned slots, never deleted by RetroFrontier, and never subjected to save-state compatibility
+logic.
 
 ### Save State
 
-An emulator snapshot associated with a game.
+An emulator snapshot bound to the exact game, content unit, play session, core binary, and physical
+bytes that produced it.
 
-Track core and runtime versions because compatibility is not guaranteed across versions.
+M9 makes this a first-class domain object with a hard rule: a Save State exists because a
+*controlled launch proved its provenance* and RetroFrontier subsequently verified the exact physical
+content. Provenance is never derived from a filename, a slot suffix, a directory name, a content
+basename, or timestamp proximity.
+
+- `SaveStateId` is the semantic identity, and the only one that crosses IPC. A filename, an absolute
+  path, a slot, a content basename, a RetroArch core directory name, and a timestamp are explicitly
+  *not* identity.
+- The slot is scoped metadata bounded to 1–999. RetroArch's slot 0 and automatic slot are out of
+  scope and cannot be expressed at all.
+- `core_binary_sha256` — the authenticated digest of the core executable, from the release
+  manifest's installed-file inventory — is the decisive core identity and is **immutable**. The same
+  slot under different core-binary provenance is a different Save State, and both are representable.
+- Lifecycle is `available`, `missing`, `superseded`, or `deleted`. Only `available` states are shown.
+- A human-readable core version may be recorded for description; it is never a load identity.
+
+M9 calculates whether a controlled load is currently *permitted* (`loadable`), never whether a state
+is compatible. Even with the identical binary, deserialization is not guaranteed, and one failed
+load never marks a state corrupt. See [`docs/SAVE_STATES.md`](docs/SAVE_STATES.md).
 
 ### Game Override
 
@@ -318,6 +340,14 @@ RuntimeRelease
 16. Operating-system process identity, not persisted history, decides whether a managed emulator is
     running. When identity cannot be established, RetroFrontier fails closed: runtime mutation stays
     blocked, launches are refused, and the durable record is preserved rather than deleted.
+17. A Save State is a managed object only when a controlled launch proved its game, content unit,
+    core provenance, and exact file identity. Attribution is fail-closed: a state whose provenance
+    cannot be proved is left untouched on disk, never imported, never displayed, and never offered
+    for load or delete. Filename resemblance proves nothing.
+18. A `SaveStateId` never authorizes a filesystem path. It identifies the expected domain object,
+    and the exact current target must be proved again immediately before any read, load, or
+    destructive action. The filesystem is authoritative for bytes; SQLite is authoritative for
+    provenance and lifecycle; neither alone makes a Save State usable.
 
 ## Identification Inputs
 
@@ -361,6 +391,15 @@ M7 adds two further tables alongside this schema without altering it: `game_laun
 the user-owned per-game core choice and `play_sessions` holds execution history. Both reference
 `games (id)` with restrictive delete behaviour, `play_sessions` also references
 `content_units (id)`, and neither is written by the scanner or by a metadata provider.
+
+M9 adds three more on the same terms. `save_states` holds proved provenance and the registered file
+identity, with restrictive foreign keys to `games`, `content_units`, and `play_sessions`; a unique
+`(play_session_id, state_relative_path, state_sha256)` index makes reconciliation replay a no-op,
+and a partial unique index on `state_relative_path` lets exactly one `available` row claim a
+physical file while superseded predecessors remain as history. `launch_state_baselines` and
+`launch_state_baseline_entries` hold the durable pre-launch state-tree snapshot that makes
+attribution possible at all; it is persisted before RetroArch is spawned and survives a restart.
+None of the three is written by the scanner or by a metadata provider.
 
 M5 adds metadata tables alongside this schema without altering it: `provider_matches` and
 `provider_match_evidence` hold provider identity and the evidence bound to it,

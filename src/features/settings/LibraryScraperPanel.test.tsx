@@ -11,7 +11,7 @@ import type {
   MetadataScrapeStatus,
 } from '../../platform/ipc';
 import { LibraryScraperPanel, SCRAPE_CONFIRMATION_THRESHOLD } from './LibraryScraperPanel';
-import { useMetadataScrape } from '../../hooks/useMetadataScrape';
+import { SCRAPE_POLL_INTERVAL_MS, useMetadataScrape } from '../../hooks/useMetadataScrape';
 
 const mocks = vi.hoisted(() => ({
   getMetadataScrapeStatus: vi.fn(),
@@ -433,7 +433,12 @@ describe('LibraryScraperPanel controller navigation', () => {
     mocks.getMetadataScrapeStatus.mockResolvedValue(
       status('completed', { matched: 148, waiting: 0 }),
     );
-    await screen.findByText('SCRAPE COMPLETE');
+    // The completion arrives on the panel's own poll, whose interval is exactly the default
+    // `findBy` timeout — so the default is a coin flip that only wins while the machine is idle.
+    // The claim under test is about focus, not about latency, so the wait is given real margin.
+    await screen.findByText('SCRAPE COMPLETE', undefined, {
+      timeout: SCRAPE_POLL_INTERVAL_MS * 4,
+    });
 
     expect(elsewhere).toHaveFocus();
   });

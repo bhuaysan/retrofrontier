@@ -6,8 +6,11 @@ approved design is `docs/superpowers/specs/2026-08-30-m7-retroarch-launch-design
 ## Scope
 
 Linux x86_64 only. macOS is the second platform and Windows remains a V1 target; neither has a
-launch adapter yet. M7 does not implement controller/focus (M8), save-state management (M9), or
-packaging (M10).
+launch adapter yet. M7 does not implement controller/focus (M8) or packaging (M10).
+
+**M9 extended this pipeline rather than adding a second one.** A save-state load is the same launch
+with a different *plan*; see [Launch plans](#launch-plans) and
+[`docs/SAVE_STATES.md`](SAVE_STATES.md).
 
 ## Boundary
 
@@ -59,6 +62,25 @@ Storing an override runs that same resolution, so no override that fails the con
 persisted in the first place. The launch still revalidates: passing validation once does not make a
 stored override trustworthy later, because the verified runtime can change underneath it.
 
+## Launch plans
+
+M9 introduced one parameter and no new pipeline. A `LaunchPlan` replaces exactly two decisions:
+
+| | Normal | Save state |
+| --- | --- | --- |
+| Core | valid per-game override, else the approved system default | the **exact historical core binary** the plan carries |
+| Content unit | auto-selected, or chosen by the user | the **exact recorded** unit; no selection is ever offered |
+| Active slot | 1 | the stored slot, plus `--entryslot N` |
+
+Everything else is the same code: the runtime mutation lock, process exclusivity, content-target
+validation, BIOS validation, managed controller profiles, configuration generation, the durable play
+session, the durable process record, restart adoption, and process monitoring. A save-state launch
+is a new managed play session and receives its own pre-launch save-state baseline.
+
+A save-state launch never reads and never writes `game_launch_overrides` — the historical core is a
+one-shot launch override — and there is no fallback to the game's current core if it cannot be
+resolved.
+
 ## Content selection
 
 A unit is launchable when it is `available`, its ordinal-zero membership is a `standalone`,
@@ -99,6 +121,10 @@ verified immutable version tree, because RetroArch only reads both — see
 the generated file, and `savefiles_in_content_dir`, `savestates_in_content_dir`,
 `systemfiles_in_content_dir`, and `screenshots_in_content_dir` are all `false` so nothing is written
 beside user ROMs.
+
+M9 adds `savestate_thumbnail_enable = true`, an explicit `state_slot`, and — when the authenticated
+controller profiles resolve them — the managed save-state hotkeys. It deliberately writes **no**
+ingame load-state bind. See [`docs/SAVE_STATES.md`](SAVE_STATES.md).
 
 There is exactly one configuration file. It is deterministic and rewritten atomically (unique
 same-directory temporary file, flush, rename, parent fsync, mode `0600`) before every launch, so no
@@ -210,17 +236,26 @@ Non-blocking gaps are returned as `diagnostics` on a successful launch and rende
 7. validate BIOS, then host prerequisites;
 8. write the generated configuration and compose the system directory;
 9. persist the play session as `running`;
-10. write the conservative `launching` process record — no PID, because the child does not exist yet;
-11. spawn the authenticated `AppRun`;
-12. build strong process identity and atomically replace the record with `running`; on failure the
+10. capture the durable save-state baseline — **before** the record and the spawn, because a state
+    written by a session whose "before" was never recorded could never be attributed afterwards. A
+    baseline that cannot be created durably fails the launch as `saveStateBaselineFailed`;
+11. write the conservative `launching` process record — no PID, because the child does not exist yet;
+12. spawn the authenticated `AppRun`;
+13. build strong process identity and atomically replace the record with `running`; on failure the
     child is terminated and the launch fails closed — see *Uncertain process death* for what
     happens when that termination itself cannot be confirmed;
-13. watch a bounded settle window for an immediate exit (`processExitedDuringLaunch`);
-14. release the mutation lock, publish running state, and monitor the child on a blocking task;
-15. on a positively reaped exit: classify the outcome, close the session, clear the record, publish
-    the stable state.
+14. watch a bounded settle window for an immediate exit (`processExitedDuringLaunch`);
+15. release the mutation lock, publish running state, and monitor the child on a blocking task;
+16. on a positively reaped exit: classify the outcome, close the session, clear the record, publish
+    the stable state, and reconcile the session's save-state baseline.
 
-`AppRun --config <generated config> -L <managed core> <content target>` is the exact command form.
+`AppRun --config <generated config> -L <managed core> [--entryslot N] <content target>` is the exact
+command form. `--entryslot` appears only for a save-state launch, and the content target is always
+last; an ordinary launch's arguments are byte-identical to the original M7 contract.
+
+Once a process end is *certainly observed* — positively reaped, or independently proven absent — the
+session's save-state baseline is reconciled. An uncertain end reconciles nothing and keeps the
+baseline for the retry.
 
 ### Why the record is written before the spawn
 
@@ -306,7 +341,7 @@ reset a core choice or delete history. An override-management UI is deferred.
 `runtimeNotReady`, `corePolicyUnresolved`, `coreNotInstalled`, `coreNotApproved`, `biosMissing`,
 `biosInvalid`, `biosNotCoveredByCatalog`, `hostPrerequisiteMissing`, `gameAlreadyRunning`,
 `configPreparationFailed`, `spawnFailed`, `processIdentityFailed`, `processExitedDuringLaunch`,
-`sessionPersistenceFailed`, `internalLaunchFailure`.
+`sessionPersistenceFailed`, `saveStateBaselineFailed`, `internalLaunchFailure`.
 
 Every anticipated problem is a `LaunchResponse` with `status: "failed"`, not an IPC error. The
 message is a fixed RetroFrontier sentence, and the typed context carries only identifiers React may
@@ -348,7 +383,8 @@ owns and never adding either to this repository:
    detected, and `runtime-user/config/retroarch.cfg` is the configuration actually in use.
 4. While the game runs, confirm a runtime update/repair/rollback is refused and a second launch
    returns `gameAlreadyRunning`.
-5. Save in-game, exit, and confirm the save lands under `saves/` and never beside the ROM.
+5. Save in-game, exit, and confirm the save lands under `saves/` and never beside the ROM. M9 adds
+   its own save-state checklist in [`docs/SAVE_STATES.md`](SAVE_STATES.md).
 6. Confirm RetroFrontier regains focus, the session is `completed`, and the UI returns to its normal
    detail state.
 7. Kill RetroFrontier while the game runs, restart it, and confirm the game is still reported as

@@ -32,7 +32,10 @@ token and an AA correction for the black-on-accent active controls. RetroFrontie
 is hard-edge pixel art; the directional/sidebar cursor arrows and the Game Detail Favorite star are
 deliberate accepted vector exceptions. M8.6 turns All Systems into a bounded per-system shelf
 browse view while a selected system keeps the full paginated grid, and frames Library cover artwork
-by system presentation profile without cropping it. M7 owns launching. M6.1 provides the bounded library-query, summary, local-detail, favorite,
+by system presentation profile without cropping it. M7 owns launching, and M9 owns save states: a RetroArch save state becomes a managed object only
+when a controlled launch proves its game, content unit, core binary, and exact bytes, and every load
+or delete re-proves the current filesystem target first. Normal save data stays where RetroFrontier
+puts it and is never interpreted. See [`docs/SAVE_STATES.md`](docs/SAVE_STATES.md). M6.1 provides the bounded library-query, summary, local-detail, favorite,
 scan-issue, cached-cover, and metadata-invalidation IPC foundations consumed by the current UI.
 
 ## Stack

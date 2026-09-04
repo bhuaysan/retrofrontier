@@ -287,12 +287,32 @@ not readiness. The M3/M4 IPC surfaces expose one coherent systems response, a de
 status query, typed library root/snapshot queries, and scan progress/completion events; React does
 not inspect the filesystem, hash content, or query RuntimeManager.
 
-### SaveService
+### Save States (M9)
 
-- resolve save directories
-- track save states
-- preserve user save/state data across runtime updates
-- attach runtime/core compatibility metadata
+Implemented as `SaveStateApplicationService`, a `SaveStateRepository`, and a `save_state_fs`
+adapter. See [`docs/SAVE_STATES.md`](docs/SAVE_STATES.md).
+
+- **Normal SaveData is opaque.** It lives under `saves/`, outside every replaceable runtime version
+  tree, so a runtime update, repair, or rollback cannot remove it. It is never interpreted,
+  enumerated, sliced into slots, or deleted by RetroFrontier.
+- **Save States are provenance-based.** One becomes a managed object only through a controlled
+  launch delta: a durable pre-launch baseline of the state tree, then — after a *certainly observed*
+  process end — the new or changed supported files that can be proved stable and hashed. There is no
+  heuristic importer and no global filesystem watcher.
+- **Attribution is fail-closed.** Game, exact content unit, core provenance, and exact file identity
+  must all be proved. Legacy and orphan states are left untouched, unimported, and invisible.
+- **Authority is split.** The filesystem is authoritative for bytes; SQLite is authoritative for
+  provenance, lifecycle, and the registered identity. Neither alone makes a state usable.
+- **The core identity is the authenticated core-binary SHA-256**, taken from the release manifest's
+  installed-file inventory rather than hashed off disk. It is immutable per Save State, and Runtime
+  security policy always outranks save-state recovery.
+- **Loadability is a permission, never a compatibility claim**, and it is independent of
+  deletability.
+- **Destructive operations re-prove the target.** A `SaveStateId` never authorizes a path; deletion
+  walks by directory handle with `O_NOFOLLOW`, then quarantine-renames and re-verifies the inode
+  before unlinking, so it deletes exactly the verified file or nothing.
+- The single managed launch pipeline serves both an ordinary launch and a save-state launch; M9 adds
+  no second process launcher.
 
 ## Managed Paths
 
@@ -333,13 +353,18 @@ RetroFrontier/
 ├── metadata/
 │   ├── media/
 │   └── tmp/
-├── saves/
-├── states/
-├── screenshots/
+├── saves/                          opaque SaveData; never interpreted by RetroFrontier
+├── states/                         managed save states, per core-reported library name
+├── screenshots/                    never a save-state thumbnail source
 └── logs/
 ```
 
 Use platform path APIs; do not hard-code OS paths.
+
+`saves/`, `states/`, and `screenshots/` deliberately sit outside `runtime/versions/`, so a runtime
+update, repair, or rollback can never remove user data. The save-state adapter is only ever handed
+the `states/` root, which is what makes `saves/` and `screenshots/` unreachable from it by
+construction rather than by convention.
 
 ## Runtime Architecture
 

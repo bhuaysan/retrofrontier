@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { InputAction } from '../input/actions';
+import { publishActiveControllerOwner } from '../input/activeController';
 import {
   createGamepadState,
   hasUnsupportedGamepad,
@@ -102,6 +103,11 @@ export function useControllerInput({ enabled, onAction }: UseControllerInputOpti
       if (disposed) return;
       const pads = readGamepads();
       const active = selectActiveGamepad(pads, stateRef.current.activeIndex);
+      // MEDIUM-2: this is *the* ownership decision — it honours the retained `activeIndex`, so a
+      // pad that already owns input keeps it when another is plugged in at a lower index.
+      // Publishing it here is what stops a launch from selecting a second, different controller of
+      // its own a moment later.
+      publishActiveControllerOwner(active);
       setConnected(active !== null);
       setUnsupported(active === null && hasUnsupportedGamepad(pads));
       setLayoutQuirk(active === null ? null : gamepadLayoutQuirk(active, currentInputRuntime()));
@@ -126,6 +132,9 @@ export function useControllerInput({ enabled, onAction }: UseControllerInputOpti
     return () => {
       disposed = true;
       window.cancelAnimationFrame(frame);
+      // An unmounted acquisition boundary owns nothing, and a stale identity must never outlive
+      // the loop that proved it.
+      publishActiveControllerOwner(null);
     };
   }, []);
 

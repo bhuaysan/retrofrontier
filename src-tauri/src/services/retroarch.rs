@@ -4,15 +4,17 @@
 #![allow(clippy::result_large_err)]
 
 use crate::adapters::game_process::{GameProcessLauncher, SpawnRequest, SpawnedGame};
-use crate::application::runtime_manager::VerifiedLaunchRuntime;
+use crate::application::runtime_manager::{AuthenticatedCoreBinary, VerifiedLaunchRuntime};
 use crate::domain::core::{current_core_target, CoreId};
 use crate::domain::launch::{LaunchDiagnostic, LaunchErrorCode, LaunchFailure};
 use crate::domain::library::{ContentFileRole, ContentUnit, ContentUnitAvailability};
 use crate::domain::runtime::SafeIdentifier;
+use crate::domain::save_state::SaveStateSlot;
 use crate::domain::system::{SystemCatalog, SystemId};
-use crate::services::retroarch_config::RetroArchConfig;
+use crate::services::retroarch_config::{RetroArchConfig, RetroArchConfigRequest};
 use crate::services::retroarch_env::{build_child_environment, host_environment};
 use crate::services::retroarch_host::HostPrerequisiteInspector;
+use crate::services::retroarch_input::resolve_managed_save_state_hotkeys;
 use crate::services::retroarch_paths::LaunchPaths;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -64,6 +66,17 @@ pub struct LaunchPreparation<'a> {
     pub bios_files: &'a [(String, PathBuf)],
     /// The verified managed controller-profile root, from `resolve_controller_profiles`.
     pub controller_profiles_root: &'a Path,
+    /// The save state this launch should enter from, when it is a save-state launch.
+    ///
+    /// `Some` adds `--entryslot N` and makes that slot active; `None` is an ordinary game launch,
+    /// which starts on the first managed slot and passes no entry argument at all.
+    pub entry_slot: Option<SaveStateSlot>,
+    /// The frontend's own confirmed identity of the one controller RetroFrontier currently accepts
+    /// (`Gamepad.id`, via the browser Gamepad API — ADR-014), or `None`. RetroFrontier's native
+    /// code never reads a controller device directly, so this is the only proof `prepare` ever has
+    /// of which physical device the save-state hotkeys it may write would actually apply to
+    /// (MEDIUM-2) — see `resolve_managed_save_state_hotkeys`.
+    pub active_gamepad_id: Option<&'a str>,
 }
 
 /// Builds and starts one controlled managed RetroArch launch.
@@ -244,26 +257,77 @@ impl RetroArchService {
                 .with_core(core_id));
         }
 
-        let mut support_assets = Vec::new();
-        for asset in &definition.support_assets {
-            let asset_component = SafeIdentifier::new(asset.component_id.as_str())
-                .map_err(|_| LaunchFailure::new(LaunchErrorCode::InternalLaunchFailure))?;
-            // Support data comes only from the verified managed runtime boundary; an arbitrary
-            // user directory is never accepted as a substitute.
-            let source = runtime
-                .support_assets
-                .get(&asset_component)
-                .ok_or_else(not_installed)?;
-            if !fs::symlink_metadata(source).is_ok_and(|metadata| metadata.is_dir()) {
-                return Err(not_installed());
-            }
-            support_assets.push((asset.system_directory_path.clone(), source.clone()));
-        }
+        let support_assets = resolve_support_assets(definition, runtime, &not_installed)?;
 
         Ok(ResolvedCore {
             core_id,
             component_id,
             core_path: component.core_path.clone(),
+            support_assets,
+        })
+    }
+
+    /// Resolve the **exact historical core binary** a Save State was produced by.
+    ///
+    /// This is the one-shot launch override a save-state load needs, and it is deliberately not a
+    /// relaxation of policy. The binary was already located by `RuntimeManager` in a currently
+    /// installed, authenticated, allowed installation; what is re-checked here is everything the
+    /// ordinary resolver checks *except* which core the game currently prefers:
+    ///
+    /// - the component maps to a core the catalog knows;
+    /// - the catalog approves that core for **this game's system**;
+    /// - the definition declares the running platform target;
+    /// - the authenticated release that carries the binary approves it for this system;
+    /// - the binary is still a regular, non-symlinked file on disk.
+    ///
+    /// There is no fallback: if any of that fails the load is refused, and it never falls through
+    /// to the game's currently configured core. Support data still comes from the *currently*
+    /// verified runtime, because a support component is read-only shared data — Dolphin's `Sys` —
+    /// and not part of the state's core-binary identity.
+    pub fn resolve_historical_core(
+        catalog: &SystemCatalog,
+        system_id: SystemId,
+        historical: &AuthenticatedCoreBinary,
+        runtime: &VerifiedLaunchRuntime,
+    ) -> Result<ResolvedCore, LaunchFailure> {
+        let not_approved =
+            || LaunchFailure::new(LaunchErrorCode::CoreNotApproved).with_system(system_id);
+        let definition = catalog
+            .core_for_component(&historical.component_id)
+            .ok_or_else(not_approved)?;
+        let core_id = definition.id.clone();
+        if !catalog.approves_core_for_system(system_id, &core_id) {
+            return Err(not_approved().with_core(core_id));
+        }
+        let Some(target) = current_core_target() else {
+            return Err(not_approved().with_core(core_id));
+        };
+        if !definition.supports_target(target) {
+            return Err(not_approved().with_core(core_id));
+        }
+        // The authenticated release that carries this binary must approve it for the launching
+        // system, exactly as an ordinary launch requires.
+        let release_system = SafeIdentifier::new(system_id.as_str())
+            .map_err(|_| LaunchFailure::new(LaunchErrorCode::InternalLaunchFailure))?;
+        if !historical.systems.contains(&release_system) {
+            return Err(not_approved().with_core(core_id));
+        }
+        let not_installed = || {
+            LaunchFailure::new(LaunchErrorCode::CoreNotInstalled)
+                .with_system(system_id)
+                .with_core(core_id.clone())
+        };
+        if !fs::symlink_metadata(&historical.core_path)
+            .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        {
+            return Err(not_installed());
+        }
+
+        let support_assets = resolve_support_assets(definition, runtime, &not_installed)?;
+        Ok(ResolvedCore {
+            core_id,
+            component_id: historical.component_id.clone(),
+            core_path: historical.core_path.clone(),
             support_assets,
         })
     }
@@ -282,11 +346,40 @@ impl RetroArchService {
             .ok_or_else(config_failed)?
             .to_path_buf();
         let config_path = self.paths.config_file();
-        RetroArchConfig::build(
-            &self.paths,
-            &core_directory,
+        // HIGH-2: the one directory this launch may write states into, composed by the same
+        // function that later proves a registered path *is* this launch's target. It is created
+        // here rather than left to RetroArch, so the target exists before the process does.
+        let save_state_directory = crate::services::save_state_fs::state_directory(
+            self.paths.states_root(),
+            &request.core.core_id,
+        );
+        fs::create_dir_all(&save_state_directory).map_err(|_| config_failed())?;
+        // Derived from the authenticated managed profiles, or `None` — in which case no hotkey is
+        // written at all. A launch is never failed for it: a game whose controller works must keep
+        // starting, and losing the save hotkey is a smaller failure than losing the game.
+        let save_state_hotkeys = resolve_managed_save_state_hotkeys(
             request.controller_profiles_root,
-        )
+            MANAGED_JOYPAD_DRIVER,
+            request.active_gamepad_id,
+        );
+        if save_state_hotkeys.is_none() {
+            tracing::info!(
+                "the managed save-state hotkeys could not be derived from the authenticated \
+                 controller profiles; none were written"
+            );
+        }
+        RetroArchConfig::build(&RetroArchConfigRequest {
+            paths: &self.paths,
+            core_directory: &core_directory,
+            controller_profiles_root: request.controller_profiles_root,
+            save_state_directory: &save_state_directory,
+            // A save-state launch starts on the loaded state's own slot; an ordinary launch starts
+            // on the first managed slot.
+            state_slot: request
+                .entry_slot
+                .unwrap_or_else(SaveStateSlot::default_launch_slot),
+            save_state_hotkeys: save_state_hotkeys.as_ref(),
+        })
         .write(&config_path)
         .map_err(|_| config_failed())?;
 
@@ -300,14 +393,22 @@ impl RetroArchService {
             diagnostics.push(LaunchDiagnostic::new(prerequisite));
         }
 
+        // `AppRun --config <cfg> -L <core> [--entryslot N] <content>`. The content target stays
+        // last, and an ordinary launch is byte-identical to the M7 contract.
+        let mut arguments = vec![
+            OsString::from("--config"),
+            config_path.clone().into_os_string(),
+            OsString::from("-L"),
+            request.core.core_path.clone().into_os_string(),
+        ];
+        if let Some(slot) = request.entry_slot {
+            arguments.push(OsString::from("--entryslot"));
+            arguments.push(OsString::from(slot.get().to_string()));
+        }
+        arguments.push(request.content_path.to_path_buf().into_os_string());
+
         Ok(LaunchContext {
-            arguments: vec![
-                OsString::from("--config"),
-                config_path.clone().into_os_string(),
-                OsString::from("-L"),
-                request.core.core_path.clone().into_os_string(),
-                request.content_path.to_path_buf().into_os_string(),
-            ],
+            arguments,
             program: request.app_run_path.to_path_buf(),
             environment,
             // A RetroFrontier-owned working directory means a relative path can never resolve
@@ -383,6 +484,31 @@ impl RetroArchService {
 
 /// Replace a RetroFrontier-owned symbolic link. A pre-existing regular file or directory at the
 /// same name is refused rather than silently destroyed.
+/// The verified managed support data one core definition declares.
+///
+/// It comes only from the verified managed runtime boundary; an arbitrary user directory is never
+/// accepted as a substitute.
+fn resolve_support_assets(
+    definition: &crate::domain::core::CoreDefinition,
+    runtime: &VerifiedLaunchRuntime,
+    not_installed: &dyn Fn() -> LaunchFailure,
+) -> Result<Vec<(String, PathBuf)>, LaunchFailure> {
+    let mut support_assets = Vec::new();
+    for asset in &definition.support_assets {
+        let asset_component = SafeIdentifier::new(asset.component_id.as_str())
+            .map_err(|_| LaunchFailure::new(LaunchErrorCode::InternalLaunchFailure))?;
+        let source = runtime
+            .support_assets
+            .get(&asset_component)
+            .ok_or_else(not_installed)?;
+        if !fs::symlink_metadata(source).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err(not_installed());
+        }
+        support_assets.push((asset.system_directory_path.clone(), source.clone()));
+    }
+    Ok(support_assets)
+}
+
 fn link(link_path: &Path, target: &Path) -> Result<(), LaunchFailure> {
     let config_failed = || LaunchFailure::new(LaunchErrorCode::ConfigPreparationFailed);
     match fs::symlink_metadata(link_path) {
@@ -408,11 +534,13 @@ mod tests {
         ContentRootId, ContentUnit, ContentUnitAvailability, ContentUnitId, ContentUnitKind,
         GameId,
     };
-    use crate::domain::runtime::{RuntimeStatus, SafeIdentifier};
+    use crate::domain::runtime::{RuntimeStatus, SafeIdentifier, Sha256Digest};
+    use crate::domain::save_state::SaveStateSlot;
     use crate::domain::system::{SystemCatalog, SystemId};
     use crate::services::retroarch_host::HostPrerequisiteInspector;
     use crate::services::retroarch_paths::LaunchPaths;
     use std::collections::{BTreeMap, BTreeSet};
+    use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -553,6 +681,10 @@ mod tests {
                             .iter()
                             .map(|system| SafeIdentifier::new(system.as_str()).unwrap())
                             .collect(),
+                        binary_sha256: Sha256Digest::from_hex(&"a".repeat(64)).unwrap(),
+                        binary_size_bytes: 4,
+                        display_version: Some("synthetic-1.0".to_owned()),
+                        source_revision: Some("0123456".to_owned()),
                     },
                 )]),
                 support_assets,
@@ -905,6 +1037,8 @@ mod tests {
                 content_path: &content.path().join("NES/Game.nes"),
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
+                active_gamepad_id: None,
             })
             .unwrap();
 
@@ -962,6 +1096,8 @@ mod tests {
                 content_path: &content_path,
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
+                active_gamepad_id: None,
             })
             .unwrap();
 
@@ -1039,6 +1175,8 @@ mod tests {
                 content_path: &content.path().join("GC/Game.rvz"),
                 bios_files: &[("scph5501.bin".to_owned(), bios_path.clone())],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
+                active_gamepad_id: None,
             })
             .unwrap();
 
@@ -1064,6 +1202,8 @@ mod tests {
                 content_path: &content.path().join("GC/Game.rvz"),
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
+                active_gamepad_id: None,
             })
             .unwrap();
         assert!(!system_root.join("scph5501.bin").exists());
@@ -1099,6 +1239,8 @@ mod tests {
                 content_path: &content_path,
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
+                active_gamepad_id: None,
             })
         };
 
@@ -1152,6 +1294,8 @@ mod tests {
                 content_path: &content.path().join("PS1/Game.chd"),
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
+                entry_slot: None,
+                active_gamepad_id: None,
             })
             .unwrap();
 
@@ -1185,5 +1329,173 @@ mod tests {
 
         assert_eq!(identifiers.len(), 1);
         assert!(resolved.core_path.is_absolute());
+    }
+
+    /// The launch argument contract, for both shapes.
+    ///
+    /// `--entryslot=NUMBER` is documented by the managed RetroArch 1.22.2 binary itself
+    /// (`-e, --entryslot=NUMBER  Slot from which to load an entry state.`), and an ordinary game
+    /// launch stays byte-identical to the M7 contract.
+    #[test]
+    fn a_save_state_launch_adds_entryslot_and_an_ordinary_launch_is_unchanged() {
+        let directory = TempDir::new().unwrap();
+        let service = service(directory.path(), Vec::new());
+        let (runtime, app_run) =
+            launch_runtime(directory.path(), "nestopia", &[SystemId::Nes], None);
+        let core =
+            RetroArchService::resolve_core(&SystemCatalog::v1(), SystemId::Nes, None, &runtime)
+                .unwrap();
+        let profiles = profiles_root(&runtime);
+        let content = directory.path().join("content.nes");
+        std::fs::write(&content, b"synthetic").unwrap();
+
+        let ordinary = service
+            .prepare(LaunchPreparation {
+                app_run_path: &app_run,
+                core: &core,
+                content_path: &content,
+                bios_files: &[],
+                controller_profiles_root: &profiles,
+                entry_slot: None,
+                active_gamepad_id: None,
+            })
+            .unwrap();
+        assert_eq!(
+            ordinary.arguments,
+            vec![
+                OsString::from("--config"),
+                ordinary.config_path.clone().into_os_string(),
+                OsString::from("-L"),
+                core.core_path.clone().into_os_string(),
+                content.clone().into_os_string(),
+            ]
+        );
+
+        for slot in [1_u16, 42, 999] {
+            let save_state = service
+                .prepare(LaunchPreparation {
+                    app_run_path: &app_run,
+                    core: &core,
+                    content_path: &content,
+                    bios_files: &[],
+                    controller_profiles_root: &profiles,
+                    entry_slot: Some(SaveStateSlot::new(slot).unwrap()),
+                    active_gamepad_id: None,
+                })
+                .unwrap();
+            assert_eq!(
+                save_state.arguments,
+                vec![
+                    OsString::from("--config"),
+                    save_state.config_path.clone().into_os_string(),
+                    OsString::from("-L"),
+                    core.core_path.clone().into_os_string(),
+                    OsString::from("--entryslot"),
+                    OsString::from(slot.to_string()),
+                    // The content target stays last.
+                    content.clone().into_os_string(),
+                ],
+                "slot {slot}"
+            );
+            // The generated configuration agrees about the active slot, so the invariant does not
+            // depend on the argument alone.
+            let rendered = std::fs::read_to_string(&save_state.config_path).unwrap();
+            assert!(rendered.contains(&format!("state_slot = \"{slot}\"\n")));
+        }
+    }
+
+    /// MEDIUM-2 regression: the generated configuration carries the derived save-state hotkeys
+    /// only when `active_gamepad_id` actually confirms the qualified controller for *this*
+    /// launch — never merely because the qualified profile files exist in the managed database
+    /// and agree with each other, which they do regardless of what is actually plugged in.
+    #[test]
+    fn the_generated_configuration_carries_hotkeys_only_when_the_actual_controller_is_confirmed() {
+        let app_data = tempdir().unwrap();
+        let runtime_directory = tempdir().unwrap();
+        let content = content_root(&["NES/Game.nes"]);
+        let (runtime, app_run) =
+            launch_runtime(runtime_directory.path(), "nestopia", &[SystemId::Nes], None);
+        let core =
+            RetroArchService::resolve_core(&SystemCatalog::v1(), SystemId::Nes, None, &runtime)
+                .unwrap();
+        let service = service(app_data.path(), Vec::new());
+        let profiles = profiles_root(&runtime);
+
+        // A complete, mutually agreeing qualified profile pair — exactly what a real managed
+        // installation carries, regardless of what is actually connected.
+        // MEDIUM-2: the profile names the devices it applies to, exactly as the real authenticated
+        // database does. Those declarations are the qualification rule — nothing else is.
+        let dualsense_profile = "input_driver = \"udev\"\n\
+             input_device = \"Sony Interactive Entertainment DualSense Wireless Controller\"\n\
+             input_device_alt1 = \"DualSense Wireless Controller\"\n\
+             input_select_btn = \"8\"\n\
+             input_r_btn = \"5\"\n\
+             input_left_btn = \"h0left\"\n\
+             input_right_btn = \"h0right\"\n";
+        for name in crate::services::retroarch_input::QUALIFIED_CONTROLLER_PROFILES {
+            fs::write(profiles.join("udev").join(name), dualsense_profile).unwrap();
+        }
+
+        let prepare = |active_gamepad_id: Option<&str>| {
+            service
+                .prepare(LaunchPreparation {
+                    app_run_path: &app_run,
+                    core: &core,
+                    content_path: &content.path().join("NES/Game.nes"),
+                    bios_files: &[],
+                    controller_profiles_root: &profiles,
+                    entry_slot: None,
+                    active_gamepad_id,
+                })
+                .unwrap()
+        };
+
+        // No confirmed active controller: the files exist and agree, but nothing is written.
+        let unconfirmed = prepare(None);
+        let rendered = fs::read_to_string(&unconfirmed.config_path).unwrap();
+        assert!(!rendered.contains(crate::services::retroarch_input::SAVE_STATE_KEY));
+
+        // A confirmed qualified controller: the very same files now resolve, and their values
+        // reach the generated configuration.
+        let confirmed = prepare(Some(
+            "Sony Interactive Entertainment DualSense Wireless Controller",
+        ));
+        let rendered = fs::read_to_string(&confirmed.config_path).unwrap();
+        assert!(rendered.contains(&format!(
+            "{} = \"8\"\n",
+            crate::services::retroarch_input::ENABLE_HOTKEY_KEY
+        )));
+        assert!(rendered.contains(&format!(
+            "{} = \"5\"\n",
+            crate::services::retroarch_input::SAVE_STATE_KEY
+        )));
+
+        // The same profile's Bluetooth alias is the same physical pad, so it qualifies too.
+        let bluetooth = prepare(Some("DualSense Wireless Controller"));
+        let rendered = fs::read_to_string(&bluetooth.config_path).unwrap();
+        assert!(rendered.contains(&format!(
+            "{} = \"5\"\n",
+            crate::services::retroarch_input::SAVE_STATE_KEY
+        )));
+
+        // A confirmed *other* controller: the exact same qualified files still resolve nothing —
+        // and neither does anything that merely *contains* a qualified name (MEDIUM-2). A
+        // substring rule accepted every one of these and bound the qualified pad's raw button
+        // numbers to a device nobody has measured.
+        for impostor in [
+            "Xbox Wireless Controller",
+            "Generic DualSense-style Adapter",
+            "MyDualSenseClone",
+            "Sony Interactive Entertainment DualSense Wireless Controller Clone",
+            "dualsense",
+            "",
+        ] {
+            let other = prepare(Some(impostor));
+            let rendered = fs::read_to_string(&other.config_path).unwrap();
+            assert!(
+                !rendered.contains(crate::services::retroarch_input::SAVE_STATE_KEY),
+                "{impostor} must not qualify"
+            );
+        }
     }
 }

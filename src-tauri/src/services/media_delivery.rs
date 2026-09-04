@@ -70,6 +70,57 @@ impl CachedCoverDelivery {
     }
 }
 
+/// Delivery of one verified Save-State thumbnail.
+///
+/// It mirrors the cached-cover boundary exactly: the WebView holds an opaque reference keyed by
+/// `SaveStateId`, never a path, and the bytes are read only after the *registered* size and digest
+/// have been re-proved against the current file through the no-follow adapter. A thumbnail whose
+/// state is no longer `available`, or whose file no longer matches, is simply not found.
+#[derive(Clone)]
+pub struct SaveStateThumbnailDelivery {
+    save_states: Arc<crate::application::SaveStateApplicationService>,
+}
+
+impl SaveStateThumbnailDelivery {
+    pub fn new(save_states: Arc<crate::application::SaveStateApplicationService>) -> Self {
+        Self { save_states }
+    }
+
+    pub async fn load_thumbnail(
+        &self,
+        id: crate::domain::save_state::SaveStateId,
+    ) -> Result<DeliveredCover, CoverDeliveryError> {
+        // The bytes come back from the descriptor that verified them. Asking for a path and
+        // reading it here would re-resolve the name and follow a symbolic link, which is exactly
+        // the substitution a same-user attacker would use to have another file's bytes served.
+        let bytes = self.save_states.verified_thumbnail(id).await.map_err(|error| {
+            tracing::debug!(save_state_id = %id, code = error.as_str(), "no deliverable save-state thumbnail");
+            CoverDeliveryError::NotFound
+        })?;
+        Ok(DeliveredCover {
+            bytes,
+            // RetroArch writes its state thumbnails as PNG. The value is fixed rather than sniffed,
+            // and `X-Content-Type-Options: nosniff` is already set on the response.
+            content_type: "image/png".to_owned(),
+        })
+    }
+}
+
+/// Parses the Save-State thumbnail route.
+///
+/// Percent-encoded, absolute, query-like, and traversal-shaped values are rejected instead of
+/// being decoded into anything, exactly as the cover route rejects them.
+pub fn parse_save_state_thumbnail_route(
+    path: &str,
+) -> Option<crate::domain::save_state::SaveStateId> {
+    let id = path.strip_prefix("/save-state-thumbnail/")?;
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let value = id.parse::<i64>().ok()?;
+    (value > 0).then_some(crate::domain::save_state::SaveStateId(value))
+}
+
 /// Parses the only route understood by the custom protocol. Percent-encoded, absolute, query-like,
 /// and traversal-shaped values are rejected instead of being decoded into filesystem paths.
 pub fn parse_cover_route(path: &str) -> Option<GameId> {

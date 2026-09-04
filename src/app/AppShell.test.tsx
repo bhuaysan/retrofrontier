@@ -64,6 +64,9 @@ const mocks = vi.hoisted(() => {
     onLibraryScanCompleted: vi.fn(),
     getLaunchState: vi.fn(),
     launchGame: vi.fn(),
+    listSaveStates: vi.fn(),
+    loadSaveState: vi.fn(),
+    deleteSaveState: vi.fn(),
     onGameLaunchStateChanged: vi.fn(),
     onMetadataStateChanged: vi.fn(),
     progressHandlers: new Set<(progress: ScanProgress) => void>(),
@@ -106,6 +109,9 @@ vi.mock('../platform/ipc', () => ({
   onMetadataStateChanged: mocks.onMetadataStateChanged,
   getLaunchState: mocks.getLaunchState,
   launchGame: mocks.launchGame,
+  listSaveStates: mocks.listSaveStates,
+  loadSaveState: mocks.loadSaveState,
+  deleteSaveState: mocks.deleteSaveState,
   onGameLaunchStateChanged: mocks.onGameLaunchStateChanged,
 }));
 
@@ -368,6 +374,9 @@ function setupDefaults() {
     mocks.onMetadataStateChanged,
     mocks.getLaunchState,
     mocks.launchGame,
+    mocks.listSaveStates,
+    mocks.loadSaveState,
+    mocks.deleteSaveState,
     mocks.onGameLaunchStateChanged,
     mocks.isAppWindowFocused,
     mocks.onAppWindowFocusChanged,
@@ -388,6 +397,7 @@ function setupDefaults() {
     return () => mocks.windowFocusHandlers.delete(handler);
   });
   mocks.getLaunchState.mockResolvedValue({ running: null, blocked: false });
+  mocks.listSaveStates.mockResolvedValue([]);
   mocks.onGameLaunchStateChanged.mockImplementation(
     async (handler: (event: { state: LaunchState }) => void) => {
       mocks.launchHandlers.add(handler);
@@ -652,6 +662,38 @@ describe('AppShell M6.2 shell and library states', () => {
         screen.getByRole('link', { name: 'Open Kirby’s Adventure details' }),
       ),
     );
+  });
+
+  it('reads the save states of the opened game and of no other', async () => {
+    window.history.replaceState({}, '', '/games/1');
+    mocks.listSaveStates.mockResolvedValue([
+      {
+        id: 4,
+        gameId: 1,
+        contentUnitId: 11,
+        slot: 2,
+        coreId: 'nestopia',
+        coreDisplayVersion: '1.53',
+        coreSourceRevision: null,
+        contentUnitLabel: null,
+        createdAt: new Date(2026, 8, 1, 9, 15).getTime(),
+        updatedAt: new Date(2026, 8, 3, 14, 32).getTime(),
+        thumbnailRef: null,
+        capabilities: { loadability: 'ready', deletable: true },
+      },
+    ]);
+    render(<AppShell />);
+
+    expect(
+      await screen.findByRole('button', { name: 'Load SLOT 2 · 2026-09-03 14:32' }),
+    ).toBeInTheDocument();
+    // The request carries the opened game and nothing else: no path, no slot, no core.
+    expect(mocks.listSaveStates).toHaveBeenCalledWith({ gameId: 1 });
+    expect(mocks.listSaveStates).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('link', { name: /back to library/i }));
+    await waitFor(() => expect(window.location.pathname).toBe('/library'));
+    expect(mocks.listSaveStates).toHaveBeenCalledTimes(1);
   });
 
   it('loads a valid deep link and gives invalid game routes a safe Library path', async () => {
@@ -3073,7 +3115,11 @@ describe('AppShell M8 controller navigation and focus', () => {
           expect.objectContaining({ systemId: 'nes' }),
         ),
       );
-      expect(cards().kirby).not.toHaveFocus();
+      // The mock having been *called* is not the same as its result having committed: between the
+      // two, the grid is still rendering the previous result and a card may momentarily be absent.
+      // The claim under test is about focus, so wait for the committed view before reading it.
+      const kirby = await screen.findByRole('link', { name: 'Open Kirby’s Adventure details' });
+      expect(kirby).not.toHaveFocus();
 
       // Tab and Shift+Tab stay with the browser.
       for (const shiftKey of [false, true]) {
@@ -3919,7 +3965,11 @@ describe('AppShell M8 controller navigation and focus', () => {
     await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
     expect(second).toHaveFocus();
     await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
-    expect(mocks.launchGame).toHaveBeenLastCalledWith({ gameId: 1, contentUnitId: 12 });
+    expect(mocks.launchGame).toHaveBeenLastCalledWith({
+      gameId: 1,
+      contentUnitId: 12,
+      activeGamepadId: 'Qualification Pad (STANDARD GAMEPAD)',
+    });
   });
 
   it('updates the footer action immediately when the focused card changes state', async () => {

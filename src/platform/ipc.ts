@@ -703,6 +703,7 @@ export type LaunchErrorCode =
   | 'processIdentityFailed'
   | 'processExitedDuringLaunch'
   | 'sessionPersistenceFailed'
+  | 'saveStateBaselineFailed'
   | 'internalLaunchFailure';
 
 /** A Linux host capability the managed runtime cannot provide. Only a display session blocks. */
@@ -781,6 +782,98 @@ export type LaunchResponse =
 export interface LaunchGameRequest {
   gameId: number;
   contentUnitId?: number | null;
+  /**
+   * The frontend's own confirmed identity of the one controller RetroFrontier currently accepts
+   * (the active gamepad's `Gamepad.id` — see `input/gamepadAdapter.ts`), or absent when none is
+   * connected or supported. Used for nothing but gating which save-state hotkeys, if any, this
+   * launch may derive.
+   */
+  activeGamepadId?: string | null;
+}
+
+/**
+ * Whether RetroFrontier currently *permits* loading a Save State.
+ *
+ * It is deliberately not a compatibility claim: nothing here says a state will deserialize. It says
+ * whether the exact core binary that produced the state can be located and whether the managed
+ * launch pipeline is free right now.
+ */
+export type SaveStateLoadability = 'ready' | 'coreUnavailable' | 'temporarilyBlocked';
+
+export interface SaveStateCapabilities {
+  loadability: SaveStateLoadability;
+  deletable: boolean;
+}
+
+/**
+ * The bounded Save-State projection Game Detail renders. It deliberately carries no digest and no
+ * filesystem path; `thumbnailRef` is an opaque reference the native media protocol resolves.
+ */
+export interface SaveStateView {
+  id: number;
+  gameId: number;
+  contentUnitId: number;
+  slot: number;
+  coreId: string;
+  coreDisplayVersion: string | null;
+  coreSourceRevision: string | null;
+  /** Set only when the game has more than one content unit, so a disc label appears exactly when it disambiguates. */
+  contentUnitLabel: string | null;
+  createdAt: number;
+  updatedAt: number;
+  thumbnailRef: string | null;
+  capabilities: SaveStateCapabilities;
+}
+
+export type SaveStateErrorCode =
+  | 'notFound'
+  | 'unavailable'
+  | 'coreUnavailable'
+  | 'temporarilyBlocked'
+  | 'integrityMismatch'
+  | 'unsafeFilesystemTarget'
+  | 'indeterminate'
+  | 'reconciliationFailed'
+  | 'launchFailed'
+  | 'deleteFailed';
+
+export interface SaveStateFailure {
+  code: SaveStateErrorCode;
+  message: string;
+}
+
+/**
+ * The result of a save-state load.
+ *
+ * A load has two genuinely different ways to be refused, and collapsing them would make the UI
+ * guess. `refused` is a Save-State verdict — the state is gone, its registered identity no longer
+ * matches, its historical core is unavailable, or a game is running. `launchFailed` is the managed
+ * launch pipeline's own normalized verdict about a launch that was otherwise permitted.
+ *
+ * There is deliberately no content-selection arm: the content unit is recorded provenance, so a
+ * save-state load never has a choice to offer.
+ */
+export type LoadSaveStateResponse =
+  | { status: 'started'; session: RunningGameSession; diagnostics: LaunchDiagnostic[] }
+  | { status: 'refused'; error: SaveStateFailure }
+  | { status: 'launchFailed'; error: LaunchFailure };
+
+export type DeleteSaveStateResponse =
+  { status: 'deleted'; saveStateId: number } | { status: 'failed'; error: SaveStateFailure };
+
+/** Semantic requests. There is deliberately no path, slot, core, digest, or thumbnail field. */
+export interface ListSaveStatesRequest {
+  gameId: number;
+}
+
+export interface SaveStateRequest {
+  saveStateId: number;
+}
+
+/** The load request: an identity, plus the same confirmed active-controller identity a launch carries. */
+export interface LoadSaveStateRequest {
+  saveStateId: number;
+  activeGamepadId?: string | null;
 }
 
 export const LIBRARY_SCAN_PROGRESS_EVENT = 'library-scan-progress';
@@ -1105,6 +1198,36 @@ export async function onGameLaunchStateChanged(
     return await listen<GameLaunchStateChanged>(GAME_LAUNCH_STATE_CHANGED_EVENT, (event) =>
       handler(event.payload),
     );
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function listSaveStates(request: ListSaveStatesRequest): Promise<SaveStateView[]> {
+  try {
+    return await invoke<SaveStateView[]>('list_save_states', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+/**
+ * Loads a Save State through the one managed launch pipeline.
+ *
+ * The answer is its own union rather than the ordinary `LaunchResponse`, because the two ways a
+ * load can be refused are different verdicts: one is about the state, one is about the launch.
+ */
+export async function loadSaveState(request: LoadSaveStateRequest): Promise<LoadSaveStateResponse> {
+  try {
+    return await invoke<LoadSaveStateResponse>('load_save_state', { request });
+  } catch (error: unknown) {
+    throw normalizeIpcError(error);
+  }
+}
+
+export async function deleteSaveState(request: SaveStateRequest): Promise<DeleteSaveStateResponse> {
+  try {
+    return await invoke<DeleteSaveStateResponse>('delete_save_state', { request });
   } catch (error: unknown) {
     throw normalizeIpcError(error);
   }

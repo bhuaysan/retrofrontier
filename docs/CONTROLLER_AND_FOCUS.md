@@ -231,6 +231,9 @@ Focus restoration keys off stable semantic identities, never DOM selectors and n
 | `detail:dismiss-launch-failure` | The launch-failure surface's dismiss action |
 | `settings:runtime:action` | The managed-runtime install/repair action |
 | `settings:root:<rootId>:<action>` | Reserved for per-root Settings actions (not yet used) |
+| `save-state:<SaveStateId>` | A Save State card on Game Detail |
+| `save-state:<SaveStateId>:<action>` | An action inside that state's own options or delete surface |
+| `save-states:heading` | The Save States section heading, its deterministic fallback |
 
 A component declares its identity with `useFocusNode`, which returns a callback ref. The registry
 holds identity ↔ element and a live getter for the node's action metadata, so a label can follow
@@ -494,6 +497,8 @@ scopes therefore declare `restore: 'none'` and restore per user action:
 | Launch failure | Entry focuses DISMISS; dismissal restores `detail:play`, falling back to `detail:back` | Dismisses the failure |
 | Settings root removal | Left to Settings' existing behaviour | Cancels the removal |
 | Settings metadata-account clear | Left to Settings' existing behaviour | Cancels the confirmation |
+| Save-State options | Entry managed by the scope; closing restores the originating card | Closes the options |
+| Save-State delete confirmation | **Cancel** receives entry focus, deliberately, because the other choice is destructive | Cancels the deletion |
 
 The Settings confirmations already had correct, tested entry and exit focus behaviour — confirmation
 receives focus, cancel returns to the trigger, a removed trigger falls back to the roots heading. M8
@@ -535,6 +540,41 @@ later Game Detail could satisfy.
 rewriting a shared primitive to serve one surface would have changed behaviour nobody asked to change.
 
 The content-selection scope now follows the same explicit pattern; see the table above.
+
+### Save States (M9)
+
+A Save State card is identified by its `SaveStateId`, never by array position, so a card keeps its
+identity when the list reorders after a save or a delete.
+
+| Action | Behaviour |
+| --- | --- |
+| `confirm` (A) | Loads — **only** when the backend reports the state as loadable. A card that is not loadable declares no `confirm` and its LOAD control is `disabled`, so `confirm` invokes nothing at all. There is deliberately no fallback: a disabled Load that quietly did something else would be the exact dishonesty M9's capability model exists to prevent |
+| `context` (X) | Opens the state's Options scope, containing Load and Delete. Load may be disabled there while Delete stays enabled, because a state whose historical core is gone is still safely deletable |
+| `back` (B) | Closes the open surface and restores the originating card |
+
+**The Options action is `context`, so its physical button is X/Square, not Y.** B7 shows
+`Y OPTIONEN`, but that design predates M8, and button 3 is already the Library `search` exit —
+ADR-014 concentrates the button table in one file precisely so a second claim on one index cannot
+appear. The *semantic* intent of a card-scoped Options action distinct from `confirm` and `back` is
+implemented exactly; only the letter the footer derives differs.
+
+Both scopes declare `restore: 'none'` and restore explicitly per user action, for the same reason
+the launch scopes do: the generic cleanup cannot tell "the user closed it" from "the route
+unmounted".
+
+The card's focus identity lives on its LOAD control, mirroring how a Library card's identity lives
+on its detail link. That is what makes "an unloadable card's `confirm` does nothing" literally true
+rather than merely intended — the control declares no `confirm` *and*, being `disabled`, offers no
+native activation either. Its always-enabled Options control therefore carries its own identity and
+is the middle step of the surface-close restoration chain.
+
+**Deletion moves focus deterministically**, and never to a removed node: the state that now occupies
+the removed position, otherwise the previous state, otherwise `save-states:heading`. Cancelling
+restores the originating state.
+
+While a managed game is launching, running, or blocked, the backend reports every state as
+`temporarilyBlocked` and not deletable, and the existing input-ownership predicate already stops
+delivering semantic actions. M9 adds no focus path around that boundary.
 
 ### Pointer, Tab, and assistive technology
 

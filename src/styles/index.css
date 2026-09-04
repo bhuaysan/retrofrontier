@@ -3299,6 +3299,343 @@ a:focus-visible,
   font-size: 17px;
 }
 
+/* B7 save-state grid. `auto-fill` with a 215px floor is the whole responsive rule: the section
+   never needs to know a column count, exactly as the Library grid does not. */
+.save-state-grid {
+  display: grid;
+  max-width: 900px;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.save-state-card {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-rest);
+  transition:
+    transform 0.14s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: center bottom;
+}
+
+/* A6 V5 rule 3 — a card carrying an image zooms for its own primary action, which here is LOAD.
+   The standalone Options control inverts instead (rule 2), so the two stay distinguishable. */
+.save-state-card:has(.save-state-load:focus-visible),
+[data-input-mode='controller'] .save-state-card:has(.save-state-load:focus) {
+  z-index: 2;
+  box-shadow: var(--shadow-focus);
+  transform: scale(1.08);
+}
+
+.save-state-media {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: var(--cover-well);
+  border-bottom: 2px solid var(--border);
+}
+
+.save-state-thumbnail {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Deliberately neutral, and deliberately not an accent: a state with no proved thumbnail is
+   ordinary, and a state whose thumbnail fails to render is not thereby a damaged state. */
+.save-state-thumbnail-placeholder {
+  width: 100%;
+  height: 100%;
+  background-color: var(--cover-well);
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--scanline) 0,
+    var(--scanline) 2px,
+    transparent 2px,
+    transparent 8px
+  );
+}
+
+.save-state-slot {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  margin: 0;
+  padding: 6px 8px;
+  color: var(--text);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+
+.save-state-options {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--text);
+  font-family: var(--font-label);
+  font-size: 10px;
+  line-height: 1;
+  background: var(--surface-2);
+  border: 2px solid var(--border);
+  box-shadow: 2px 2px 0 var(--shadow);
+  cursor: pointer;
+}
+
+.save-state-options:hover,
+.save-state-options:focus-visible,
+[data-input-mode='controller'] .save-state-options:hover,
+[data-input-mode='controller'] .save-state-options:focus {
+  color: var(--bg);
+  background: var(--text);
+}
+
+.save-state-copy {
+  display: flex;
+  min-width: 0;
+  padding: 10px 12px 12px;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.save-state-when {
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 18px;
+}
+
+.save-state-core,
+.save-state-disc {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  line-height: 1.6;
+}
+
+.save-state-disc {
+  color: var(--text);
+}
+
+/* The loadability line never depends on colour alone: the label states it, and the hint says
+   whether it is the core or the current session that is in the way. */
+.save-state-loadability {
+  display: flex;
+  margin: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.save-state-loadability-label {
+  color: var(--text);
+  font-family: var(--font-meta);
+  font-size: 18px;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.save-state-loadability[data-loadability='ready'] .save-state-loadability-label {
+  text-decoration-color: var(--accent);
+}
+
+.save-state-loadability[data-loadability='coreUnavailable'] .save-state-loadability-label,
+.save-state-loadability[data-loadability='temporarilyBlocked'] .save-state-loadability-label {
+  text-decoration-color: var(--accent-6);
+}
+
+.save-state-loadability-hint {
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.save-state-load {
+  margin-top: auto;
+  padding: 7px 10px;
+  color: #000;
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  background: var(--accent-5);
+  border: 2px solid var(--border);
+  box-shadow: 2px 2px 0 var(--shadow);
+  cursor: pointer;
+}
+
+.save-state-load:hover:not(:disabled),
+.save-state-load:focus-visible,
+[data-input-mode='controller'] .save-state-load:hover:not(:disabled),
+[data-input-mode='controller'] .save-state-load:focus {
+  color: var(--bg);
+  background: var(--text);
+}
+
+.save-state-load:disabled {
+  color: var(--text-dim);
+  background: var(--surface-2);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* The Options surface sits over its own card, like B7's menu, and is deliberately not
+   browser-modal: the focus scope owns controller actions, pointer and Tab stay untouched. */
+.save-state-menu {
+  position: absolute;
+  top: 38px;
+  right: 8px;
+  z-index: 4;
+  display: flex;
+  min-width: 140px;
+  flex-direction: column;
+  background: var(--chip-bg);
+  border: 2px solid var(--border);
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+
+.save-state-menu button {
+  padding: 10px 12px;
+  color: var(--text);
+  font-family: var(--font-label);
+  font-size: 9px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.save-state-menu button + button {
+  border-top: 2px solid var(--border);
+}
+
+.save-state-menu button:hover:not(:disabled),
+.save-state-menu button:focus-visible,
+[data-input-mode='controller'] .save-state-menu button:hover:not(:disabled),
+[data-input-mode='controller'] .save-state-menu button:focus {
+  color: var(--bg);
+  background: var(--text);
+}
+
+.save-state-menu button:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.save-state-confirm {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 5;
+  display: flex;
+  min-height: 100%;
+  padding: 14px;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--surface);
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-hover);
+}
+
+.save-state-confirm strong {
+  color: var(--negative-text);
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 1px;
+  line-height: 1.5;
+}
+
+.save-state-confirm p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.save-state-confirm-actions {
+  display: flex;
+  margin-top: auto;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.save-state-empty {
+  display: flex;
+  max-width: 520px;
+  padding: 14px 16px;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--surface-2);
+  border: 2px solid var(--border);
+}
+
+.save-state-empty strong {
+  color: var(--text);
+  font-family: var(--font-label);
+  font-size: 9px;
+  letter-spacing: 1px;
+  line-height: 1.5;
+}
+
+.save-state-empty p {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* The ingame hotkeys are a two-column reference, not prose: the chord on the left, what it does on
+   the right. There is deliberately no Load row — RetroFrontier has no ingame Load hotkey. */
+.save-state-hotkeys {
+  display: grid;
+  margin: 0;
+  gap: 6px;
+}
+
+.save-state-hotkeys > div {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.save-state-hotkeys dt {
+  min-width: 150px;
+  padding: 6px 8px;
+  color: var(--text);
+  font-family: var(--font-label);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  background: var(--chip-bg);
+  border: 2px solid var(--border);
+}
+
+.save-state-hotkeys dd {
+  margin: 0;
+  color: var(--text-dim);
+  font-family: var(--font-meta);
+  font-size: 18px;
+}
+
 .game-detail-not-found {
   display: grid;
   max-width: 760px;
