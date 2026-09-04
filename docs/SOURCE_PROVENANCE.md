@@ -9,14 +9,22 @@ not perform production legal distribution, and it is not legal advice. Points re
 review are marked **Legal review required**.
 
 > **Partially superseded by M10.3.** [`docs/CORE_BUILD_PROVENANCE.md`](CORE_BUILD_PROVENANCE.md)
-> recovered **Dolphin's exact source revision** — `libretro/dolphin` @
-> `fd1aca3af7db75504ed7512406d8a4cf4187110a` — from the shipped binary itself, which embeds its own
-> build-generated SCM constants. §2 check 2 below ("the shipped binaries carry no embedded upstream
-> revision") is therefore **correct for three cores and wrong for Dolphin**, and the headline's
-> "all four" scope is overstated. M10.3 also identified named **candidate** revisions for the other
-> three from libretro's public GitLab CI records, which M10.2 did not examine. Those three remain
-> unproven, so the operative conclusion below — that RetroFrontier cannot meet the obligation and
-> public redistribution stays blocked — is unchanged. Read this document with M10.3 alongside it.
+> recovered **Dolphin's exact top-level source revision** — `libretro/dolphin` @
+> `fd1aca3af7db75504ed7512406d8a4cf4187110a` — from the shipped binary itself, which embeds the full
+> 40-character `SCM_REV_STR` its build emits from `git rev-parse HEAD`. The repository is identified
+> by libretro's historical `libretro-super` build recipe. §2 check 2 below ("the shipped binaries
+> carry no embedded upstream revision") is therefore **correct for three cores and wrong for
+> Dolphin**, and the headline's "all four" scope is overstated.
+>
+> For Nestopia, bsnes-mercury Balanced and Beetle PSX the **exact source revision remains unknown**;
+> M10.3 identified a specific public-CI **candidate** revision for each, awaiting libretro
+> confirmation. A candidate is not corresponding source. **Exactly three** core revisions remain
+> unproven, and the operative conclusion below — that RetroFrontier cannot meet the obligation and
+> public redistribution stays blocked — is unchanged.
+>
+> Note also that proving a core's revision does not clear its system for distribution: GameCube still
+> carries the separate `dolphin-sys` provenance/immutability gap (§4 below) and unconfirmed content
+> execution. Read this document with M10.3 alongside it.
 
 ## Headline finding
 

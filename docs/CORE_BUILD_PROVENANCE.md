@@ -20,12 +20,14 @@ trust semantics, and left Release 002 byte-identical. It is not legal advice.
 > M10.2 reported that the source revision of all four Release 002 cores was "not recoverable from
 > public sources". That is now **false for one core and materially overstated for the other three.**
 >
-> - **Dolphin's exact source revision is recovered and proven** from the distributed binary itself:
->   `libretro/dolphin` @ `fd1aca3af7db75504ed7512406d8a4cf4187110a`. The binary carries its own
->   build-system-generated SCM constants. No inference from dates or version strings is involved.
-> - **Nestopia, bsnes-mercury Balanced and Beetle PSX remain unproven**, but are no longer unknown:
->   each has a single, named, high-confidence **candidate revision** derived from libretro's
->   *public* GitLab CI pipeline records, which M10.2 did not examine.
+> - **Dolphin's exact top-level source revision is recovered and proven** from the distributed binary
+>   itself: `libretro/dolphin` @ `fd1aca3af7db75504ed7512406d8a4cf4187110a`. The binary embeds the
+>   full 40-character `SCM_REV_STR` that Dolphin's own build emits from `git rev-parse HEAD`. No
+>   inference from dates or version strings is involved.
+> - **For Nestopia, bsnes-mercury Balanced and Beetle PSX the exact source revision remains
+>   unknown.** A specific public-CI **candidate revision has been identified for each and awaits
+>   libretro confirmation.** A candidate is not provenance, and does not become provenance by having
+>   stayed unchanged across the release window.
 > - The missing link for those three is narrow and specific: nothing public binds the **bundle member
 >   bytes** to a **specific CI job**. libretro's CI destroys build artefacts after **10 minutes**, and
 >   job logs require authentication.
@@ -33,9 +35,13 @@ trust semantics, and left Release 002 byte-identical. It is not legal advice.
 The operative consequence is unchanged: **RetroFrontier still cannot satisfy GPL corresponding-source
 obligations for three of the four cores, so public redistribution of the managed runtime remains
 blocked.** What changed is the *shape* of the remaining gap, and therefore the cost of closing it.
-The outreach to libretro is no longer "please excavate unknown information" but "please confirm four
-specific, already-identified revisions and their job binding" — a far cheaper and far more answerable
-request.
+The outreach to libretro is no longer "please excavate unknown information" but "please confirm three
+specific, already-identified candidate revisions and their job binding" — a far cheaper and far more
+answerable request.
+
+**Proving a core's source revision is not the same as clearing a system for distribution.** Even for
+GameCube, where the core revision is now proven, distribution remains blocked by the separate
+`dolphin-sys` provenance/immutability gap and by unconfirmed content execution. See §3.3.
 
 ## 1. Proof standard used in this document
 
@@ -106,9 +112,39 @@ revision, and is not used as one.
 
 **Exact source revision: `libretro/dolphin` @ `fd1aca3af7db75504ed7512406d8a4cf4187110a`.**
 
-The Dolphin binary carries revision constants that Dolphin's own CMake build emits into
-`scm_rev.h`. These are stored as `(pointer, length)` pairs in `.data.rel.ro`, so their boundaries are
-exact rather than inferred from `strings` heuristics:
+#### The revision: emitted by Dolphin's own build machinery into the shipped binary
+
+Dolphin's build produces the value directly from git and bakes it into the binary:
+
+1. CMake runs `git rev-parse HEAD` into `DOLPHIN_WC_REVISION`.
+2. `scmrev.h.in` emits that exact value as **`SCM_REV_STR`**.
+3. `Version.cpp` exposes it through **`GetScmRevGitStr()`**.
+
+The **full 40-character `SCM_REV_STR` is present in the authenticated Release 002 binary.** It is
+materialised as a 40-character `std::string`, split by the compiler across two storage locations —
+which is why a naive contiguous `strings` scan does not reveal it, and why M10.3's first pass
+understated it as a 32-character prefix. The disassembly at the construction site is unambiguous:
+
+| Instruction | Effect |
+|---|---|
+| `mov $0x29,%edi` → `operator new` | allocates **41** bytes = 40 characters + NUL |
+| `movdqa 0x10f17c0(%rip)` → `movups %xmm0,(%rax)` | writes characters 0–15 from `.rodata` |
+| `movdqa 0x10f17d0(%rip)` → `movups %xmm0,0x10(%rax)` | writes characters 16–31 from `.rodata` |
+| `movabs $0x6130313137383134,%rcx` → `mov %rcx,0x20(%rax)` | writes characters 32–39 as an inline immediate |
+| `movb $0x0,0x28(%rax)` | NUL-terminates at offset 40 |
+| `movq $0x28,…` | stores the `std::string` length as **0x28 = 40** |
+
+Reassembling the two halves:
+
+```
+.rodata[0x10f17c0 .. +32]  = fd1aca3af7db75504ed7512406d8a4cf
+movabs immediate (LE)      =                                 4187110a
+                             ----------------------------------------
+full SCM_REV_STR (len 40)  = fd1aca3af7db75504ed7512406d8a4cf4187110a
+```
+
+The binary additionally carries the related constants, stored as `(pointer, length)` pairs in
+`.data.rel.ro` so their boundaries are exact rather than inferred:
 
 | Dolphin constant | Value in the shipped binary | Length field |
 |---|---|---|
@@ -117,31 +153,63 @@ exact rather than inferred from `strings` heuristics:
 | `SCM_DISTRIBUTOR_STR` | `None` | 4 |
 | netplay version string | `fd1aca3a Lin` | 12 |
 
-A `.rodata` literal pool additionally contains the string `Dolphin [HEAD] ` immediately followed by
-a 33-character hex run whose final 32 characters, `fd1aca3af7db75504ed7512406d8a4cf`, are a
-**32-character prefix** of the full revision.
+The commit is titled **"libretro: Add SCM Git revision to log"** and touches
+`Source/Core/DolphinLibretro/Boot.cpp` — the change that makes a Dolphin libretro core report its SCM
+revision is the very commit the binary reports. The binary is self-consistent with its own provenance
+mechanism.
 
-Resolution and verification, all against primary sources:
+#### The repository: established by libretro's historical build recipe
 
-1. `fd1aca3a` and the 32-character prefix both resolve, in `libretro/dolphin`, to exactly
-   `fd1aca3af7db75504ed7512406d8a4cf4187110a`. A 32-hex prefix is a 128-bit constraint; ambiguity is
-   not a live concern.
-2. That commit is an **ancestor of `libretro/dolphin`'s `master`** (`compare master...<sha>` reports
-   `status: behind`, `ahead_by: 0`), so it genuinely belongs to the libretro fork's history.
-3. It is **not** an ancestor of `dolphin-emu/dolphin`'s `master` (`status: diverged`, `ahead_by: 213`),
-   confirming the fork — not upstream Dolphin — is the correct corresponding-source repository.
-4. The commit is titled **"libretro: Add SCM Git revision to log"** and touches
-   `Source/Core/DolphinLibretro/Boot.cpp`. The change that causes a Dolphin libretro core to carry
-   its SCM revision is the very commit the binary reports. The binary is self-consistent with its
-   own provenance mechanism.
+**A commit id alone does not name a repository.** GitHub resolves the *same commit object* through
+either `libretro/dolphin` or `dolphin-emu/dolphin`, because they share a fork network. Repository
+identity therefore cannot be inferred from which GitHub path happens to resolve the SHA, and
+**absence from upstream Dolphin's current `master` proves nothing** — it reflects only that upstream
+`master` has moved on. M10.3 originally argued from that non-membership; **that argument is withdrawn
+and is not used here.**
+
+The repository is established instead by libretro's own build recipe, which names the source
+repository per core. In `libretro/libretro-super`, `recipes/linux/cores-linux-x64-generic` at
+revision `9f56d6248fe83ba1d88df71a7230fde7e1cf2083` (2025-10-15 — the last change to that file
+**before** the 2025-11-20 stable 1.22.2 build, so it is the historical recipe in force at build time):
+
+```
+dolphin libretro-dolphin https://github.com/libretro/dolphin.git master YES CMAKE Makefile build \
+  -DLIBRETRO=ON -DLIBRETRO_STATIC=1 -DENABLE_QT=0 -DCMAKE_BUILD_TYPE=Release \
+  -DENABLE_ANALYTICS=OFF -DENABLE_LTO=ON
+```
+
+The recipe names the repository and the build flags; it names a **branch**, not a revision, and is
+used here only for repository identity. This is consistent with §1's rule that a recipe is not
+*revision* provenance — the revision comes from the binary, and only the repository comes from the
+recipe.
+
+#### The resulting chain
+
+```
+Release 002 Dolphin binary (sha256 c28dc9a2…, build-id 0c693b78…)
+  → embedded full SCM_REV_STR emitted by Dolphin's own build from `git rev-parse HEAD`
+    → fd1aca3af7db75504ed7512406d8a4cf4187110a
+      → historical libretro-super recipe identifies libretro/dolphin as the repository used
+        → that commit's tree, plus its gitlink pins, defines the source checkout
+```
+
+No step depends on a date, a product version string, or a branch head.
 
 Independent corroboration (**corroboration only — not the basis of the claim**): libretro CI pipeline
 `27084` first built this revision at 2025-11-19T15:04:35Z and pipeline `27186` rebuilt it at
 2025-11-19T17:17:36Z; the stable bundle was published 2025-11-20 02:50.
 
-**Why this meets the standard.** The chain is: distributed bytes → constants that Dolphin's build
-system wrote into those bytes from its own source tree → unique commit in the correct repository. No
-step depends on a date, a version string, or a branch head.
+#### Scope limit: this proves the top-level revision, not full submodule closure
+
+What is proven is the **top-level Dolphin source revision**. The commit's tree records **33 gitlink
+(submodule) entries**, so a recursive checkout at that revision yields a determinate source set, and
+those pins are recorded in `docs/research/m10-3/dolphin-submodules-fd1aca3a.txt`.
+
+That the shipped binary was linked from exactly that submodule set is **consistent with** the CI
+configuration (`GIT_SUBMODULE_STRATEGY: recursive`) but is **not independently verified by M10.3**:
+the verification script checks the top-level revision only, because the submodule revisions are not
+recoverable from the binary. Full corresponding-source closure for Dolphin therefore still requires
+materialising and archiving that checkout (§7), and must not be reported as already achieved.
 
 **Corresponding source for Dolphin therefore also requires its submodules.** `.gitlab-ci.yml` sets
 `GIT_SUBMODULE_STRATEGY: recursive`, and the tree at that commit contains **33 submodule gitlinks**.
@@ -149,7 +217,25 @@ Crucially, those revisions are *determined by* the recovered commit, so the corr
 fully specified by it. The pinned set is recorded in [§7.2](#72-what-a-production-build-record-must-contain)
 and reproduced in full in `docs/research/m10-3/dolphin-submodules-fd1aca3a.txt`.
 
-### 3.2 Nestopia, bsnes-mercury Balanced, Beetle PSX — **CANDIDATE, NOT PROVEN**
+### 3.2 Nestopia, bsnes-mercury Balanced, Beetle PSX — **exact revision unknown; candidate identified**
+
+For all three, the status is precisely:
+
+> **Exact source revision unknown; a specific public-CI candidate revision has been identified and
+> awaits libretro confirmation.**
+
+The *repository* for each is established the same way as Dolphin's — from the historical
+`libretro-super` recipe at `9f56d6248fe83ba1d88df71a7230fde7e1cf2083`, which also records the build
+variant actually shipped:
+
+```
+nestopia      … https://github.com/libretro/nestopia.git            master YES GENERIC Makefile libretro
+bsnes_mercury … https://github.com/libretro/bsnes-mercury.git       master YES GENERIC Makefile . | … bsnes_mercury_balanced:profile=balanced …
+mednafen_psx  … https://github.com/libretro/beetle-psx-libretro.git master YES GENERIC Makefile . HAVE_LIGHTREC=1
+```
+
+Repository identity is therefore **not** the gap. The gap is the revision.
+
 
 None of these three binaries embeds any revision. This was checked positively, not assumed:
 
@@ -213,6 +299,27 @@ bundle could in principle have been assembled from a cached, re-run or different
 Absent that binding, asserting these revisions as corresponding source would be asserting a
 conclusion the evidence does not carry — and GPL §3 is exactly where that is not acceptable.
 
+### 3.3 Precise per-system status
+
+Stated explicitly because "the core's revision is proven" and "the system may be distributed" are
+different claims, and collapsing them is the most likely misreading of this milestone.
+
+| Item | Status after M10.3 |
+|---|---|
+| **NES / Nestopia** | Exact revision **unknown**; candidate identified, awaiting libretro confirmation. |
+| **SNES / bsnes-mercury Balanced** | Exact revision **unknown**; candidate identified, awaiting libretro confirmation. |
+| **PlayStation / Beetle PSX** | Exact revision **unknown**; candidate identified, awaiting libretro confirmation. **Additionally** the `GPL-2.0-only` / GPLv3-host separate-work legal gate remains independently open — confirming the revision would not release PlayStation. |
+| **GameCube / Dolphin core** | Top-level source revision **proven**: `fd1aca3af7db75504ed7512406d8a4cf4187110a`. Submodule closure recorded but not independently verified (§3.1). |
+| **`dolphin-sys` support asset** | **Separate blocker, open.** `source_revision` remains `null`; upstream `https://buildbot.libretro.com/assets/system/Dolphin.zip` is **not version-addressed**; immutable mirroring is still outstanding. M10.3 proved nothing about this component. |
+| **GameCube qualification** | **Partially qualified.** Content execution is still **not confirmed** (inherited from M7.5; M10.3 measured nothing). |
+
+**Consequence for Strategy B.** Obtaining the three remaining core revisions from libretro would
+**not**, by itself, unblock GameCube public distribution — GameCube's core revision was never the
+item Strategy B was needed for, and its two remaining gates (`dolphin-sys`, content execution) are
+untouched by any libretro reply. Nor would it release PlayStation, which carries an independent legal
+gate. The honest statement is that a successful Strategy B would remove **one** of several gates for
+NES and SNES, and would leave every system still short of a distribution decision.
+
 ## 4. Public provenance sources inspected
 
 M10.2 examined four sources and found nothing. M10.3 re-checked all four and added five that M10.2
@@ -261,9 +368,18 @@ into the shipped binaries is exactly the compiler in the public CI image for the
 core — **no revision**. The equivalent path under `stable/1.22.2/linux/x86_64/` returns **404**: the
 stable tree publishes no index at all. This both confirms and sharpens M10.2's finding.
 
-**Fork-network verification on GitHub** was used to establish repository membership for the Dolphin
-commit (§3.1), because GitHub's API resolves any commit in a fork network and a naive lookup would
-have wrongly suggested upstream `dolphin-emu/dolphin` as the corresponding-source repository.
+**`libretro/libretro-super` build recipes on GitHub.** `recipes/linux/cores-linux-x64-generic`
+records, per core, the source repository and build flags libretro's buildbot uses. The historical
+revision `9f56d6248fe83ba1d88df71a7230fde7e1cf2083` (2025-10-15) is the last change to that file
+before the 2025-11-20 stable build, and is what establishes **repository identity** for all four
+cores (§3.1, §3.2). It names branches, not revisions, so it is not used for revision provenance.
+
+**A note on GitHub fork networks.** GitHub resolves a commit object through *any* repository in a
+fork network, so `libretro/dolphin` and `dolphin-emu/dolphin` both return the same commit. Repository
+identity therefore **cannot** be derived from GitHub commit resolution, and a commit's absence from
+upstream Dolphin's current `master` proves nothing about which repository a build used. M10.3's first
+pass drew that inference; it has been withdrawn, and repository identity now rests on the recipe
+above.
 
 ## 5. Strategy B — public provenance recovery
 
@@ -356,8 +472,10 @@ To make this as cheap as possible to answer, here is what we have already worked
 information, so you may only need to confirm or correct it.
 
 `dolphin_libretro.so` we believe we have already resolved without needing your records: the binary
-embeds Dolphin's own `scm_rev` constants (`SCM_DESC_STR = fd1aca3a`, `SCM_BRANCH_STR = HEAD`), and a
-32-character prefix of the revision appears in `.rodata`. That resolves to
+embeds the full 40-character `SCM_REV_STR` that Dolphin's build emits from `git rev-parse HEAD`
+(stored as 32 bytes in `.rodata` plus the final 8 as an inline immediate, with a `std::string` length
+of 40), alongside `SCM_DESC_STR = fd1aca3a` and `SCM_BRANCH_STR = HEAD`. Together with your
+`libretro-super` recipe naming `https://github.com/libretro/dolphin.git`, that gives
 `libretro/dolphin` @ `fd1aca3af7db75504ed7512406d8a4cf4187110a`. If that looks wrong to you, we would
 very much like to know.
 
@@ -435,15 +553,29 @@ renderer, not `mednafen_psx_hw_libretro.so`. A self-build must reproduce that ch
 
 **The two conclusions that most change Strategy C's cost:**
 
-1. **Three of the four targets need only Linux containers.** Windows is cross-compiled via MXE, not
-   built on Windows. No Windows build host, and no Windows CI runner, is required to produce cores.
-2. **One Apple Silicon machine covers both macOS targets.** libretro produces the x86_64 dylib on
-   `mac-apple-silicon` runners by forcing `-DCMAKE_OSX_ARCHITECTURES=x86_64` /
-   `LIBRETRO_APPLE_PLATFORM`. A single Mac is the entire macOS hardware requirement.
+1. **Three of the four targets appear to need only Linux containers.** Windows is cross-compiled via
+   MXE, not built on Windows, so no Windows build host or CI runner is indicated.
+2. **One Apple Silicon machine appears to cover both macOS targets.** libretro produces the x86_64
+   dylib on `mac-apple-silicon` runners by forcing `-DCMAKE_OSX_ARCHITECTURES=x86_64` /
+   `LIBRETRO_APPLE_PLATFORM`.
 
-This is materially cheaper than the "four-platform build and signing pipeline" M10.2 estimated. The
-remaining genuine costs are ongoing maintenance, one Mac, and RetroFrontier becoming the distributor
-of binaries it compiled.
+This is materially cheaper than the "four-platform build and signing pipeline" M10.2 estimated.
+
+> **This section records feasibility, not qualification.** Every row above is evidence that a
+> *credible build path exists*, read from libretro's public CI configuration. RetroFrontier has built
+> nothing. Specifically:
+>
+> - **A Windows cross-compilation path identified is not a production Windows build proven.** No
+>   `.dll` has been produced or run by RetroFrontier.
+> - **One Apple Silicon host plausibly building both architectures is not two qualified production
+>   dylibs.** Neither macOS artefact has been produced, loaded, or measured.
+> - **macOS core build availability is not signing, notarization or quarantine readiness** (§6.4).
+> - **A pinned-source build is not a reproducible build** (§6.3).
+> - No managed launch has been measured on any platform other than Linux x86_64, and M10.3 measured
+>   nothing at all. No qualification status changes.
+>
+> The prototype in §10 exists precisely to convert one cell of this matrix from *feasible* to
+> *measured* before the remaining fifteen are relied on.
 
 ### 6.3 Reproducibility — **pinned, not reproducible**
 
@@ -583,9 +715,24 @@ foundations.** Do not stand up the full self-build pipeline yet, and do not wait
 **Why B first, and why it is now genuinely cheap.** M10.2 rated Strategy B a plausible long shot.
 M10.3 changes that: the ask is three yes/no confirmations against named candidate revisions, with
 Dolphin already resolved and serving as a correctness check on the maintainer's own lookup. The
-outreach costs one message. If it succeeds, the corresponding-source blocker closes for Linux
-x86_64 — which unblocks NES, SNES and GameCube redistribution far sooner than any build pipeline
-could, and PlayStation still waits on its separate legal gate.
+outreach costs one message.
+
+**What a fully successful Strategy B would and would not achieve**, stated precisely (§3.3):
+
+- It would establish the corresponding-source *revision* for the three remaining cores on Linux
+  x86_64. That is one gate, removed, for three cores.
+- It would **not** unblock **GameCube** public distribution. GameCube's core revision is already
+  proven and was never what Strategy B was for; its open gates are the `dolphin-sys`
+  provenance/immutability blocker and unconfirmed content execution, neither of which any libretro
+  reply touches.
+- It would **not** release **PlayStation**, which carries an independent `GPL-2.0-only` /
+  GPLv3-host legal gate.
+- It would **not** by itself clear **NES** or **SNES** for distribution either: source archiving,
+  notices, a written offer, immutable mirroring, hosting and the production key ceremony all remain
+  open regardless.
+
+So the honest case for B is narrower than "it unblocks systems": it removes the single gate that is
+currently *cheapest to remove*, on the one platform that is actually qualified today.
 
 **Why C must start anyway, and not after.** Strategy B has a hard ceiling that no reply can raise:
 
@@ -604,14 +751,16 @@ amount of duplicated effort if libretro answers immediately and completely.
 
 **C-now was seriously considered and rejected**, on the ground that B's cost has fallen far enough
 (one message, candidates already identified) that skipping it would discard a cheap, real chance of
-unblocking three systems on the platform that is actually qualified today.
+removing the corresponding-source gate for three cores on the one platform that is actually
+qualified today.
 
 ### Low-regret Strategy C foundations to start now
 
 Useful under *either* outcome, and none of them creates a Runtime Release or touches trust code:
 
-1. Record the recovered Dolphin revision and its 33 submodule pins as durable provenance (**done** by
-   this milestone).
+1. Record the recovered Dolphin top-level revision and the 33 gitlink pins its tree declares
+   (**done** by this milestone). Note that materialising and archiving that checkout — which is what
+   actually closes Dolphin's corresponding source — is item 2, not item 1.
 2. Archive source at the four identified revisions into RetroFrontier-controlled immutable storage —
    valuable whether the revision is later confirmed by libretro or replaced by a self-build pin.
 3. Mirror the non-version-addressed `dolphin-sys` asset (already an open M10.2 item, §7.3).
@@ -670,7 +819,12 @@ Primary sources, retrieved 2026-09-05. No community lists, wikis or forum infere
 
 **GitHub:**
 
-- `libretro/dolphin` commit resolution and fork-network comparison against `dolphin-emu/dolphin`.
+- `libretro/dolphin` commit resolution for `fd1aca3af7db75504ed7512406d8a4cf4187110a`.
+- `libretro/libretro-super` `recipes/linux/cores-linux-x64-generic`, both at current `master` and at
+  the historical revision `9f56d6248fe83ba1d88df71a7230fde7e1cf2083` (2025-10-15), with the four
+  core lines confirmed identical between them.
+- `objdump -d` of the `GetScmRevGitStr()` construction site in the shipped Dolphin binary, and the
+  `.rodata` bytes at `0x10f17c0`, to reassemble the full 40-character `SCM_REV_STR`.
 - `.gitmodules` and recursive tree (submodule gitlinks) at
   `fd1aca3af7db75504ed7512406d8a4cf4187110a`.
 - Mirror existence checks for the three candidate revisions.

@@ -8,6 +8,11 @@
 # They are recorded, not chosen. Corresponding source for dolphin_libretro.so requires the
 # repository at the revision above WITH these submodules materialised.
 #
+# NOT INDEPENDENTLY VERIFIED. The top-level revision is proven from the shipped binary; these
+# submodule pins are not recoverable from the binary. That the distributed core was linked from
+# exactly this set is consistent with the CI configuration (GIT_SUBMODULE_STRATEGY: recursive)
+# but has not been verified by M10.3. Do not report Dolphin's submodule closure as established.
+#
 # Retrieved 2026-09-05 from the GitHub trees API (recursive, truncated=false).
 #
 # <path> <40-char revision>

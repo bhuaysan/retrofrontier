@@ -142,43 +142,57 @@ for row in "${EXPECTED[@]}"; do
   [ -f "$path" ] || continue
 
   if [ "$component" = "dolphin" ]; then
-    # Byte-exact extraction. The scm constants are stored as (pointer, length)
-    # pairs, so boundaries are read from the data rather than guessed from
-    # `strings` output. The 32-character prefix of the full revision appears in
-    # the .rodata literal pool.
+    # Byte-exact extraction.
+    #
+    # Dolphin's build runs `git rev-parse HEAD` into DOLPHIN_WC_REVISION,
+    # scmrev.h.in emits it as SCM_REV_STR, and Version.cpp exposes it through
+    # GetScmRevGitStr(). The full 40-character value IS present in the binary,
+    # but the compiler splits its construction: characters 0..31 are copied from
+    # .rodata by two 16-byte SSE moves, and characters 32..39 are written from an
+    # inline `movabs` immediate. A contiguous search therefore finds only 32 of
+    # the 40 characters, which is why both halves are checked here.
+    #
+    # The other scm constants are stored as (pointer, length) pairs in
+    # .data.rel.ro, so their boundaries are read from the data rather than
+    # guessed from `strings` output.
     result=$(python3 - "$path" "$DOLPHIN_REVISION" "$DOLPHIN_DESCRIBE" <<'PY'
 import sys
 path, revision, describe = sys.argv[1], sys.argv[2], sys.argv[3]
 data = open(path, 'rb').read()
 
 findings = []
-
-# NUL-delimited scm constants emitted by Dolphin's build into scm_rev.h.
 for literal in (describe.encode(), b'HEAD', b'None', describe.encode() + b' Lin'):
-    needle = b'\x00' + literal + b'\x00'
-    if needle in data:
+    if b'\x00' + literal + b'\x00' in data:
         findings.append(literal.decode())
 
-# 32-character prefix of the full revision, inside the .rodata pool.
-prefix = revision[:32].encode()
-has_prefix = prefix in data
-has_revstr = b'Dolphin [HEAD] ' in data
+head32 = revision[:32].encode()          # .rodata half
+tail8  = revision[32:].encode()          # written by the movabs immediate
+# The immediate is stored little-endian in the instruction stream.
+tail8_le = tail8[::-1]
+
+has_head = head32 in data
+has_tail = (tail8 in data) or (tail8_le in data)
 
 print("constants=" + ",".join(findings))
-print("prefix32=" + ("yes" if has_prefix else "no"))
-print("revstr=" + ("yes" if has_revstr else "no"))
+print("head32=" + ("yes" if has_head else "no"))
+print("tail8=" + ("yes" if has_tail else "no"))
+print("full=" + ("yes" if (has_head and has_tail) else "no"))
+print("revstr=" + ("yes" if b'Dolphin [HEAD] ' in data else "no"))
 PY
 )
     constants=$(printf '%s\n' "$result" | sed -n 's/^constants=//p')
-    prefix32=$(printf '%s\n' "$result" | sed -n 's/^prefix32=//p')
+    head32=$(printf '%s\n' "$result" | sed -n 's/^head32=//p')
+    tail8=$(printf '%s\n' "$result" | sed -n 's/^tail8=//p')
+    full=$(printf '%s\n' "$result" | sed -n 's/^full=//p')
     revstr=$(printf '%s\n' "$result" | sed -n 's/^revstr=//p')
 
     note "dolphin scm constants found: ${constants:-<none>}"
+    note "SCM_REV_STR halves: .rodata[0..31]=$head32  movabs[32..39]=$tail8"
 
-    if [ "$prefix32" = "yes" ]; then
-      pass "dolphin embeds the 32-char prefix of $DOLPHIN_REVISION"
+    if [ "$full" = "yes" ]; then
+      pass "dolphin embeds the FULL 40-char SCM_REV_STR $DOLPHIN_REVISION"
     else
-      fail "dolphin does NOT embed the 32-char prefix of $DOLPHIN_REVISION"
+      fail "dolphin does NOT embed the full 40-char SCM_REV_STR $DOLPHIN_REVISION"
     fi
 
     if [ "$revstr" = "yes" ]; then
@@ -186,6 +200,10 @@ PY
     else
       fail "dolphin does NOT embed the 'Dolphin [HEAD] ' scm_rev string"
     fi
+
+    note "NOTE: this verifies the TOP-LEVEL revision only. The 33 submodule pins"
+    note "      recorded in dolphin-submodules-fd1aca3a.txt are NOT verifiable from"
+    note "      the binary and are not asserted as verified here."
   else
     # These three must contain no 40-character hexadecimal revision.
     #
@@ -228,9 +246,11 @@ echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "All checks passed."
   echo
-  echo "Reminder: only dolphin has a PROVEN revision. The nestopia, bsnes-mercury and"
-  echo "beetle-psx revisions in docs/CORE_BUILD_PROVENANCE.md are CANDIDATES and must not"
-  echo "be recorded as corresponding source."
+  echo "Reminder: only dolphin's TOP-LEVEL revision is PROVEN, and its submodule closure is"
+  echo "not verified here. For nestopia, bsnes-mercury and beetle-psx the exact source"
+  echo "revision is UNKNOWN; docs/CORE_BUILD_PROVENANCE.md records a public-CI candidate"
+  echo "for each, awaiting libretro confirmation. A candidate must never be recorded as"
+  echo "corresponding source, and does not become one by staying unchanged over time."
   echo
   exit 0
 fi
