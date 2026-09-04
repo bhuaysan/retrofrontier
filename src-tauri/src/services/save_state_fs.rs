@@ -3366,9 +3366,23 @@ mod tests {
 
         // Replace the quarantined object with a different physical file holding identical bytes,
         // in place, with no sweep in flight at all.
+        //
+        // The replacement is created *alongside* the genuine object and then renamed over its
+        // name, rather than written after removing it: a filesystem is free to hand the new file
+        // the inode number the removed one just released — that reuse is precisely the hazard
+        // HIGH-8 and HIGH-9 exist for — and this test's premise is that the two are different
+        // physical files. Two files that exist simultaneously cannot share an inode, and a rename
+        // moves a directory entry without touching the inode it points at, so the premise holds by
+        // construction rather than by luck.
         let genuine_inode = inode_of(&quarantine_path);
+        let directory = root.path().join("nestopia");
+        let staged = directory.join("rf-replacement-staging");
+        fs::write(&staged, owned).unwrap();
+        let replacement_inode = inode_of(&staged);
+        assert_ne!(replacement_inode, genuine_inode);
         fs::remove_file(&quarantine_path).unwrap();
-        fs::write(&quarantine_path, owned).unwrap();
+        fs::rename(&staged, &quarantine_path).unwrap();
+        assert_eq!(inode_of(&quarantine_path), replacement_inode);
         assert_ne!(inode_of(&quarantine_path), genuine_inode);
 
         assert_eq!(sweep_delete_quarantine(root.path()), 0);
