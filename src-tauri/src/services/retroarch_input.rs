@@ -46,24 +46,56 @@
 //!
 //! So resolution additionally requires the frontend's own confirmed identity of the controller it
 //! currently accepts (`active_gamepad_id`, `Gamepad.id` via the browser Gamepad API — ADR-014;
-//! RetroFrontier's native code never reads a controller directly) to name a qualified DualSense
-//! device before the profile files are even consulted. `None` — no controller, an unsupported
-//! mapping, or a device the qualification never measured — resolves nothing, exactly like a
-//! missing or disagreeing profile.
+//! RetroFrontier's native code never reads a controller directly). That identity is the pad that
+//! currently *owns* RetroFrontier input, published by the one ownership decision the input layer
+//! makes (`src/input/activeController.ts`) rather than selected a second time at launch, so it can
+//! never name a different controller than the one driving the UI.
+//!
+//! And it must qualify by **exact match against a device identity the authenticated profiles
+//! themselves declare** — their own `input_device` and `input_device_alt<N>` values — not by
+//! carrying a token. A substring rule accepted `"Generic DualSense-style Adapter"` and
+//! `"MyDualSenseClone"` alike and would have bound the qualified pad's raw button numbers to a
+//! device nobody has measured. `None`, an unsupported mapping, an unmeasured device, or a profile
+//! set that declares no device at all all resolve nothing, exactly like a missing or disagreeing
+//! profile — and none of them ever fails a launch.
 
 use std::path::Path;
 
-/// Whether a frontend-confirmed active-controller identity names a physically qualified DualSense.
+/// The autoconfig keys a profile declares its own device identities under.
 ///
-/// Matches the Linux kernel device name substring `dualsense`, case-insensitively — the same token
-/// `gamepadQuirks.ts`'s `TRANSPOSED_FACE_BUTTON_DEVICE` already matches on the frontend, physically
-/// verified against the real device (see `docs/M8_FINAL_HARDWARE_INPUT_REPORT.md` section M): USB
-/// reports `Sony Interactive Entertainment DualSense Wireless Controller`, Bluetooth `DualSense
-/// Wireless Controller`, and both carry the token. Only the DualSense has been physically
-/// qualified, so nothing wider than this one substring is accepted — a DualSense **Edge** id, an
-/// Xbox pad, or any other device resolves nothing here, however plausible its name looks.
-fn active_controller_is_qualified(active_gamepad_id: Option<&str>) -> bool {
-    active_gamepad_id.is_some_and(|id| id.to_ascii_lowercase().contains("dualsense"))
+/// `input_device` is the device name RetroArch matches on; `input_device_alt1..alt<N>` are the
+/// additional names the *same* physical controller reports under another connection. The qualified
+/// USB DualSense profile declares
+/// `input_device = "Sony Interactive Entertainment DualSense Wireless Controller"` and
+/// `input_device_alt1 = "DualSense Wireless Controller"` — the Bluetooth naming — which is why the
+/// aliases have to be read rather than guessed at.
+const DEVICE_ROLE: &str = "input_device";
+const DEVICE_ALIAS_PREFIX: &str = "input_device_alt";
+/// How many device identities one profile may declare. The real profiles declare one or two.
+const MAX_PROFILE_DEVICES: usize = 8;
+
+/// Whether a frontend-confirmed active-controller identity names a physically qualified controller
+/// — by **exact match against an identity the authenticated profile database itself declares**.
+///
+/// MEDIUM-2: this used to be `id.to_ascii_lowercase().contains("dualsense")`. A substring test
+/// accepts anything that merely carries the token — `"Generic DualSense-style Adapter"`,
+/// `"MyDualSenseClone"`, an unmeasured future variant — and binds RetroArch's global hotkey set to
+/// the qualified profile's raw button numbers for a pad nobody has ever measured. It also
+/// contradicted its own documentation, which claimed a DualSense **Edge** id resolved nothing while
+/// the substring plainly accepted it.
+///
+/// The authority is now the immutable managed database rather than a token: `declared` is every
+/// `input_device` / `input_device_alt<N>` value the qualified profiles declare, so RetroFrontier
+/// accepts exactly the devices whose button numbers it is about to write and nothing else.
+/// Comparison is trimmed and ASCII-case-insensitive — a kernel device name is stable, so this
+/// tolerates presentation differences without ever widening to a prefix or a substring.
+fn active_controller_is_qualified(active_gamepad_id: Option<&str>, declared: &[String]) -> bool {
+    let Some(id) = active_gamepad_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return false;
+    };
+    declared
+        .iter()
+        .any(|device| device.trim().eq_ignore_ascii_case(id))
 }
 
 /// The managed controller device profiles the save-state hotkeys are derived from.
@@ -131,25 +163,37 @@ pub fn resolve_managed_save_state_hotkeys(
     driver: &str,
     active_gamepad_id: Option<&str>,
 ) -> Option<SaveStateHotkeys> {
-    if !active_controller_is_qualified(active_gamepad_id) {
-        return None;
-    }
     let mut agreed: Option<SaveStateHotkeys> = None;
+    let mut declared: Vec<String> = Vec::new();
     for profile_name in QUALIFIED_CONTROLLER_PROFILES {
-        let hotkeys = read_profile_hotkeys(&profiles_root.join(driver).join(profile_name))?;
+        let profile = read_profile(&profiles_root.join(driver).join(profile_name))?;
+        declared.extend(profile.devices);
         match &agreed {
             // Two qualified profiles that disagree cannot both be honoured by one global hotkey
             // set, and picking one would silently mis-bind the other. Refusing is the only honest
             // answer.
-            Some(existing) if *existing != hotkeys => return None,
+            Some(existing) if *existing != profile.hotkeys => return None,
             Some(_) => {}
-            None => agreed = Some(hotkeys),
+            None => agreed = Some(profile.hotkeys),
         }
+    }
+    // MEDIUM-2: the proof requirement, checked against what the qualified profiles actually
+    // declare rather than against a token. A profile database that names no device at all proves
+    // nothing about the pad in the player's hands, so it resolves nothing either.
+    if !active_controller_is_qualified(active_gamepad_id, &declared) {
+        return None;
     }
     agreed
 }
 
-fn read_profile_hotkeys(profile_path: &Path) -> Option<SaveStateHotkeys> {
+/// One qualified profile, as far as M9 reads it.
+struct QualifiedProfile {
+    /// The device identities this profile declares it applies to.
+    devices: Vec<String>,
+    hotkeys: SaveStateHotkeys,
+}
+
+fn read_profile(profile_path: &Path) -> Option<QualifiedProfile> {
     let metadata = std::fs::symlink_metadata(profile_path).ok()?;
     // A symbolic link would let something outside the verified tree decide what RetroFrontier
     // binds, which is exactly the authority the managed database exists to hold.
@@ -165,10 +209,24 @@ fn read_profile_hotkeys(profile_path: &Path) -> Option<SaveStateHotkeys> {
     let mut shoulder_right = None;
     let mut dpad_right = None;
     let mut dpad_left = None;
+    let mut devices: Vec<String> = Vec::new();
     for line in contents.lines().take(MAX_PROFILE_LINES) {
-        let Some((key, value)) = parse_profile_line(line) else {
+        let Some((key, value)) = split_profile_line(line) else {
             continue;
         };
+        // The device identities this profile applies to. They are ordinary text rather than joypad
+        // binds, so they are read here and never passed through `is_joypad_bind`, and they never
+        // reach the generated configuration — they are only ever compared against.
+        if key == DEVICE_ROLE || key.starts_with(DEVICE_ALIAS_PREFIX) {
+            if value.is_empty() || devices.len() >= MAX_PROFILE_DEVICES {
+                continue;
+            }
+            devices.push(value.to_owned());
+            continue;
+        }
+        if !is_joypad_bind(value) {
+            continue;
+        }
         let slot = match key {
             SELECT_ROLE => &mut select,
             SHOULDER_RIGHT_ROLE => &mut shoulder_right,
@@ -181,31 +239,32 @@ fn read_profile_hotkeys(profile_path: &Path) -> Option<SaveStateHotkeys> {
         if slot.is_some() {
             return None;
         }
-        *slot = Some(value);
+        *slot = Some(value.to_owned());
     }
 
-    Some(SaveStateHotkeys {
-        enable_hotkey: select?,
-        save_state: shoulder_right?,
-        slot_increase: dpad_right?,
-        slot_decrease: dpad_left?,
+    Some(QualifiedProfile {
+        devices,
+        hotkeys: SaveStateHotkeys {
+            enable_hotkey: select?,
+            save_state: shoulder_right?,
+            slot_increase: dpad_right?,
+            slot_decrease: dpad_left?,
+        },
     })
 }
 
-/// Parse one `key = "value"` line of an autoconfig profile.
+/// Split one `key = "value"` line of an autoconfig profile into its unquoted halves.
 ///
-/// The value must be a RetroArch joypad bind: a bounded button index, or a hat direction. Anything
-/// else is ignored rather than passed through, so no arbitrary string from a profile file can end
-/// up inside RetroFrontier's generated configuration.
-fn parse_profile_line(line: &str) -> Option<(&str, String)> {
+/// This performs no interpretation: `read_profile` decides per key whether the value is a joypad
+/// bind (which must satisfy `is_joypad_bind` before it can ever reach RetroFrontier's generated
+/// configuration) or a device identity (which is only ever compared against, never written).
+fn split_profile_line(line: &str) -> Option<(&str, &str)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
         return None;
     }
     let (key, value) = line.split_once('=')?;
-    let key = key.trim();
-    let value = value.trim().trim_matches('"').trim();
-    is_joypad_bind(value).then(|| (key, value.to_owned()))
+    Some((key.trim(), value.trim().trim_matches('"').trim()))
 }
 
 /// Whether a value is a RetroArch joypad bind RetroFrontier is willing to write.
@@ -554,6 +613,92 @@ mod tests {
                 "{other}"
             );
         }
+    }
+
+    /// MEDIUM-2 regression (qualification is an exact match, not a substring): every identity here
+    /// *contains* a qualified device name, and the previous
+    /// `id.to_ascii_lowercase().contains("dualsense")` rule accepted all of them — binding
+    /// RetroArch's global hotkey set to the qualified pad's raw button numbers on devices nobody
+    /// has ever measured. Only an identity the authenticated profiles themselves declare qualifies.
+    #[test]
+    fn an_identity_that_merely_contains_a_qualified_name_is_never_accepted() {
+        let root = qualified_tree();
+        for impostor in [
+            "Generic DualSense-style Adapter",
+            "MyDualSenseClone",
+            "DualSense",
+            "dualsense",
+            "Sony Interactive Entertainment DualSense Wireless Controller Clone",
+            "Not a Sony Interactive Entertainment DualSense Wireless Controller",
+            "DualSense Wireless Controller (copy)",
+        ] {
+            assert_eq!(
+                resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(impostor)),
+                None,
+                "{impostor} must not qualify"
+            );
+        }
+        // The exact declared identities still do, including with surrounding whitespace and a
+        // different case — a kernel device name is stable, so tolerating presentation is safe
+        // while widening to a prefix or substring is not.
+        for exact in [
+            QUALIFIED_ACTIVE_ID,
+            "  Sony Interactive Entertainment DualSense Wireless Controller  ",
+            "sony interactive entertainment dualsense wireless controller",
+            "DualSense Wireless Controller",
+        ] {
+            assert_eq!(
+                resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(exact)),
+                Some(expected_dualsense_hotkeys()),
+                "{exact} must qualify"
+            );
+        }
+    }
+
+    /// A qualified profile that declares no device at all names nobody, so it can qualify nobody —
+    /// the identity check has no authority to fall back on and refuses rather than guessing.
+    #[test]
+    fn a_profile_declaring_no_device_qualifies_no_controller() {
+        let without_device: String = dualsense_profile()
+            .lines()
+            .filter(|line| !line.starts_with(DEVICE_ROLE))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let profiles: Vec<(&str, String)> = QUALIFIED_CONTROLLER_PROFILES
+            .iter()
+            .map(|name| (*name, without_device.clone()))
+            .collect();
+        let root = profile_tree(&profiles);
+        assert_eq!(
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
+            None
+        );
+    }
+
+    /// A device name is never a joypad bind: declaring devices must not make arbitrary profile text
+    /// reachable by the four roles the generated configuration writes.
+    #[test]
+    fn a_device_declaration_can_never_become_a_written_hotkey_value() {
+        let hostile = [
+            "input_driver = \"udev\"",
+            "input_device = \"Sony Interactive Entertainment DualSense Wireless Controller\"",
+            // A role whose value is text rather than a bind is ignored, exactly as before.
+            "input_select_btn = \"Sony Interactive Entertainment DualSense Wireless Controller\"",
+            "input_r_btn = \"5\"",
+            "input_left_btn = \"h0left\"",
+            "input_right_btn = \"h0right\"",
+        ]
+        .join("\n");
+        let profiles: Vec<(&str, String)> = QUALIFIED_CONTROLLER_PROFILES
+            .iter()
+            .map(|name| (*name, hostile.clone()))
+            .collect();
+        let root = profile_tree(&profiles);
+        // The Select role never resolved, so the whole set refuses rather than writing text.
+        assert_eq!(
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
+            None
+        );
     }
 
     /// MEDIUM-2 regression (ambiguous/no-actual-profile): no confirmed active controller resolves

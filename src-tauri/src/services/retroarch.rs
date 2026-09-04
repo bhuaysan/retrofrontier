@@ -1423,7 +1423,11 @@ mod tests {
 
         // A complete, mutually agreeing qualified profile pair — exactly what a real managed
         // installation carries, regardless of what is actually connected.
+        // MEDIUM-2: the profile names the devices it applies to, exactly as the real authenticated
+        // database does. Those declarations are the qualification rule — nothing else is.
         let dualsense_profile = "input_driver = \"udev\"\n\
+             input_device = \"Sony Interactive Entertainment DualSense Wireless Controller\"\n\
+             input_device_alt1 = \"DualSense Wireless Controller\"\n\
              input_select_btn = \"8\"\n\
              input_r_btn = \"5\"\n\
              input_left_btn = \"h0left\"\n\
@@ -1466,9 +1470,32 @@ mod tests {
             crate::services::retroarch_input::SAVE_STATE_KEY
         )));
 
-        // A confirmed *other* controller: the exact same qualified files still resolve nothing.
-        let other = prepare(Some("Xbox Wireless Controller"));
-        let rendered = fs::read_to_string(&other.config_path).unwrap();
-        assert!(!rendered.contains(crate::services::retroarch_input::SAVE_STATE_KEY));
+        // The same profile's Bluetooth alias is the same physical pad, so it qualifies too.
+        let bluetooth = prepare(Some("DualSense Wireless Controller"));
+        let rendered = fs::read_to_string(&bluetooth.config_path).unwrap();
+        assert!(rendered.contains(&format!(
+            "{} = \"5\"\n",
+            crate::services::retroarch_input::SAVE_STATE_KEY
+        )));
+
+        // A confirmed *other* controller: the exact same qualified files still resolve nothing —
+        // and neither does anything that merely *contains* a qualified name (MEDIUM-2). A
+        // substring rule accepted every one of these and bound the qualified pad's raw button
+        // numbers to a device nobody has measured.
+        for impostor in [
+            "Xbox Wireless Controller",
+            "Generic DualSense-style Adapter",
+            "MyDualSenseClone",
+            "Sony Interactive Entertainment DualSense Wireless Controller Clone",
+            "dualsense",
+            "",
+        ] {
+            let other = prepare(Some(impostor));
+            let rendered = fs::read_to_string(&other.config_path).unwrap();
+            assert!(
+                !rendered.contains(crate::services::retroarch_input::SAVE_STATE_KEY),
+                "{impostor} must not qualify"
+            );
+        }
     }
 }

@@ -3,7 +3,9 @@ import { useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { InputAction } from '../input/actions';
+import { resetActiveControllerOwner } from '../input/activeController';
 import { GAMEPAD_BUTTON_INDEX, GAMEPAD_TUNING } from '../input/gamepadAdapter';
+import { activeControllerIdentity } from '../input/gamepadQuirks';
 import { useControllerInput } from './useControllerInput';
 
 interface FakePad {
@@ -420,5 +422,70 @@ describe('useControllerInput WebKitGTK DualSense face-button normalization', () 
     frame();
     frame();
     expect(onAction).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * MEDIUM-2: the identity the backend receives must be the controller that actually owns
+ * RetroFrontier input.
+ *
+ * `useControllerInput` is the only place ownership is decided, and it deliberately *keeps*
+ * ownership with the pad that has it rather than re-picking the lowest connected index. These tests
+ * assert that `activeControllerIdentity()` — the value threaded into every launch and save-state
+ * load request — reports that same decision. Before the fix it called `selectActiveGamepad` a
+ * second time with no ownership state, so plugging a pad in at a lower index made the backend
+ * receive one controller's identity while the player drove the UI with another, and the backend
+ * then wrote that other pad's raw hotkey button numbers.
+ */
+describe('useControllerInput publishes the controller that owns input', () => {
+  const DUALSENSE_ID = 'Sony Interactive Entertainment DualSense Wireless Controller';
+
+  afterEach(() => {
+    resetActiveControllerOwner();
+  });
+
+  it('keeps the established owner when a different pad appears at a lower index', () => {
+    render(<Harness enabled onAction={vi.fn()} />);
+
+    // Controller B takes ownership first, at index 1.
+    pads = [null, fakePad(1, { id: 'Xbox Wireless Controller' })];
+    frame();
+    expect(activeControllerIdentity()).toBe('Xbox Wireless Controller');
+
+    // A DualSense is plugged in later, at the lower index 0. Navigation ownership does not move,
+    // so neither does the identity sent to the backend — and no DualSense hotkeys are emitted.
+    pads = [fakePad(0, { id: DUALSENSE_ID }), fakePad(1, { id: 'Xbox Wireless Controller' })];
+    frame();
+    frame();
+    expect(activeControllerIdentity()).toBe('Xbox Wireless Controller');
+    expect(activeControllerIdentity()).not.toBe(DUALSENSE_ID);
+  });
+
+  it('reports the qualified pad when it is the actual owner', () => {
+    render(<Harness enabled onAction={vi.fn()} />);
+    pads = [fakePad(0, { id: DUALSENSE_ID })];
+    frame();
+    expect(activeControllerIdentity()).toBe(DUALSENSE_ID);
+  });
+
+  it('reports no owner when nothing usable is connected, and after unmount', () => {
+    const view = render(<Harness enabled onAction={vi.fn()} />);
+    pads = [];
+    frame();
+    expect(activeControllerIdentity()).toBeNull();
+
+    // A pad the browser could not map to the Standard layout owns nothing either.
+    pads = [fakePad(0, { id: DUALSENSE_ID, mapping: 'xinput' })];
+    frame();
+    expect(activeControllerIdentity()).toBeNull();
+
+    // A real owner, then an unmount: a stale identity must not outlive the loop that proved it.
+    pads = [fakePad(0, { id: DUALSENSE_ID })];
+    frame();
+    expect(activeControllerIdentity()).toBe(DUALSENSE_ID);
+    act(() => {
+      view.unmount();
+    });
+    expect(activeControllerIdentity()).toBeNull();
   });
 });

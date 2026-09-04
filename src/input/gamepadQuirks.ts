@@ -1,4 +1,5 @@
-import { selectActiveGamepad, type GamepadSnapshot } from './gamepadAdapter';
+import { activeControllerOwner } from './activeController';
+import type { GamepadSnapshot } from './gamepadAdapter';
 
 /**
  * Browser/device layout quirk normalization, the one place a physical layout that does **not** match
@@ -139,22 +140,21 @@ export function normalizeGamepads(
 }
 
 /**
- * The `Gamepad.id` of the one controller RetroFrontier currently accepts, or `null` when none is
- * connected or supported.
+ * The `Gamepad.id` of the one controller RetroFrontier currently accepts, or `null` when no exact
+ * owner can be proven.
  *
- * A one-shot read for the moment a launch or a save-state load is issued — it is deliberately not
- * a subscription: nothing here holds ownership state across calls, unlike `useControllerInput`.
- * The identity is sent to the backend so save-state hotkey derivation can require proof of the
- * actual controller before ever trusting the qualified profile database alone (MEDIUM-2); nothing
- * else reads it.
+ * MEDIUM-2: this **reads** the ownership the input layer established; it does not decide it. The
+ * previous implementation called `selectActiveGamepad(pads, null)` here, which discards retained
+ * ownership and re-picks the lowest connected index — so with an Xbox pad owning input at index 1
+ * and a DualSense appearing later at index 0, the UI was driven by the Xbox pad while the identity
+ * sent to the backend named the DualSense, and the backend then wrote DualSense raw hotkey button
+ * numbers for a launch on a pad that has no such buttons.
+ *
+ * There is now exactly one ownership decision, in `useControllerInput`, published through
+ * `activeControllerOwner`. When it names no owner — no controller, an uninterpretable mapping, or
+ * no mounted acquisition boundary at all — this returns `null`, the backend writes no save-state
+ * hotkey, and the launch still succeeds.
  */
 export function activeControllerIdentity(): string | null {
-  const source =
-    typeof navigator === 'undefined' ? undefined : navigator.getGamepads?.bind(navigator);
-  if (source === undefined) return null;
-  const pads = normalizeGamepads(
-    Array.from(source()) as (GamepadSnapshot | null)[],
-    currentInputRuntime(),
-  );
-  return selectActiveGamepad(pads, null)?.id ?? null;
+  return activeControllerOwner()?.id ?? null;
 }

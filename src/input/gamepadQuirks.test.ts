@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { publishActiveControllerOwner, resetActiveControllerOwner } from './activeController';
 import { GAMEPAD_BUTTON_INDEX, type GamepadSnapshot } from './gamepadAdapter';
 import {
   activeControllerIdentity,
@@ -288,39 +289,43 @@ describe('normalizeGamepads', () => {
 });
 
 describe('activeControllerIdentity', () => {
-  beforeEach(() => {
-    vi.stubGlobal('navigator', { ...window.navigator, getGamepads: () => [] });
-  });
-
   afterEach(() => {
-    vi.unstubAllGlobals();
+    resetActiveControllerOwner();
   });
 
-  it('returns the accepted controller’s own id', () => {
-    vi.stubGlobal('navigator', {
-      ...window.navigator,
-      getGamepads: () => [pad({ id: DUALSENSE_USB_ID })],
-    });
+  it('returns the id of the controller that actually owns input', () => {
+    publishActiveControllerOwner(pad({ id: DUALSENSE_USB_ID }));
     expect(activeControllerIdentity()).toBe(DUALSENSE_USB_ID);
   });
 
-  it('returns null when nothing is connected', () => {
+  it('returns null when no owner has been proven', () => {
     expect(activeControllerIdentity()).toBeNull();
   });
 
-  it('returns null for a pad the browser could not map to the Standard layout', () => {
-    vi.stubGlobal('navigator', {
-      ...window.navigator,
-      getGamepads: () => [pad({ mapping: 'xinput' })],
-    });
+  it('returns null once the acquisition boundary releases ownership', () => {
+    publishActiveControllerOwner(pad({ id: DUALSENSE_USB_ID }));
+    publishActiveControllerOwner(null);
     expect(activeControllerIdentity()).toBeNull();
   });
 
-  it('picks the lowest-index supported pad, matching ordinary navigation ownership', () => {
+  /**
+   * MEDIUM-2 regression. It does **not** re-select a controller of its own: it reports whoever the
+   * input layer says currently owns input, even when that is not the lowest connected index. The
+   * previous implementation called `selectActiveGamepad(pads, null)` here and would have answered
+   * `'DualSense at index 0'` while the UI was being driven by the pad at index 1.
+   */
+  it('never re-selects: a lower-index pad does not take the reported identity', () => {
+    // The input layer's own ownership decision: the pad at index 1 got there first and keeps it.
+    publishActiveControllerOwner(pad({ index: 1, id: 'Xbox Wireless Controller' }));
+    // A second pad appears at a lower index. Nothing about ownership changed.
     vi.stubGlobal('navigator', {
       ...window.navigator,
-      getGamepads: () => [pad({ index: 1, id: 'Second Pad' }), pad({ index: 0, id: 'First Pad' })],
+      getGamepads: () => [
+        pad({ index: 0, id: DUALSENSE_USB_ID }),
+        pad({ index: 1, id: 'Xbox Wireless Controller' }),
+      ],
     });
-    expect(activeControllerIdentity()).toBe('First Pad');
+    expect(activeControllerIdentity()).toBe('Xbox Wireless Controller');
+    vi.unstubAllGlobals();
   });
 });
