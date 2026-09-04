@@ -202,22 +202,28 @@ as a different binary does. Matching on the binary alone would move the first ga
 second game's bytes while keeping the first game's ids, so its detail page would list a state that
 is really the other game's and loading it would boot the wrong ROM.
 
-Attribution goes one step further: a delta candidate is only ever attributed when its own filename
-basename matches the basename RetroFrontier's own `ContentUnit.primary_relative_path` derives —
-the same basename the launched content's own filename produces, and so the same namespace RetroArch
-itself would use for that content's states. A perfectly valid-looking managed slot that lands in
-the same delta window under a *different* basename is left unattributed and untouched; nothing about
-timing or slot shape alone is ever enough. The same check runs again, as defense in depth, the
-moment a load is attempted: a registered row whose path's basename does not belong to its own
-recorded content unit is refused with `unsafeFilesystemTarget` before a process is ever authorized,
-so a row established some other way than ordinary attribution — a direct database write, a future
-migration, a bug elsewhere — cannot be loaded as if it belonged to content it does not.
+Attribution goes one step further: a delta candidate is only ever attributed when it **is the exact
+state target** a controlled launch of this session's core, content, and slot resolves — the whole
+path, not a shape. That path is computable because RetroFrontier owns both halves of RetroArch's
+own derivation (see *The RetroArch 1.22.2 layout* below): `savestate_directory` is
+`<appData>/states/<CoreId>`, and `sort_savestates_enable` is off so RetroArch inserts nothing of its
+own. A perfectly valid-looking managed slot that lands in the same delta window under a different
+basename, a different slot, or a *different directory* is left unattributed and untouched; nothing
+about timing or slot shape alone is ever enough.
 
-This binds the *basename* only. RetroArch's `<library name>` directory segment is the core's own
-self-reported `sysinfo->library_name` (see the layout note below), which RetroFrontier has no
-authenticated way to verify or reverse-map to a `CoreId` — so the directory segment is not, and
-cannot be, part of this proof. The core-binary and content-unit checks above are what close that
-gap: they are what refuses a match, not the directory name.
+The same equality is re-proved twice more before a process can exist. `prepare_load` re-derives it
+from the state's recorded core and content as a fast-fail, and `launch_locked` re-derives it once
+more from the core that actually resolved under the runtime mutation lock — the only core whose
+`CoreId` really reaches the generated configuration — and refuses to spawn anything unless the
+result equals the physical path whose bytes were verified. A row established some other way than
+ordinary attribution (a direct database write, a future migration, a bug elsewhere) therefore cannot
+be loaded as if it belonged to content, a core, or a namespace it does not.
+
+This is what makes "verify file A, load file B" impossible rather than merely unlikely.
+RetroFrontier hands RetroArch a *slot*, never a path, so the only defence against RetroArch
+resolving a different file is that the path RetroArch will resolve is fully determined and equal to
+the verified one. A basename-only proof was not that: `ForeignNamespace/Tetris.state1` and
+`Nestopia/Tetris.state1` share a basename and a slot, and only one of them is ever opened.
 
 ### Same slot, different cores
 
@@ -255,7 +261,13 @@ When loading:
    records the runtime release that actually **launches** this session — the same value an ordinary
    launch would record — never the historical release the core binary happened to come from. The
    two can differ (a retained older release still carrying a core a newer release also ships), and
-   conflating them would misreport which release a session actually ran under.
+   conflating them would misreport which release a session actually ran under. It also **moves with
+   the bytes**: when the same core binary overwrites its own slot, the refresh records the session
+   *and* the Runtime Release that produced the new physical version. The core identity — core id,
+   component, binary digest, display version, source revision — stays immutable, because that is
+   precisely what makes the change a refresh rather than a supersession; the producing runtime is
+   not immutable, because a save-state load runs an old core binary on the current managed
+   RetroArch. Leaving it behind produced a row that contradicted itself.
 3. If the exact binary is unavailable, the state is not loadable.
 4. There is no silent fallback to the game's currently configured core.
 5. There is no "try another core anyway" escape hatch.
@@ -365,13 +377,13 @@ State is not marked corrupt, its digest and provenance are untouched, and a late
 
 | Key | Value | Why |
 | --- | --- | --- |
-| `savestate_directory` | `<appData>/states` | RetroFrontier-owned, outside every runtime version tree |
+| `savestate_directory` | `<appData>/states/<CoreId>` | RetroFrontier-owned, outside every runtime version tree, and the launching core's own namespace |
 | `savestates_in_content_dir` | `false` | Nothing is written beside user ROMs |
 | `savestate_auto_save` | `false` | Every managed state comes from a deliberate save |
 | `savestate_auto_load` | `false` | Loading is a controlled RetroFrontier action |
 | `savestate_thumbnail_enable` | `true` | Produces a *provable* thumbnail candidate |
 | `state_slot` | `1`, or the loaded state's slot | The active slot on start |
-| `sort_savestates_enable` | `true` | Unchanged from M7 — see the layout note below |
+| `sort_savestates_enable` | `false` | **Security setting.** RetroArch must insert nothing of its own — see the layout note below |
 
 ## Ingame hotkeys
 
@@ -401,21 +413,35 @@ part of the immutable managed database and are present and agree regardless of w
 connected, so deriving hotkeys from that agreement alone would silently bind "Save State" to
 DualSense button numbers on a launch whose actual pad is something else entirely. Resolution
 additionally requires the frontend's own confirmed identity of the controller RetroFrontier
-currently accepts for navigation — the same `Gamepad.id` (via the browser Gamepad API; ADR-014)
-`useControllerInput` already selects, read once at the moment a launch or a save-state load is
-issued and passed as `active_gamepad_id` — to name a physically qualified DualSense before the
-profile files are even consulted. RetroFrontier's native code never reads a controller device
-directly; this frontend-confirmed identity is the only proof it ever has.
+currently accepts — the `Gamepad.id` (via the browser Gamepad API; ADR-014) of the pad that actually
+*owns* RetroFrontier input, read at the moment a launch or a save-state load is issued and passed as
+`active_gamepad_id`. RetroFrontier's native code never reads a controller device directly; this
+frontend-confirmed identity is the only proof it ever has.
 
-If `active_gamepad_id` does not name a qualified DualSense, or a qualified profile is absent, is a
-symlink, is oversized, omits a role, declares one twice, carries a value that is not a joypad bind,
-or disagrees with the other qualified profile, **no hotkey is written at all**. RetroArch's hotkey
-binds are one global set, so picking one of two disagreeing profiles would silently mis-bind the
-other pad. An unresolved set never fails a launch: losing the save hotkey is a smaller failure than
-losing the game. Matching an active identity to "qualified DualSense" is narrow by design — a
-DualSense **Edge** id, or any device whose name does not carry the physically-verified `dualsense`
-token, resolves nothing either, matching the fact that only the ordinary DualSense has been
-physically qualified (see *Qualification status*).
+**That identity comes from one ownership decision, never a second selection.**
+`useControllerInput` keeps a persistent ownership index, so a pad that already owns input keeps it
+when another is plugged in at a lower index; it publishes that exact pad through
+`src/input/activeController.ts`, and `activeControllerIdentity()` only reads it. Selecting again at
+launch time would discard retained ownership and re-pick the lowest connected index — with an Xbox
+pad owning input at index 1 and a DualSense appearing later at index 0, the UI would be driven by
+one pad while the backend received the other's identity and wrote its raw button numbers.
+
+**Qualification is an exact match against what the authenticated database itself declares** — the
+qualified profiles' own `input_device` and `input_device_alt<N>` values, compared trimmed and
+ASCII-case-insensitively. It is deliberately not a token test: `"Generic DualSense-style Adapter"`,
+`"MyDualSenseClone"`, and any unmeasured variant all carry the `dualsense` substring, and accepting
+them would bind the qualified pad's raw button numbers to a device nobody has measured. Those
+declarations are read as text and never pass the joypad-bind filter, so they can never reach the
+generated configuration.
+
+If `active_gamepad_id` does not exactly name a declared qualified device, or a qualified profile is
+absent, is a symlink, is oversized, omits a role, declares one twice, carries a value that is not a
+joypad bind, declares no device at all, or disagrees with the other qualified profile, **no hotkey
+is written at all**. RetroArch's hotkey binds are one global set, so picking one of two disagreeing
+profiles would silently mis-bind the other pad. An unresolved set never fails a launch: losing the
+save hotkey is a smaller failure than losing the game. The qualified set is exactly what the shipped
+database names — the USB DualSense, its own declared Bluetooth alias, and the DualSense Edge the
+database also carries — and nothing wider (see *Qualification status*).
 
 While RetroArch runs, RetroFrontier does not consume the controller. The M8 ownership boundary is
 unchanged, and M9 introduces no focus path around it.
@@ -462,10 +488,17 @@ authorization-to-action window.
 The architectural invariant is:
 
 > RetroFrontier deletes exactly the previously verified regular file under its owned Save-State
-> root, or deletes nothing.
+> root, or deletes nothing — against pathname replacement, symbolic-link traversal, hard links, a
+> wrong inode, a wrong digest, and ordinary TOCTOU substitution.
 
-`canonicalize` then `remove_file` cannot provide that — it leaves a window in which the resolved
-name is replaced, and the removal would then delete whatever occupies the *pathname*. So:
+Stated precisely, because the qualifier is load-bearing: those are the actors this design defeats.
+It does **not** claim to defeat a hostile *same-user* writer that already holds an open writable
+descriptor onto the exact inode — that remains a documented POSIX limitation, narrowed rather than
+closed, and it is spelled out under *Accepted residual risks*.
+
+`canonicalize` then `remove_file` cannot provide even the stated invariant — it leaves a window in
+which the resolved name is replaced, and the removal would then delete whatever occupies the
+*pathname*. So:
 
 - the states root is walked by **directory handle** with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`, so
   a symlinked final component *or* intermediate directory is `ELOOP` rather than a resolution;
@@ -490,6 +523,23 @@ the rename, a small durable **ownership-proof journal entry** is written first, 
 journal entry it can find *and* whose current content still matches that recorded proof — a file
 that merely happens to carry the same name pattern, planted or coincidental, is left alone rather
 than assumed to be RetroFrontier's own and swept regardless.
+
+**The startup sweep destroys nothing by pathname either.** Verifying a descriptor does not license
+unlinking a *name*, and Linux has no unlink-by-descriptor: a racing same-user process could rename
+the verified object away and drop an unrelated file at that name in between. So the sweep repeats
+the delete path's own discipline. After verifying the object it moves that directory entry to a
+**fresh** RetroFrontier-owned second-stage quarantine name with `RENAME_NOREPLACE`, journaled before
+the move, and re-proves `(dev, ino, size)` and the digest *at the new name* before unlinking. A
+pathname substituted in that window is carried to the second stage instead, fails the re-proof, is
+renamed back to where it was found, and is never unlinked.
+
+**Journal evidence outlives every non-terminal failure.** The entry is removed only after the one
+deterministic terminal result — the owned object was verified and successfully unlinked. A transient
+I/O failure, a content mismatch, an indeterminate verification, and a refused race all keep it,
+because the object is still on disk and that entry is the only durable proof RetroFrontier owns it.
+Discarding it would strand the object permanently: no later startup could prove it safe to finish.
+A mismatching quarantine file is never deleted, and repeating the sweep keeps refusing rather than
+forgetting.
 
 Deletion is the irreversible primary action, so ordering is: verify → delete the state file → delete
 the verified thumbnail if safe → persist `deleted`. If persistence fails afterwards, the row briefly
@@ -560,13 +610,41 @@ a future Runtime upgrade must break them deliberately.
 | AUTO | `<base>.state.auto` — not managed |
 | thumbnail | `<state path>.png` |
 
-With `sort_savestates_enable`, RetroArch inserts the **core-reported `sysinfo->library_name`** as a
-subdirectory. That name is not guaranteed to equal a RetroFrontier `CoreId`, a managed component ID,
-a core filename, or a libretro filename stem — and on the real qualified runtime it does not: it
-produced `states/Nestopia/`, `states/bsnes-mercury/`, and `states/dolphin-emu/` for the cores
-RetroFrontier calls `nestopia`, `bsnes-mercury-balanced`, and `dolphin`. **Nothing reverse-maps a
-directory to a core.** The parse result carries no core field at all; core provenance comes from the
-controlled launch.
+RetroArch composes the state base from `savestate_directory` and the content file's own basename,
+then appends the slot number. What sits between those two depends on one setting:
+
+- with `sort_savestates_enable`, RetroArch inserts the **core-reported `sysinfo->library_name`** as
+  a subdirectory. That name is not guaranteed to equal a RetroFrontier `CoreId`, a managed component
+  ID, a core filename, or a libretro filename stem — and on the real qualified runtime it does not:
+  it produced `states/Nestopia/`, `states/bsnes-mercury/`, and `states/dolphin-emu/` for the cores
+  RetroFrontier calls `nestopia`, `bsnes-mercury-balanced`, and `dolphin`;
+- **without it, RetroArch inserts nothing**, and the base is exactly
+  `<savestate_directory>/<content basename>.state`.
+
+RetroFrontier therefore turns sorting **off** and points `savestate_directory` at
+`<appData>/states/<CoreId>` — a segment it *writes* rather than reads back. Both halves of the
+derivation are then RetroFrontier's own, so `save_state_fs::state_target` can compute the one path a
+controlled launch will resolve for a given (core, content, slot), and attribution and authorization
+are equality tests against it. Per-core separation is not lost; it is just defined by RetroFrontier
+rather than by the core.
+
+**Nothing reverse-maps a directory to a core.** The parse result still carries no core field, and a
+directory that merely resembles a `CoreId` proves nothing — only equality with the computed target
+does. Core provenance still comes from the controlled launch.
+
+`CoreId` is already restricted to ASCII alphanumerics, `-`, `_`, and `.` with an alphanumeric first
+character, so the namespace segment is always exactly one safe path component: it can never be `.`
+or `..`, never escape the states root, and never collide with the `.rf-delete-*` quarantine names or
+the `.rf-delete-journal` directory.
+
+This composition is pinned against a real RetroArch 1.22.x binary rather than assumed. With
+`sort_savestates_enable = false`, `savestate_directory = D` and content `Synthetic Probe.nes`, it
+logs `Redirecting save state to "D/Synthetic Probe.state"`, and `--entryslot 3` then resolves
+`D/Synthetic Probe.state3`. The same run with sorting enabled resolves
+`D/Nestopia/Synthetic Probe.state3` instead.
+
+`sort_savefiles_enable` is deliberately left on. SaveData is opaque to M9, lives under its own
+`savefile_directory`, and no RetroFrontier proof depends on a path into it.
 
 ## Accepted residual risks
 
@@ -643,4 +721,12 @@ the tester legally owns:
 8. Roll the runtime back or forward so a state's core binary is no longer installed, and confirm the
    state stays visible, reports `Required core unavailable`, and is still deletable.
 9. While a game runs, confirm every Save-State load and delete is refused.
-10. Repeat on the distribution matrix in `docs/spikes/LINUX_RUNTIME_QUALIFICATION.md`.
+10. Confirm states land under `states/<CoreId>/` — the RetroFrontier-composed namespace — and not
+    under a core-reported `library_name` directory. A pre-existing `states/Nestopia/` tree from
+    before this binding is expected to be ignored rather than adopted: it is not the target any
+    controlled launch resolves, so it is neither attributed nor loaded, and it is never deleted
+    either.
+11. With two pads attached, make the higher-index one take navigation ownership first, then attach
+    the qualified DualSense at a lower index, and confirm the save hotkeys are *not* silently bound
+    to the DualSense while the other pad drives the UI.
+12. Repeat on the distribution matrix in `docs/spikes/LINUX_RUNTIME_QUALIFICATION.md`.

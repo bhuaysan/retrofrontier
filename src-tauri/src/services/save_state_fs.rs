@@ -668,7 +668,13 @@ pub fn managed_file_matches_size(
     Ok(())
 }
 
-/// Delete exactly the previously verified regular file, or delete nothing.
+/// Delete exactly the previously verified regular file, or delete nothing — against pathname
+/// replacement, symbolic-link traversal, hard links, a wrong inode, a wrong digest, and ordinary
+/// TOCTOU substitution.
+///
+/// The qualifier is load-bearing and is not a hedge: a hostile *same-user* writer already holding an
+/// open writable descriptor onto the exact inode remains outside what this can promise. See
+/// `delete_verified_managed_file_inner` for the full statement of that accepted limitation.
 pub fn delete_verified_managed_file(
     states_root: &Path,
     relative_path: &RelativePath,
@@ -1390,10 +1396,12 @@ fn delete_verified_managed_file_inner(
     // holding an already-open descriptor short of mandatory locking, which Linux does not offer as
     // a mechanism this project can rely on — and a same-user hostile process capable of racing a
     // delete this precisely already has unrestricted access to the user's own files regardless.
-    // What is still guaranteed: the exact previously verified bytes are deleted, or nothing is,
-    // against every actor path substitution, hard links, symlinks, and directory swaps can
-    // produce; for a hostile same-inode writer, the remaining window is narrowed to the instant
-    // between this re-hash and the `unlinkat` immediately below, not the whole delete.
+    // What is guaranteed, stated exactly: the exact previously verified bytes are deleted, or
+    // nothing is, against pathname replacement, symlink traversal, hard links, a wrong inode, a
+    // wrong digest, and ordinary TOCTOU substitution. What is *not* claimed: for a hostile
+    // same-inode writer the window is narrowed to the instant between this re-hash and the
+    // `unlinkat` immediately below, rather than closed. That is a documented POSIX limitation, and
+    // the module documentation and `docs/SAVE_STATES.md` say so in the same terms.
     let content_matches =
         matches!(hash_descriptor(quarantined), Ok(sha256) if sha256 == expected_sha256);
     if !content_matches {
