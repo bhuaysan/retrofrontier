@@ -29,6 +29,21 @@ pub struct SaveStateRequest {
     pub save_state_id: SaveStateId,
 }
 
+/// The load request.
+///
+/// A `SaveStateId`, plus `activeGamepadId` — the frontend's own confirmed identity of the one
+/// controller RetroFrontier currently accepts (`Gamepad.id`, via the browser Gamepad API; see
+/// ADR-014), or absent when none is connected or supported. It is used for nothing but gating
+/// which save-state hotkeys, if any, this launch may derive (MEDIUM-2); everything else about the
+/// load is still resolved from durable provenance and re-proved independently.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LoadSaveStateRequest {
+    pub save_state_id: SaveStateId,
+    #[serde(default)]
+    pub active_gamepad_id: Option<String>,
+}
+
 /// The bounded Save-State projection Game Detail renders.
 ///
 /// Only `available`, proved states appear, ordered by the backend. A state whose registered file
@@ -48,11 +63,11 @@ pub async fn list_save_states(
 #[tauri::command]
 pub async fn load_save_state(
     state: tauri::State<'_, AppState>,
-    request: SaveStateRequest,
+    request: LoadSaveStateRequest,
 ) -> Result<LoadSaveStateResponse, AppError> {
     Ok(state
         .save_states()
-        .load_save_state(request.save_state_id)
+        .load_save_state(request.save_state_id, request.active_gamepad_id)
         .await)
 }
 
@@ -73,7 +88,39 @@ pub async fn delete_save_state(
 
 #[cfg(test)]
 mod tests {
-    use super::{ListSaveStatesRequest, SaveStateRequest};
+    use super::{ListSaveStatesRequest, LoadSaveStateRequest, SaveStateRequest};
+
+    /// The load request accepts the identity, and optionally the confirmed active-controller
+    /// identity (MEDIUM-2) — nothing else.
+    #[test]
+    fn a_load_request_carries_only_a_save_state_id_and_an_optional_active_gamepad_id() {
+        let request: LoadSaveStateRequest =
+            serde_json::from_value(serde_json::json!({ "saveStateId": 42 })).unwrap();
+        assert_eq!(request.save_state_id.0, 42);
+        assert_eq!(request.active_gamepad_id, None);
+
+        let request: LoadSaveStateRequest = serde_json::from_value(serde_json::json!({
+            "saveStateId": 42,
+            "activeGamepadId": "Sony Interactive Entertainment DualSense Wireless Controller",
+        }))
+        .unwrap();
+        assert_eq!(
+            request.active_gamepad_id.as_deref(),
+            Some("Sony Interactive Entertainment DualSense Wireless Controller")
+        );
+
+        for smuggled in [
+            serde_json::json!({ "saveStateId": 42, "statePath": "/etc/passwd" }),
+            serde_json::json!({ "saveStateId": 42, "corePath": "/tmp/core.so" }),
+            serde_json::json!({ "saveStateId": 42, "slot": 3 }),
+        ] {
+            assert!(
+                serde_json::from_value::<LoadSaveStateRequest>(smuggled.clone()).is_err(),
+                "{smuggled} must be refused"
+            );
+        }
+        assert!(serde_json::from_value::<LoadSaveStateRequest>(serde_json::json!({})).is_err());
+    }
 
     /// The IPC surface accepts identities and nothing else.
     #[test]

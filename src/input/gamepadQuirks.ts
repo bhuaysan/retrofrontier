@@ -1,4 +1,4 @@
-import type { GamepadSnapshot } from './gamepadAdapter';
+import { selectActiveGamepad, type GamepadSnapshot } from './gamepadAdapter';
 
 /**
  * Browser/device layout quirk normalization, the one place a physical layout that does **not** match
@@ -136,4 +136,25 @@ export function normalizeGamepads(
   return pads.map((snapshot) =>
     snapshot === null ? null : normalizeGamepadSnapshot(snapshot, runtime),
   );
+}
+
+/**
+ * The `Gamepad.id` of the one controller RetroFrontier currently accepts, or `null` when none is
+ * connected or supported.
+ *
+ * A one-shot read for the moment a launch or a save-state load is issued — it is deliberately not
+ * a subscription: nothing here holds ownership state across calls, unlike `useControllerInput`.
+ * The identity is sent to the backend so save-state hotkey derivation can require proof of the
+ * actual controller before ever trusting the qualified profile database alone (MEDIUM-2); nothing
+ * else reads it.
+ */
+export function activeControllerIdentity(): string | null {
+  const source =
+    typeof navigator === 'undefined' ? undefined : navigator.getGamepads?.bind(navigator);
+  if (source === undefined) return null;
+  const pads = normalizeGamepads(
+    Array.from(source()) as (GamepadSnapshot | null)[],
+    currentInputRuntime(),
+  );
+  return selectActiveGamepad(pads, null)?.id ?? null;
 }

@@ -3965,7 +3965,11 @@ describe('AppShell M8 controller navigation and focus', () => {
     await pressButton(GAMEPAD_BUTTON_INDEX.dpadDown);
     expect(second).toHaveFocus();
     await pressButton(GAMEPAD_BUTTON_INDEX.confirm);
-    expect(mocks.launchGame).toHaveBeenLastCalledWith({ gameId: 1, contentUnitId: 12 });
+    expect(mocks.launchGame).toHaveBeenLastCalledWith({
+      gameId: 1,
+      contentUnitId: 12,
+      activeGamepadId: 'Qualification Pad (STANDARD GAMEPAD)',
+    });
   });
 
   it('updates the footer action immediately when the focused card changes state', async () => {

@@ -376,11 +376,17 @@ impl SaveStateApplicationService {
 
     /// Load one Save State through the shared managed launch pipeline.
     ///
-    /// Nothing but the `SaveStateId` comes from the caller. Every fact is resolved from durable
-    /// provenance and then re-proved against the current filesystem and the current trust state
-    /// before a process is created.
-    pub async fn load_save_state(&self, id: SaveStateId) -> LoadSaveStateResponse {
-        match self.prepare_load(id).await {
+    /// Nothing but the `SaveStateId` comes from the caller, save for `active_gamepad_id` — the
+    /// frontend's own confirmed active-controller identity, passed straight through to the launch
+    /// pipeline's save-state hotkey derivation (MEDIUM-2) and to nothing else. Every other fact is
+    /// resolved from durable provenance and then re-proved against the current filesystem and the
+    /// current trust state before a process is created.
+    pub async fn load_save_state(
+        &self,
+        id: SaveStateId,
+        active_gamepad_id: Option<String>,
+    ) -> LoadSaveStateResponse {
+        match self.prepare_load(id, active_gamepad_id).await {
             Ok(plan) => {
                 let Some(launch) = self.launch.get() else {
                     return LoadSaveStateResponse::refused(SaveStateError::LaunchFailed);
@@ -438,7 +444,11 @@ impl SaveStateApplicationService {
     /// mid-write content turn a perfectly good Save State into `missing`. The launch pipeline
     /// re-checks the same thing again under the runtime mutation lock, so this is a guard rather
     /// than the authority.
-    async fn prepare_load(&self, id: SaveStateId) -> Result<SaveStateLaunchPlan, SaveStateError> {
+    async fn prepare_load(
+        &self,
+        id: SaveStateId,
+        active_gamepad_id: Option<String>,
+    ) -> Result<SaveStateLaunchPlan, SaveStateError> {
         if self.managed_session_active() {
             return Err(SaveStateError::TemporarilyBlocked);
         }
@@ -526,6 +536,7 @@ impl SaveStateApplicationService {
             core_component_id: state.provenance.core_component_id.clone(),
             core_binary_sha256: state.provenance.core_binary_sha256,
             slot: state.slot,
+            active_gamepad_id,
         })
     }
 
@@ -2435,7 +2446,7 @@ mod tests {
             .await;
         let state = fixture.only_state().await;
 
-        let response = fixture.service.load_save_state(state.id).await;
+        let response = fixture.service.load_save_state(state.id, None).await;
         assert!(matches!(response, LoadSaveStateResponse::Started { .. }));
 
         let plans = fixture.launch.plans.lock().unwrap();
@@ -2459,14 +2470,17 @@ mod tests {
 
         // An identity that does not exist.
         assert_eq!(
-            fixture.service.load_save_state(SaveStateId(9_999)).await,
+            fixture
+                .service
+                .load_save_state(SaveStateId(9_999), None)
+                .await,
             LoadSaveStateResponse::refused(SaveStateError::NotFound)
         );
 
         // A managed game is running.
         fixture.launch.active.store(true, Ordering::Relaxed);
         assert_eq!(
-            fixture.service.load_save_state(state.id).await,
+            fixture.service.load_save_state(state.id, None).await,
             LoadSaveStateResponse::refused(SaveStateError::TemporarilyBlocked)
         );
         fixture.launch.active.store(false, Ordering::Relaxed);
@@ -2474,7 +2488,7 @@ mod tests {
         // The exact historical core binary is gone.
         fixture.runtime.remove(CORE_A);
         assert_eq!(
-            fixture.service.load_save_state(state.id).await,
+            fixture.service.load_save_state(state.id, None).await,
             LoadSaveStateResponse::refused(SaveStateError::CoreUnavailable)
         );
         fixture
@@ -2490,7 +2504,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            fixture.service.load_save_state(state.id).await,
+            fixture.service.load_save_state(state.id, None).await,
             LoadSaveStateResponse::refused(SaveStateError::Unavailable)
         );
         sqlx::query("UPDATE content_units SET availability = 'available' WHERE id = 1")
@@ -2502,7 +2516,7 @@ mod tests {
         assert!(fixture.launch.plans.lock().unwrap().is_empty());
         // And the state is still perfectly loadable once the world is right again.
         assert!(matches!(
-            fixture.service.load_save_state(state.id).await,
+            fixture.service.load_save_state(state.id, None).await,
             LoadSaveStateResponse::Started { .. }
         ));
     }
@@ -2532,7 +2546,7 @@ mod tests {
         );
 
         assert_eq!(
-            fixture.service.load_save_state(state.id).await,
+            fixture.service.load_save_state(state.id, None).await,
             LoadSaveStateResponse::refused(SaveStateError::TemporarilyBlocked)
         );
         assert_eq!(
@@ -2582,7 +2596,7 @@ mod tests {
         fixture.write("Nestopia/Synthetic.state1", b"unexplained new bytes");
 
         assert_eq!(
-            fixture.service.load_save_state(state.id).await,
+            fixture.service.load_save_state(state.id, None).await,
             LoadSaveStateResponse::refused(SaveStateError::IntegrityMismatch)
         );
         // The registered identity is no longer valid, so the object leaves the normal list...
@@ -2618,7 +2632,7 @@ mod tests {
         let before = fixture.only_state().await;
         fixture.launch.fail.store(true, Ordering::Relaxed);
 
-        let response = fixture.service.load_save_state(before.id).await;
+        let response = fixture.service.load_save_state(before.id, None).await;
 
         // The launch pipeline's own verdict, kept distinct from a Save-State refusal.
         assert!(matches!(
@@ -2638,7 +2652,7 @@ mod tests {
         // And a later retry succeeds once the launch works again.
         fixture.launch.fail.store(false, Ordering::Relaxed);
         assert!(matches!(
-            fixture.service.load_save_state(before.id).await,
+            fixture.service.load_save_state(before.id, None).await,
             LoadSaveStateResponse::Started { .. }
         ));
     }
@@ -2700,7 +2714,7 @@ mod tests {
 
         // It cannot be loaded...
         assert_eq!(
-            fixture.service.load_save_state(state.id).await,
+            fixture.service.load_save_state(state.id, None).await,
             LoadSaveStateResponse::refused(SaveStateError::CoreUnavailable)
         );
         // ...and deleting it needs no emulator at all.
@@ -2895,7 +2909,7 @@ mod tests {
         // The world moves on underneath it in three independent ways.
         fixture.launch.active.store(true, Ordering::Relaxed);
         assert_eq!(
-            fixture.service.load_save_state(id).await,
+            fixture.service.load_save_state(id, None).await,
             LoadSaveStateResponse::refused(SaveStateError::TemporarilyBlocked)
         );
         assert_eq!(
@@ -2906,7 +2920,7 @@ mod tests {
         fixture.launch.active.store(false, Ordering::Relaxed);
         fixture.runtime.remove(CORE_A);
         assert_eq!(
-            fixture.service.load_save_state(id).await,
+            fixture.service.load_save_state(id, None).await,
             LoadSaveStateResponse::refused(SaveStateError::CoreUnavailable)
         );
 
@@ -3025,7 +3039,7 @@ mod tests {
         // deciding whether to destroy the very file that load would need. It is refused outright,
         // and — because `StubLaunch::launch_save_state` itself contends for the same section a
         // real launch would — it never even records a launch attempt.
-        let racing_load = fixture.service.load_save_state(state.id).await;
+        let racing_load = fixture.service.load_save_state(state.id, None).await;
         assert!(
             matches!(
                 racing_load,
@@ -3053,7 +3067,7 @@ mod tests {
         // never a half-deleted file. The row survives as a closed `deleted` lifecycle, so the
         // verdict is `Unavailable`, not a dangling reference to bytes that might still exist.
         assert_eq!(
-            fixture.service.load_save_state(state.id).await,
+            fixture.service.load_save_state(state.id, None).await,
             LoadSaveStateResponse::refused(SaveStateError::Unavailable)
         );
     }
@@ -3093,7 +3107,7 @@ mod tests {
         );
 
         assert_eq!(
-            unattached.load_save_state(state.id).await,
+            unattached.load_save_state(state.id, None).await,
             LoadSaveStateResponse::refused(SaveStateError::TemporarilyBlocked)
         );
         assert_eq!(
@@ -3193,7 +3207,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            fixture.service.load_save_state(row.id).await,
+            fixture.service.load_save_state(row.id, None).await,
             LoadSaveStateResponse::refused(SaveStateError::UnsafeFilesystemTarget)
         );
         assert!(fixture.launch.plans.lock().unwrap().is_empty());

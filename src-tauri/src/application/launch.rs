@@ -124,6 +124,11 @@ pub struct SaveStateLaunchPlan {
     /// whose currently installed, trusted binary has a different digest never satisfies this.
     pub core_binary_sha256: Sha256Digest,
     pub slot: SaveStateSlot,
+    /// The frontend's own confirmed active-controller identity for this exact load attempt (see
+    /// `LaunchApplicationService::launch_game`), or `None`. Carried on the plan itself so a
+    /// save-state load needs no separate parameter to reach the same hotkey-derivation gate an
+    /// ordinary launch uses.
+    pub active_gamepad_id: Option<String>,
 }
 
 /// Proof that this task, and no other, currently owns the in-process launch-serialization section.
@@ -144,6 +149,7 @@ pub struct LaunchExclusionGuard(pub(crate) tokio::sync::OwnedMutexGuard<()>);
 enum LaunchPlan {
     Normal {
         content_unit_id: Option<ContentUnitId>,
+        active_gamepad_id: Option<String>,
     },
     // Boxed: a save-state plan carries a whole located core binary, and an ordinary launch — by
     // far the common case — should not pay for that on the stack.
@@ -410,13 +416,26 @@ impl LaunchApplicationService {
     ///
     /// Every anticipated problem is a normalized response rather than an error, so React can act
     /// on a stable code instead of parsing text.
+    ///
+    /// `active_gamepad_id` is the frontend's own confirmed identity (`Gamepad.id`, via the
+    /// browser Gamepad API — see ADR-014) of the one controller RetroFrontier currently accepts
+    /// for navigation, or `None` when none is connected or supported. RetroFrontier's native code
+    /// never reads a controller device directly; this is the only proof it ever has of which
+    /// physical device this launch's save-state hotkeys, if any, may be derived from (MEDIUM-2).
     pub async fn launch_game(
         &self,
         game_id: GameId,
         content_unit_id: Option<ContentUnitId>,
+        active_gamepad_id: Option<String>,
     ) -> LaunchResponse {
-        self.launch(game_id, LaunchPlan::Normal { content_unit_id })
-            .await
+        self.launch(
+            game_id,
+            LaunchPlan::Normal {
+                content_unit_id,
+                active_gamepad_id,
+            },
+        )
+        .await
     }
 
     /// Launch one game from a proved Save State.
@@ -547,7 +566,9 @@ impl LaunchApplicationService {
         // A save-state launch has no selection to make: the content unit is recorded provenance,
         // so it is *required* to still be launchable rather than offered as one of several.
         let requested = match &plan {
-            LaunchPlan::Normal { content_unit_id } => *content_unit_id,
+            LaunchPlan::Normal {
+                content_unit_id, ..
+            } => *content_unit_id,
             LaunchPlan::SaveState(plan) => Some(plan.content_unit_id),
         };
         let unit = match requested {
@@ -669,6 +690,14 @@ impl LaunchApplicationService {
         // release that does not carry them cannot start a game with an unusable controller.
         let controller_profiles_root =
             RetroArchService::resolve_controller_profiles(&launch_runtime)?;
+        // MEDIUM-2: the same signal, whichever shape this launch is, so a save-state load gates
+        // its hotkeys exactly as an ordinary launch does.
+        let active_gamepad_id = match &plan {
+            LaunchPlan::Normal {
+                active_gamepad_id, ..
+            } => active_gamepad_id.clone(),
+            LaunchPlan::SaveState(plan) => plan.active_gamepad_id.clone(),
+        };
         let context = self.retroarch.prepare(LaunchPreparation {
             app_run_path: &launch_runtime.app_run_path,
             core: &core,
@@ -676,6 +705,7 @@ impl LaunchApplicationService {
             bios_files: &bios_files,
             controller_profiles_root: &controller_profiles_root,
             entry_slot,
+            active_gamepad_id: active_gamepad_id.as_deref(),
         })?;
 
         let session = self
@@ -1864,11 +1894,11 @@ mod tests {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;
 
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(99), None).await),
+            failure_code(&harness.service.launch_game(GameId(99), None, None).await),
             LaunchErrorCode::GameNotFound
         );
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(3), None).await),
+            failure_code(&harness.service.launch_game(GameId(3), None, None).await),
             LaunchErrorCode::GameUnavailable
         );
         assert!(harness
@@ -1887,7 +1917,7 @@ mod tests {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;
         harness.set_app_run("sleep 5");
 
-        let selection = harness.service.launch_game(GameId(2), None).await;
+        let selection = harness.service.launch_game(GameId(2), None, None).await;
         let options = match &selection {
             LaunchResponse::ContentSelectionRequired { options } => options.clone(),
             other => panic!("expected a content selection, got {other:?}"),
@@ -1900,7 +1930,7 @@ mod tests {
             .unwrap()
             .is_empty());
 
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
         assert!(matches!(started, LaunchResponse::Started { .. }));
     }
 
@@ -1922,11 +1952,11 @@ mod tests {
 
         // Both launches have to take and release the very same lock the drop above released.
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(99), None).await),
+            failure_code(&harness.service.launch_game(GameId(99), None, None).await),
             LaunchErrorCode::GameNotFound
         );
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(3), None).await),
+            failure_code(&harness.service.launch_game(GameId(3), None, None).await),
             LaunchErrorCode::GameUnavailable
         );
         drop(inherited);
@@ -1941,7 +1971,7 @@ mod tests {
             failure_code(
                 &harness
                     .service
-                    .launch_game(GameId(1), Some(ContentUnitId(2)))
+                    .launch_game(GameId(1), Some(ContentUnitId(2)), None)
                     .await
             ),
             LaunchErrorCode::ContentUnavailable
@@ -1951,7 +1981,7 @@ mod tests {
             failure_code(
                 &harness
                     .service
-                    .launch_game(GameId(3), Some(ContentUnitId(4)))
+                    .launch_game(GameId(3), Some(ContentUnitId(4)), None)
                     .await
             ),
             LaunchErrorCode::GameUnavailable
@@ -1960,7 +1990,7 @@ mod tests {
             failure_code(
                 &harness
                     .service
-                    .launch_game(GameId(1), Some(ContentUnitId(404)))
+                    .launch_game(GameId(1), Some(ContentUnitId(404)), None)
                     .await
             ),
             LaunchErrorCode::ContentUnavailable
@@ -1973,7 +2003,7 @@ mod tests {
 
         *harness.runtime.launch.lock().unwrap() = None;
         *harness.runtime.state.lock().unwrap() = RuntimeState::Broken;
-        let failure = harness.service.launch_game(GameId(1), None).await;
+        let failure = harness.service.launch_game(GameId(1), None, None).await;
         assert_eq!(failure_code(&failure), LaunchErrorCode::RuntimeNotReady);
         if let LaunchResponse::Failed { error } = &failure {
             assert_eq!(error.context.runtime_state, Some(RuntimeState::Broken));
@@ -1994,7 +2024,7 @@ mod tests {
         *harness.runtime.launch.lock().unwrap() = Some(without_core);
         *harness.runtime.state.lock().unwrap() = RuntimeState::Ready;
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            failure_code(&harness.service.launch_game(GameId(1), None, None).await),
             LaunchErrorCode::CoreNotInstalled
         );
     }
@@ -2004,7 +2034,7 @@ mod tests {
         let harness = Harness::build(SystemId::Nintendo64, Vec::new()).await;
 
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            failure_code(&harness.service.launch_game(GameId(1), None, None).await),
             LaunchErrorCode::CorePolicyUnresolved
         );
     }
@@ -2020,7 +2050,7 @@ mod tests {
             .set_core_override(GameId(1), &nestopia)
             .await
             .unwrap();
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
         let session = started_session(&started);
         assert_eq!(
             harness
@@ -2053,7 +2083,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            failure_code(&harness2.service.launch_game(GameId(1), None).await),
+            failure_code(&harness2.service.launch_game(GameId(1), None, None).await),
             LaunchErrorCode::CoreNotApproved
         );
     }
@@ -2064,13 +2094,13 @@ mod tests {
         harness.set_app_run("sleep 5");
 
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            failure_code(&harness.service.launch_game(GameId(1), None, None).await),
             LaunchErrorCode::BiosMissing
         );
 
         harness.write_bios("scph5501.bin", b"not the documented dump");
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            failure_code(&harness.service.launch_game(GameId(1), None, None).await),
             LaunchErrorCode::BiosInvalid
         );
         assert!(read_process_record(&harness.runtime.paths)
@@ -2088,7 +2118,7 @@ mod tests {
     async fn a_missing_display_session_blocks_the_launch() {
         let harness = Harness::build(SystemId::Nes, vec![HostPrerequisite::DisplaySession]).await;
 
-        let failure = harness.service.launch_game(GameId(1), None).await;
+        let failure = harness.service.launch_game(GameId(1), None, None).await;
 
         assert_eq!(
             failure_code(&failure),
@@ -2114,7 +2144,7 @@ mod tests {
         .await;
         harness.set_app_run("sleep 5");
 
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
 
         match &started {
             LaunchResponse::Started { diagnostics, .. } => assert_eq!(diagnostics.len(), 2),
@@ -2127,7 +2157,7 @@ mod tests {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;
         harness.set_app_run("sleep 5");
 
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
         let session = started_session(&started);
 
         let record = read_process_record(&harness.runtime.paths)
@@ -2142,7 +2172,7 @@ mod tests {
         ));
 
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            failure_code(&harness.service.launch_game(GameId(1), None, None).await),
             LaunchErrorCode::GameAlreadyRunning
         );
         assert!(harness.service.get_launch_state().running.is_some());
@@ -2153,7 +2183,7 @@ mod tests {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;
         harness.set_app_run("sleep 0.4; exit 0");
 
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
         let session = started_session(&started);
 
         assert_eq!(
@@ -2183,7 +2213,7 @@ mod tests {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;
         harness.set_app_run("sleep 0.4; exit 4");
 
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
         let session = started_session(&started);
 
         assert_eq!(
@@ -2207,7 +2237,7 @@ mod tests {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;
         harness.set_app_run("exit 9");
 
-        let failure = harness.service.launch_game(GameId(1), None).await;
+        let failure = harness.service.launch_game(GameId(1), None, None).await;
 
         assert_eq!(
             failure_code(&failure),
@@ -2242,7 +2272,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&harness.app_run, fs::Permissions::from_mode(0o644)).unwrap();
 
-        let failure = harness.service.launch_game(GameId(1), None).await;
+        let failure = harness.service.launch_game(GameId(1), None, None).await;
 
         assert_eq!(failure_code(&failure), LaunchErrorCode::SpawnFailed);
         assert!(harness
@@ -2270,7 +2300,7 @@ mod tests {
     async fn a_restart_with_no_surviving_process_interrupts_open_sessions() {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;
         harness.set_app_run("sleep 5");
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
         let session = started_session(&started);
 
         // A restart: the record is gone because RuntimeManager proved the process dead.
@@ -2297,7 +2327,7 @@ mod tests {
     async fn a_restart_with_a_live_child_keeps_the_session_running_and_mutation_blocked() {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;
         harness.set_app_run("sleep 5");
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
         let session = started_session(&started);
 
         let restarted = harness.rebuild();
@@ -2323,7 +2353,7 @@ mod tests {
             Err(RuntimeError::GameActive)
         ));
         assert_eq!(
-            failure_code(&restarted.launch_game(GameId(1), None).await),
+            failure_code(&restarted.launch_game(GameId(1), None, None).await),
             LaunchErrorCode::GameAlreadyRunning
         );
     }
@@ -2353,7 +2383,7 @@ mod tests {
         assert!(state.running.is_none());
         assert!(harness.runtime.paths.game_process_record().exists());
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            failure_code(&harness.service.launch_game(GameId(1), None, None).await),
             LaunchErrorCode::GameAlreadyRunning
         );
     }
@@ -2366,8 +2396,8 @@ mod tests {
         let second = harness.service.clone();
 
         let (left, right) = tokio::join!(
-            async move { first.launch_game(GameId(1), None).await },
-            async move { second.launch_game(GameId(1), None).await }
+            async move { first.launch_game(GameId(1), None, None).await },
+            async move { second.launch_game(GameId(1), None, None).await }
         );
 
         let responses = [left, right];
@@ -2402,7 +2432,7 @@ mod tests {
         let harness = Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
         harness.set_app_run_until_stopped();
 
-        let session = started_session(&harness.service.launch_game(GameId(1), None).await);
+        let session = started_session(&harness.service.launch_game(GameId(1), None, None).await);
         harness.await_blocked(&harness.service).await;
 
         // Uncertainty is fail-closed: the durable record survives, runtime mutation stays
@@ -2417,7 +2447,7 @@ mod tests {
             Err(RuntimeError::GameActive)
         ));
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            failure_code(&harness.service.launch_game(GameId(1), None, None).await),
             LaunchErrorCode::GameAlreadyRunning
         );
         assert_eq!(
@@ -2447,7 +2477,7 @@ mod tests {
         launcher.faults.fail_try_exit(false);
         harness.set_app_run("sleep 5");
         assert!(matches!(
-            harness.service.launch_game(GameId(1), None).await,
+            harness.service.launch_game(GameId(1), None, None).await,
             LaunchResponse::Started { .. }
         ));
     }
@@ -2475,7 +2505,7 @@ mod tests {
             fs::rename(&from, &to).unwrap();
         });
 
-        let failure = harness.service.launch_game(GameId(1), None).await;
+        let failure = harness.service.launch_game(GameId(1), None, None).await;
         assert_eq!(
             failure_code(&failure),
             LaunchErrorCode::ProcessIdentityFailed
@@ -2493,7 +2523,7 @@ mod tests {
         ));
         assert!(harness.service.get_launch_state().blocked);
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            failure_code(&harness.service.launch_game(GameId(1), None, None).await),
             LaunchErrorCode::GameAlreadyRunning
         );
         // No closed failed-to-start session is claimed while the child may still be alive.
@@ -2534,7 +2564,7 @@ mod tests {
         launcher.faults.fail_terminate(false);
         harness.set_app_run("sleep 5");
         assert!(matches!(
-            harness.service.launch_game(GameId(1), None).await,
+            harness.service.launch_game(GameId(1), None, None).await,
             LaunchResponse::Started { .. }
         ));
     }
@@ -2633,7 +2663,7 @@ mod tests {
         fs::remove_file(harness.core_path("nestopia")).unwrap();
 
         assert_eq!(
-            failure_code(&harness.service.launch_game(GameId(1), None).await),
+            failure_code(&harness.service.launch_game(GameId(1), None, None).await),
             LaunchErrorCode::CoreNotInstalled
         );
         assert_eq!(
@@ -2670,6 +2700,7 @@ mod tests {
             core_component_id: SafeIdentifier::new(default_component(system)).unwrap(),
             core_binary_sha256: Sha256Digest::from_hex(&"a".repeat(64)).unwrap(),
             slot: SaveStateSlot::new(slot).unwrap(),
+            active_gamepad_id: None,
         }
     }
 
@@ -2695,7 +2726,7 @@ mod tests {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;
         harness.set_app_run("sleep 5");
 
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
         let config = std::fs::read_to_string(harness.retroarch.paths().config_file()).unwrap();
         assert!(config.contains("state_slot = \"1\""));
         assert!(matches!(started, LaunchResponse::Started { .. }));
@@ -2952,7 +2983,7 @@ mod tests {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;
         harness.set_app_run_until_stopped();
 
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
         let session_id = started_session(&started);
         harness.await_started();
 
@@ -3010,7 +3041,7 @@ mod tests {
             sqlx::query(statement).execute(&harness.pool).await.unwrap();
         }
 
-        let response = harness.service.launch_game(GameId(1), None).await;
+        let response = harness.service.launch_game(GameId(1), None, None).await;
 
         assert_eq!(
             failure_code(&response),
@@ -3047,7 +3078,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&states_root);
         std::fs::write(&states_root, b"not a directory").unwrap();
 
-        let response = harness.service.launch_game(GameId(1), None).await;
+        let response = harness.service.launch_game(GameId(1), None, None).await;
 
         assert_eq!(
             failure_code(&response),
@@ -3069,7 +3100,7 @@ mod tests {
         let harness = Harness::build(SystemId::Nes, Vec::new()).await;
         harness.set_app_run_until_stopped();
 
-        let first = harness.service.launch_game(GameId(1), None).await;
+        let first = harness.service.launch_game(GameId(1), None, None).await;
         let first_session = started_session(&first);
         harness.await_started();
         harness.stop();
@@ -3177,7 +3208,7 @@ mod tests {
         let harness = Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
         harness.set_app_run_until_stopped();
 
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
         let session_id = started_session(&started);
 
         // The session stays open and the baseline stays put: no attribution while the end is
@@ -3239,7 +3270,7 @@ mod tests {
         // it now holds the exact section a launch needs.
         reached.notified().await;
 
-        let response = harness.service.launch_game(GameId(1), None).await;
+        let response = harness.service.launch_game(GameId(1), None, None).await;
         assert_eq!(failure_code(&response), LaunchErrorCode::GameAlreadyRunning);
         assert_eq!(
             launcher.spawns(),
@@ -3263,7 +3294,7 @@ mod tests {
         ));
 
         // The section is released: an ordinary launch now succeeds normally.
-        let started = harness.service.launch_game(GameId(1), None).await;
+        let started = harness.service.launch_game(GameId(1), None, None).await;
         assert!(matches!(started, LaunchResponse::Started { .. }));
         assert_eq!(launcher.spawns(), 1);
         harness.stop();

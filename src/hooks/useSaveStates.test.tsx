@@ -227,7 +227,7 @@ describe('useSaveStates', () => {
 
     await act(async () => result.current.load(1));
 
-    expect(mocks.loadSaveState).toHaveBeenCalledWith({ saveStateId: 1 });
+    expect(mocks.loadSaveState).toHaveBeenCalledWith({ saveStateId: 1, activeGamepadId: null });
     // A Save-State verdict stays a Save-State verdict: re-coding this as `launchFailed` would
     // claim the launch was attempted and lose which of the two refusals really happened.
     expect(result.current.actionFailure).toEqual({

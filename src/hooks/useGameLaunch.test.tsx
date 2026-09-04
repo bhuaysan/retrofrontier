@@ -56,7 +56,11 @@ describe('useGameLaunch', () => {
       await result.current.launch(7);
     });
 
-    expect(mocks.launchGame).toHaveBeenCalledWith({ gameId: 7, contentUnitId: null });
+    expect(mocks.launchGame).toHaveBeenCalledWith({
+      gameId: 7,
+      contentUnitId: null,
+      activeGamepadId: null,
+    });
     expect(result.current.phase).toBe('running');
     expect(result.current.running).toEqual(session);
     expect(result.current.failure).toBeNull();
@@ -154,7 +158,11 @@ describe('useGameLaunch', () => {
       await result.current.launch(7, 4);
     });
 
-    expect(mocks.launchGame).toHaveBeenLastCalledWith({ gameId: 7, contentUnitId: 4 });
+    expect(mocks.launchGame).toHaveBeenLastCalledWith({
+      gameId: 7,
+      contentUnitId: 4,
+      activeGamepadId: null,
+    });
     expect(result.current.phase).toBe('running');
     expect(result.current.contentOptions).toBeNull();
   });

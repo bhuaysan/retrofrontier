@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GAMEPAD_BUTTON_INDEX, type GamepadSnapshot } from './gamepadAdapter';
 import {
+  activeControllerIdentity,
   detectInputRuntime,
   gamepadLayoutQuirk,
   normalizeGamepadSnapshot,
@@ -283,5 +284,43 @@ describe('normalizeGamepads', () => {
     expect(pressedCanonicalIndices(dualsense as GamepadSnapshot)).toEqual([
       GAMEPAD_BUTTON_INDEX.search,
     ]);
+  });
+});
+
+describe('activeControllerIdentity', () => {
+  beforeEach(() => {
+    vi.stubGlobal('navigator', { ...window.navigator, getGamepads: () => [] });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns the accepted controller’s own id', () => {
+    vi.stubGlobal('navigator', {
+      ...window.navigator,
+      getGamepads: () => [pad({ id: DUALSENSE_USB_ID })],
+    });
+    expect(activeControllerIdentity()).toBe(DUALSENSE_USB_ID);
+  });
+
+  it('returns null when nothing is connected', () => {
+    expect(activeControllerIdentity()).toBeNull();
+  });
+
+  it('returns null for a pad the browser could not map to the Standard layout', () => {
+    vi.stubGlobal('navigator', {
+      ...window.navigator,
+      getGamepads: () => [pad({ mapping: 'xinput' })],
+    });
+    expect(activeControllerIdentity()).toBeNull();
+  });
+
+  it('picks the lowest-index supported pad, matching ordinary navigation ownership', () => {
+    vi.stubGlobal('navigator', {
+      ...window.navigator,
+      getGamepads: () => [pad({ index: 1, id: 'Second Pad' }), pad({ index: 0, id: 'First Pad' })],
+    });
+    expect(activeControllerIdentity()).toBe('First Pad');
   });
 });

@@ -71,6 +71,12 @@ pub struct LaunchPreparation<'a> {
     /// `Some` adds `--entryslot N` and makes that slot active; `None` is an ordinary game launch,
     /// which starts on the first managed slot and passes no entry argument at all.
     pub entry_slot: Option<SaveStateSlot>,
+    /// The frontend's own confirmed identity of the one controller RetroFrontier currently accepts
+    /// (`Gamepad.id`, via the browser Gamepad API — ADR-014), or `None`. RetroFrontier's native
+    /// code never reads a controller device directly, so this is the only proof `prepare` ever has
+    /// of which physical device the save-state hotkeys it may write would actually apply to
+    /// (MEDIUM-2) — see `resolve_managed_save_state_hotkeys`.
+    pub active_gamepad_id: Option<&'a str>,
 }
 
 /// Builds and starts one controlled managed RetroArch launch.
@@ -346,6 +352,7 @@ impl RetroArchService {
         let save_state_hotkeys = resolve_managed_save_state_hotkeys(
             request.controller_profiles_root,
             MANAGED_JOYPAD_DRIVER,
+            request.active_gamepad_id,
         );
         if save_state_hotkeys.is_none() {
             tracing::info!(
@@ -1022,6 +1029,7 @@ mod tests {
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
                 entry_slot: None,
+                active_gamepad_id: None,
             })
             .unwrap();
 
@@ -1080,6 +1088,7 @@ mod tests {
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
                 entry_slot: None,
+                active_gamepad_id: None,
             })
             .unwrap();
 
@@ -1158,6 +1167,7 @@ mod tests {
                 bios_files: &[("scph5501.bin".to_owned(), bios_path.clone())],
                 controller_profiles_root: &profiles_root(&runtime),
                 entry_slot: None,
+                active_gamepad_id: None,
             })
             .unwrap();
 
@@ -1184,6 +1194,7 @@ mod tests {
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
                 entry_slot: None,
+                active_gamepad_id: None,
             })
             .unwrap();
         assert!(!system_root.join("scph5501.bin").exists());
@@ -1220,6 +1231,7 @@ mod tests {
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
                 entry_slot: None,
+                active_gamepad_id: None,
             })
         };
 
@@ -1274,6 +1286,7 @@ mod tests {
                 bios_files: &[],
                 controller_profiles_root: &profiles_root(&runtime),
                 entry_slot: None,
+                active_gamepad_id: None,
             })
             .unwrap();
 
@@ -1335,6 +1348,7 @@ mod tests {
                 bios_files: &[],
                 controller_profiles_root: &profiles,
                 entry_slot: None,
+                active_gamepad_id: None,
             })
             .unwrap();
         assert_eq!(
@@ -1357,6 +1371,7 @@ mod tests {
                     bios_files: &[],
                     controller_profiles_root: &profiles,
                     entry_slot: Some(SaveStateSlot::new(slot).unwrap()),
+                    active_gamepad_id: None,
                 })
                 .unwrap();
             assert_eq!(
@@ -1378,5 +1393,73 @@ mod tests {
             let rendered = std::fs::read_to_string(&save_state.config_path).unwrap();
             assert!(rendered.contains(&format!("state_slot = \"{slot}\"\n")));
         }
+    }
+
+    /// MEDIUM-2 regression: the generated configuration carries the derived save-state hotkeys
+    /// only when `active_gamepad_id` actually confirms the qualified controller for *this*
+    /// launch — never merely because the qualified profile files exist in the managed database
+    /// and agree with each other, which they do regardless of what is actually plugged in.
+    #[test]
+    fn the_generated_configuration_carries_hotkeys_only_when_the_actual_controller_is_confirmed() {
+        let app_data = tempdir().unwrap();
+        let runtime_directory = tempdir().unwrap();
+        let content = content_root(&["NES/Game.nes"]);
+        let (runtime, app_run) =
+            launch_runtime(runtime_directory.path(), "nestopia", &[SystemId::Nes], None);
+        let core =
+            RetroArchService::resolve_core(&SystemCatalog::v1(), SystemId::Nes, None, &runtime)
+                .unwrap();
+        let service = service(app_data.path(), Vec::new());
+        let profiles = profiles_root(&runtime);
+
+        // A complete, mutually agreeing qualified profile pair — exactly what a real managed
+        // installation carries, regardless of what is actually connected.
+        let dualsense_profile = "input_driver = \"udev\"\n\
+             input_select_btn = \"8\"\n\
+             input_r_btn = \"5\"\n\
+             input_left_btn = \"h0left\"\n\
+             input_right_btn = \"h0right\"\n";
+        for name in crate::services::retroarch_input::QUALIFIED_CONTROLLER_PROFILES {
+            fs::write(profiles.join("udev").join(name), dualsense_profile).unwrap();
+        }
+
+        let prepare = |active_gamepad_id: Option<&str>| {
+            service
+                .prepare(LaunchPreparation {
+                    app_run_path: &app_run,
+                    core: &core,
+                    content_path: &content.path().join("NES/Game.nes"),
+                    bios_files: &[],
+                    controller_profiles_root: &profiles,
+                    entry_slot: None,
+                    active_gamepad_id,
+                })
+                .unwrap()
+        };
+
+        // No confirmed active controller: the files exist and agree, but nothing is written.
+        let unconfirmed = prepare(None);
+        let rendered = fs::read_to_string(&unconfirmed.config_path).unwrap();
+        assert!(!rendered.contains(crate::services::retroarch_input::SAVE_STATE_KEY));
+
+        // A confirmed qualified controller: the very same files now resolve, and their values
+        // reach the generated configuration.
+        let confirmed = prepare(Some(
+            "Sony Interactive Entertainment DualSense Wireless Controller",
+        ));
+        let rendered = fs::read_to_string(&confirmed.config_path).unwrap();
+        assert!(rendered.contains(&format!(
+            "{} = \"8\"\n",
+            crate::services::retroarch_input::ENABLE_HOTKEY_KEY
+        )));
+        assert!(rendered.contains(&format!(
+            "{} = \"5\"\n",
+            crate::services::retroarch_input::SAVE_STATE_KEY
+        )));
+
+        // A confirmed *other* controller: the exact same qualified files still resolve nothing.
+        let other = prepare(Some("Xbox Wireless Controller"));
+        let rendered = fs::read_to_string(&other.config_path).unwrap();
+        assert!(!rendered.contains(crate::services::retroarch_input::SAVE_STATE_KEY));
     }
 }

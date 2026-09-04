@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { activeControllerIdentity } from '../input/gamepadQuirks';
 import {
   deleteSaveState,
   listSaveStates,
@@ -234,7 +235,10 @@ export function useSaveStates({
       runAction(
         (current) => ({ ...current, loadPendingId: saveStateId }),
         async () => {
-          const response = await loadSaveState({ saveStateId });
+          const response = await loadSaveState({
+            saveStateId,
+            activeGamepadId: activeControllerIdentity(),
+          });
           switch (response.status) {
             case 'started':
               return null;

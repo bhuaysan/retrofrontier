@@ -35,8 +35,36 @@
 //! M9. An unresolved set never blocks a launch: a game whose controller works must keep starting,
 //! and losing the save hotkey is a smaller failure than losing the game. Broader per-controller
 //! hotkey coverage is B10 work.
+//!
+//! ## MEDIUM-2: the qualified profile files existing is not proof they apply
+//!
+//! The qualified profile *files* are part of the immutable managed database — they exist and agree
+//! with each other regardless of what is actually plugged in. Deriving hotkeys from that agreement
+//! alone would silently bind "Save State" to DualSense button numbers on a launch where the
+//! player's actual pad is something else entirely, because nothing about the file tree changes
+//! with what is connected.
+//!
+//! So resolution additionally requires the frontend's own confirmed identity of the controller it
+//! currently accepts (`active_gamepad_id`, `Gamepad.id` via the browser Gamepad API — ADR-014;
+//! RetroFrontier's native code never reads a controller directly) to name a qualified DualSense
+//! device before the profile files are even consulted. `None` — no controller, an unsupported
+//! mapping, or a device the qualification never measured — resolves nothing, exactly like a
+//! missing or disagreeing profile.
 
 use std::path::Path;
+
+/// Whether a frontend-confirmed active-controller identity names a physically qualified DualSense.
+///
+/// Matches the Linux kernel device name substring `dualsense`, case-insensitively — the same token
+/// `gamepadQuirks.ts`'s `TRANSPOSED_FACE_BUTTON_DEVICE` already matches on the frontend, physically
+/// verified against the real device (see `docs/M8_FINAL_HARDWARE_INPUT_REPORT.md` section M): USB
+/// reports `Sony Interactive Entertainment DualSense Wireless Controller`, Bluetooth `DualSense
+/// Wireless Controller`, and both carry the token. Only the DualSense has been physically
+/// qualified, so nothing wider than this one substring is accepted — a DualSense **Edge** id, an
+/// Xbox pad, or any other device resolves nothing here, however plausible its name looks.
+fn active_controller_is_qualified(active_gamepad_id: Option<&str>) -> bool {
+    active_gamepad_id.is_some_and(|id| id.to_ascii_lowercase().contains("dualsense"))
+}
 
 /// The managed controller device profiles the save-state hotkeys are derived from.
 ///
@@ -89,16 +117,23 @@ pub struct SaveStateHotkeys {
 /// `profiles_root` is the verified immutable joypad-autoconfig component and `driver` the joypad
 /// driver subdirectory RetroArch will really scan — both already resolved by
 /// `RetroArchService::resolve_controller_profiles`, so this function reads nothing it was not
-/// handed.
+/// handed. `active_gamepad_id` is the frontend's own confirmed identity of the controller this
+/// exact launch's player is actually using (MEDIUM-2); it is the proof requirement, not the
+/// profile database.
 ///
-/// Returns `None` — meaning *write no hotkey* — when a qualified profile is absent, is not a
-/// regular file, is a symbolic link, is too large, does not declare one of the four roles, or when
-/// two qualified profiles disagree about a role. Every one of those is a refusal to guess, and none
-/// of them fails a launch.
+/// Returns `None` — meaning *write no hotkey* — when `active_gamepad_id` does not name a
+/// physically qualified DualSense, when a qualified profile is absent, is not a regular file, is a
+/// symbolic link, is too large, does not declare one of the four roles, or when two qualified
+/// profiles disagree about a role. Every one of those is a refusal to guess, and none of them fails
+/// a launch.
 pub fn resolve_managed_save_state_hotkeys(
     profiles_root: &Path,
     driver: &str,
+    active_gamepad_id: Option<&str>,
 ) -> Option<SaveStateHotkeys> {
+    if !active_controller_is_qualified(active_gamepad_id) {
+        return None;
+    }
     let mut agreed: Option<SaveStateHotkeys> = None;
     for profile_name in QUALIFIED_CONTROLLER_PROFILES {
         let hotkeys = read_profile_hotkeys(&profiles_root.join(driver).join(profile_name))?;
@@ -203,6 +238,11 @@ mod tests {
     use tempfile::{tempdir, TempDir};
 
     const DRIVER: &str = "udev";
+    /// The exact `Gamepad.id` WebKitGTK on Linux reports for the physically qualified DualSense
+    /// over USB. See `docs/M8_FINAL_HARDWARE_INPUT_REPORT.md` section M and
+    /// `src/input/gamepadQuirks.ts`'s `TRANSPOSED_FACE_BUTTON_DEVICE`.
+    const QUALIFIED_ACTIVE_ID: &str =
+        "Sony Interactive Entertainment DualSense Wireless Controller";
 
     /// The four roles exactly as the real authenticated DualSense profile declares them.
     ///
@@ -264,8 +304,9 @@ mod tests {
     fn the_hotkeys_are_derived_from_the_authenticated_profile_and_not_from_a_constant() {
         let root = qualified_tree();
 
-        let hotkeys = resolve_managed_save_state_hotkeys(root.path(), DRIVER)
-            .expect("the qualified profiles resolve");
+        let hotkeys =
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID))
+                .expect("the qualified profiles resolve");
         assert_eq!(hotkeys, expected_dualsense_hotkeys());
 
         // The same semantic intent on a device with different numbers produces different values,
@@ -285,7 +326,7 @@ mod tests {
         let root = profile_tree(&profiles);
 
         assert_eq!(
-            resolve_managed_save_state_hotkeys(root.path(), DRIVER),
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
             Some(SaveStateHotkeys {
                 enable_hotkey: "6".to_owned(),
                 save_state: "7".to_owned(),
@@ -299,28 +340,28 @@ mod tests {
     fn a_missing_component_driver_directory_or_profile_resolves_nothing() {
         let empty = tempdir().unwrap();
         assert_eq!(
-            resolve_managed_save_state_hotkeys(empty.path(), DRIVER),
+            resolve_managed_save_state_hotkeys(empty.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
             None
         );
 
         // The driver directory exists but carries no qualified profile.
         let root = profile_tree(&[("Some Other Pad.cfg", dualsense_profile())]);
         assert_eq!(
-            resolve_managed_save_state_hotkeys(root.path(), DRIVER),
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
             None
         );
 
         // Only one of the two qualified profiles is present.
         let root = profile_tree(&[(QUALIFIED_CONTROLLER_PROFILES[0], dualsense_profile())]);
         assert_eq!(
-            resolve_managed_save_state_hotkeys(root.path(), DRIVER),
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
             None
         );
 
         // And a driver RetroArch would not scan is not silently substituted.
         let root = qualified_tree();
         assert_eq!(
-            resolve_managed_save_state_hotkeys(root.path(), "linuxraw"),
+            resolve_managed_save_state_hotkeys(root.path(), "linuxraw", Some(QUALIFIED_ACTIVE_ID)),
             None
         );
     }
@@ -347,7 +388,7 @@ mod tests {
                 .collect();
             let root = profile_tree(&profiles);
             assert_eq!(
-                resolve_managed_save_state_hotkeys(root.path(), DRIVER),
+                resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
                 None,
                 "{mutation:?}"
             );
@@ -365,7 +406,7 @@ mod tests {
         // One global hotkey set cannot honour both, and picking one would silently mis-bind the
         // other pad.
         assert_eq!(
-            resolve_managed_save_state_hotkeys(root.path(), DRIVER),
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
             None
         );
     }
@@ -383,7 +424,7 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, &target).unwrap();
 
         assert_eq!(
-            resolve_managed_save_state_hotkeys(root.path(), DRIVER),
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
             None
         );
 
@@ -394,7 +435,7 @@ mod tests {
         oversized.push_str(&"# padding\n".repeat(20_000));
         fs::write(&target, oversized).unwrap();
         assert_eq!(
-            resolve_managed_save_state_hotkeys(root.path(), DRIVER),
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
             None
         );
     }
@@ -432,7 +473,7 @@ mod tests {
             .collect();
         let root = profile_tree(&profiles);
         assert_eq!(
-            resolve_managed_save_state_hotkeys(root.path(), DRIVER),
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
             None
         );
     }
@@ -470,5 +511,65 @@ mod tests {
         }
         // The only filesystem reads are relative to the caller-supplied verified root.
         assert_eq!(production.matches("std::fs::").count(), 2);
+    }
+
+    // ================================================================ MEDIUM-2: actual-controller proof
+
+    /// MEDIUM-2 regression (qualified-actual-controller): the frontend's own confirmed identity
+    /// naming the physically qualified DualSense is enough proof, and the expected mappings are
+    /// still emitted exactly as before.
+    #[test]
+    fn a_confirmed_qualified_active_controller_still_produces_the_expected_mappings() {
+        let root = qualified_tree();
+        assert_eq!(
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(QUALIFIED_ACTIVE_ID)),
+            Some(expected_dualsense_hotkeys())
+        );
+        // The Bluetooth connection naming names the very same physical device.
+        assert_eq!(
+            resolve_managed_save_state_hotkeys(
+                root.path(),
+                DRIVER,
+                Some("DualSense Wireless Controller")
+            ),
+            Some(expected_dualsense_hotkeys())
+        );
+    }
+
+    /// MEDIUM-2 regression (other-actual-controller): the qualified profile files exist and agree
+    /// with each other, exactly as in a real installation — but the frontend confirms the player is
+    /// actually using a different pad. The DualSense values must never be written merely because
+    /// the files happen to be there.
+    #[test]
+    fn a_different_actual_controller_never_receives_the_dualsense_values() {
+        let root = qualified_tree();
+        for other in [
+            "Xbox Wireless Controller",
+            "Microsoft X-Box 360 pad",
+            "8BitDo Pro 2",
+        ] {
+            assert_eq!(
+                resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some(other)),
+                None,
+                "{other}"
+            );
+        }
+    }
+
+    /// MEDIUM-2 regression (ambiguous/no-actual-profile): no confirmed active controller resolves
+    /// no hotkeys, which is exactly the pre-existing "write nothing" outcome the rest of the launch
+    /// pipeline already treats as non-fatal — nothing here ever fails a launch.
+    #[test]
+    fn no_confirmed_active_controller_resolves_nothing() {
+        let root = qualified_tree();
+        assert_eq!(
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, None),
+            None
+        );
+        // An empty identity string is not a confirmed controller either.
+        assert_eq!(
+            resolve_managed_save_state_hotkeys(root.path(), DRIVER, Some("")),
+            None
+        );
     }
 }

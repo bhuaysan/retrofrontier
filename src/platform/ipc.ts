@@ -782,6 +782,13 @@ export type LaunchResponse =
 export interface LaunchGameRequest {
   gameId: number;
   contentUnitId?: number | null;
+  /**
+   * The frontend's own confirmed identity of the one controller RetroFrontier currently accepts
+   * (the active gamepad's `Gamepad.id` — see `input/gamepadAdapter.ts`), or absent when none is
+   * connected or supported. Used for nothing but gating which save-state hotkeys, if any, this
+   * launch may derive.
+   */
+  activeGamepadId?: string | null;
 }
 
 /**
@@ -861,6 +868,12 @@ export interface ListSaveStatesRequest {
 
 export interface SaveStateRequest {
   saveStateId: number;
+}
+
+/** The load request: an identity, plus the same confirmed active-controller identity a launch carries. */
+export interface LoadSaveStateRequest {
+  saveStateId: number;
+  activeGamepadId?: string | null;
 }
 
 export const LIBRARY_SCAN_PROGRESS_EVENT = 'library-scan-progress';
@@ -1204,7 +1217,7 @@ export async function listSaveStates(request: ListSaveStatesRequest): Promise<Sa
  * The answer is its own union rather than the ordinary `LaunchResponse`, because the two ways a
  * load can be refused are different verdicts: one is about the state, one is about the launch.
  */
-export async function loadSaveState(request: SaveStateRequest): Promise<LoadSaveStateResponse> {
+export async function loadSaveState(request: LoadSaveStateRequest): Promise<LoadSaveStateResponse> {
   try {
     return await invoke<LoadSaveStateResponse>('load_save_state', { request });
   } catch (error: unknown) {
