@@ -694,16 +694,48 @@ pub fn delete_verified_managed_file(
 /// content that was quarantined. Only a `.rf-delete-*` name with such a proof is touched at all:
 ///
 /// - no matching journal entry → left completely alone (it was never proven RF-owned);
-/// - a matching entry whose recorded identity the file no longer has → left in place, not deleted
-///   (the same content re-verification an in-flight delete performs, so a crash window cannot
-///   relax the guarantee an interrupted delete makes over an uninterrupted one);
-/// - a matching entry whose recorded identity the file still has → finished: unlinked, and the
-///   journal entry removed with it.
+/// - a matching entry whose recorded identity the file no longer has → left in place, not deleted,
+///   and **its journal entry is kept** (the same content re-verification an in-flight delete
+///   performs, so a crash window cannot relax the guarantee an interrupted delete makes over an
+///   uninterrupted one);
+/// - a matching entry whose recorded identity the file still has → finished, through the same
+///   verify-requarantine-reprove-unlink sequence a live delete uses.
+///
+/// ## HIGH-6: verifying a descriptor does not license unlinking a *name*
+///
+/// This used to open the quarantine object, hash it, drop that descriptor, and then
+/// `unlinkat(parent, name)`. Linux has no unlink-by-descriptor, so the destructive step named the
+/// *pathname* — and a racing same-user process could rename the verified object away and drop an
+/// unrelated file at that name in between, making the sweep delete a file it had never seen. The
+/// journal proves RetroFrontier once owned that content; it proves nothing about what the pathname
+/// resolves to now.
+///
+/// So the sweep now uses exactly the discipline the live delete path uses: after verifying the
+/// object, it moves that directory entry to a *fresh* RetroFrontier-owned second-stage quarantine
+/// name with `RENAME_NOREPLACE`, durably journaled before the move, and then re-proves device,
+/// inode, size, and digest **at the new name** before unlinking it. A pathname substituted in the
+/// race window is carried to the second stage instead, fails that re-proof, is renamed back to
+/// where it was found, and is never unlinked.
+///
+/// ## MEDIUM-5: journal evidence outlives every non-terminal failure
+///
+/// The journal entry is removed only after a deterministic terminal result — the owned object was
+/// verified and successfully unlinked. A transient I/O failure, a content mismatch, an
+/// indeterminate verification, and a refused race all *keep* the entry, because the object is still
+/// on disk and that entry is the only durable proof RetroFrontier owns it. Forgetting it would
+/// strand the object forever: no later startup could ever prove it safe to finish.
 ///
 /// This makes the sweep idempotent and safe to run on every startup: a genuine RetroFrontier
 /// delete that crashed between its rename and its unlink is completed exactly as it would have
-/// completed uninterrupted, and nothing else is ever touched.
+/// completed uninterrupted, a sweep that cannot finish is retried at the next startup with its
+/// evidence intact, and nothing else is ever touched.
 pub fn sweep_delete_quarantine(states_root: &Path) -> usize {
+    sweep_delete_quarantine_inner(states_root, &SweepRaceHooks::default())
+}
+
+fn sweep_delete_quarantine_inner(states_root: &Path, hooks: &SweepRaceHooks<'_>) -> usize {
+    use std::os::unix::fs::MetadataExt;
+
     let snapshot = snapshot_state_tree(states_root);
     let mut removed = 0;
     for (relative_path, _) in snapshot.entries.iter() {
@@ -715,36 +747,164 @@ pub fn sweep_delete_quarantine(states_root: &Path) -> usize {
         let Some(id) = name.strip_prefix(QUARANTINE_PREFIX) else {
             continue;
         };
+        // Ownership proof first: without a journal entry recording this exact content, the object
+        // is not RetroFrontier's to touch, whatever it is named.
         let Some((expected_size, expected_sha256)) = read_journal_entry(states_root, id) else {
             continue;
         };
         let Ok(parent) = open_parent_directory(states_root, relative_path) else {
+            // An unreadable parent proves nothing; the journal entry stays for the next startup.
             continue;
         };
-        let matches = rustix::fs::openat(&parent, name, FILE_OPEN_FLAGS, rustix::fs::Mode::empty())
-            .ok()
-            .and_then(|descriptor| {
-                let file = std::fs::File::from(descriptor);
-                let metadata = file.metadata().ok()?;
-                if !metadata.file_type().is_file() || metadata.len() != expected_size {
-                    return Some(false);
-                }
-                Some(hash_descriptor(file).ok() == Some(expected_sha256))
-            })
-            .unwrap_or(false);
-        if matches {
-            if rustix::fs::unlinkat(&parent, name, rustix::fs::AtFlags::empty()).is_ok() {
-                removed += 1;
-            }
-        } else {
+
+        // Stage one: prove the object is still exactly the content the journal recorded, and
+        // remember the physical identity that proof was made about.
+        let verified =
+            rustix::fs::openat(&parent, name, FILE_OPEN_FLAGS, rustix::fs::Mode::empty())
+                .ok()
+                .and_then(|descriptor| {
+                    let file = std::fs::File::from(descriptor);
+                    let metadata = file.metadata().ok()?;
+                    if !metadata.file_type().is_file()
+                        || metadata.nlink() != 1
+                        || metadata.len() != expected_size
+                    {
+                        return None;
+                    }
+                    let identity = (metadata.dev(), metadata.ino(), metadata.size());
+                    (hash_descriptor(file).ok()? == expected_sha256).then_some(identity)
+                });
+        let Some((device, inode, size)) = verified else {
+            // MEDIUM-5: not deleted, and *not forgotten*. The object stays, its journal entry stays
+            // with it, and a later sweep can still tell it apart from a stranger's file.
             tracing::warn!(
                 "a quarantined save-state file no longer matches the identity its delete journal \
-                 recorded; it was left in place rather than removed"
+                 recorded, or could not be verified; it was left in place with its ownership \
+                 evidence intact rather than removed"
+            );
+            continue;
+        };
+
+        // The HIGH-6 race window: everything above spoke about a descriptor, everything below has
+        // to speak about a name.
+        hooks.after_verified();
+
+        // Stage two: claim a fresh RetroFrontier-owned name for the verified entry, journaled
+        // before the move and `NOREPLACE` so it can never land on top of anything.
+        let Ok(second_stage) =
+            quarantine_verified_file(states_root, &parent, name, expected_size, expected_sha256)
+        else {
+            tracing::warn!(
+                "a quarantined save-state file could not be moved to a fresh second-stage name; \
+                 it was left in place with its ownership evidence intact"
+            );
+            continue;
+        };
+        let second_stage_id = second_stage
+            .strip_prefix(QUARANTINE_PREFIX)
+            .unwrap_or_default()
+            .to_owned();
+
+        // Re-prove *at the new name*. If the pathname was substituted in the window above, what
+        // moved is the substitute, and this refuses it.
+        let still_ours = rustix::fs::openat(
+            &parent,
+            second_stage.as_str(),
+            FILE_OPEN_FLAGS,
+            rustix::fs::Mode::empty(),
+        )
+        .ok()
+        .and_then(|descriptor| {
+            let file = std::fs::File::from(descriptor);
+            let metadata = file.metadata().ok()?;
+            if !metadata.file_type().is_file()
+                || metadata.dev() != device
+                || metadata.ino() != inode
+                || metadata.size() != size
+            {
+                return Some(false);
+            }
+            Some(hash_descriptor(file).ok() == Some(expected_sha256))
+        })
+        .unwrap_or(false);
+
+        if !still_ours {
+            // Someone else's file was carried here by the rename. Put it back where it was found —
+            // `NOREPLACE`, so restoring can never destroy a third file — and delete nothing. The
+            // second-stage journal entry goes only if the restore succeeded and there is therefore
+            // nothing left at that name to prove ownership of.
+            let restored = rustix::fs::renameat_with(
+                &parent,
+                second_stage.as_str(),
+                &parent,
+                name,
+                rustix::fs::RenameFlags::NOREPLACE,
+            )
+            .is_ok();
+            if restored {
+                remove_journal_entry(states_root, &second_stage_id);
+            }
+            tracing::warn!(
+                restored,
+                "a quarantined save-state file was replaced between its verification and its \
+                 removal; nothing was deleted"
+            );
+            continue;
+        }
+
+        hooks.before_unlink();
+
+        if rustix::fs::unlinkat(&parent, second_stage.as_str(), rustix::fs::AtFlags::empty())
+            .is_ok()
+        {
+            // The one terminal result. Both entries describe objects that no longer exist: the
+            // first-stage name was renamed away, the second-stage name is now unlinked.
+            remove_journal_entry(states_root, &second_stage_id);
+            remove_journal_entry(states_root, id);
+            removed += 1;
+        } else {
+            // MEDIUM-5: the object is still there under its second-stage name, so its evidence
+            // stays too and the next startup finishes what this one could not.
+            tracing::warn!(
+                "a quarantined save-state file could not be unlinked; it was left in place with \
+                 its ownership evidence intact and will be retried"
             );
         }
-        remove_journal_entry(states_root, id);
     }
     removed
+}
+
+/// The windows an attacker racing the startup sweep can act in. Production passes `None` for both.
+#[cfg(test)]
+#[derive(Default)]
+struct SweepRaceHooks<'a> {
+    /// After the quarantine object's content is verified from a descriptor, before its directory
+    /// entry is moved to the second-stage name (HIGH-6).
+    after_verified: Option<&'a (dyn Fn() + Send + Sync)>,
+    /// After the second-stage re-proof, immediately before the destructive `unlinkat` (MEDIUM-5).
+    before_unlink: Option<&'a (dyn Fn() + Send + Sync)>,
+}
+
+#[cfg(not(test))]
+#[derive(Default)]
+struct SweepRaceHooks<'a> {
+    marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl SweepRaceHooks<'_> {
+    fn after_verified(&self) {
+        #[cfg(test)]
+        if let Some(hook) = self.after_verified {
+            hook();
+        }
+    }
+
+    fn before_unlink(&self) {
+        #[cfg(test)]
+        if let Some(hook) = self.before_unlink {
+            hook();
+        }
+    }
 }
 
 // ------------------------------------------------------------------ no-follow primitives
@@ -2457,6 +2617,186 @@ mod tests {
             b"a user's own file"
         );
         assert!(root.path().join("Nestopia/Synthetic.state1").exists());
+    }
+
+    /// Quarantine an already-written file exactly as an interrupted delete would have left it,
+    /// and hand back the quarantine name and the journal id that proves RetroFrontier owns it.
+    fn interrupted_delete(root: &Path, relative: &str, bytes: &[u8]) -> (String, String) {
+        let relative_path = path(relative);
+        let parent = open_parent_directory(root, &relative_path).unwrap();
+        let name = relative.rsplit('/').next().unwrap();
+        let quarantine =
+            quarantine_verified_file(root, &parent, name, bytes.len() as u64, digest_of(bytes))
+                .unwrap();
+        let id = quarantine
+            .strip_prefix(QUARANTINE_PREFIX)
+            .unwrap()
+            .to_owned();
+        (quarantine, id)
+    }
+
+    fn journal_entry_exists(root: &Path, id: &str) -> bool {
+        read_journal_entry(root, id).is_some()
+    }
+
+    /// HIGH-6 regression: the startup sweep verifies a *descriptor* and then has to act on a
+    /// *name*. A racing same-user process that swaps the pathname in that window must not be able
+    /// to make the sweep delete its file.
+    ///
+    /// The swap here is deterministic rather than timing-dependent: the hook fires exactly once,
+    /// after the intended file's content has been verified and before the sweep's first
+    /// destructive step, and renames the verified object away so an unrelated file can take its
+    /// name — precisely the substitution a `unlinkat(parent, name)` after verification would have
+    /// destroyed.
+    #[test]
+    fn a_pathname_swapped_after_the_sweep_verified_it_deletes_nothing() {
+        let root = states_root();
+        write(
+            root.path(),
+            "nestopia/Synthetic.state1",
+            b"an unrelated state",
+        );
+        let owned = b"the quarantined bytes";
+        write(root.path(), "nestopia/ToQuarantine.state1", owned);
+        let (quarantine, id) =
+            interrupted_delete(root.path(), "nestopia/ToQuarantine.state1", owned);
+
+        let directory = root.path().join("nestopia");
+        let quarantine_path = directory.join(&quarantine);
+        let moved_aside = directory.join("rf-owned-moved-aside");
+        let swapped = std::sync::atomic::AtomicBool::new(false);
+        let swap = || {
+            if swapped.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            // The verified object is renamed away, and a file RetroFrontier has never seen takes
+            // the pathname the sweep is about to act on.
+            fs::rename(&quarantine_path, &moved_aside).unwrap();
+            fs::write(&quarantine_path, b"a replacement file").unwrap();
+        };
+
+        let removed = sweep_delete_quarantine_inner(
+            root.path(),
+            &SweepRaceHooks {
+                after_verified: Some(&swap),
+                ..SweepRaceHooks::default()
+            },
+        );
+
+        assert_eq!(removed, 0, "nothing may be reported as finished");
+        // The replacement survives, with its own bytes, back at the name it was planted at.
+        assert_eq!(fs::read(&quarantine_path).unwrap(), b"a replacement file");
+        // The unrelated state next to it was never touched.
+        assert_eq!(
+            fs::read(root.path().join("nestopia/Synthetic.state1")).unwrap(),
+            b"an unrelated state"
+        );
+        // RetroFrontier's own object still exists and is still provably RetroFrontier's: its
+        // journal entry was not discarded by the refusal.
+        assert_eq!(fs::read(&moved_aside).unwrap(), owned);
+        assert!(journal_entry_exists(root.path(), &id));
+
+        // Retryable: once the impostor is out of the way and the object is back at a quarantine
+        // name, an ordinary sweep finishes the interrupted delete and nothing else.
+        fs::remove_file(&quarantine_path).unwrap();
+        fs::rename(&moved_aside, &quarantine_path).unwrap();
+        assert_eq!(sweep_delete_quarantine(root.path()), 1);
+        assert!(!quarantine_path.exists());
+        assert!(!journal_entry_exists(root.path(), &id));
+        assert!(root.path().join("nestopia/Synthetic.state1").exists());
+        assert_eq!(sweep_delete_quarantine(root.path()), 0);
+    }
+
+    /// MEDIUM-5 regression: a failed destructive step must not destroy the ownership evidence.
+    ///
+    /// The final `unlinkat` is made to fail deterministically by making its directory
+    /// non-writable at exactly that moment. The object remains, so its journal entry must remain
+    /// too — otherwise the next startup could never prove the leftover is RetroFrontier's and
+    /// would be obliged to leave it forever.
+    #[test]
+    fn a_failed_unlink_keeps_the_object_and_its_journal_so_a_later_sweep_can_finish_it() {
+        let root = states_root();
+        let owned = b"the quarantined bytes";
+        write(root.path(), "nestopia/ToQuarantine.state1", owned);
+        let (_, id) = interrupted_delete(root.path(), "nestopia/ToQuarantine.state1", owned);
+
+        let directory = root.path().join("nestopia");
+        let seal = || {
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o500)).unwrap();
+        };
+        let removed = sweep_delete_quarantine_inner(
+            root.path(),
+            &SweepRaceHooks {
+                before_unlink: Some(&seal),
+                ..SweepRaceHooks::default()
+            },
+        );
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert_eq!(removed, 0, "the delete did not finish");
+        // The object is still there, under whichever quarantine name it now carries, and its
+        // ownership evidence survived with it.
+        assert_eq!(no_quarantine_files(root.path()), 1);
+        let surviving = surviving_quarantine_id(root.path());
+        assert!(journal_entry_exists(root.path(), &surviving));
+        // The first-stage entry is either still present or superseded by the second-stage one;
+        // what matters is that *some* durable proof of ownership survived.
+        assert!(
+            journal_entry_exists(root.path(), &surviving) || journal_entry_exists(root.path(), &id)
+        );
+
+        // A later sweep, with the transient failure gone, finishes it — and is then idempotent.
+        assert_eq!(sweep_delete_quarantine(root.path()), 1);
+        assert_eq!(no_quarantine_files(root.path()), 0);
+        assert!(!journal_entry_exists(root.path(), &surviving));
+        assert_eq!(sweep_delete_quarantine(root.path()), 0);
+    }
+
+    /// MEDIUM-5 regression: a quarantine object whose bytes no longer match its journal entry is
+    /// never deleted — and never forgotten either. Repeating the sweep keeps refusing rather than
+    /// losing the ownership history that makes a safe recovery possible at all.
+    #[test]
+    fn a_mismatching_quarantine_object_is_never_deleted_and_never_loses_its_evidence() {
+        let root = states_root();
+        let owned = b"the quarantined bytes";
+        write(root.path(), "nestopia/ToQuarantine.state1", owned);
+        let (quarantine, id) =
+            interrupted_delete(root.path(), "nestopia/ToQuarantine.state1", owned);
+        let quarantine_path = root.path().join("nestopia").join(&quarantine);
+
+        // The interrupted operation's own object is mutated after the fact.
+        fs::write(&quarantine_path, b"mutated after the interruption").unwrap();
+
+        for _ in 0..3 {
+            assert_eq!(sweep_delete_quarantine(root.path()), 0);
+            assert_eq!(
+                fs::read(&quarantine_path).unwrap(),
+                b"mutated after the interruption",
+                "a mismatching quarantine file is never deleted"
+            );
+            assert!(
+                journal_entry_exists(root.path(), &id),
+                "the ownership evidence must survive every refusal"
+            );
+        }
+    }
+
+    /// The journal id of the single quarantine object left in the tree.
+    fn surviving_quarantine_id(root: &Path) -> String {
+        let snapshot = snapshot_state_tree(root);
+        let mut ids: Vec<String> = snapshot
+            .entries()
+            .filter_map(|(relative_path, _)| {
+                relative_path
+                    .as_str()
+                    .rsplit('/')
+                    .next()?
+                    .strip_prefix(QUARANTINE_PREFIX)
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(ids.len(), 1);
+        ids.pop().unwrap()
     }
 
     fn no_quarantine_files(root: &Path) -> usize {
