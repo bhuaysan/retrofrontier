@@ -829,7 +829,7 @@ pub fn sweep_delete_quarantine(states_root: &Path) -> usize {
 fn sweep_delete_quarantine_inner(states_root: &Path, hooks: &SweepRaceHooks<'_>) -> usize {
     let snapshot = snapshot_state_tree(states_root);
     let mut removed = 0;
-    for (relative_path, _) in snapshot.entries.iter() {
+    for relative_path in snapshot.entries.keys() {
         let name = relative_path
             .as_str()
             .rsplit('/')
