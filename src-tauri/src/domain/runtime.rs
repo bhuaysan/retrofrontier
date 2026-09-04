@@ -1,7 +1,9 @@
-use serde::de::{DeserializeOwned, Error as DeserializeError, MapAccess, Visitor};
+use serde::de::{DeserializeOwned, Error as DeserializeError, MapAccess, SeqAccess, Visitor};
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::ops::Deref;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -9,9 +11,36 @@ pub const RUNTIME_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const ACTIVE_POINTER_SCHEMA_VERSION: u32 = 1;
 pub const COMPLETE_MARKER_SCHEMA_VERSION: u32 = 1;
 pub const MANAGED_PROCESS_RECORD_SCHEMA_VERSION: u32 = 3;
+pub const DETACHED_INVENTORY_SCHEMA_VERSION: u32 = 1;
 pub const MAX_ACTIVE_POINTER_BYTES: u64 = 4 * 1024;
 pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub const MAX_TRUST_STATE_BYTES: u64 = 1024 * 1024;
+
+/// The independent bound on a *detached* installed-file inventory target.
+///
+/// ADR-012 permits the complete installed-file inventory to live in a separate immutable target
+/// referenced by digest from the Runtime Release manifest. That option exists because the manifest
+/// bound below is close to being exhausted by the core matrix, so the detached document needs
+/// headroom the manifest does not have. It is deliberately a *second* bound rather than a relaxed
+/// `MAX_MANIFEST_BYTES`: the manifest stays small, and nothing about the detached representation
+/// widens what an inline manifest may contain.
+pub const MAX_DETACHED_INVENTORY_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The bound on how many entries any installed-file inventory may describe, inline or detached.
+///
+/// The manifest byte bound already caps an inline inventory. A detached one is larger by design,
+/// so the entry count is bounded explicitly: every entry becomes a filesystem path this process
+/// stats, hashes, and permissions during installation and verification.
+pub const MAX_INVENTORY_ENTRIES: usize = 200_000;
+
+/// The headroom is the reason the detached representation exists at all.
+const _: () = assert!(MAX_DETACHED_INVENTORY_BYTES > MAX_MANIFEST_BYTES);
+
+/// The `representation` discriminant of a detached inventory reference.
+///
+/// The client never guesses which representation a manifest uses: an inline inventory is a JSON
+/// array of entries, and a detached one is a JSON object carrying this exact tag.
+pub const DETACHED_INVENTORY_REPRESENTATION: &str = "detached_target";
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -496,6 +525,19 @@ impl Sha256Digest {
         Self(bytes)
     }
 
+    /// The SHA-256 of `bytes`.
+    ///
+    /// Digesting in-memory bytes is a domain operation here because the manifest itself binds the
+    /// detached inventory by digest, so the check that the received bytes *are* the referenced
+    /// inventory belongs with the type that expresses that reference.
+    pub fn of(bytes: &[u8]) -> Self {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(bytes);
+        let mut output = [0_u8; 32];
+        output.copy_from_slice(&digest);
+        Self(output)
+    }
+
     pub fn from_hex(value: &str) -> Result<Self, RuntimeError> {
         if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(RuntimeError::Manifest(
@@ -634,7 +676,7 @@ pub enum InstalledEntryType {
     Symlink,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstalledEntry {
     pub path: RelativePath,
@@ -643,6 +685,221 @@ pub struct InstalledEntry {
     pub sha256: Option<Sha256Digest>,
     pub executable: bool,
     pub link_target: Option<SymlinkTarget>,
+}
+
+/// A bounded cryptographic reference from the Runtime Release manifest to a separate immutable
+/// installed-file inventory target.
+///
+/// This is not a second trust root and it is not a URL. The named target is obtained only as an
+/// authenticated TUF target, and these three values must equal what trusted TUF targets metadata
+/// says about that target *before* any of its bytes are read — the same rule the manifest already
+/// applies to component archives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetachedInventoryReference {
+    /// The TUF target name. Flat, relative, and safe: it is a filename in the published repository.
+    pub target_name: String,
+    pub size_bytes: u64,
+    pub sha256: Sha256Digest,
+}
+
+impl DetachedInventoryReference {
+    fn validate(&self) -> Result<(), RuntimeError> {
+        let path = RelativePath::new(self.target_name.clone()).map_err(|_| {
+            RuntimeError::Manifest("detached inventory target name is unsafe".to_owned())
+        })?;
+        if path.as_str().contains('/') {
+            return Err(RuntimeError::Manifest(
+                "detached inventory target name must be a flat filename".to_owned(),
+            ));
+        }
+        // An empty or oversized reference is refused before anything is fetched, so the bound is
+        // enforced by the authenticated manifest rather than only by the download loop.
+        if self.size_bytes == 0 {
+            return Err(RuntimeError::Manifest(
+                "detached inventory reference declares an empty length".to_owned(),
+            ));
+        }
+        if self.size_bytes > MAX_DETACHED_INVENTORY_BYTES {
+            return Err(RuntimeError::Manifest(
+                "detached inventory reference exceeds the detached inventory size limit".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The wire form of a detached reference: an explicitly tagged JSON object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DetachedInventoryWire {
+    representation: DetachedInventoryTag,
+    target_name: String,
+    size_bytes: u64,
+    sha256: Sha256Digest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DetachedInventoryTag {
+    DetachedTarget,
+}
+
+/// How a Runtime Release manifest carries its installed-file inventory.
+///
+/// Two representations are supported and the manifest states which one it uses; the client never
+/// infers it. `Inline` is the legacy and currently published form — a JSON array of entries inside
+/// the authenticated manifest, which is what Runtime Release 001 and 002 use and what they must
+/// keep parsing to byte-identically. `Detached` is ADR-012's scalable form: a tagged JSON object
+/// binding a separate immutable inventory target by name, length, and SHA-256.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseInventory {
+    Inline(Vec<InstalledEntry>),
+    Detached(DetachedInventoryReference),
+}
+
+impl ReleaseInventory {
+    pub fn detached(&self) -> Option<&DetachedInventoryReference> {
+        match self {
+            Self::Inline(_) => None,
+            Self::Detached(reference) => Some(reference),
+        }
+    }
+
+    pub fn is_detached(&self) -> bool {
+        self.detached().is_some()
+    }
+
+    /// The inline entries, for tests that build or perturb a synthetic manifest directly.
+    ///
+    /// Production code reads the inventory through [`VerifiedRuntimeManifest::inventory`], which is
+    /// the only path that has been through length, digest, and schema validation.
+    #[cfg(test)]
+    pub(crate) fn inline_entries_mut(&mut self) -> &mut Vec<InstalledEntry> {
+        match self {
+            Self::Inline(entries) => entries,
+            Self::Detached(_) => panic!("the fixture manifest declares a detached inventory"),
+        }
+    }
+
+    fn validate(&self) -> Result<(), RuntimeError> {
+        match self {
+            Self::Inline(entries) => {
+                if entries.len() > MAX_INVENTORY_ENTRIES {
+                    return Err(RuntimeError::Manifest(
+                        "installed-file inventory exceeds the entry limit".to_owned(),
+                    ));
+                }
+                Ok(())
+            }
+            Self::Detached(reference) => reference.validate(),
+        }
+    }
+}
+
+impl Serialize for ReleaseInventory {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            // Byte-compatibility with every already published inline manifest: the array is the
+            // inline representation, exactly as before.
+            Self::Inline(entries) => entries.serialize(serializer),
+            Self::Detached(reference) => {
+                let mut map = serializer.serialize_map(Some(4))?;
+                map.serialize_entry("representation", DETACHED_INVENTORY_REPRESENTATION)?;
+                map.serialize_entry("sha256", &reference.sha256)?;
+                map.serialize_entry("size_bytes", &reference.size_bytes)?;
+                map.serialize_entry("target_name", &reference.target_name)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ReleaseInventory {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct InventoryVisitor;
+
+        impl<'de> Visitor<'de> for InventoryVisitor {
+            type Value = ReleaseInventory;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(
+                    "an inline array of installed-file entries, or a detached inventory reference",
+                )
+            }
+
+            fn visit_seq<A>(self, sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let entries = Vec::<InstalledEntry>::deserialize(
+                    serde::de::value::SeqAccessDeserializer::new(sequence),
+                )?;
+                Ok(ReleaseInventory::Inline(entries))
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let wire = DetachedInventoryWire::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )?;
+                let DetachedInventoryTag::DetachedTarget = wire.representation;
+                Ok(ReleaseInventory::Detached(DetachedInventoryReference {
+                    target_name: wire.target_name,
+                    size_bytes: wire.size_bytes,
+                    sha256: wire.sha256,
+                }))
+            }
+        }
+
+        deserializer.deserialize_any(InventoryVisitor)
+    }
+}
+
+/// The separate immutable inventory target's document.
+///
+/// It repeats the manifest and release identity it belongs to. The digest binding already prevents
+/// substitution, but naming the owner makes a wrong-release document a stated refusal rather than
+/// something only the digest happens to catch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DetachedInventoryDocument {
+    pub schema_version: u32,
+    pub manifest_id: SafeIdentifier,
+    pub release_id: SafeIdentifier,
+    pub entries: Vec<InstalledEntry>,
+}
+
+impl DetachedInventoryDocument {
+    /// Parse a detached inventory document under an explicit bound.
+    pub fn parse(bytes: &[u8]) -> Result<Self, RuntimeError> {
+        if bytes.len() as u64 > MAX_DETACHED_INVENTORY_BYTES {
+            return Err(RuntimeError::Manifest(
+                "detached inventory document is too large".to_owned(),
+            ));
+        }
+        let document: Self =
+            parse_strict_json(bytes).map_err(|error| RuntimeError::Manifest(error.to_owned()))?;
+        if document.schema_version != DETACHED_INVENTORY_SCHEMA_VERSION {
+            return Err(RuntimeError::Manifest(format!(
+                "unsupported detached inventory schema version {}",
+                document.schema_version
+            )));
+        }
+        if document.entries.len() > MAX_INVENTORY_ENTRIES {
+            return Err(RuntimeError::Manifest(
+                "detached inventory exceeds the entry limit".to_owned(),
+            ));
+        }
+        Ok(document)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -663,8 +920,9 @@ pub struct RuntimeRelease {
     pub architecture: RuntimeArchitecture,
     pub components: Vec<RuntimeComponent>,
     pub app_run_path: RelativePath,
-    #[serde(default)]
-    pub inventory: Vec<InstalledEntry>,
+    /// The explicit installed-file inventory representation: inline entries, or a bounded
+    /// cryptographic reference to a separate immutable inventory target.
+    pub inventory: ReleaseInventory,
     #[serde(default)]
     pub extraction: ExtractionLimits,
 }
@@ -681,17 +939,26 @@ pub struct RuntimeManifest {
 }
 
 impl RuntimeManifest {
+    /// Parse a manifest under the manifest bound and validate everything that does not depend on
+    /// the installed-file inventory.
+    ///
+    /// The inventory-dependent half is [`RuntimeManifest::validate_inventory`], reached through
+    /// [`VerifiedRuntimeManifest`]. Splitting them is what makes a detached inventory possible at
+    /// all: the manifest is authenticated and structurally checked first, and only then does its
+    /// stated representation decide whether the entries are already present or must be obtained as
+    /// a further authenticated target. Nothing installs, verifies, or launches from a manifest whose
+    /// inventory half has not run.
     pub fn parse(bytes: &[u8]) -> Result<Self, RuntimeError> {
         if bytes.len() as u64 > MAX_MANIFEST_BYTES {
             return Err(RuntimeError::Manifest("manifest is too large".to_owned()));
         }
         let manifest: Self =
             parse_strict_json(bytes).map_err(|error| RuntimeError::Manifest(error.to_owned()))?;
-        manifest.validate_for_linux_x86_64()?;
+        manifest.validate_structure()?;
         Ok(manifest)
     }
 
-    pub fn validate_for_linux_x86_64(&self) -> Result<(), RuntimeError> {
+    pub fn validate_structure(&self) -> Result<(), RuntimeError> {
         if self.schema_version != RUNTIME_MANIFEST_SCHEMA_VERSION {
             return Err(RuntimeError::Manifest(format!(
                 "unsupported schema version {}",
@@ -717,6 +984,7 @@ impl RuntimeManifest {
             ));
         }
         self.release.extraction.validate()?;
+        self.release.inventory.validate()?;
 
         let mut component_ids = BTreeSet::new();
         let mut target_names = BTreeSet::new();
@@ -847,10 +1115,41 @@ impl RuntimeManifest {
             ));
         }
 
+        // A detached inventory target shares the repository namespace with the component targets,
+        // so it must be a distinct target: a name collision would make one authenticated target
+        // stand in for another.
+        if let Some(reference) = self.release.inventory.detached() {
+            if self
+                .release
+                .components
+                .iter()
+                .any(|component| component.target_name == reference.target_name)
+            {
+                return Err(RuntimeError::Manifest(
+                    "detached inventory target name collides with a component target".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate the manifest against the installed-file inventory it declares.
+    ///
+    /// `entries` are the authenticated entries: either the manifest's own inline array, or the
+    /// contents of the detached inventory target whose length and digest the manifest bound. This
+    /// half of validation is identical for both representations, which is the point — the
+    /// verification boundary below it never learns where the inventory came from.
+    pub fn validate_inventory(&self, entries: &[InstalledEntry]) -> Result<(), RuntimeError> {
+        if entries.len() > MAX_INVENTORY_ENTRIES {
+            return Err(RuntimeError::Manifest(
+                "installed-file inventory exceeds the entry limit".to_owned(),
+            ));
+        }
         let mut inventory_paths = BTreeMap::new();
-        for entry in &self.release.inventory {
+        for entry in entries {
             if entry.path.as_str() == "release-manifest.json"
                 || entry.path.as_str() == "complete.json"
+                || entry.path.as_str() == "release-inventory.json"
             {
                 return Err(RuntimeError::Manifest(
                     "installation metadata cannot be part of payload inventory".to_owned(),
@@ -917,7 +1216,7 @@ impl RuntimeManifest {
 
         // Resolve links only after the complete inventory has been collected; valid manifests do
         // not depend on whether a link appears before or after its target in JSON.
-        for entry in &self.release.inventory {
+        for entry in entries {
             if entry.entry_type != InstalledEntryType::Symlink {
                 continue;
             }
@@ -986,7 +1285,7 @@ impl RuntimeManifest {
             ));
         }
 
-        for entry in &self.release.inventory {
+        for entry in entries {
             if let Some(parent) = entry.path.parent() {
                 if let Some(parent_entry) = inventory_paths.get(&parent) {
                     if !matches!(parent_entry.entry_type, InstalledEntryType::Directory) {
@@ -1003,6 +1302,122 @@ impl RuntimeManifest {
 
     pub fn app_run_path(&self) -> &RelativePath {
         &self.release.app_run_path
+    }
+}
+
+/// A Runtime Release manifest whose installed-file inventory has been authenticated and resolved.
+///
+/// Every boundary that verifies, permissions, extracts against, launches from, or projects
+/// core-binary provenance out of an installed Runtime tree takes this type rather than a bare
+/// [`RuntimeManifest`]. That is the whole safety argument for the detached representation: the
+/// entries reachable through [`VerifiedRuntimeManifest::inventory`] can only have come from the
+/// authenticated manifest itself or from bytes that matched the length and SHA-256 the
+/// authenticated manifest bound, and there is no constructor that supplies them any other way.
+///
+/// It derefs to the manifest, so component, release, and compatibility metadata read exactly as
+/// before.
+#[derive(Debug, Clone)]
+pub struct VerifiedRuntimeManifest {
+    manifest: RuntimeManifest,
+    inventory: Vec<InstalledEntry>,
+}
+
+impl VerifiedRuntimeManifest {
+    /// Resolve a manifest whose inventory is inline.
+    ///
+    /// Refuses a manifest that declares a detached inventory: an inline resolution of a detached
+    /// manifest would be an empty or absent inventory, and an absent inventory must never look
+    /// like a valid one.
+    pub fn from_inline(manifest: RuntimeManifest) -> Result<Self, RuntimeError> {
+        manifest.validate_structure()?;
+        let ReleaseInventory::Inline(inventory) = &manifest.release.inventory else {
+            return Err(RuntimeError::Manifest(
+                "manifest declares a detached inventory but none was supplied".to_owned(),
+            ));
+        };
+        let inventory = inventory.clone();
+        manifest.validate_inventory(&inventory)?;
+        Ok(Self {
+            manifest,
+            inventory,
+        })
+    }
+
+    /// Resolve a manifest that declares a detached inventory, from that target's exact bytes.
+    ///
+    /// `bytes` must be the authenticated inventory target's content. Length and digest are checked
+    /// against the manifest's own reference here, so this refuses truncated, padded, substituted,
+    /// and wrong-release documents even if a caller obtained them from somewhere careless.
+    pub fn from_detached_bytes(
+        manifest: RuntimeManifest,
+        bytes: &[u8],
+    ) -> Result<Self, RuntimeError> {
+        manifest.validate_structure()?;
+        let Some(reference) = manifest.release.inventory.detached() else {
+            return Err(RuntimeError::Manifest(
+                "a detached inventory was supplied for an inline manifest".to_owned(),
+            ));
+        };
+        if bytes.len() as u64 != reference.size_bytes {
+            return Err(RuntimeError::Integrity(
+                "detached inventory length does not match the manifest reference".to_owned(),
+            ));
+        }
+        if Sha256Digest::of(bytes) != reference.sha256 {
+            return Err(RuntimeError::Integrity(
+                "detached inventory SHA-256 does not match the manifest reference".to_owned(),
+            ));
+        }
+        let document = DetachedInventoryDocument::parse(bytes)?;
+        if document.manifest_id != manifest.manifest_id
+            || document.release_id != manifest.release.release_id
+        {
+            return Err(RuntimeError::Manifest(
+                "detached inventory belongs to a different release".to_owned(),
+            ));
+        }
+        manifest.validate_inventory(&document.entries)?;
+        Ok(Self {
+            manifest,
+            inventory: document.entries,
+        })
+    }
+
+    /// Resolve either representation, chosen by the manifest's own explicit statement.
+    pub fn resolve(
+        manifest: RuntimeManifest,
+        detached_bytes: Option<&[u8]>,
+    ) -> Result<Self, RuntimeError> {
+        match (manifest.release.inventory.is_detached(), detached_bytes) {
+            (false, None) => Self::from_inline(manifest),
+            (true, Some(bytes)) => Self::from_detached_bytes(manifest, bytes),
+            (true, None) => Err(RuntimeError::Manifest(
+                "manifest declares a detached inventory but none was supplied".to_owned(),
+            )),
+            (false, Some(_)) => Err(RuntimeError::Manifest(
+                "a detached inventory was supplied for an inline manifest".to_owned(),
+            )),
+        }
+    }
+
+    pub fn inventory(&self) -> &[InstalledEntry] {
+        &self.inventory
+    }
+
+    pub fn manifest(&self) -> &RuntimeManifest {
+        &self.manifest
+    }
+
+    pub fn into_manifest(self) -> RuntimeManifest {
+        self.manifest
+    }
+}
+
+impl Deref for VerifiedRuntimeManifest {
+    type Target = RuntimeManifest;
+
+    fn deref(&self) -> &Self::Target {
+        &self.manifest
     }
 }
 
@@ -1309,10 +1724,12 @@ pub fn serialize_json<T: Serialize>(value: &T) -> Result<Vec<u8>, RuntimeError> 
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_strict_json, ArchiveFormat, ComponentKind, ExtractionLimits, InstalledEntry,
-        InstalledEntryType, RelativePath, ReleaseChannel, RuntimeArchitecture,
-        RuntimeCompatibility, RuntimeComponent, RuntimeManifest, RuntimePlatform, RuntimeRelease,
-        SafeIdentifier, Sha256Digest, RUNTIME_MANIFEST_SCHEMA_VERSION,
+        parse_strict_json, ArchiveFormat, ComponentKind, DetachedInventoryDocument,
+        DetachedInventoryReference, ExtractionLimits, InstalledEntry, InstalledEntryType,
+        RelativePath, ReleaseChannel, ReleaseInventory, RuntimeArchitecture, RuntimeCompatibility,
+        RuntimeComponent, RuntimeError, RuntimeManifest, RuntimePlatform, RuntimeRelease,
+        SafeIdentifier, Sha256Digest, VerifiedRuntimeManifest, DETACHED_INVENTORY_SCHEMA_VERSION,
+        MAX_DETACHED_INVENTORY_BYTES, RUNTIME_MANIFEST_SCHEMA_VERSION,
     };
 
     #[test]
@@ -1371,7 +1788,7 @@ mod tests {
                     systems: Vec::new(),
                 }],
                 app_run_path: RelativePath::new("runtime/app/AppRun").unwrap(),
-                inventory: vec![
+                inventory: ReleaseInventory::Inline(vec![
                     InstalledEntry {
                         path: RelativePath::new("runtime").unwrap(),
                         entry_type: InstalledEntryType::Directory,
@@ -1396,7 +1813,7 @@ mod tests {
                         executable: true,
                         link_target: None,
                     },
-                ],
+                ]),
                 extraction: ExtractionLimits::default(),
             },
             compatibility: RuntimeCompatibility {
@@ -1406,10 +1823,15 @@ mod tests {
         }
     }
 
+    /// Parse the manifest bytes the way a client does, then resolve its inline inventory.
+    fn parse_and_resolve(bytes: &[u8]) -> Result<VerifiedRuntimeManifest, RuntimeError> {
+        VerifiedRuntimeManifest::from_inline(RuntimeManifest::parse(bytes)?)
+    }
+
     #[test]
     fn accepts_a_valid_manifest() {
         let bytes = serde_json::to_vec(&valid_manifest()).unwrap();
-        assert!(RuntimeManifest::parse(&bytes).is_ok());
+        assert!(parse_and_resolve(&bytes).is_ok());
     }
 
     #[test]
@@ -1440,8 +1862,482 @@ mod tests {
         assert!(RuntimeManifest::parse(&serde_json::to_vec(&unsafe_path).unwrap()).is_err());
 
         let mut duplicate = valid_manifest();
-        let duplicate_entry = duplicate.release.inventory[2].clone();
-        duplicate.release.inventory.push(duplicate_entry);
-        assert!(RuntimeManifest::parse(&serde_json::to_vec(&duplicate).unwrap()).is_err());
+        let duplicate_entry = duplicate.release.inventory.inline_entries_mut()[2].clone();
+        duplicate
+            .release
+            .inventory
+            .inline_entries_mut()
+            .push(duplicate_entry);
+        assert!(parse_and_resolve(&serde_json::to_vec(&duplicate).unwrap()).is_err());
+    }
+
+    // -- ADR-012 detached installed-file inventory ---------------------------------------------
+
+    const INVENTORY_TARGET: &str = "release-1.inventory.json";
+
+    fn inline_entries(manifest: &RuntimeManifest) -> Vec<InstalledEntry> {
+        match &manifest.release.inventory {
+            ReleaseInventory::Inline(entries) => entries.clone(),
+            ReleaseInventory::Detached(_) => panic!("fixture is inline"),
+        }
+    }
+
+    /// Build the detached counterpart of [`valid_manifest`]: the same inventory, moved into a
+    /// separate document, with the manifest bound to that document's exact length and digest.
+    fn detached_pair() -> (RuntimeManifest, Vec<u8>) {
+        let inline = valid_manifest();
+        let document = DetachedInventoryDocument {
+            schema_version: DETACHED_INVENTORY_SCHEMA_VERSION,
+            manifest_id: inline.manifest_id.clone(),
+            release_id: inline.release.release_id.clone(),
+            entries: inline_entries(&inline),
+        };
+        let bytes = serde_json::to_vec(&document).unwrap();
+        detach_with(inline, bytes)
+    }
+
+    /// Bind `manifest` to exactly `bytes`, so only the *content* of the document is under test.
+    fn detach_with(mut manifest: RuntimeManifest, bytes: Vec<u8>) -> (RuntimeManifest, Vec<u8>) {
+        manifest.release.inventory = ReleaseInventory::Detached(DetachedInventoryReference {
+            target_name: INVENTORY_TARGET.to_owned(),
+            size_bytes: bytes.len() as u64,
+            sha256: Sha256Digest::of(&bytes),
+        });
+        (manifest, bytes)
+    }
+
+    /// Take the manifest through real JSON, the way a client only ever sees one.
+    fn reparse(manifest: &RuntimeManifest) -> RuntimeManifest {
+        RuntimeManifest::parse(&serde_json::to_vec(manifest).unwrap())
+            .expect("the manifest parses structurally")
+    }
+
+    /// C1 — the inline representation is unchanged on the wire.
+    ///
+    /// Runtime Release 001 and 002 are published, immutable, inline manifests whose SHA-256 is
+    /// pinned in TUF targets metadata and in persisted client trust state. Introducing the detached
+    /// representation must therefore not alter one byte of how an inline inventory serializes: it
+    /// is still the bare JSON array under `inventory`, with no representation tag and no wrapper.
+    #[test]
+    fn an_inline_inventory_still_serializes_as_a_bare_json_array() {
+        let manifest = valid_manifest();
+        let value = serde_json::to_value(&manifest).unwrap();
+        let inventory = &value["release"]["inventory"];
+        assert!(
+            inventory.is_array(),
+            "an inline inventory must stay a JSON array: {inventory}"
+        );
+        assert_eq!(inventory.as_array().unwrap().len(), 3);
+
+        // And it round-trips back to the same entries through the client's own parse path.
+        let resolved = parse_and_resolve(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(!resolved.release.inventory.is_detached());
+        assert_eq!(resolved.inventory(), inline_entries(&manifest).as_slice());
+    }
+
+    /// C1b — the manifest's authenticated field set is unchanged.
+    ///
+    /// Release 002 is published and immutable: its bytes are pinned by TUF targets metadata, by
+    /// `active.json`, by the completion marker, and by persisted client trust state. Any added,
+    /// removed, or renamed manifest field would change those bytes and make the published release
+    /// unparseable or unverifiable. The detached representation is expressed entirely *inside* the
+    /// existing `inventory` field, so this key set must not move.
+    #[test]
+    fn the_authenticated_manifest_field_set_is_unchanged() {
+        fn keys(value: &serde_json::Value) -> Vec<&str> {
+            let mut keys: Vec<&str> = value
+                .as_object()
+                .expect("a JSON object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            keys
+        }
+
+        let value = serde_json::to_value(valid_manifest()).unwrap();
+        assert_eq!(
+            keys(&value),
+            vec![
+                "channel",
+                "compatibility",
+                "manifest_id",
+                "min_retrofrontier_version",
+                "release",
+                "schema_version",
+            ]
+        );
+        assert_eq!(
+            keys(&value["release"]),
+            vec![
+                "app_run_path",
+                "architecture",
+                "components",
+                "extraction",
+                "inventory",
+                "platform",
+                "release_id",
+                "release_sequence",
+                "retroarch_version",
+                "retrofrontier_runtime_version",
+            ]
+        );
+        assert_eq!(RUNTIME_MANIFEST_SCHEMA_VERSION, 1);
+    }
+
+    /// C2 — the detached happy path: a manifest that references an inventory target resolves from
+    /// that target's exact bytes, and the result is the same inventory an inline manifest carries.
+    #[test]
+    fn a_detached_manifest_resolves_from_its_exact_target_bytes() {
+        let (manifest, bytes) = detached_pair();
+        let parsed = reparse(&manifest);
+        let reference = parsed
+            .release
+            .inventory
+            .detached()
+            .expect("the parsed manifest still declares a detached inventory");
+        assert_eq!(reference.target_name, INVENTORY_TARGET);
+        assert_eq!(reference.size_bytes, bytes.len() as u64);
+        assert_eq!(reference.sha256, Sha256Digest::of(&bytes));
+
+        let resolved = VerifiedRuntimeManifest::from_detached_bytes(parsed, &bytes).unwrap();
+        assert_eq!(
+            resolved.inventory(),
+            inline_entries(&valid_manifest()).as_slice(),
+            "both representations must yield the identical authenticated inventory"
+        );
+    }
+
+    /// C3 — the representation is explicit. An object with no tag, the wrong tag, an unknown
+    /// field, or a missing field is refused rather than being read as some default.
+    #[test]
+    fn a_detached_reference_must_carry_its_explicit_representation_tag() {
+        let (manifest, _) = detached_pair();
+        let mut value = serde_json::to_value(&manifest).unwrap();
+        let original = value["release"]["inventory"].clone();
+        assert_eq!(
+            original["representation"],
+            serde_json::json!(super::DETACHED_INVENTORY_REPRESENTATION)
+        );
+
+        for mutate in [
+            // No tag at all.
+            |inventory: &mut serde_json::Value| {
+                inventory.as_object_mut().unwrap().remove("representation");
+            },
+            // A tag this client does not implement.
+            |inventory: &mut serde_json::Value| {
+                inventory["representation"] = serde_json::json!("detached_url");
+            },
+            // An extra field the schema forbids.
+            |inventory: &mut serde_json::Value| {
+                inventory["fetch_url"] =
+                    serde_json::json!("https://example.invalid/inventory.json");
+            },
+            // A missing required field.
+            |inventory: &mut serde_json::Value| {
+                inventory.as_object_mut().unwrap().remove("sha256");
+            },
+        ] {
+            let mut inventory = original.clone();
+            mutate(&mut inventory);
+            value["release"]["inventory"] = inventory;
+            assert!(
+                RuntimeManifest::parse(&serde_json::to_vec(&value).unwrap()).is_err(),
+                "an ambiguous inventory representation must be refused"
+            );
+        }
+
+        // A duplicate key inside the reference is refused by the strict JSON reader.
+        let manifest_json = serde_json::to_string(&value).unwrap();
+        let duplicated = manifest_json.replace(
+            r#""representation":"detached_target""#,
+            r#""representation":"detached_target","representation":"detached_target""#,
+        );
+        assert!(RuntimeManifest::parse(duplicated.as_bytes()).is_err());
+    }
+
+    /// C4 — wrong length, wrong digest, truncation, and padding all fail closed.
+    #[test]
+    fn detached_inventory_bytes_must_match_the_manifest_reference_exactly() {
+        let (manifest, bytes) = detached_pair();
+
+        // Truncated.
+        let truncated = bytes[..bytes.len() - 1].to_vec();
+        assert!(matches!(
+            VerifiedRuntimeManifest::from_detached_bytes(reparse(&manifest), &truncated),
+            Err(RuntimeError::Integrity(_))
+        ));
+
+        // Padded to a different length.
+        let mut padded = bytes.clone();
+        padded.push(b' ');
+        assert!(matches!(
+            VerifiedRuntimeManifest::from_detached_bytes(reparse(&manifest), &padded),
+            Err(RuntimeError::Integrity(_))
+        ));
+
+        // Same length, different bytes: only the digest catches this.
+        let mut substituted = bytes.clone();
+        let last = substituted.len() - 1;
+        substituted[last] = b' ';
+        assert!(matches!(
+            VerifiedRuntimeManifest::from_detached_bytes(reparse(&manifest), &substituted),
+            Err(RuntimeError::Integrity(_))
+        ));
+
+        // A manifest that declares the wrong length for otherwise correct bytes is refused too.
+        let mut wrong_length = manifest.clone();
+        wrong_length.release.inventory = ReleaseInventory::Detached(DetachedInventoryReference {
+            target_name: INVENTORY_TARGET.to_owned(),
+            size_bytes: bytes.len() as u64 + 1,
+            sha256: Sha256Digest::of(&bytes),
+        });
+        assert!(
+            VerifiedRuntimeManifest::from_detached_bytes(reparse(&wrong_length), &bytes).is_err()
+        );
+
+        // …and so is one that declares the wrong digest.
+        let mut wrong_digest = manifest;
+        wrong_digest.release.inventory = ReleaseInventory::Detached(DetachedInventoryReference {
+            target_name: INVENTORY_TARGET.to_owned(),
+            size_bytes: bytes.len() as u64,
+            sha256: Sha256Digest::from_hex(&"c".repeat(64)).unwrap(),
+        });
+        assert!(
+            VerifiedRuntimeManifest::from_detached_bytes(reparse(&wrong_digest), &bytes).is_err()
+        );
+    }
+
+    /// C5 — malformed, wrong-schema, and wrong-release documents are refused even when their
+    /// length and digest are exactly what the manifest says.
+    #[test]
+    fn a_malformed_or_foreign_detached_inventory_is_refused_at_matching_length_and_digest() {
+        let malformed = detach_with(valid_manifest(), b"{ not json".to_vec());
+        assert!(matches!(
+            VerifiedRuntimeManifest::from_detached_bytes(reparse(&malformed.0), &malformed.1),
+            Err(RuntimeError::Manifest(_))
+        ));
+
+        let entries = inline_entries(&valid_manifest());
+        let future_schema = serde_json::to_vec(&serde_json::json!({
+            "schema_version": DETACHED_INVENTORY_SCHEMA_VERSION + 1,
+            "manifest_id": "manifest-1",
+            "release_id": "release-1",
+            "entries": entries,
+        }))
+        .unwrap();
+        let future = detach_with(valid_manifest(), future_schema);
+        assert!(
+            VerifiedRuntimeManifest::from_detached_bytes(reparse(&future.0), &future.1).is_err()
+        );
+
+        // An unknown field inside the document is refused, not ignored.
+        let extra = serde_json::to_vec(&serde_json::json!({
+            "schema_version": DETACHED_INVENTORY_SCHEMA_VERSION,
+            "manifest_id": "manifest-1",
+            "release_id": "release-1",
+            "entries": entries,
+            "surprise": true,
+        }))
+        .unwrap();
+        let extra = detach_with(valid_manifest(), extra);
+        assert!(VerifiedRuntimeManifest::from_detached_bytes(reparse(&extra.0), &extra.1).is_err());
+
+        // A well-formed inventory belonging to a different release is refused: the digest already
+        // prevents substitution, and the recorded owner makes the refusal explicit.
+        let foreign = serde_json::to_vec(&DetachedInventoryDocument {
+            schema_version: DETACHED_INVENTORY_SCHEMA_VERSION,
+            manifest_id: SafeIdentifier::new("manifest-2").unwrap(),
+            release_id: SafeIdentifier::new("release-2").unwrap(),
+            entries,
+        })
+        .unwrap();
+        let foreign = detach_with(valid_manifest(), foreign);
+        let error = VerifiedRuntimeManifest::from_detached_bytes(reparse(&foreign.0), &foreign.1)
+            .expect_err("a foreign inventory must be refused");
+        assert!(
+            format!("{error}").contains("different release"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// C6 — the two representations never substitute for one another.
+    #[test]
+    fn the_representations_are_never_interchangeable() {
+        let (detached, bytes) = detached_pair();
+
+        // A detached manifest resolved as if it were inline would produce no inventory at all.
+        assert!(VerifiedRuntimeManifest::from_inline(reparse(&detached)).is_err());
+        assert!(VerifiedRuntimeManifest::resolve(reparse(&detached), None).is_err());
+
+        // Detached bytes offered for an inline manifest are refused rather than preferred.
+        let inline = valid_manifest();
+        assert!(VerifiedRuntimeManifest::from_detached_bytes(reparse(&inline), &bytes).is_err());
+        assert!(VerifiedRuntimeManifest::resolve(reparse(&inline), Some(&bytes)).is_err());
+    }
+
+    /// C7 — the detached target is a target name, never a URL or a path, and never a name that
+    /// already belongs to a component.
+    #[test]
+    fn a_detached_target_name_is_flat_safe_and_distinct_from_every_component() {
+        let (manifest, _) = detached_pair();
+        for name in [
+            "https://example.invalid/inventory.json",
+            "../inventory.json",
+            "targets/inventory.json",
+            "/etc/inventory.json",
+            "",
+        ] {
+            let mut value = serde_json::to_value(&manifest).unwrap();
+            value["release"]["inventory"]["target_name"] = serde_json::json!(name);
+            assert!(
+                RuntimeManifest::parse(&serde_json::to_vec(&value).unwrap()).is_err(),
+                "'{name}' must not be accepted as an inventory target name"
+            );
+        }
+
+        let mut value = serde_json::to_value(&manifest).unwrap();
+        value["release"]["components"][0]["target_name"] = serde_json::json!("runtime.tar");
+        value["release"]["inventory"]["target_name"] = serde_json::json!("runtime.tar");
+        let error = RuntimeManifest::parse(&serde_json::to_vec(&value).unwrap())
+            .expect_err("a name collision with a component target must be refused");
+        assert!(
+            format!("{error}").contains("collides"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// C8 — the detached inventory has its own explicit bound, and the manifest bound is unchanged.
+    #[test]
+    fn the_detached_inventory_has_an_independent_explicit_size_bound() {
+        // The manifest bound is untouched by this milestone. That the detached bound exceeds it
+        // is asserted at compile time beside the two constants.
+        assert_eq!(super::MAX_MANIFEST_BYTES, 1024 * 1024);
+
+        // A reference beyond the bound is refused during manifest validation, before anything is
+        // fetched or read.
+        let (manifest, _) = detached_pair();
+        let mut value = serde_json::to_value(&manifest).unwrap();
+        value["release"]["inventory"]["size_bytes"] =
+            serde_json::json!(MAX_DETACHED_INVENTORY_BYTES + 1);
+        let error = RuntimeManifest::parse(&serde_json::to_vec(&value).unwrap())
+            .expect_err("an oversized reference must be refused");
+        assert!(
+            format!("{error}").contains("size limit"),
+            "unexpected error: {error}"
+        );
+
+        // A zero-length reference is refused as well: an empty inventory is never a valid one.
+        let mut value = serde_json::to_value(&manifest).unwrap();
+        value["release"]["inventory"]["size_bytes"] = serde_json::json!(0);
+        assert!(RuntimeManifest::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+
+        // And the document parser enforces the bound on its own, independently of any manifest.
+        let oversized = vec![b' '; MAX_DETACHED_INVENTORY_BYTES as usize + 1];
+        assert!(DetachedInventoryDocument::parse(&oversized).is_err());
+    }
+
+    /// C9 — entry-count and path bounds apply to a detached inventory too.
+    #[test]
+    fn inventory_entry_and_path_bounds_are_enforced() {
+        let manifest = valid_manifest();
+        let template = inline_entries(&manifest)[0].clone();
+        let too_many: Vec<InstalledEntry> = (0..=super::MAX_INVENTORY_ENTRIES)
+            .map(|index| InstalledEntry {
+                path: RelativePath::new(format!("runtime/e{index}")).unwrap(),
+                ..template.clone()
+            })
+            .collect();
+        let error = manifest
+            .validate_inventory(&too_many)
+            .expect_err("an inventory beyond the entry limit must be refused");
+        assert!(
+            format!("{error}").contains("entry limit"),
+            "unexpected error: {error}"
+        );
+
+        // A path beyond `RelativePath`'s bound cannot even be deserialized into an entry.
+        let long_path = "a".repeat(5000);
+        let document = serde_json::json!({
+            "schema_version": DETACHED_INVENTORY_SCHEMA_VERSION,
+            "manifest_id": "manifest-1",
+            "release_id": "release-1",
+            "entries": [{
+                "path": long_path,
+                "entry_type": "file",
+                "size_bytes": 1,
+                "sha256": "a".repeat(64),
+                "executable": false,
+                "link_target": null,
+            }],
+        });
+        assert!(DetachedInventoryDocument::parse(&serde_json::to_vec(&document).unwrap()).is_err());
+    }
+
+    /// C10 — a detached inventory that does not describe the release's components is refused.
+    ///
+    /// This is the same check an inline manifest gets, which is the point: moving the inventory out
+    /// of the manifest must not move it out of validation.
+    #[test]
+    fn a_detached_inventory_that_mismatches_the_components_is_refused() {
+        let manifest = valid_manifest();
+        let mut entries = inline_entries(&manifest);
+        // Drop the runtime component's install-path directory.
+        entries.retain(|entry| entry.path.as_str() != "runtime/app");
+        let document = serde_json::to_vec(&DetachedInventoryDocument {
+            schema_version: DETACHED_INVENTORY_SCHEMA_VERSION,
+            manifest_id: manifest.manifest_id.clone(),
+            release_id: manifest.release.release_id.clone(),
+            entries,
+        })
+        .unwrap();
+        let (manifest, bytes) = detach_with(manifest, document);
+        let error = VerifiedRuntimeManifest::from_detached_bytes(reparse(&manifest), &bytes)
+            .expect_err("a component with no inventory directory must be refused");
+        assert!(
+            format!("{error}").contains("inventory directory"),
+            "unexpected error: {error}"
+        );
+
+        // AppRun missing from a detached inventory is refused for the same reason.
+        let manifest = valid_manifest();
+        let mut entries = inline_entries(&manifest);
+        entries.retain(|entry| entry.path.as_str() != "runtime/app/AppRun");
+        let document = serde_json::to_vec(&DetachedInventoryDocument {
+            schema_version: DETACHED_INVENTORY_SCHEMA_VERSION,
+            manifest_id: manifest.manifest_id.clone(),
+            release_id: manifest.release.release_id.clone(),
+            entries,
+        })
+        .unwrap();
+        let (manifest, bytes) = detach_with(manifest, document);
+        assert!(VerifiedRuntimeManifest::from_detached_bytes(reparse(&manifest), &bytes).is_err());
+    }
+
+    /// C11 — installation metadata can never be claimed as payload, `release-inventory.json`
+    /// included. Otherwise an inventory entry could describe the very file that authenticates it.
+    #[test]
+    fn installation_metadata_filenames_are_not_valid_inventory_paths() {
+        let manifest = valid_manifest();
+        for reserved in [
+            "release-manifest.json",
+            "complete.json",
+            "release-inventory.json",
+        ] {
+            let mut entries = inline_entries(&manifest);
+            entries.push(InstalledEntry {
+                path: RelativePath::new(reserved).unwrap(),
+                entry_type: InstalledEntryType::File,
+                size_bytes: 1,
+                sha256: Some(Sha256Digest::from_hex(&"a".repeat(64)).unwrap()),
+                executable: false,
+                link_target: None,
+            });
+            assert!(
+                manifest.validate_inventory(&entries).is_err(),
+                "'{reserved}' must not be a payload inventory path"
+            );
+        }
     }
 }

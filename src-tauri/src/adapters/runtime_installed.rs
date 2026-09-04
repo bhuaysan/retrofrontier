@@ -2,40 +2,74 @@ use crate::adapters::runtime_integrity::{sha256_bytes, sha256_file};
 use crate::adapters::runtime_paths::{fsync_directory, RuntimePaths};
 use crate::domain::runtime::{
     parse_strict_json, serialize_json, CompleteMarker, InstalledEntry, InstalledEntryType,
-    RelativePath, RuntimeError, RuntimeManifest, SymlinkTarget, MAX_MANIFEST_BYTES,
+    RelativePath, RuntimeError, RuntimeManifest, SymlinkTarget, VerifiedRuntimeManifest,
+    MAX_DETACHED_INVENTORY_BYTES, MAX_MANIFEST_BYTES,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 pub const RELEASE_MANIFEST_FILE: &str = "release-manifest.json";
 pub const COMPLETE_MARKER_FILE: &str = "complete.json";
 
+/// Where an installation keeps the authenticated bytes of a *detached* installed-file inventory.
+///
+/// ADR-012 requires an installed runtime to stay verifiable and launchable with no network, so a
+/// detached inventory cannot be re-fetched at verification time. The exact authenticated bytes are
+/// therefore stored beside the manifest, and every later read re-checks them against the length and
+/// SHA-256 the authenticated manifest binds — which makes this file a cache of authenticated data,
+/// never an authority of its own. It is absent for an inline release.
+pub const RELEASE_INVENTORY_FILE: &str = "release-inventory.json";
+
 #[derive(Debug, Clone)]
 pub struct VerifiedInstallation {
     pub installation_id: crate::domain::runtime::SafeIdentifier,
-    pub manifest: RuntimeManifest,
+    pub manifest: VerifiedRuntimeManifest,
     pub manifest_sha256: crate::domain::runtime::Sha256Digest,
     pub storage_bytes: u64,
 }
 
-pub fn write_release_manifest(path: &Path, manifest_bytes: &[u8]) -> Result<(), RuntimeError> {
+/// Write the installation's release metadata: the manifest, plus the detached inventory bytes when
+/// the manifest declares one.
+///
+/// `inventory_bytes` must be `Some` exactly when the manifest declares a detached inventory;
+/// `read_manifest` re-resolves both files immediately afterwards, so a mismatch fails here rather
+/// than at first launch.
+pub fn write_release_metadata(
+    path: &Path,
+    manifest_bytes: &[u8],
+    inventory_bytes: Option<&[u8]>,
+) -> Result<(), RuntimeError> {
     if manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
         return Err(RuntimeError::InstalledTree(
             "release manifest is too large".to_owned(),
         ));
     }
     let manifest = RuntimeManifest::parse(manifest_bytes)?;
-    let target = path.join(RELEASE_MANIFEST_FILE);
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true).mode(0o600);
-    let mut file = options.open(&target)?;
-    file.write_all(manifest_bytes)?;
-    file.flush()?;
-    file.sync_all()?;
-    drop(file);
+    write_private_file(&path.join(RELEASE_MANIFEST_FILE), manifest_bytes)?;
+    match (manifest.release.inventory.detached(), inventory_bytes) {
+        (Some(_), Some(bytes)) => {
+            if bytes.len() as u64 > MAX_DETACHED_INVENTORY_BYTES {
+                return Err(RuntimeError::InstalledTree(
+                    "detached release inventory is too large".to_owned(),
+                ));
+            }
+            write_private_file(&path.join(RELEASE_INVENTORY_FILE), bytes)?;
+        }
+        (None, None) => {}
+        (Some(_), None) => {
+            return Err(RuntimeError::InstalledTree(
+                "the release declares a detached inventory but none was staged".to_owned(),
+            ))
+        }
+        (None, Some(_)) => {
+            return Err(RuntimeError::InstalledTree(
+                "a detached inventory was staged for an inline release".to_owned(),
+            ))
+        }
+    }
     let parsed = read_manifest(path)?;
     if parsed.0.release.release_id != manifest.release.release_id
         || parsed.1 != sha256_bytes(manifest_bytes)
@@ -48,23 +82,77 @@ pub fn write_release_manifest(path: &Path, manifest_bytes: &[u8]) -> Result<(), 
     Ok(())
 }
 
+fn write_private_file(target: &Path, bytes: &[u8]) -> Result<(), RuntimeError> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = options.open(target)?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Read and resolve the installed release metadata.
+///
+/// The returned digest is always the *manifest's* digest, because the manifest is what `active.json`
+/// and the completion marker bind. A detached inventory adds no second identity: it is accepted only
+/// when its length and digest equal what the manifest already declared.
 pub fn read_manifest(
     path: &Path,
-) -> Result<(RuntimeManifest, crate::domain::runtime::Sha256Digest), RuntimeError> {
-    let metadata = fs::symlink_metadata(path.join(RELEASE_MANIFEST_FILE))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(RuntimeError::InstalledTree(
-            "installed release manifest is not a regular file".to_owned(),
-        ));
-    }
-    if metadata.len() > MAX_MANIFEST_BYTES {
-        return Err(RuntimeError::InstalledTree(
-            "installed release manifest is too large".to_owned(),
-        ));
-    }
-    let bytes = fs::read(path.join(RELEASE_MANIFEST_FILE))?;
+) -> Result<
+    (
+        VerifiedRuntimeManifest,
+        crate::domain::runtime::Sha256Digest,
+    ),
+    RuntimeError,
+> {
+    let bytes = read_metadata_file(
+        &path.join(RELEASE_MANIFEST_FILE),
+        MAX_MANIFEST_BYTES,
+        "installed release manifest",
+    )?;
     let manifest = RuntimeManifest::parse(&bytes)?;
-    Ok((manifest, sha256_bytes(&bytes)))
+    let manifest_sha256 = sha256_bytes(&bytes);
+    let verified = match manifest.release.inventory.detached() {
+        None => VerifiedRuntimeManifest::from_inline(manifest)?,
+        Some(reference) => {
+            // Bounded by the manifest's own reference, which structural validation already held
+            // to `MAX_DETACHED_INVENTORY_BYTES`. A file of any other length is refused before it
+            // is read at all.
+            let expected = reference.size_bytes;
+            let inventory_bytes = read_metadata_file(
+                &path.join(RELEASE_INVENTORY_FILE),
+                expected,
+                "installed release inventory",
+            )?;
+            VerifiedRuntimeManifest::from_detached_bytes(manifest, &inventory_bytes)?
+        }
+    };
+    Ok((verified, manifest_sha256))
+}
+
+/// Read one installation metadata file under an explicit byte bound.
+///
+/// The bound is enforced twice on purpose. The `stat` refuses an oversized file before it is
+/// opened, and the read itself is capped, so a file that grows between the two — the same-user race
+/// ADR-012 acknowledges it cannot eliminate — still cannot make this read unbounded.
+fn read_metadata_file(target: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>, RuntimeError> {
+    let metadata = fs::symlink_metadata(target)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(RuntimeError::InstalledTree(format!(
+            "{label} is not a regular file"
+        )));
+    }
+    if metadata.len() > max_bytes {
+        return Err(RuntimeError::InstalledTree(format!("{label} is too large")));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+    std::io::Read::take(fs::File::open(target)?, max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(RuntimeError::InstalledTree(format!("{label} is too large")));
+    }
+    Ok(bytes)
 }
 
 pub fn write_complete_marker(
@@ -159,16 +247,27 @@ pub fn verify_installation(
     })
 }
 
-pub fn verify_tree(path: &Path, manifest: &RuntimeManifest) -> Result<(), RuntimeError> {
+pub fn verify_tree(path: &Path, manifest: &VerifiedRuntimeManifest) -> Result<(), RuntimeError> {
     let expected: BTreeMap<_, _> = manifest
-        .release
-        .inventory
+        .inventory()
         .iter()
         .map(|entry| (entry.path.clone(), entry))
         .collect();
     let mut actual = BTreeSet::new();
-    walk_tree(path, Path::new(""), &mut actual, &expected)?;
-    for entry in &manifest.release.inventory {
+    // Installation metadata is not payload. `release-inventory.json` is skipped only for a release
+    // that actually declares a detached inventory, so an inline installation still refuses a file
+    // by that name as an unexpected tree entry.
+    let metadata_files: &[&str] = if manifest.release.inventory.is_detached() {
+        &[
+            RELEASE_MANIFEST_FILE,
+            COMPLETE_MARKER_FILE,
+            RELEASE_INVENTORY_FILE,
+        ]
+    } else {
+        &[RELEASE_MANIFEST_FILE, COMPLETE_MARKER_FILE]
+    };
+    walk_tree(path, Path::new(""), &mut actual, &expected, metadata_files)?;
+    for entry in manifest.inventory() {
         if !actual.contains(&entry.path) {
             return Err(RuntimeError::InstalledTree(format!(
                 "installed runtime is missing '{}'",
@@ -190,6 +289,7 @@ fn walk_tree(
     relative: &Path,
     actual: &mut BTreeSet<RelativePath>,
     expected: &BTreeMap<RelativePath, &InstalledEntry>,
+    metadata_files: &[&str],
 ) -> Result<(), RuntimeError> {
     let directory = root.join(relative);
     let metadata = fs::symlink_metadata(&directory)?;
@@ -206,9 +306,7 @@ fn walk_tree(
             .to_str()
             .ok_or_else(|| RuntimeError::InstalledTree("runtime filename is not UTF-8".to_owned()))?
             .to_owned();
-        if relative.as_os_str().is_empty()
-            && matches!(name.as_str(), RELEASE_MANIFEST_FILE | COMPLETE_MARKER_FILE)
-        {
+        if relative.as_os_str().is_empty() && metadata_files.contains(&name.as_str()) {
             continue;
         }
         let child_relative = if relative.as_os_str().is_empty() {
@@ -262,7 +360,7 @@ fn walk_tree(
                         child_relative
                     )));
                 }
-                walk_tree(root, &relative.join(name), actual, expected)?;
+                walk_tree(root, &relative.join(name), actual, expected, metadata_files)?;
             }
             InstalledEntryType::Symlink => {
                 if !metadata.file_type().is_symlink() {
@@ -301,14 +399,13 @@ fn walk_tree(
     Ok(())
 }
 
-fn validate_symlink_graph(manifest: &RuntimeManifest) -> Result<(), RuntimeError> {
+fn validate_symlink_graph(manifest: &VerifiedRuntimeManifest) -> Result<(), RuntimeError> {
     let expected: BTreeMap<_, _> = manifest
-        .release
-        .inventory
+        .inventory()
         .iter()
         .map(|entry| (entry.path.clone(), entry))
         .collect();
-    for entry in &manifest.release.inventory {
+    for entry in manifest.inventory() {
         if entry.entry_type != InstalledEntryType::Symlink {
             continue;
         }
@@ -397,9 +494,9 @@ pub fn validate_app_run(path: &Path, manifest: &RuntimeManifest) -> Result<(), R
 
 pub fn apply_inventory_permissions(
     path: &Path,
-    manifest: &RuntimeManifest,
+    manifest: &VerifiedRuntimeManifest,
 ) -> Result<(), RuntimeError> {
-    for entry in &manifest.release.inventory {
+    for entry in manifest.inventory() {
         let target = path.join(entry.path.to_path_buf());
         match entry.entry_type {
             InstalledEntryType::File => {
