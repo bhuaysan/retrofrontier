@@ -553,18 +553,59 @@ J1 names object A at the first-stage name Q1
   J2 is written, naming the same physical A, before anything moves
   Q1 → Q2  (NOREPLACE)
   Q2 is re-proved against the journaled identity
-  only now is J1 retired — Q1 is free again, and a record pointing at a free
-  name is authority over whatever comes to occupy it
-  Q2 is unlinked, and J2 goes with it
+  J1 is retired — Q1 is free again, and a record pointing at a free name is
+  authority over whatever comes to occupy it
+  J2 is retired, durably          ← the terminal transition
+  Q2 is unlinked
 ```
 
-There is deliberately no step at which the live object has no durable record, so a crash anywhere in
-that sequence leaves the next startup either the first stage or the second, each with its own proof,
-and never neither. Every non-terminal outcome — a transient I/O failure, an identity or content
-mismatch, an indeterminate verification, a refused race — keeps the entry that still names a real
-object, because discarding it would strand that object permanently: no later startup could prove it
-safe to finish. A mismatching quarantine file is never deleted, the entry is never rewritten onto
-whatever now occupies the pathname, and repeating the sweep keeps refusing rather than forgetting.
+Up to the re-proof there is deliberately no step at which the live object has no durable record, so a
+crash anywhere in that region leaves the next startup either the first stage or the second, each with
+its own proof, and never neither. Every non-terminal outcome — a transient I/O failure, an identity
+or content mismatch, an indeterminate verification, a refused race, a second-stage transfer that
+cannot complete — keeps the entry that still names a real object, because discarding it would strand
+that object permanently: no later startup could prove it safe to finish. A mismatching quarantine
+file is never deleted, the entry is never rewritten onto whatever now occupies the pathname, and
+repeating the sweep keeps refusing rather than forgetting.
+
+**The last step reverses that priority, deliberately.** A record must not outlive the physical
+object it authenticates: `(device, inode)` identifies an object only while the object exists, and
+once its last link is unlinked the inode number becomes eligible for reuse — so a record that
+survived its own object would be a capability that some future, unrelated file could satisfy. The
+authorizing record is therefore retired **before** the unlink, not after it, and if it cannot be
+retired the unlink is not attempted at all. The rule, stated as recovery behaviour:
+
+```text
+before the final re-proof:
+  the journal is retained, so interrupted work stays recoverable
+
+after the final re-proof:
+  the journal is retired first, then the object is unlinked
+
+if the unlink then fails or the process dies in between:
+  the quarantine file is left inert and is never swept automatically again
+```
+
+| Crash point | State | Meaning |
+| --- | --- | --- |
+| Before the final re-proof | `Q2` + `J2` | Recoverable; the next startup retries |
+| After the re-proof, before `J2` is retired | `Q2` + `J2` | Recoverable; the next startup retries |
+| After `J2` is retired, before the unlink | `Q2` only | Inert orphan; never swept again |
+| After the unlink | Neither | Done |
+
+RetroFrontier would rather leak one tiny owned orphan than keep a record that could later authorize
+a different physical object. That orphan is **not** an unresolved bug — it is the fail-closed outcome
+the ordering exists to produce. Its ownership is never reconstructed from the file's name, size,
+digest, currently observed inode, or any database row, because doing so would rebuild exactly the
+stale authority being removed. It stays inert in every other sense too: a quarantine name cannot
+parse as a state or a thumbnail, so nothing attributes, lists, or loads it.
+
+**Durability, stated precisely.** Retirement unlinks the entry and then `fsync`s the journal
+*directory*, which is what POSIX offers for committing a directory-entry removal, so on a filesystem
+and storage stack that honour `fsync` the retirement is durable before the object's own unlink is
+even attempted. RetroFrontier claims no more than that: on a stack that ignores `fsync` or reorders
+across it, the guarantee degrades to process-crash ordering — which this ordering is structurally
+correct for regardless, and which is the window that mattered.
 
 Deletion is the irreversible primary action, so ordering is: verify → delete the state file → delete
 the verified thumbnail if safe → persist `deleted`. If persistence fails afterwards, the row briefly
@@ -689,6 +730,11 @@ logs `Redirecting save state to "D/Synthetic Probe.state"`, and `--entryslot 3` 
   proof journal entry still recording the physical object RetroFrontier itself verified, until the
   next startup sweep re-proves and removes it. That retained entry names one specific inode, so it
   can never be satisfied by anything else that comes to occupy the pathname.
+- **A failure or crash after the final record is retired leaves an inert quarantine orphan.** This is
+  the deliberate fail-closed outcome of retiring the authorizing record before the unlink, not a
+  defect: the alternative is a record that outlives its object and could later authorize a reused
+  inode. The orphan is one bounded file under a name that cannot parse as a state or a thumbnail, it
+  is never attributed, listed, or loaded, and it is never automatically deleted or re-adopted.
 - **A same-inode concurrent writer narrows, rather than fully closes, the deletion window.** POSIX
   and Linux offer no dependable, portable, non-mandatory-locking way to exclude a writer that already
   holds an open, writable descriptor to the exact same inode RetroFrontier is deleting — advisory
