@@ -39,19 +39,25 @@ closure) is documentation and policy only: it approved no new core, created no R
 left Release 002 unchanged. It closed the licence and BIOS research questions and, more importantly,
 converted three previously vague gates into precisely identified V1 blockers:
 
-- **Corresponding source.** The exact source revision of the four redistributed cores is not
-  published by libretro and is not recoverable from the artefacts. Public redistribution of the
-  managed runtime is blocked — for the four *already approved* systems too. This is a provenance
-  blocker, not a policy one.
-- **Mega Drive has no redistributable core.** Genesis Plus GX and PicoDrive both forbid commercial
-  redistribution and are GPL-incompatible with this project's `GPL-3.0-or-later` licence. BlastEm is
-  the only GPL-compatible candidate and is unqualified.
+- **Corresponding source.** The exact source revision of the four redistributed cores is unknown and
+  not recoverable from the published bundle, the shipped binaries, core-info metadata or the public
+  buildbot metadata examined. libretro's own build infrastructure may still be able to identify it,
+  so asking is a live option. Either way RetroFrontier cannot meet the obligation from what it can
+  obtain today, so public redistribution is blocked — for the four *already approved* systems too.
+  This is a provenance blocker, not a policy one.
+- **Mega Drive has no approvable core.** Genesis Plus GX and PicoDrive both carry a non-commercial
+  licence term, which conflicts with the freedoms this project's `GPL-3.0-or-later` licence grants
+  downstream. Engineering status: blocked for V1 under current policy, legal compatibility review
+  required — not a finding that redistribution is categorically unlawful. BlastEm is the only
+  GPL-compatible candidate and is unqualified.
 - **macOS has no immutable core acquisition path at all.** libretro publishes no macOS core bundle
   at any architecture — only rolling nightly per-core archives, which ADR-004 rejects. This affects
   every core equally and cannot be solved by choosing a different one.
 
 Seven systems moved from unresearched to Candidate or Unresolved with recorded primary-source
-evidence and named blockers. See [`docs/CORE_MATRIX.md`](docs/CORE_MATRIX.md),
+evidence and named blockers. **M10.2 measured nothing and changed no system's qualification status**;
+NES and SNES remain the only systems qualified end-to-end, GameCube remains partially qualified, and
+PlayStation remains unqualified. See [`docs/CORE_MATRIX.md`](docs/CORE_MATRIX.md),
 [`docs/BIOS_MATRIX.md`](docs/BIOS_MATRIX.md) and
 [`docs/SOURCE_PROVENANCE.md`](docs/SOURCE_PROVENANCE.md).
 
@@ -213,8 +219,12 @@ presentation are explicitly non-blocking deferred capabilities. The pre-M5 ident
 - [x] default/approved-core policy model with explicit unresolved decisions
 - [ ] resolve the default-core matrix (M10.2: four systems Approved, seven researched to Candidate
       or Unresolved with named blockers; Mega Drive is a hard licence blocker)
-- [x] core licenses and approved distribution sources (M10.2: every licence verified against the
-      upstream licence file and per-file headers; see [`docs/SOURCE_PROVENANCE.md`](docs/SOURCE_PROVENANCE.md))
+- [x] core licence identification (M10.2: every licence verified against the upstream licence file
+      and per-file headers, not against heuristic metadata; see
+      [`docs/SOURCE_PROVENANCE.md`](docs/SOURCE_PROVENANCE.md) §3)
+- [ ] approved distribution sources for cores — **not established.** Licence identification is done,
+      but corresponding source, the GPLv3-host separate-work question, Mega Drive licensing and
+      macOS acquisition all remain open; no core has an approved public distribution path
 - [ ] close the corresponding-source gap for the four redistributed cores (M10.2 blocker; public
       redistribution is blocked until then)
 - [x] platform/architecture availability model
@@ -224,14 +234,20 @@ presentation are explicitly non-blocking deferred capabilities. The pre-M5 ident
 - [x] per-system BIOS/readiness status UI
 - [ ] map user BIOS folders to any future core-required internal layout (M10.2: Flycast's `dc/`
       subdirectory is the first real case; it is a hard precondition of Dreamcast approval)
-- [ ] correct the Dreamcast BIOS catalog entry, which contradicts the approved core documentation
-      (M10.2: currently Required + `dc_flash.bin` at top level; Flycast documents Optional
-      `dc/dc_boot.bin`; see [`docs/BIOS_MATRIX.md`](docs/BIOS_MATRIX.md) §4)
-- [ ] adopt authoritative Saturn and Game Boy family BIOS identities when their cores are approved
+- [ ] correct the Dreamcast BIOS catalog entry, which conflicts with the **candidate** core's
+      documentation (M10.2: currently Required + `dc_flash.bin` at top level; Flycast — a Candidate,
+      not an approved core — documents Optional `dc/dc_boot.bin`; the entry stays Unresolved until a
+      Dreamcast core is approved; see [`docs/BIOS_MATRIX.md`](docs/BIOS_MATRIX.md) §4)
+- [ ] adopt the candidate-core Saturn and Game Boy family BIOS identities if and when those cores are
+      approved (authoritative evidence today, not adopted policy)
+- [ ] re-derive the Nintendo 64 and Mega Drive `NotRequired` BIOS values from an approved core; both
+      are inherited from M3 and are not core-derived policy
 
-M3 research still open: the repository's core matrix does not approve a default or alternative
-core for any system, and it does not provide authoritative BIOS identities/hashes. The catalog
-keeps both uncertainties explicit; filename candidates are not treated as valid identities.
+M3 research status: **four systems have an approved default core** — NES, SNES, PlayStation and
+GameCube (M7) — and PlayStation has authoritative, adopted BIOS identities (M7). The remaining seven
+systems approve no core; M10.2 researched them to Candidate or Unresolved with named blockers, and
+their firmware evidence is recorded as candidate-core evidence rather than product policy. Filename
+candidates are still never treated as valid identities.
 
 M3 review follow-up: complete. Systems/readiness now consumes one coherent
 verified runtime snapshot for status and verified core availability.
@@ -644,11 +660,17 @@ Deliberately not in M9:
       [`docs/CORE_MATRIX.md`](docs/CORE_MATRIX.md), [`docs/BIOS_MATRIX.md`](docs/BIOS_MATRIX.md),
       [`docs/SOURCE_PROVENANCE.md`](docs/SOURCE_PROVENANCE.md)
 - [ ] **V1 blocker:** corresponding source for the four redistributed cores is unknown and not
-      recoverable from libretro's stable bundle; public redistribution is blocked
-- [ ] **V1 blocker:** Mega Drive has no redistributable core — Genesis Plus GX and PicoDrive are
-      both non-commercial/non-free and GPL-incompatible; BlastEm is unqualified
+      recoverable from the published bundle, shipped binaries, core-info metadata or public buildbot
+      metadata examined; public redistribution is blocked. Try asking libretro for build provenance
+      before committing to a self-build pipeline
+- [ ] **V1 blocker:** Mega Drive has no approvable core — Genesis Plus GX and PicoDrive both carry a
+      non-commercial licence term (blocked for V1 under current policy; legal compatibility review
+      required); BlastEm is the only GPL-compatible candidate and is unqualified
 - [ ] **V1 blocker:** no immutable macOS core acquisition path exists — libretro publishes no
       macOS core bundle at any architecture, only rolling nightly per-core archives
+- [ ] legal review: whether `dlopen`-loaded libretro cores are separate works from the GPLv3
+      RetroArch host — gates PlayStation independently of corresponding source, because `beetle-psx`
+      is `GPL-2.0-only`
 - [ ] resolve the Nintendo 64 licence identity conflict (repo LICENSE/LICENSES say GPLv2, per-file
       headers say GPLv2-or-later, libretro documentation says GPLv3)
 - [ ] decide the PlayStation and Saturn `.iso` catalog mismatch (advertised but not loadable)

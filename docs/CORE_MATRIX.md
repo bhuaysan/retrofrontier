@@ -4,7 +4,8 @@ Authoritative core, platform, format and policy source for the eleven V1 systems
 
 Companion documents:
 
-- [`docs/BIOS_MATRIX.md`](BIOS_MATRIX.md) — required/optional firmware policy and authoritative identities.
+- [`docs/BIOS_MATRIX.md`](BIOS_MATRIX.md) — adopted firmware policy for Approved cores, kept separate
+  from candidate-core firmware evidence.
 - [`docs/SOURCE_PROVENANCE.md`](SOURCE_PROVENANCE.md) — licence, redistribution and corresponding-source closure.
 
 ## How to read this document
@@ -15,7 +16,7 @@ M10.2 exists because the previous matrix collapsed several different questions i
 | Concept | Column | Meaning |
 |---|---|---|
 | Policy status | Policy | Whether RetroFrontier has *decided* this core is the controlled default. |
-| Redistribution | Redistribution | Whether RetroFrontier may lawfully ship the binary in a managed Runtime Release. |
+| Redistribution | Redistribution | Whether RetroFrontier is willing to ship the binary in a managed Runtime Release under current policy. An engineering status, never a legal conclusion. |
 | Provenance | Source revision | Whether the exact corresponding source of the redistributed binary is known. |
 | Availability | Platform columns | Whether a binary exists, and whether it can be acquired from an *immutable* input. |
 | Implementation | Implementation | Whether the application actually has this core in its catalog and Runtime Release. |
@@ -27,13 +28,37 @@ Status vocabulary, used strictly:
 - **Candidate** — evidence gathered and a leading core identified, but the decision rule is not met.
 - **Unresolved** — no core meets the rule; the system approves no core at all (DOMAIN rule 15).
 - **Implemented** — present in `SystemCatalog` and in an authenticated Runtime Release.
-- **Qualified** — a managed launch was actually measured.
+- **Qualified end-to-end** — a real managed launch ran the system's content and rendering was
+  observed.
+- **Partially qualified** — some of the managed launch path was measured, with a named part that was
+  **not** confirmed.
+- **Not qualified** — no successful managed launch of this system's content has been measured.
 - **Research-only** — evidence exists in this document and nowhere else in the product.
 - **Blocked** — a specific, named obstacle prevents progress.
 - **Missing** — no artefact exists.
 
 **Research is not qualification, and a published binary is not redistribution approval.** No row below
 may be read as a support claim.
+
+### Qualification is inherited from M7.5 and was not advanced by M10.2
+
+M10.2 measured nothing. It ran no managed launch, so it **cannot** raise any system's qualification
+status, and the qualification column below simply restates
+[`docs/M7_5_RUNTIME_QUALIFICATION.md`](M7_5_RUNTIME_QUALIFICATION.md) §Qualification status:
+
+| System | M7.5 result | Open gate |
+|---|---|---|
+| NES | Qualified end-to-end — real launch, *Over Horizon (Europe)* | none on Linux x86_64 |
+| SNES | Qualified end-to-end — *Super Mario World* rendering confirmed | none on Linux x86_64 |
+| GameCube | **Partially qualified** — core resolved and managed `dolphin-emu/Sys` link verified; **no rendered frame observed** | `confirmed GameCube content execution` |
+| PlayStation | **Not qualified** — core installs and resolves, and readiness correctly reports `MissingRequiredBios` | `PlayStation qualification (needs an approved BIOS dump and legal content)` |
+
+Both open gates remain open in `BACKLOG.md`. GameCube content execution and PlayStation content
+execution are explicitly **not claimed** by M7.5, and are explicitly **not claimed** here.
+
+An Approved policy plus a shipped Release 002 component is *not* qualification: PlayStation is
+Approved, Implemented and **not qualified** at the same time, and that combination is correct rather
+than contradictory.
 
 ## Decision rule (ADR-009, tightened by M10.2)
 
@@ -50,17 +75,17 @@ false green matrix.
 
 | System | Core | Policy | Core upstream | Licence (verified) | Exact source revision | Implementation | Qualification |
 |---|---|---|---|---|---|---|---|
-| NES | Nestopia UE (`nestopia_libretro`) | **Approved** (M7) | https://github.com/libretro/nestopia | `GPL-2.0-or-later` | **Unknown — unrecoverable** | Implemented (Release 002) | Qualified, Linux x86_64 only |
-| SNES | bsnes-mercury Balanced (`bsnes_mercury_balanced_libretro`) | **Approved** (M7) | https://github.com/libretro/bsnes-mercury | `GPL-3.0-only` | **Unknown — unrecoverable** | Implemented (Release 002) | Qualified, Linux x86_64 only |
+| NES | Nestopia UE (`nestopia_libretro`) | **Approved** (M7) | https://github.com/libretro/nestopia | `GPL-2.0-or-later` | **Unknown** (§5.3) | Implemented (Release 002) | **Qualified end-to-end**, Linux x86_64 only |
+| SNES | bsnes-mercury Balanced (`bsnes_mercury_balanced_libretro`) | **Approved** (M7) | https://github.com/libretro/bsnes-mercury | `GPL-3.0-only` | **Unknown** (§5.3) | Implemented (Release 002) | **Qualified end-to-end**, Linux x86_64 only |
 | Nintendo 64 | Mupen64Plus-Next (`mupen64plus_next_libretro`) | **Candidate** | https://github.com/libretro/mupen64plus-libretro-nx | **Conflicting** — see §5.1 | Unknown | Not implemented | Research-only |
 | Game Boy | mGBA (`mgba_libretro`) | **Candidate** | https://github.com/mgba-emu/mgba (libretro fork: libretro/mgba) | `MPL-2.0` | Unknown | Not implemented | Research-only |
 | Game Boy Color | mGBA (`mgba_libretro`) | **Candidate** | https://github.com/mgba-emu/mgba | `MPL-2.0` | Unknown | Not implemented | Research-only |
 | Game Boy Advance | mGBA (`mgba_libretro`) | **Candidate** | https://github.com/mgba-emu/mgba | `MPL-2.0` | Unknown | Not implemented | Research-only |
 | Mega Drive / Genesis | *none* | **Unresolved — blocked** | — | see §5.2 | — | Not implemented | Research-only |
-| PlayStation | Beetle PSX (`mednafen_psx_libretro`) | **Approved** (M7) | https://github.com/libretro/beetle-psx-libretro | `GPL-2.0` (aggregate; see §5.3) | **Unknown — unrecoverable** | Implemented (Release 002) | Qualified, Linux x86_64 only |
+| PlayStation | Beetle PSX (`mednafen_psx_libretro`) | **Approved** (M7) | https://github.com/libretro/beetle-psx-libretro | `GPL-2.0` (aggregate; see §5.3) | **Unknown** (§5.3) | Implemented (Release 002) | **Not qualified** — blocked on an approved BIOS dump and legal test content |
 | Saturn | Beetle Saturn (`mednafen_saturn_libretro`) | **Candidate** | https://github.com/libretro/beetle-saturn-libretro | `GPL-2.0-or-later` | Unknown | Not implemented | Research-only |
 | Dreamcast | Flycast (`flycast_libretro`) | **Candidate** | https://github.com/flyinghead/flycast | `GPL-2.0-or-later` | Unknown | Not implemented | Research-only |
-| GameCube | Dolphin (`dolphin_libretro`) | **Approved** (M7) | https://github.com/libretro/dolphin (upstream dolphin-emu/dolphin) | `GPL-2.0-or-later` | **Unknown — unrecoverable** | Implemented (Release 002) | Qualified, Linux x86_64 only |
+| GameCube | Dolphin (`dolphin_libretro`) | **Approved** (M7) | https://github.com/libretro/dolphin (upstream dolphin-emu/dolphin) | `GPL-2.0-or-later` | **Unknown** (§5.3) | Implemented (Release 002) | **Partially qualified** — runtime/core/`Sys` path verified; content execution **not confirmed** |
 
 The four Approved rows are **unchanged by M10.2**. M10.2 did not replace them and found no evidence
 requiring their replacement. Their *policy* approval survives; their *redistribution* status is
@@ -120,8 +145,8 @@ closed by choosing a different core.
 | `mednafen_saturn_libretro` | **In pinned bundle** | Bundle unverified; nightly `.dll.zip` confirmed | Nightly `.dylib.zip` confirmed | Nightly only, not enumerated |
 | `flycast_libretro` | **In pinned bundle** | Bundle unverified; nightly `.dll.zip` confirmed | Nightly `.dylib.zip` confirmed | Nightly only, not enumerated |
 | `blastem_libretro` | **In pinned bundle** | Bundle unverified; nightly `.dll.zip` confirmed | Nightly `.dylib.zip` confirmed | Nightly only, not enumerated |
-| `genesis_plus_gx_libretro` | In pinned bundle, but **redistribution prohibited** (§5.2) | not assessed | not assessed | not assessed |
-| `picodrive_libretro` | In pinned bundle, but **redistribution prohibited** (§5.2) | not assessed | not assessed | not assessed |
+| `genesis_plus_gx_libretro` | In pinned bundle, but **blocked for V1** (§5.2) | not assessed | not assessed | not assessed |
+| `picodrive_libretro` | In pinned bundle, but **blocked for V1** (§5.2) | not assessed | not assessed | not assessed |
 
 Two limits of this table, stated rather than hidden:
 
@@ -137,22 +162,26 @@ their Linux bundle membership is what Release 002 actually depends on.
 
 ## 3. Redistribution and blockers
 
+All statuses below are **engineering** statuses under RetroFrontier's current licensing and
+distribution policy. None is a legal conclusion, and none authorises distribution.
+
 | System | Redistribution status | Remaining blocker |
 |---|---|---|
-| NES | **Blocked** | Corresponding source for the redistributed binary is unknown (§5.3). |
-| SNES | **Blocked** | Corresponding source unknown (§5.3). |
-| Nintendo 64 | Blocked | Licence identity conflict (§5.1) + corresponding source + not implemented. |
-| Game Boy | Blocked | Corresponding source strategy undecided; not implemented; not qualified. |
-| Game Boy Color | Blocked | As Game Boy. |
-| Game Boy Advance | Blocked | As Game Boy. |
-| Mega Drive / Genesis | **Prohibited** | Both mainstream cores forbid commercial redistribution (§5.2). No approved alternative is qualified. |
-| PlayStation | **Blocked** | Corresponding source unknown (§5.3). |
-| Saturn | Blocked | Corresponding source; content-format mismatch (§4.1); not implemented. |
-| Dreamcast | Blocked | Corresponding source; BIOS policy currently contradicts the core documentation (§4.2); not implemented. |
-| GameCube | **Blocked** | Corresponding source unknown (§5.3). |
+| NES | **Blocked for V1** | Corresponding source for the redistributed binary is unknown (§5.3). |
+| SNES | **Blocked for V1** | Corresponding source unknown (§5.3). |
+| Nintendo 64 | Blocked for V1 | Licence identity conflict (§5.1) + corresponding source + not implemented. |
+| Game Boy | Blocked for V1 | Corresponding source strategy undecided; not implemented; not qualified. |
+| Game Boy Color | Blocked for V1 | As Game Boy. |
+| Game Boy Advance | Blocked for V1 | As Game Boy. |
+| Mega Drive / Genesis | **Blocked for V1** | Both mainstream cores carry a non-commercial licence term (§5.2); legal compatibility review required. BlastEm is the only GPL-compatible candidate and is unqualified. |
+| PlayStation | **Blocked for V1** | Corresponding source unknown (§5.3); **and** the GPL-2.0-only / GPLv3-host separate-work question is open (§5.4). |
+| Saturn | Blocked for V1 | Corresponding source; content-format mismatch (§4.2); not implemented. |
+| Dreamcast | Blocked for V1 | Corresponding source; the catalog BIOS entry contradicts the *candidate* core's documentation (§4.3); not implemented. |
+| GameCube | **Blocked for V1** | Corresponding source unknown (§5.3). |
 
-Every V1 system is currently blocked from public redistribution. For the four Approved systems the
-blocker is provenance, not policy.
+Every V1 system is currently blocked from public redistribution. For NES, SNES and GameCube the
+blocker is provenance, not policy. PlayStation carries a second, independent legal-review gate on
+top of provenance (§5.4).
 
 ## 4. Content formats
 
@@ -186,9 +215,10 @@ track, never as a launch target, which the M7 launch contract already requires.
 This is *not* corrected in code by M10.2, because Saturn approves no core and is therefore not
 launchable (DOMAIN rule 15). It is a precondition of any future Saturn approval.
 
-### 4.3 PlayStation `.iso` is advertised but not loadable (live defect)
+### 4.2 PlayStation `.iso` is advertised but not loadable (live defect)
 
-Unlike §4.1, this affects a system that is **Approved, Implemented and Qualified today**.
+Unlike §4.1, this affects a system that is **Approved and Implemented today** — and that is shipped
+to users despite not being qualified end-to-end.
 
 The catalog offers PlayStation `.iso`. Beetle PSX's `.info` extensions are
 `cue|toc|m3u|ccd|exe|pbp|chd|bin` — **`.iso` is not among them**. A user who places a PlayStation
@@ -207,13 +237,13 @@ documentation milestone's scope. It is recorded here as a defect requiring a pro
 and surface a clearer launch-time error. Beetle Saturn shows the same pattern, so the two should be
 decided together.
 
-### 4.2 Dreamcast BIOS layout conflict
+### 4.3 Dreamcast BIOS layout conflict
 
-Flycast documents that its firmware lives in a **`dc/` subdirectory** of RetroArch's system
-directory, not at the top level. RetroFrontier's BIOS discovery has no notion of a core-required
-internal layout. This is the already-open backlog item *"map user BIOS folders to any future
-core-required internal layout"* and it is a hard precondition of Dreamcast approval. See
-[`docs/BIOS_MATRIX.md`](BIOS_MATRIX.md) §Dreamcast.
+Flycast — a **Candidate**, not an approved core — documents that its firmware lives in a **`dc/`
+subdirectory** of RetroArch's system directory, not at the top level. RetroFrontier's BIOS discovery
+has no notion of a core-required internal layout. This is the already-open backlog item *"map user
+BIOS folders to any future core-required internal layout"* and it is a hard precondition of
+Dreamcast approval. See [`docs/BIOS_MATRIX.md`](BIOS_MATRIX.md) §4.
 
 ## 5. Licence findings
 
@@ -241,14 +271,29 @@ This is M10.2's most consequential finding.
 
 > Redistributions may not be sold, nor may they be used in a commercial product or activity.
 
-Consequences:
+What this establishes as fact:
 
 - Neither licence is an SPDX standard licence (GitHub reports `NOASSERTION` for both).
-- Both are **non-free**: a field-of-use restriction on commercial activity.
-- Both are **GPL-incompatible**, so neither can be combined with or distributed as part of a
-  GPL-3.0-or-later work.
-- RetroFrontier is `GPL-3.0-or-later` (ADR-010). It **must not** redistribute either core in a
-  managed Runtime Release, and the restriction survives any future commercial use of RetroFrontier.
+- Both are **non-free** by the usual definition: a field-of-use restriction on commercial activity.
+- Both terms therefore conflict with the freedoms a `GPL-3.0-or-later` work grants downstream, which
+  is why neither core is suitable for automatic V1 approval under ADR-009.
+
+What this does **not** establish, and what M10.2 deliberately does not assert:
+
+- These licences are not "no redistribution" licences. They permit redistribution under conditions —
+  notably non-commercial use, complete source for modified redistributions, and notice reproduction.
+  M10.2 does not claim that shipping either core is categorically unlawful.
+- Whether a separately built, `dlopen`-loaded libretro core forms a combined work with GPLv3
+  RetroArch, or is an aggregate of separate works, is an **open legal question** this repository
+  already flags (§5.4). The answer changes the analysis, and RetroFrontier is not the right party to
+  decide it.
+
+**Engineering status: Blocked for V1 under the current licensing/distribution policy — non-commercial
+licence; legal compatibility review required.**
+
+That status is sufficient to decide the engineering question, and it is deliberately narrower than a
+legal conclusion. In practice it means: do not approve Genesis Plus GX, do not approve PicoDrive, do
+not add either to a Runtime Release, and do not give Mega Drive a fallback core.
 
 Genesis Plus GX additionally vendors an LGPL-2.1-or-later Nuked OPN2 core, which does not cure the
 outer non-commercial term.
@@ -269,17 +314,47 @@ unmeasured maturity are.
 **Mega Drive is therefore an Unresolved V1 blocker.** It must not receive a fallback core. Product
 owner decision required (§7).
 
-### 5.3 The four redistributed cores have no recoverable corresponding source
+### 5.3 The four redistributed cores have no corresponding source available to RetroFrontier
 
 Release 002 records `"source_revision": null` for `nestopia`, `bsnes-mercury-balanced`,
-`beetle-psx` and `dolphin`. M10.2 established that this is **not an oversight that can be filled in
-by looking harder** — the data does not exist upstream. Full analysis in
-[`docs/SOURCE_PROVENANCE.md`](SOURCE_PROVENANCE.md).
+`beetle-psx` and `dolphin`.
+
+The exact revision is **unknown — not recoverable from the currently published bundle, the shipped
+binaries, libretro's core-info metadata, or the public buildbot metadata M10.2 examined.** Four
+independent checks were made and all were negative; the full analysis is in
+[`docs/SOURCE_PROVENANCE.md`](SOURCE_PROVENANCE.md) §2.
+
+This is scoped to what RetroFrontier can obtain from public sources. libretro's own build
+infrastructure may still be able to identify the revision that produced each binary, which is
+exactly why "ask libretro for build provenance" is a live strategy rather than a dead end
+([`docs/SOURCE_PROVENANCE.md`](SOURCE_PROVENANCE.md) §5, strategy B).
+
+The operative conclusion is unchanged: **RetroFrontier cannot currently satisfy corresponding-source
+requirements from the evidence available to it**, so public redistribution stays blocked.
 
 Beetle PSX is additionally recorded as `GPL-2.0-only` in Release 002 while
 `mednafen/psx/gpu.c` carries a "version 2 … or any later version" header. The declared identifier is
 the conservative reading and is safe to distribute under, but the aggregate `only`/`or-later`
 disposition has not been established by a per-file audit. Recorded as `GPL-2.0 (aggregate)` above.
+
+### 5.4 The core/host separate-work question (affects PlayStation in particular)
+
+RetroArch is GPLv3. libretro cores are separately built native libraries that RetroArch loads with
+`dlopen` across a stable C ABI. Whether such a core is a **separate work merely aggregated** with the
+host, or forms a **combined work** with it, is an unresolved legal question — and it is not one this
+milestone can answer.
+
+It matters most for **`beetle-psx`**, whose Release 002 licence is `GPL-2.0-only`. GPL-2.0-only and
+GPL-3.0 are mutually incompatible *for combining into one work*. If the separate-work reading holds,
+shipping both in one Runtime Release is aggregation and raises no conflict; if it does not, the
+combination needs a different answer.
+
+The same question would apply to Gambatte (GPL-2.0-only) if it were ever adopted, and it does not
+arise for `nestopia` or `dolphin`, whose `or-later` grants reach GPLv3.
+
+Consequently PlayStation's redistribution row carries **two** independent gates — corresponding
+source (§5.3) *and* this one — and closing the first would not by itself unblock it.
+**Legal review required. M10.2 asserts no answer.**
 
 ## 6. Why no system was approved by M10.2
 
@@ -289,7 +364,7 @@ approved acquisition strategy (§5.3). Approving four more cores would multiply 
 redistribution obligation across four more systems while closing nothing.
 
 Two systems fail on further, independent grounds: Nintendo 64 on licence identity (§5.1), and Mega
-Drive on licence compatibility with no qualified alternative (§5.2).
+Drive on non-commercial licence terms with no qualified GPL-compatible alternative (§5.2).
 
 The productive M10.2 outcome is therefore that seven systems moved from *"unresearched"* to
 *Candidate with recorded primary-source evidence and a named blocker*, and that the blocker itself
@@ -305,9 +380,9 @@ Which systems could be added to a successor Linux x86_64 release *purely on tech
 |---|---|---|
 | Nintendo 64 | Yes, binary is in the pinned bundle | **Blocked** — licence identity unresolved |
 | Game Boy / Color / Advance | Yes, one `mgba_libretro` component covers all three | **Blocked** — policy not approved; MPL-2.0 notice obligations undefined |
-| Saturn | Yes | **Blocked** — policy not approved; catalog format mismatch |
-| Dreamcast | Yes | **Blocked** — policy not approved; `dc/` BIOS layout unsupported |
-| Mega Drive | No acceptable core | **Blocked** — licence |
+| Saturn | Yes | **Blocked** — policy not approved; catalog format mismatch (§4.1) |
+| Dreamcast | Yes | **Blocked** — policy not approved; `dc/` BIOS layout unsupported (§4.3) |
+| Mega Drive | No GPL-compatible core is qualified | **Blocked** — non-commercial licence terms; legal review required (§5.2) |
 
 For an **internal, non-public, non-distributed qualification release**, the lowest-risk expansion is
 `mgba_libretro`, because MPL-2.0 imposes the lightest source obligation and one component resolves

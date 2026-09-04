@@ -1,7 +1,12 @@
 # V1 BIOS Matrix
 
-Authoritative firmware policy for the eleven V1 systems. Closed by M10.2 alongside
+Firmware policy for the eleven V1 systems, produced by M10.2 alongside
 [`docs/CORE_MATRIX.md`](CORE_MATRIX.md).
+
+**Only four systems have authoritative RetroFrontier BIOS policy** — NES, SNES, PlayStation and
+GameCube, the systems whose core is Approved. The other seven have researched *candidate-core
+evidence* that is deliberately not in force. The two are kept in separate tables below and must not
+be quoted interchangeably.
 
 ## Non-negotiable rules
 
@@ -18,36 +23,63 @@ Authoritative firmware policy for the eleven V1 systems. Closed by M10.2 alongsi
    A system with no approved core cannot have an authoritative BIOS policy, because "required by
    which core?" has no answer yet.
 
-## Policy states
+## Two kinds of row, which must never be confused
 
-Every V1 system resolves to exactly one:
+Rule 4 has a direct structural consequence: **only a system whose core is Approved can appear in the
+authoritative policy table.** Everything else is evidence, however well-sourced.
 
-- **Not required** — no firmware is needed for the system's V1 content.
-- **Required, identities authoritative** — firmware is mandatory and RetroFrontier knows exactly
-  which dumps satisfy it.
-- **Optional, effect documented** — firmware changes behaviour in a documented way; absence is not
-  a failure.
-- **Unresolved / release blocker** — the policy cannot be stated authoritatively yet.
+So this document has two separate tables, and a term from one is never valid in the other:
 
-## Matrix
+| | Table A — RetroFrontier policy | Table B — candidate-core evidence |
+|---|---|---|
+| Applies to | Systems with an **Approved** core | Systems whose core is **Candidate** or **Unresolved** |
+| Status means | What the product enforces today | What *would* apply if that core were approved |
+| Vocabulary | **Not required** / **Required, identities adopted** / **Optional, identities adopted** | **Candidate evidence — not adopted** / **Unresolved** |
+| Authority | RetroFrontier system policy | The candidate core's own documentation |
+| In `SystemCatalog`? | Yes, or a named defect | No — and must not be added before approval |
 
-| System | Policy state | Filenames | Authoritative identity | Evidence | Implemented in catalog |
-|---|---|---|---|---|---|
-| NES | **Not required** | — | n/a | Nestopia UE; `disksys.rom` is FDS-only and `.fds` is not a V1 extension | Yes — `BiosPolicy::NotRequired` |
-| SNES | **Not required** (see §1) | — | n/a | bsnes-mercury; coprocessor firmware is title-specific | Yes — `NotRequired` |
-| Nintendo 64 | **Not required** | — | n/a | Mupen64Plus-Next documents no BIOS | Yes — `NotRequired` |
-| Game Boy | **Optional, effect documented** | `gb_bios.bin` | MD5 `32fbbd84168d3482956eb3c5051637f5` | mGBA + Gambatte core docs (agree) | No — catalog has no GB requirement |
-| Game Boy Color | **Optional, effect documented** | `gbc_bios.bin` | MD5 `dbfce9db9deaa2567f6a84fde55f9680` | mGBA + Gambatte core docs (agree) | No |
-| Game Boy Advance | **Optional, effect documented** | `gba_bios.bin` | MD5 `a860e8c0b6d573d191e4ec7db1b1e4f6` | mGBA core documentation | Partly — requirement exists, **identity still absent** |
-| Mega Drive / Genesis | **Not required** | — | n/a | No approved core; no V1 Mega Drive content requires firmware | Yes — `NotRequired` |
-| PlayStation | **Required, identities authoritative** | `scph5500.bin`, `scph5501.bin`, `scph5502.bin` | MD5, see §2 | Beetle PSX core documentation | **Yes — fully implemented** |
-| Saturn | **Required, identities authoritative** (newly established) | `sega_101.bin`, `mpr-17933.bin` | MD5, see §3 | Beetle Saturn core documentation | Partly — requirement exists, **identities absent** |
-| Dreamcast | **Unresolved — current catalog policy is wrong** | see §4 | — | Flycast core documentation contradicts the catalog | **No — catalog is incorrect** |
-| GameCube | **Not required** | — | n/a | Dolphin; IPL deferred, see §5 | Yes — `NotRequired` |
+A Table B row is **not** RetroFrontier policy, is **not** enforced, and must never be quoted as the
+product's firmware requirement for that system.
 
-Only PlayStation is both authoritative *and* fully implemented. The Game Boy family and Saturn rows
-are now authoritative *as policy* but are deliberately not yet in the catalog, because their cores
-are only Candidates — see §6.
+### Table A — authoritative RetroFrontier BIOS policy (Approved cores only)
+
+Four systems qualify: NES, SNES, PlayStation and GameCube.
+
+| System | Approved core | Policy state | Filenames | Adopted identity | Evidence | In catalog |
+|---|---|---|---|---|---|---|
+| NES | Nestopia UE | **Not required** | — | n/a | Nestopia UE; `disksys.rom` is FDS-only and `.fds` is not a V1 extension | Yes — `BiosPolicy::NotRequired` |
+| SNES | bsnes-mercury Balanced | **Not required** (see §1) | — | n/a | bsnes-mercury; coprocessor firmware is title-specific | Yes — `NotRequired` |
+| PlayStation | Beetle PSX | **Required, identities adopted** | `scph5500.bin`, `scph5501.bin`, `scph5502.bin` | MD5, see §2 | Beetle PSX core documentation | **Yes — fully implemented** |
+| GameCube | Dolphin | **Not required** | — | n/a | Dolphin; `Sys` is a managed component, not BIOS; IPL deferred — see §5 | Yes — `NotRequired` |
+
+PlayStation is the only V1 system with adopted, enforced BIOS identities.
+
+### Table B — candidate-core firmware evidence (not RetroFrontier policy)
+
+Seven systems. Every row here is research output held ready for adoption, and **none of it is in
+force**. The "core's documented behaviour" column describes what the *named candidate core* does —
+not what RetroFrontier requires.
+
+| System | Core policy | Candidate core | Core's documented behaviour | Filenames | Documented identity | In catalog |
+|---|---|---|---|---|---|---|
+| Nintendo 64 | Candidate | Mupen64Plus-Next | No BIOS documented | — | — | `NotRequired` — **inherited from M3, not core-derived** |
+| Game Boy | Candidate | mGBA | Optional boot ROM; needs "Use BIOS file if found" | `gb_bios.bin` | MD5 `32fbbd84168d3482956eb3c5051637f5` | No requirement present |
+| Game Boy Color | Candidate | mGBA | Optional boot ROM; same core option | `gbc_bios.bin` | MD5 `dbfce9db9deaa2567f6a84fde55f9680` | No requirement present |
+| Game Boy Advance | Candidate | mGBA | Optional BIOS; same core option | `gba_bios.bin` | MD5 `a860e8c0b6d573d191e4ec7db1b1e4f6` | Filename only, **no identity** — see §6 |
+| Mega Drive / Genesis | **Unresolved** | *none* | No core approved, so no core-derived policy exists | — | — | `NotRequired` — **inherited from M3, not core-derived** |
+| Saturn | Candidate | Beetle Saturn | System BIOS **required** by that core; no HLE fallback | `sega_101.bin`, `mpr-17933.bin` | MD5, see §3 | Filenames only, **no identities** |
+| Dreamcast | **Unresolved** | Flycast | `dc/dc_boot.bin` **optional**; `dc_flash.bin` undocumented; `dc/` layout required | see §4 | MD5, see §4 | **Catalog contradicts the candidate core — see §4** |
+
+Two rows deserve explicit attention:
+
+- **Nintendo 64 and Mega Drive show `NotRequired` in `SystemCatalog`,** but that value was inherited
+  from M3 before any core research existed. It is *not* an authoritative, core-derived RetroFrontier
+  policy, and this document does not assert one for either system while their core policy is
+  Candidate or Unresolved. Neither is currently harmful — both systems approve no core and are
+  therefore unlaunchable under DOMAIN rule 15 — and both must be re-derived from the approved core at
+  approval time.
+- **Saturn's and the Game Boy family's identities are authoritative *for their candidate cores*,**
+  and are not adopted RetroFrontier system policy. See §6.
 
 ## 1. SNES coprocessor firmware (deferred, unchanged)
 
@@ -82,17 +114,20 @@ Retained consequences:
 - Beetle PSX can fall back to a bundled OpenBIOS. RetroFrontier keeps PlayStation BIOS **required**,
   validates before spawn, and never enables the core's BIOS override.
 
-## 3. Saturn (newly authoritative)
+## 3. Saturn — candidate-core evidence (Beetle Saturn), not adopted policy
 
-Beetle Saturn documents its firmware explicitly. These identities are authoritative *for that core*
-and become catalog data only if Beetle Saturn is approved.
+Beetle Saturn documents its firmware explicitly, and the identities below are authoritative
+**evidence for that core**. They are **not** RetroFrontier's Saturn BIOS policy: Saturn's core policy
+is Candidate, so RetroFrontier requires nothing for Saturn today. They become policy only if and when
+Beetle Saturn is approved, in the same change that adopts them.
 
 | Filename | Description | MD5 |
 |---|---|---|
 | `sega_101.bin` | Saturn JP BIOS | `85ec9ca47d8f6807718151cbcca8b964` |
 | `mpr-17933.bin` | Saturn US/EU BIOS | `3240872c70984b6cbfda1586cab68dbe` |
 
-Saturn BIOS is **required** — Beetle Saturn has no HLE fallback comparable to Beetle PSX's OpenBIOS.
+Beetle Saturn **requires** a system BIOS — it has no HLE fallback comparable to Beetle PSX's
+OpenBIOS. That is a statement about the candidate core, not a RetroFrontier requirement in force.
 
 The core additionally documents two **title-specific cartridge ROMs**, which are *not* system BIOS
 and must not be modelled as a system BIOS requirement:
@@ -110,27 +145,33 @@ The current catalog lists the two system filenames with **no identities at all**
 means a real dump is reported `notCoveredByCatalog`. Adding these MD5 values is a precondition of
 Saturn approval.
 
-## 4. Dreamcast — the catalog is currently wrong
+## 4. Dreamcast — Unresolved, and the catalog conflicts with the candidate core
 
-This is M10.2's most significant BIOS finding.
+This is M10.2's most significant BIOS finding. Dreamcast's policy state is **Unresolved**: its core
+policy is Candidate, so no authoritative RetroFrontier BIOS policy exists for it — and the value
+currently in the catalog is not one.
 
 The catalog states Dreamcast BIOS is **Required**, naming `dc_boot.bin` and `dc_flash.bin` at the
-top level of the system directory, with no identities. Flycast's own documentation states:
+top level of the system directory, with no identities. Flycast — the **candidate** core, not an
+approved one — documents instead:
 
 - `dc/dc_boot.bin` — "Dreamcast BIOS — **Optional**", MD5 `e10c53c2f8b90bab96ead2d368858623`;
 - **`dc_flash.bin` is not listed at all** among the documented firmware files;
 - "All bios files need to be in a directory named **`dc`**" in RetroArch's system directory.
 
-So the shipped catalog is wrong in three independent ways: wrong requirement kind (Required vs
-Optional), a file the core documentation does not list, and the wrong filesystem location.
+So the shipped catalog entry disagrees with the candidate core in three independent ways: requirement
+kind (Required vs Optional), a file that core's documentation does not list, and the filesystem
+location.
 
 Nothing user-visible breaks today, because Dreamcast approves no core and DOMAIN rule 15 makes it
 unlaunchable regardless. But the entry is a **BIOS guess presented as policy**, which is exactly what
 this milestone exists to eliminate.
 
-M10.2 records it as **Unresolved**. It is not corrected in code because the correct values depend on
-approving Flycast, which has not happened. On approval, the catalog must be changed to: Optional,
-`dc_boot.bin` with MD5 `e10c53c2f8b90bab96ead2d368858623`, located under `dc/`.
+M10.2 therefore leaves Dreamcast **Unresolved** and does not replace one unsupported entry with
+another. The catalog is not corrected in code, because the correct values depend on approving a core,
+which has not happened. *If* Flycast is approved, the catalog would become: Optional, `dc_boot.bin`
+with MD5 `e10c53c2f8b90bab96ead2d368858623`, located under `dc/` — adopted in the same change as the
+approval, and re-derived from whichever core is actually approved if it is not Flycast.
 
 **Architectural consequence.** The `dc/` subdirectory is a *core-required internal layout*.
 RetroFrontier's BIOS discovery has no concept of one. This is the existing open backlog item *"map
@@ -140,7 +181,7 @@ behind the Rust boundary — the frontend must not learn about firmware paths (r
 
 **Uncertainty recorded honestly.** Flycast is widely known to also consume a `dc_flash.bin` and to
 be able to synthesise one, and "Optional" reflects Flycast's ability to direct-boot most GD-ROM
-content without firmware. The documentation is the authoritative source for policy; the practical
+content without firmware. That core's documentation is the best available evidence; the practical
 behaviour of a real managed launch has **not** been measured by RetroFrontier. Dreamcast BIOS policy
 must be re-verified against an actual qualified launch before approval, not settled from
 documentation alone.
@@ -159,10 +200,11 @@ Two different things that must not be conflated:
 GameCube therefore stays **Not required**, and the IPL stays **deferred** — it is a cosmetic
 enhancement, not a launch precondition. M10.2 changes nothing here.
 
-## 6. Why authoritative rows are not yet in the catalog
+## 6. Why candidate-core evidence is not yet in the catalog
 
-The Game Boy family and Saturn now have authoritative identities, and they are still absent from
-`SystemCatalog`. That is deliberate.
+The Game Boy family and Saturn now have identities that are authoritative **for their candidate
+cores**, and they are still absent from `SystemCatalog`. That is deliberate, and it is what keeps
+Table B from silently becoming Table A.
 
 A BIOS requirement is a statement about *the approved core*. Writing mGBA's `gba_bios.bin` identity
 into the catalog while the Game Boy Advance core policy is only a *Candidate* would assert a
