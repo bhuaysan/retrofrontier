@@ -12,12 +12,14 @@ use crate::adapters::runtime_installed::{
 };
 use crate::adapters::runtime_integrity::{sha256_bytes, sha256_file};
 use crate::domain::runtime::{
-    ExtractionLimits, InstalledEntry, RuntimeArchitecture, RuntimeCompatibility, RuntimeComponent,
-    RuntimeError, RuntimeManifest, RuntimePlatform, RuntimePolicy, RuntimeRelease, Sha256Digest,
-    RUNTIME_MANIFEST_SCHEMA_VERSION,
+    DetachedInventoryDocument, DetachedInventoryReference, ExtractionLimits, InstalledEntry,
+    ReleaseInventory, RuntimeArchitecture, RuntimeCompatibility, RuntimeComponent, RuntimeError,
+    RuntimeManifest, RuntimePlatform, RuntimePolicy, RuntimeRelease, Sha256Digest,
+    VerifiedRuntimeManifest, DETACHED_INVENTORY_SCHEMA_VERSION, RUNTIME_MANIFEST_SCHEMA_VERSION,
 };
 use crate::release::definition::{
-    ComponentDerivation, ReleaseComponentDefinition, ReleaseDefinition, ReleaseInput,
+    ComponentDerivation, InventoryPublication, ReleaseComponentDefinition, ReleaseDefinition,
+    ReleaseInput,
 };
 use crate::release::inventory::{
     derive_component_inventory, read_seven_zip_member, repackage_seven_zip_member_as_tar,
@@ -61,8 +63,13 @@ pub struct ConstructedRelease {
     pub policy_target_name: String,
     pub manifest_bytes: Vec<u8>,
     pub manifest_sha256: Sha256Digest,
-    pub manifest: RuntimeManifest,
-    /// Every published target, including the manifest and the runtime policy.
+    pub manifest: VerifiedRuntimeManifest,
+    /// The canonical bytes of the detached installed-file inventory target, when the definition
+    /// publishes one. `None` for the inline representation.
+    pub inventory_target_name: Option<String>,
+    pub inventory_bytes: Option<Vec<u8>>,
+    /// Every published target, including the manifest, the runtime policy, and — for the detached
+    /// representation — the installed-file inventory.
     pub targets: Vec<PublishedTarget>,
 }
 
@@ -147,6 +154,32 @@ pub async fn construct_release(
     inventory.sort_by(|left, right| left.path.cmp(&right.path));
     inventory.dedup_by(|left, right| left.path == right.path);
 
+    // The definition states the representation; construction never chooses one implicitly. The
+    // detached document's bytes are canonical, so its length and digest are a deterministic
+    // function of the deterministic inventory, and the manifest that references them is emitted
+    // from those exact values rather than from a second derivation.
+    let (release_inventory, inventory_target) = match &definition.inventory {
+        InventoryPublication::Inline => (ReleaseInventory::Inline(inventory.clone()), None),
+        InventoryPublication::DetachedTarget { target_name } => {
+            let document = DetachedInventoryDocument {
+                schema_version: DETACHED_INVENTORY_SCHEMA_VERSION,
+                manifest_id: definition.manifest_id.clone(),
+                release_id: definition.release_id.clone(),
+                entries: inventory.clone(),
+            };
+            let bytes = crate::release::canonical::to_canonical_json(&document)?;
+            let reference = DetachedInventoryReference {
+                target_name: target_name.clone(),
+                size_bytes: bytes.len() as u64,
+                sha256: sha256_bytes(&bytes),
+            };
+            (
+                ReleaseInventory::Detached(reference),
+                Some((target_name.clone(), bytes)),
+            )
+        }
+    };
+
     let manifest = RuntimeManifest {
         schema_version: RUNTIME_MANIFEST_SCHEMA_VERSION,
         manifest_id: definition.manifest_id.clone(),
@@ -161,7 +194,7 @@ pub async fn construct_release(
             architecture: RuntimeArchitecture::X86_64,
             components,
             app_run_path: definition.app_run_path.clone(),
-            inventory,
+            inventory: release_inventory,
             extraction: ExtractionLimits::default(),
         },
         compatibility: RuntimeCompatibility {
@@ -169,11 +202,16 @@ pub async fn construct_release(
             save_state_policy: definition.save_state_policy.clone(),
         },
     };
-    // The client's own validation is the gate. A definition that would produce a manifest the
-    // client refuses fails here rather than at install time on a user's machine.
-    manifest.validate_for_linux_x86_64()?;
+    // The client's own validation is the gate, and for a detached release that includes resolving
+    // the emitted inventory target back through the client's own length/digest/schema checks. A
+    // definition that would produce a manifest and inventory pair the client refuses fails here
+    // rather than at install time on a user's machine.
+    let manifest = VerifiedRuntimeManifest::resolve(
+        manifest,
+        inventory_target.as_ref().map(|(_, bytes)| bytes.as_slice()),
+    )?;
 
-    let manifest_bytes = crate::release::canonical::to_canonical_json(&manifest)?;
+    let manifest_bytes = crate::release::canonical::to_canonical_json(manifest.manifest())?;
     let manifest_sha256 = sha256_bytes(&manifest_bytes);
     let manifest_path = targets_directory.join(&definition.manifest_target_name);
     write_new_file(&manifest_path, &manifest_bytes)?;
@@ -183,6 +221,17 @@ pub async fn construct_release(
         size_bytes: manifest_bytes.len() as u64,
         sha256: manifest_sha256,
     });
+
+    if let Some((target_name, bytes)) = inventory_target.as_ref() {
+        let inventory_path = targets_directory.join(target_name);
+        write_new_file(&inventory_path, bytes)?;
+        targets.push(PublishedTarget {
+            name: target_name.clone(),
+            path: inventory_path,
+            size_bytes: bytes.len() as u64,
+            sha256: sha256_bytes(bytes),
+        });
+    }
 
     let policy = RuntimePolicy {
         minimum_safe_release_sequence: definition.minimum_safe_release_sequence,
@@ -202,6 +251,10 @@ pub async fn construct_release(
     // Prove the manifest describes a tree the reviewed client extractor actually produces.
     verify_by_extraction(&manifest, &targets_directory, output_directory)?;
 
+    let (inventory_target_name, inventory_bytes) = match inventory_target {
+        None => (None, None),
+        Some((target_name, bytes)) => (Some(target_name), Some(bytes)),
+    };
     Ok(ConstructedRelease {
         targets_directory,
         manifest_target_name: definition.manifest_target_name.clone(),
@@ -209,6 +262,8 @@ pub async fn construct_release(
         manifest_bytes,
         manifest_sha256,
         manifest,
+        inventory_target_name,
+        inventory_bytes,
         targets,
     })
 }
@@ -243,7 +298,7 @@ fn install_path_ancestors(definition: &ReleaseDefinition) -> Vec<InstalledEntry>
 /// produces exactly the authenticated inventory". It is the same extractor and the same
 /// verification the client runs, so a mismatch is caught by the maintainer, not by a user.
 pub fn verify_by_extraction(
-    manifest: &RuntimeManifest,
+    manifest: &VerifiedRuntimeManifest,
     targets_directory: &Path,
     output_directory: &Path,
 ) -> Result<(), RuntimeError> {
@@ -260,7 +315,7 @@ pub fn verify_by_extraction(
             component,
             &targets_directory.join(&component.target_name),
             &destination,
-            &manifest.release.inventory,
+            manifest.inventory(),
             &manifest.release.extraction,
         )?;
     }

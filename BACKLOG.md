@@ -172,6 +172,7 @@ presentation are explicitly non-blocking deferred capabilities. The pre-M5 ident
 - [x] TUF-compatible runtime trust metadata (M7.5: real Ed25519 2-of-3 repository consumed by the production client)
 - [ ] production key-rotation/revocation ceremony under independent custody (M10)
 - [x] authenticated installed-file inventory and local modification detection
+- [x] detached immutable installed-file inventory target (M10.1: ADR-012's scalable representation, publisher and client; Release 002 stays inline)
 - [x] single-instance, runtime mutation lock, and game-process liveness coordination
 - [x] block activation while game runs
 - [x] runtime status UI
@@ -607,6 +608,7 @@ Deliberately not in M9:
 
 **Model:** Luna Max implementation; Sol Max release-readiness review.
 
+- [x] M10.1 detached immutable Runtime inventory target (ADR-012 scalable inventory representation)
 - [ ] Windows packaging
 - [ ] macOS arm64
 - [ ] macOS x86_64

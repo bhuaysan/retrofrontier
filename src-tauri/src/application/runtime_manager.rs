@@ -1,7 +1,7 @@
 use crate::adapters::runtime_archive::{LinuxRuntimeArchiveExtractor, RuntimeArchiveExtractor};
 use crate::adapters::runtime_installed::{
     apply_inventory_permissions, directory_size, validate_app_run, verify_installation,
-    verify_tree, write_complete_marker, write_release_manifest, VerifiedInstallation,
+    verify_tree, write_complete_marker, write_release_metadata, VerifiedInstallation,
 };
 use crate::adapters::runtime_lock::{operation_identifier, RuntimeMutationLock};
 use crate::adapters::runtime_paths::{ensure_empty_directory, fsync_directory, RuntimePaths};
@@ -12,8 +12,8 @@ use crate::adapters::runtime_process::{LinuxManagedProcessInspector, ManagedProc
 use crate::adapters::runtime_source::{TrustedRelease, TrustedReleaseSource};
 use crate::adapters::runtime_trust::RuntimeTrustStore;
 use crate::domain::runtime::{
-    ActivePointer, RuntimeError, RuntimeManifest, RuntimeState, RuntimeStatus, SafeIdentifier,
-    Sha256Digest, VerifiedRuntimeSnapshot,
+    ActivePointer, RuntimeError, RuntimeState, RuntimeStatus, SafeIdentifier, Sha256Digest,
+    VerifiedRuntimeManifest, VerifiedRuntimeSnapshot,
 };
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,7 +58,7 @@ pub trait RuntimeSmokeValidator: Send + Sync {
     fn validate(
         &self,
         installation_path: &Path,
-        manifest: &RuntimeManifest,
+        manifest: &VerifiedRuntimeManifest,
     ) -> Result<(), RuntimeError>;
 }
 
@@ -69,7 +69,7 @@ impl RuntimeSmokeValidator for StructuralSmokeValidator {
     fn validate(
         &self,
         installation_path: &Path,
-        manifest: &RuntimeManifest,
+        manifest: &VerifiedRuntimeManifest,
     ) -> Result<(), RuntimeError> {
         // M2 does not execute downloaded code. This verifies the authenticated AppRun contract
         // without granting an untrusted candidate process execution before activation.
@@ -140,12 +140,12 @@ pub struct ManagedCoreComponent {
 /// rather than fallbacks: the whole point of this projection is that the digest it reports was
 /// *authenticated*, so there is no honest way to supply one by hashing whatever is on disk.
 ///
-/// `RuntimeManifest::validate_for_linux_x86_64` already requires the entry to exist and to be an
+/// `RuntimeManifest::validate_inventory` already requires the entry to exist and to be an
 /// executable file, and `verify_tree` re-hashes the installed tree against it. Re-checking here
 /// rather than unwrapping keeps this a pure projection that introduces no trust assumption of its
 /// own.
 fn managed_core_component(
-    manifest: &RuntimeManifest,
+    manifest: &VerifiedRuntimeManifest,
     component: &crate::domain::runtime::RuntimeComponent,
     install_path: &Path,
 ) -> Option<ManagedCoreComponent> {
@@ -154,8 +154,7 @@ fn managed_core_component(
     let executable = component.executable_relative_path.as_ref()?;
     let inventory_path = component.install_path.join(executable.as_str()).ok()?;
     let entry = manifest
-        .release
-        .inventory
+        .inventory()
         .iter()
         .find(|entry| entry.path == inventory_path)?;
     if entry.entry_type != InstalledEntryType::File || !entry.executable {
@@ -466,13 +465,17 @@ impl RuntimeManager {
                     component,
                     &artifact,
                     &destination,
-                    &release.manifest.release.inventory,
+                    release.manifest.inventory(),
                     &release.manifest.release.extraction,
                 )?;
             }
 
             apply_inventory_permissions(&tree, &release.manifest)?;
-            write_release_manifest(&tree, &release.manifest_bytes)?;
+            write_release_metadata(
+                &tree,
+                &release.manifest_bytes,
+                release.inventory_bytes.as_deref(),
+            )?;
             verify_tree(&tree, &release.manifest)?;
             self.smoke_validator.validate(&tree, &release.manifest)?;
 
@@ -1303,20 +1306,24 @@ fn declared_candidate_peak_bytes(release: &TrustedRelease) -> Result<u64, Runtim
                     .checked_add(component.archive_size_bytes)
                     .ok_or(RuntimeError::StorageLimit)
             })?;
-    let payload_bytes =
-        release
-            .manifest
-            .release
-            .inventory
-            .iter()
-            .try_fold(0_u64, |total, entry| {
-                total
-                    .checked_add(entry.size_bytes)
-                    .ok_or(RuntimeError::StorageLimit)
-            })?;
+    let payload_bytes = release
+        .manifest
+        .inventory()
+        .iter()
+        .try_fold(0_u64, |total, entry| {
+            total
+                .checked_add(entry.size_bytes)
+                .ok_or(RuntimeError::StorageLimit)
+        })?;
+    // A detached inventory is staged into the installation as well, so its bytes are reserved.
+    let metadata_bytes = release
+        .inventory_bytes
+        .as_ref()
+        .map_or(0, |bytes| bytes.len() as u64);
     archive_bytes
         .checked_add(payload_bytes)
         .and_then(|total| total.checked_add(release.manifest_bytes.len() as u64))
+        .and_then(|total| total.checked_add(metadata_bytes))
         .and_then(|total| total.checked_add(METADATA_RESERVE_BYTES))
         .ok_or(RuntimeError::StorageLimit)
 }
@@ -1610,7 +1617,7 @@ mod tests {
                 architecture: RuntimeArchitecture::X86_64,
                 components,
                 app_run_path: RelativePath::new("runtime/app/AppRun").unwrap(),
-                inventory,
+                inventory: crate::domain::runtime::ReleaseInventory::Inline(inventory),
                 extraction: Default::default(),
             },
             compatibility: RuntimeCompatibility {
@@ -2382,7 +2389,7 @@ mod tests {
                     },
                 ],
                 app_run_path: RelativePath::new("runtime/app/AppRun").unwrap(),
-                inventory: vec![
+                inventory: crate::domain::runtime::ReleaseInventory::Inline(vec![
                     InstalledEntry {
                         path: RelativePath::new("runtime").unwrap(),
                         entry_type: InstalledEntryType::Directory,
@@ -2431,7 +2438,7 @@ mod tests {
                         executable: true,
                         link_target: None,
                     },
-                ],
+                ]),
                 extraction: Default::default(),
             },
             compatibility: RuntimeCompatibility {
@@ -2439,31 +2446,37 @@ mod tests {
                 save_state_policy: "isolated".to_owned(),
             },
         };
-        // As declared, it parses.
-        assert!(RuntimeManifest::parse(&serde_json::to_vec(&manifest).unwrap()).is_ok());
+        let resolve = |manifest: &RuntimeManifest| {
+            crate::domain::runtime::VerifiedRuntimeManifest::from_inline(
+                RuntimeManifest::parse(&serde_json::to_vec(manifest).unwrap()).unwrap(),
+            )
+        };
+        // As declared, it parses and resolves.
+        assert!(resolve(&manifest).is_ok());
 
         // Remove exactly the core executable's inventory entry: there is then no authenticated
         // digest for the binary, and the manifest is refused rather than accepted with a hole.
         manifest
             .release
             .inventory
+            .inline_entries_mut()
             .retain(|entry| entry.path.as_str() != "cores/synthetic-core/core.so");
-        let refused = RuntimeManifest::parse(&serde_json::to_vec(&manifest).unwrap());
-        assert!(matches!(refused, Err(RuntimeError::Manifest(_))));
+        assert!(matches!(resolve(&manifest), Err(RuntimeError::Manifest(_))));
 
         // A non-executable entry is refused for the same reason.
-        manifest.release.inventory.push(InstalledEntry {
-            path: RelativePath::new("cores/synthetic-core/core.so").unwrap(),
-            entry_type: InstalledEntryType::File,
-            size_bytes: core.len() as u64,
-            sha256: Some(sha256_bytes(core)),
-            executable: false,
-            link_target: None,
-        });
-        assert!(matches!(
-            RuntimeManifest::parse(&serde_json::to_vec(&manifest).unwrap()),
-            Err(RuntimeError::Manifest(_))
-        ));
+        manifest
+            .release
+            .inventory
+            .inline_entries_mut()
+            .push(InstalledEntry {
+                path: RelativePath::new("cores/synthetic-core/core.so").unwrap(),
+                entry_type: InstalledEntryType::File,
+                size_bytes: core.len() as u64,
+                sha256: Some(sha256_bytes(core)),
+                executable: false,
+                link_target: None,
+            });
+        assert!(matches!(resolve(&manifest), Err(RuntimeError::Manifest(_))));
     }
 
     #[tokio::test]

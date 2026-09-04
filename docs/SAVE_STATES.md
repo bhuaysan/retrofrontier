@@ -249,6 +249,13 @@ the same map `verify_tree` re-hashes the installed tree against. It is never rec
 whatever `.so` happens to sit at the core path: hashing an arbitrary file proves what that file is,
 never that it is trusted. (The component's own `sha256` is the *archive* digest, a different value.)
 
+That inventory is the authenticated one either way. ADR-012's detached representation lets the
+inventory live in a separate immutable target the manifest binds by length and SHA-256, and the
+resolved entries reach this projection through the same `VerifiedRuntimeManifest` boundary as an
+inline manifest's. Where the entries were published therefore has no effect on core provenance: the
+digest is still authenticated, still decisive, and a matching `.so` outside any authenticated
+inventory still never becomes trusted. See `docs/RUNTIME_MANAGER.md`.
+
 A human-readable core version and upstream revision are recorded alongside it so a state stays
 describable after its originating Runtime Release is gone. Neither is a load identity.
 

@@ -125,8 +125,18 @@ async fn run(arguments: Arguments) -> Result<(), String> {
     println!("manifest hash {}", release.manifest_sha256.to_hex());
     println!(
         "inventory     {} entries",
-        release.manifest.release.inventory.len()
+        release.manifest.inventory().len()
     );
+    match (
+        release.inventory_target_name.as_deref(),
+        release.inventory_bytes.as_deref(),
+    ) {
+        (Some(target_name), Some(bytes)) => println!(
+            "inventory     detached target {target_name} ({} bytes)",
+            bytes.len()
+        ),
+        _ => println!("inventory     inline in the release manifest"),
+    }
     for target in &release.targets {
         println!(
             "target        {:<52} {:>12}  {}",

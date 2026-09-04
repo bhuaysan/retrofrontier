@@ -19,6 +19,7 @@ use crate::application::runtime_manager::{RetentionPolicy, StructuralSmokeValida
 use crate::application::{RuntimeApplicationService, RuntimeManager};
 use crate::domain::runtime::{RuntimeError, RuntimeSourceOrigin, RuntimeState};
 use crate::release::construct::{construct_release, InputCache};
+use crate::release::definition::InventoryPublication;
 use crate::release::tuf::{publish_release, KeyDirectory};
 use backhand::{FilesystemWriter, NodeHeader};
 use std::io::{Cursor, Write};
@@ -180,6 +181,16 @@ struct Fixture {
 }
 
 fn build_fixture() -> Fixture {
+    build_fixture_with(InventoryPublication::Inline)
+}
+
+/// Build the same structurally real release, publishing its installed-file inventory the way
+/// `inventory` says.
+///
+/// The two representations differ in exactly one committed field, which is the point: the
+/// components, the derived artefacts, the extraction, and the client code under test are identical,
+/// so a difference in outcome can only come from the inventory representation itself.
+fn build_fixture_with(inventory: InventoryPublication) -> Fixture {
     let directory = TempDir::new().unwrap();
     let root = directory.path();
     let cache_directory = root.join("cache");
@@ -224,6 +235,7 @@ fn build_fixture() -> Fixture {
         "manifest_target_name": "roundtrip.manifest.json",
         "policy_target_name": "runtime-policy.json",
         "minimum_safe_release_sequence": 1,
+        "inventory": serde_json::to_value(&inventory).unwrap(),
         "app_run_path": "runtime/retroarch/AppRun",
         "inputs": [
             {
@@ -687,4 +699,525 @@ async fn a_tampered_target_is_refused_and_no_runtime_is_activated() {
         RuntimeState::NotInstalled,
         "a refused installation leaves no activated runtime behind"
     );
+}
+
+// -- ADR-012 detached installed-file inventory -------------------------------------------------
+
+/// The target name the detached fixture publishes its installed-file inventory under.
+const DETACHED_INVENTORY_TARGET: &str = "roundtrip.inventory.json";
+
+fn detached_fixture() -> Fixture {
+    build_fixture_with(InventoryPublication::DetachedTarget {
+        target_name: DETACHED_INVENTORY_TARGET.to_owned(),
+    })
+}
+
+/// One published, tamperable qualification repository built from `fixture`.
+struct Published {
+    release: crate::release::construct::ConstructedRelease,
+    repository: crate::release::tuf::PublishedRepository,
+}
+
+async fn construct_and_publish(fixture: &Fixture) -> Published {
+    let cache = InputCache::new(fixture.cache_directory.clone(), false);
+    let release = construct_release(&fixture.definition_path, &fixture.output_directory, &cache)
+        .await
+        .expect("construction, manifest validation, and proof extraction succeed");
+    let repository = publish_release(
+        &release,
+        &fixture.output_directory,
+        &KeyDirectory::new(fixture.keys_directory.clone()),
+    )
+    .await
+    .expect("the release publishes into a signed TUF repository");
+    Published {
+        release,
+        repository,
+    }
+}
+
+/// The application's real composition, pointed at a published qualification repository.
+struct Client {
+    _app_data: TempDir,
+    paths: RuntimePaths,
+    manager: RuntimeManager,
+}
+
+fn client_for(published: &Published) -> Client {
+    let app_data = TempDir::new().unwrap();
+    let paths = RuntimePaths::new(app_data.path());
+    paths.prepare().unwrap();
+    let source = Arc::new(
+        ToughTrustedReleaseSource::new(
+            std::fs::read(&published.repository.root_json).unwrap(),
+            directory_url(&published.repository.metadata_directory),
+            directory_url(&published.repository.targets_directory),
+            paths.trust_datastore().to_path_buf(),
+            published.repository.policy_target_name.clone(),
+        )
+        .expect("the generated root is self-authenticating"),
+    );
+    let manager = runtime_manager(paths.clone(), source);
+    Client {
+        _app_data: app_data,
+        paths,
+        manager,
+    }
+}
+
+/// The path of one published TUF target, under consistent-snapshot naming.
+fn published_target_path(published: &Published, suffix: &str) -> std::path::PathBuf {
+    std::fs::read_dir(&published.repository.targets_directory)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(suffix))
+        })
+        .unwrap_or_else(|| panic!("the target ending in '{suffix}' is published"))
+}
+
+/// D1 — the detached happy path, end to end through the real publisher and the real client.
+///
+/// The manifest carries a bounded cryptographic reference rather than the entries themselves, the
+/// inventory arrives as its own authenticated TUF target, and everything below the verification
+/// boundary — safe extraction, complete-tree validation, activation, launch resolution, and M9's
+/// core-binary provenance — behaves exactly as it does for an inline release.
+#[tokio::test]
+async fn a_detached_inventory_release_installs_and_launches_through_the_real_tuf_path() {
+    let fixture = detached_fixture();
+    let published = construct_and_publish(&fixture).await;
+
+    // The emitted manifest references the inventory; it does not contain it.
+    let reference = published
+        .release
+        .manifest
+        .release
+        .inventory
+        .detached()
+        .expect("the constructed manifest declares a detached inventory");
+    assert_eq!(reference.target_name, DETACHED_INVENTORY_TARGET);
+    let inventory_bytes = published
+        .release
+        .inventory_bytes
+        .as_deref()
+        .expect("construction emitted the detached inventory bytes");
+    assert_eq!(reference.size_bytes, inventory_bytes.len() as u64);
+    assert_eq!(
+        reference.sha256.to_hex(),
+        sha256_hex(inventory_bytes),
+        "the manifest binds the inventory by its exact digest"
+    );
+    assert!(
+        !published
+            .release
+            .manifest_bytes
+            .windows(9)
+            .any(|window| window == b"\"path\":\""),
+        "no inventory entry may remain inside the detached manifest"
+    );
+    // The point of the exercise: the manifest is far smaller than the inventory it authenticates.
+    assert!(
+        published.release.manifest_bytes.len() < inventory_bytes.len(),
+        "manifest {} bytes, inventory {} bytes",
+        published.release.manifest_bytes.len(),
+        inventory_bytes.len()
+    );
+    // The inventory is a published TUF target of its own.
+    assert!(published
+        .release
+        .targets
+        .iter()
+        .any(|target| target.name == DETACHED_INVENTORY_TARGET));
+
+    let client = client_for(&published);
+    assert_eq!(
+        client.manager.status().unwrap().state,
+        RuntimeState::NotInstalled
+    );
+    client
+        .manager
+        .install(&published.repository.manifest_target_name)
+        .await
+        .expect("a detached-inventory release installs through the production path");
+    assert_eq!(client.manager.status().unwrap().state, RuntimeState::Ready);
+
+    let launch = client
+        .manager
+        .verified_launch_runtime()
+        .expect("the installed runtime is launchable");
+    assert!(launch.app_run_path.ends_with("runtime/retroarch/AppRun"));
+
+    // M9: the decisive core identity still comes from the authenticated installed-file inventory,
+    // which for this release lived in the detached target.
+    let core_id = crate::domain::runtime::SafeIdentifier::new("nestopia").unwrap();
+    let core = launch
+        .cores
+        .get(&core_id)
+        .expect("the approved core resolves");
+    let inventory_entry = published
+        .release
+        .manifest
+        .inventory()
+        .iter()
+        .find(|entry| entry.path.as_str() == "cores/nestopia/example_libretro.so")
+        .expect("the authenticated inventory describes the core binary");
+    assert_eq!(core.binary_sha256, inventory_entry.sha256.unwrap());
+    assert_eq!(core.binary_size_bytes, inventory_entry.size_bytes);
+    let located = client
+        .manager
+        .locate_authenticated_core_binary(&core_id, core.binary_sha256)
+        .expect("the exact authenticated core binary resolves for a save-state load");
+    assert_eq!(located.core_path, core.core_path);
+
+    // The installation keeps the authenticated inventory bytes so it stays verifiable offline,
+    // and the complete-tree check still refuses anything the inventory does not list.
+    let installation = client.paths.version_path(&launch.installation_id);
+    let installed_inventory =
+        installation.join(crate::adapters::runtime_installed::RELEASE_INVENTORY_FILE);
+    assert_eq!(
+        std::fs::read(&installed_inventory).unwrap(),
+        inventory_bytes
+    );
+    crate::adapters::runtime_installed::verify_tree(&installation, &published.release.manifest)
+        .expect("the installed tree matches its authenticated inventory exactly");
+}
+
+/// D2 — the detached inventory bytes are a deterministic, canonical function of the release.
+#[tokio::test]
+async fn detached_inventory_generation_is_deterministic_and_canonical() {
+    let fixture = detached_fixture();
+    let cache = InputCache::new(fixture.cache_directory.clone(), false);
+    let first = construct_release(
+        &fixture.definition_path,
+        &fixture.output_directory.join("a"),
+        &cache,
+    )
+    .await
+    .unwrap();
+    let second = construct_release(
+        &fixture.definition_path,
+        &fixture.output_directory.join("b"),
+        &cache,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(first.inventory_bytes, second.inventory_bytes);
+    assert_eq!(first.manifest_bytes, second.manifest_bytes);
+    assert_eq!(first.manifest_sha256, second.manifest_sha256);
+
+    // Canonical JSON: object keys sorted, no insignificant whitespace.
+    let bytes = first.inventory_bytes.unwrap();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(
+        text.starts_with(r#"{"entries":[{"entry_type":"#),
+        "{text:.64}"
+    );
+    assert!(!text.contains('\n') && !text.contains(": "));
+    assert_eq!(
+        crate::release::canonical::to_canonical_json(
+            &serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        )
+        .unwrap(),
+        bytes,
+        "the published inventory must already be in canonical form"
+    );
+}
+
+/// D3 — tampering with the published inventory target fails closed and activates nothing.
+///
+/// This is the compromised-mirror case for the new target: HTTPS still succeeds, trusted TUF
+/// metadata is untouched, and only authentication catches the substitution.
+#[tokio::test]
+async fn a_tampered_detached_inventory_target_is_refused_and_no_runtime_is_activated() {
+    let fixture = detached_fixture();
+    let published = construct_and_publish(&fixture).await;
+    let target = published_target_path(&published, DETACHED_INVENTORY_TARGET);
+
+    // Same length, one flipped byte: the digest is the only thing that can notice.
+    let mut tampered = std::fs::read(&target).unwrap();
+    let last = tampered.len() - 1;
+    tampered[last] = b' ';
+    std::fs::write(&target, &tampered).unwrap();
+
+    let client = client_for(&published);
+    let error = client
+        .manager
+        .install(&published.repository.manifest_target_name)
+        .await
+        .expect_err("a tampered inventory target must not install");
+    // The refusal is authentication, not an incidental failure further down the pipeline.
+    assert!(
+        matches!(
+            &error,
+            RuntimeError::Trust(_) | RuntimeError::Download(_) | RuntimeError::Integrity(_)
+        ),
+        "unexpected error: {error:?}"
+    );
+    assert_eq!(
+        client.manager.status().unwrap().state,
+        RuntimeState::NotInstalled,
+        "a refused installation leaves no activated runtime behind"
+    );
+}
+
+/// D4 — an absent, truncated, or wrong-target inventory all fail closed.
+#[tokio::test]
+async fn an_absent_or_wrong_detached_inventory_target_is_refused() {
+    // Absent: the target the manifest names is not published at all.
+    let fixture = detached_fixture();
+    let published = construct_and_publish(&fixture).await;
+    let target = published_target_path(&published, DETACHED_INVENTORY_TARGET);
+    std::fs::remove_file(&target).unwrap();
+    let client = client_for(&published);
+    assert!(client
+        .manager
+        .install(&published.repository.manifest_target_name)
+        .await
+        .is_err());
+    assert_eq!(
+        client.manager.status().unwrap().state,
+        RuntimeState::NotInstalled
+    );
+
+    // Truncated: shorter than the length trusted metadata and the manifest agree on.
+    let fixture = detached_fixture();
+    let published = construct_and_publish(&fixture).await;
+    let target = published_target_path(&published, DETACHED_INVENTORY_TARGET);
+    let bytes = std::fs::read(&target).unwrap();
+    std::fs::write(&target, &bytes[..bytes.len() / 2]).unwrap();
+    let client = client_for(&published);
+    assert!(client
+        .manager
+        .install(&published.repository.manifest_target_name)
+        .await
+        .is_err());
+
+    // Wrong target: the runtime policy's authenticated bytes served as the inventory. It is a
+    // genuine, correctly signed TUF target — just not this one.
+    let fixture = detached_fixture();
+    let published = construct_and_publish(&fixture).await;
+    let target = published_target_path(&published, DETACHED_INVENTORY_TARGET);
+    let policy = published_target_path(&published, &published.repository.policy_target_name);
+    std::fs::copy(&policy, &target).unwrap();
+    let client = client_for(&published);
+    assert!(client
+        .manager
+        .install(&published.repository.manifest_target_name)
+        .await
+        .is_err());
+    assert_eq!(
+        client.manager.status().unwrap().state,
+        RuntimeState::NotInstalled
+    );
+}
+
+/// D5 — the installed copy of a detached inventory is a cache, never an authority.
+///
+/// Substituting it after installation is refused on the next read, because every read re-checks it
+/// against the length and SHA-256 the authenticated manifest binds. The installation goes to
+/// `Broken` — repair-required — rather than launching from an inventory nobody signed.
+#[tokio::test]
+async fn a_substituted_installed_inventory_is_refused_after_installation() {
+    let fixture = detached_fixture();
+    let published = construct_and_publish(&fixture).await;
+    let client = client_for(&published);
+    client
+        .manager
+        .install(&published.repository.manifest_target_name)
+        .await
+        .unwrap();
+    let installation_id = client
+        .manager
+        .verified_launch_runtime()
+        .unwrap()
+        .installation_id;
+    let installation = client.paths.version_path(&installation_id);
+    let installed_inventory =
+        installation.join(crate::adapters::runtime_installed::RELEASE_INVENTORY_FILE);
+
+    // A well-formed inventory for this exact release, minus the core binary's entry: a plausible
+    // downgrade that would stop the core from being verified at all.
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&installed_inventory).unwrap()).unwrap();
+    let entries = document["entries"].as_array_mut().unwrap();
+    entries.retain(|entry| entry["path"] != "cores/nestopia/example_libretro.so");
+    std::fs::write(
+        &installed_inventory,
+        crate::release::canonical::to_canonical_json(&document).unwrap(),
+    )
+    .unwrap();
+
+    assert!(crate::adapters::runtime_installed::read_manifest(&installation).is_err());
+    assert_eq!(
+        client.manager.status().unwrap().state,
+        RuntimeState::Broken,
+        "an installation whose inventory no longer matches the manifest needs repair"
+    );
+    assert!(client.manager.verified_launch_runtime().is_err());
+
+    // Removing it entirely is the same refusal, not a fallback to "no inventory".
+    std::fs::remove_file(&installed_inventory).unwrap();
+    assert!(crate::adapters::runtime_installed::read_manifest(&installation).is_err());
+    assert_eq!(client.manager.status().unwrap().state, RuntimeState::Broken);
+
+    // Repair performs the full reconstruction from authenticated targets and recovers.
+    client
+        .manager
+        .repair(&published.repository.manifest_target_name)
+        .await
+        .expect("repair reconstructs the complete tree, detached inventory included");
+    assert_eq!(client.manager.status().unwrap().state, RuntimeState::Ready);
+    let repaired = client.manager.verified_launch_runtime().unwrap();
+    let repaired_installation = client.paths.version_path(&repaired.installation_id);
+    assert_eq!(
+        std::fs::read(
+            repaired_installation.join(crate::adapters::runtime_installed::RELEASE_INVENTORY_FILE)
+        )
+        .unwrap(),
+        published.release.inventory_bytes.clone().unwrap()
+    );
+}
+
+/// D6 — an inline installation still refuses a stray `release-inventory.json`.
+///
+/// The verifier skips that filename only for a release that actually declares a detached inventory.
+/// For an inline one it is an unexpected tree entry, which is what keeps the new metadata filename
+/// from becoming a hole in complete-tree validation.
+#[tokio::test]
+async fn an_inline_installation_refuses_a_stray_inventory_file() {
+    let fixture = build_fixture();
+    let published = construct_and_publish(&fixture).await;
+    let client = client_for(&published);
+    client
+        .manager
+        .install(&published.repository.manifest_target_name)
+        .await
+        .unwrap();
+    let installation_id = client
+        .manager
+        .verified_launch_runtime()
+        .unwrap()
+        .installation_id;
+    let installation = client.paths.version_path(&installation_id);
+
+    std::fs::write(
+        installation.join(crate::adapters::runtime_installed::RELEASE_INVENTORY_FILE),
+        b"{}",
+    )
+    .unwrap();
+    let error =
+        crate::adapters::runtime_installed::verify_tree(&installation, &published.release.manifest)
+            .expect_err("an inline installation has no authenticated inventory file");
+    assert!(
+        format!("{error}").contains("unexpected"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(client.manager.status().unwrap().state, RuntimeState::Broken);
+}
+
+/// D7 — a matching arbitrary core file outside the authenticated inventory never becomes trusted.
+///
+/// Save-State loading needs the exact core binary that produced the state, and it finds it by
+/// asking the Runtime for an *authenticated* digest. A `.so` sitting anywhere else — even inside
+/// the managed app-data root, even with a perfectly real digest of its own — is not in any
+/// authenticated inventory, so no digest of it ever resolves.
+#[tokio::test]
+async fn a_core_file_outside_the_authenticated_inventory_is_never_trusted() {
+    let fixture = detached_fixture();
+    let published = construct_and_publish(&fixture).await;
+    let client = client_for(&published);
+    client
+        .manager
+        .install(&published.repository.manifest_target_name)
+        .await
+        .unwrap();
+
+    let core_id = crate::domain::runtime::SafeIdentifier::new("nestopia").unwrap();
+    let stray_bytes = b"a plausible but unauthenticated libretro core".to_vec();
+    let stray = client.paths.versions_root().join("example_libretro.so");
+    std::fs::write(&stray, &stray_bytes).unwrap();
+    let stray_digest = crate::adapters::runtime_integrity::sha256_bytes(&stray_bytes);
+
+    assert!(
+        client
+            .manager
+            .locate_authenticated_core_binary(&core_id, stray_digest)
+            .is_err(),
+        "a digest that appears in no authenticated inventory must never resolve"
+    );
+
+    // Overwriting the *authenticated* core binary with those same bytes does not make them
+    // trusted either: complete-tree verification refuses the installation instead.
+    let launch = client.manager.verified_launch_runtime().unwrap();
+    let authenticated = launch
+        .cores
+        .get(&core_id)
+        .expect("the approved core resolves")
+        .core_path
+        .clone();
+    let authenticated_digest = launch.cores.get(&core_id).unwrap().binary_sha256;
+    std::fs::write(&authenticated, &stray_bytes).unwrap();
+    assert!(client
+        .manager
+        .locate_authenticated_core_binary(&core_id, stray_digest)
+        .is_err());
+    assert!(
+        client
+            .manager
+            .locate_authenticated_core_binary(&core_id, authenticated_digest)
+            .is_err(),
+        "the authenticated digest no longer describes the file on disk, so nothing resolves"
+    );
+    assert_eq!(client.manager.status().unwrap().state, RuntimeState::Broken);
+}
+
+/// D8 — Runtime security policy is unchanged by the representation.
+///
+/// A detached release below the authenticated minimum-safe sequence, or one whose id the policy
+/// revokes, is refused with no installation, exactly as an inline release is.
+#[tokio::test]
+async fn security_floor_and_revocation_still_refuse_a_detached_release() {
+    for policy in [
+        crate::domain::runtime::RuntimePolicy {
+            minimum_safe_release_sequence: 2,
+            revoked_release_ids: Vec::new(),
+        },
+        crate::domain::runtime::RuntimePolicy {
+            minimum_safe_release_sequence: 1,
+            revoked_release_ids: vec![crate::domain::runtime::SafeIdentifier::new(
+                "roundtrip-release-001",
+            )
+            .unwrap()],
+        },
+    ] {
+        let fixture = detached_fixture();
+        let published = construct_and_publish(&fixture).await;
+        // Rewrite the published policy target. It is republished through the same signing keys, so
+        // this is a legitimate policy change rather than a tampered target.
+        let policy_target =
+            published_target_path(&published, &published.repository.policy_target_name);
+        std::fs::write(
+            &policy_target,
+            crate::release::canonical::to_canonical_json(&policy).unwrap(),
+        )
+        .unwrap();
+
+        let client = client_for(&published);
+        assert!(
+            client
+                .manager
+                .install(&published.repository.manifest_target_name)
+                .await
+                .is_err(),
+            "runtime policy must refuse this release"
+        );
+        assert_eq!(
+            client.manager.status().unwrap().state,
+            RuntimeState::NotInstalled
+        );
+    }
 }

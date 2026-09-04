@@ -159,8 +159,11 @@ bit, and symlink target. It then *proves* the result by extracting every compone
 and `validate_app_run`. A definition that would produce a tree the client refuses fails on the
 maintainer's machine.
 
-The current release has **2932 inventory entries** and a **626 988 byte** manifest, against a
-`MAX_MANIFEST_BYTES` limit of 1 MiB. See *Unresolved gates*.
+Release 001 had **2932 inventory entries** and a **626 988 byte** manifest; Release 002 emits
+**870 739 bytes**, against a `MAX_MANIFEST_BYTES` limit of 1 MiB. Since M10.1 a definition may
+instead publish that inventory as a separate immutable TUF target the manifest references by
+length and SHA-256, under its own 16 MiB bound. Release 002 keeps the inline representation. See
+*Unresolved gates* and `docs/RUNTIME_MANAGER.md`.
 
 ## Trust
 
@@ -349,9 +352,13 @@ Still deferred to M10:
 - **GPL source-offer obligations.** Every redistributed component is GPL-2.0 or GPL-3.0. Public
   distribution of these binaries requires corresponding source or a written offer, plus licence
   notices in the installer.
-- **Manifest size headroom.** 626 988 bytes of 1 048 576 at four cores. Adding the remaining seven
-  V1 systems will exceed `MAX_MANIFEST_BYTES`. ADR-012 already permits a separate immutable
-  inventory target referenced by digest; M10 should adopt that before the core matrix grows.
+- **Manifest size headroom.** ~~626 988 bytes of 1 048 576 at four cores.~~ **Resolved by M10.1**
+  for the *format*, not for the current release. ADR-012's separate immutable inventory target
+  referenced by digest is now implemented on both the publisher and the client side, so a release
+  definition may publish its installed-file inventory as its own authenticated TUF target under an
+  independent 16 MiB bound. Release 002 deliberately keeps the inline representation and remains
+  the active real Runtime Release; the successor that adopts the detached form and grows the core
+  matrix is a later milestone. See `docs/RUNTIME_MANAGER.md`.
 - **Bundled frontend assets.** The AppDir carries no RetroArch menu assets (they live in the
   portable-home tree the release excludes), so the RetroArch menu is unstyled if a user opens it.
   Launching straight into content is unaffected.

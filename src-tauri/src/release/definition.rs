@@ -144,6 +144,35 @@ pub struct ReleaseComponentDefinition {
     pub artifact_size_bytes: u64,
 }
 
+/// How the emitted manifest carries the installed-file inventory.
+///
+/// ADR-012 permits the complete installed-file inventory to live in a separate immutable target
+/// referenced by digest, which is what the growing core matrix needs: the four-core Release 002
+/// manifest already uses about 60 % of `MAX_MANIFEST_BYTES`. The representation is a stated
+/// property of the definition, never something construction picks by size, so a published release
+/// is reconstructible from its committed definition alone.
+///
+/// The default is `Inline`, so an existing committed definition that omits this field keeps
+/// producing byte-identical manifests.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "representation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InventoryPublication {
+    #[default]
+    Inline,
+    DetachedTarget {
+        target_name: String,
+    },
+}
+
+impl InventoryPublication {
+    pub fn target_name(&self) -> Option<&str> {
+        match self {
+            Self::Inline => None,
+            Self::DetachedTarget { target_name } => Some(target_name),
+        }
+    }
+}
+
 /// The complete release definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,6 +192,9 @@ pub struct ReleaseDefinition {
     /// The TUF target name of the emitted runtime policy.
     pub policy_target_name: String,
     pub minimum_safe_release_sequence: u64,
+    /// The installed-file inventory representation the emitted manifest uses.
+    #[serde(default)]
+    pub inventory: InventoryPublication,
     pub app_run_path: RelativePath,
     pub inputs: Vec<ReleaseInput>,
     pub components: Vec<ReleaseComponentDefinition>,
@@ -222,11 +254,21 @@ impl ReleaseDefinition {
         }
 
         let mut target_names = BTreeSet::new();
-        for reserved in [&self.manifest_target_name, &self.policy_target_name] {
+        // The detached inventory, when published, is a target in the same namespace as the
+        // manifest, the policy, and every component, so it needs the same flat-name and
+        // uniqueness rules. A shared name would let one authenticated target stand in for another.
+        let reserved_names: Vec<&str> = [
+            self.manifest_target_name.as_str(),
+            self.policy_target_name.as_str(),
+        ]
+        .into_iter()
+        .chain(self.inventory.target_name())
+        .collect();
+        for reserved in reserved_names {
             validate_target_name(reserved)?;
-            if !target_names.insert(reserved.clone()) {
+            if !target_names.insert(reserved.to_owned()) {
                 return Err(RuntimeError::Manifest(
-                    "manifest and policy cannot share a target name".to_owned(),
+                    "manifest, policy, and inventory cannot share a target name".to_owned(),
                 ));
             }
         }
@@ -303,7 +345,8 @@ impl ReleaseDefinition {
     /// metadata is deliberately excluded — this answers "do two definitions ship the same bytes",
     /// not "are two definitions textually equal".
     pub fn authenticated_contents(&self) -> std::collections::BTreeMap<String, String> {
-        self.components
+        let mut contents: std::collections::BTreeMap<String, String> = self
+            .components
             .iter()
             .map(|component| {
                 (
@@ -316,7 +359,22 @@ impl ReleaseDefinition {
                     ),
                 )
             })
-            .collect()
+            .collect();
+        // The inventory representation is part of what a client authenticates, because it changes
+        // the emitted manifest bytes and which targets exist. Switching it under a published
+        // release identity would republish a different manifest under an immutable target name, so
+        // it counts as changed authenticated contents and forces a new generation. A component id
+        // is a `SafeIdentifier` and must begin alphanumeric, so this reserved key cannot collide.
+        contents.insert(
+            "@inventory-representation".to_owned(),
+            match &self.inventory {
+                InventoryPublication::Inline => "inline".to_owned(),
+                InventoryPublication::DetachedTarget { target_name } => {
+                    format!("detached_target:{target_name}")
+                }
+            },
+        );
+        contents
     }
 
     /// Check that `self` is a legitimate successor of the already-published `previous` release.
@@ -758,6 +816,140 @@ mod tests {
             found >= 2,
             "the qualification selection must stay documented; found {found} occurrences"
         );
+    }
+
+    /// R6 — both committed Linux definitions still publish the inline representation.
+    ///
+    /// Release 002 is the active real Runtime Release and it is immutable. Introducing the detached
+    /// option must not change what it publishes, so the committed definitions omit the field
+    /// entirely and get `Inline` by default.
+    #[test]
+    fn the_committed_definitions_still_publish_an_inline_inventory() {
+        for relative in std::iter::once(super::ACTIVE_LINUX_DEFINITION)
+            .chain(super::HISTORICAL_LINUX_DEFINITIONS.iter().copied())
+        {
+            let definition = read_definition(relative);
+            assert_eq!(
+                definition.inventory,
+                super::InventoryPublication::Inline,
+                "{relative} must keep publishing an inline inventory"
+            );
+            assert!(definition.inventory.target_name().is_none());
+        }
+
+        // The field is genuinely absent from the committed JSON, not merely equal to the default.
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(super::ACTIVE_LINUX_DEFINITION);
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(
+            value.get("inventory").is_none(),
+            "the active definition must not have been edited to declare a representation"
+        );
+    }
+
+    /// R7 — a definition may publish the inventory as a separate immutable target, and that target
+    /// is held to the same naming and uniqueness rules as every other target.
+    #[test]
+    fn a_detached_inventory_target_is_declared_explicitly_and_must_be_unique() {
+        let detached = definition_json(|value| {
+            value["inventory"] = serde_json::json!({
+                "representation": "detached_target",
+                "target_name": "test-release.inventory.json",
+            });
+        });
+        let definition = ReleaseDefinition::parse(&detached).unwrap();
+        assert_eq!(
+            definition.inventory.target_name(),
+            Some("test-release.inventory.json")
+        );
+
+        // Nested, traversing, and URL-shaped names are refused.
+        for name in [
+            "targets/inventory.json",
+            "../inventory.json",
+            "https://example.invalid/inventory.json",
+        ] {
+            let unsafe_name = definition_json(|value| {
+                value["inventory"] = serde_json::json!({
+                    "representation": "detached_target",
+                    "target_name": name,
+                });
+            });
+            assert!(
+                ReleaseDefinition::parse(&unsafe_name).is_err(),
+                "'{name}' must not be accepted"
+            );
+        }
+
+        // Sharing a name with the manifest, the policy, or a component is refused.
+        for taken in ["release.json", "runtime-policy.json", "retroarch.AppImage"] {
+            let collision = definition_json(|value| {
+                value["inventory"] = serde_json::json!({
+                    "representation": "detached_target",
+                    "target_name": taken,
+                });
+            });
+            assert!(
+                ReleaseDefinition::parse(&collision).is_err(),
+                "'{taken}' is already a target name"
+            );
+        }
+
+        // The representation must be tagged, and the tag must be one this tool implements.
+        for inventory in [
+            serde_json::json!({ "target_name": "x.inventory.json" }),
+            serde_json::json!({ "representation": "detached_url", "target_name": "x.json" }),
+            serde_json::json!({ "representation": "detached_target" }),
+            serde_json::json!({
+                "representation": "detached_target",
+                "target_name": "x.json",
+                "url": "https://example.invalid/x.json",
+            }),
+        ] {
+            let malformed = definition_json(|value| {
+                value["inventory"] = inventory.clone();
+            });
+            assert!(ReleaseDefinition::parse(&malformed).is_err());
+        }
+    }
+
+    /// R8 — switching the inventory representation is a new release generation.
+    ///
+    /// The component bytes do not change, but the emitted manifest does, and a published manifest
+    /// target is immutable. Republishing a different manifest under the same release identity is
+    /// exactly what `supersedes` exists to refuse.
+    #[test]
+    fn changing_the_inventory_representation_requires_a_new_release_identity() {
+        let inline = ReleaseDefinition::parse(&definition_json(|_| {})).unwrap();
+        let mut detached = inline.clone();
+        detached.inventory = super::InventoryPublication::DetachedTarget {
+            target_name: "test-release.inventory.json".to_owned(),
+        };
+
+        assert_ne!(
+            inline.authenticated_contents(),
+            detached.authenticated_contents(),
+            "the representation is part of what a client authenticates"
+        );
+
+        let mut impostor = detached.clone();
+        impostor.release_sequence = inline.release_sequence + 1;
+        let error = impostor
+            .supersedes(&inline)
+            .expect_err("a changed representation under the same identity must be refused");
+        assert!(
+            format!("{error}").contains("release id"),
+            "unexpected error: {error}"
+        );
+
+        // A genuinely new generation is accepted.
+        let mut successor = detached;
+        successor.release_sequence = inline.release_sequence + 1;
+        successor.release_id = "test-release-002".try_into().unwrap();
+        successor.manifest_id = "test-manifest-002".try_into().unwrap();
+        successor.manifest_target_name = "release-002.json".to_owned();
+        successor.supersedes(&inline).unwrap();
     }
 
     #[test]

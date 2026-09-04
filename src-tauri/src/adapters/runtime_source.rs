@@ -2,7 +2,7 @@ use crate::adapters::runtime_integrity::{sha256_bytes, sha256_file, verify_file}
 use crate::adapters::runtime_paths::fsync_directory;
 use crate::domain::runtime::{
     parse_strict_json, RuntimeError, RuntimeManifest, RuntimePolicy, Sha256Digest,
-    MAX_MANIFEST_BYTES,
+    VerifiedRuntimeManifest, MAX_DETACHED_INVENTORY_BYTES, MAX_MANIFEST_BYTES,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -44,7 +44,11 @@ pub struct TrustedRelease {
     pub manifest_target_name: String,
     pub manifest_bytes: Vec<u8>,
     pub manifest_sha256: Sha256Digest,
-    pub manifest: RuntimeManifest,
+    pub manifest: VerifiedRuntimeManifest,
+    /// The exact bytes of the detached installed-file inventory target, present precisely when the
+    /// authenticated manifest declares one. They are staged into the installation so a verified
+    /// runtime stays verifiable offline; they are never a trust decision of their own.
+    pub inventory_bytes: Option<Vec<u8>>,
     pub targets: BTreeMap<String, TrustedTarget>,
     pub policy: RuntimePolicy,
     pub metadata_versions: crate::domain::runtime::MetadataVersions,
@@ -52,7 +56,10 @@ pub struct TrustedRelease {
 
 impl TrustedRelease {
     pub fn validate(&self) -> Result<(), RuntimeError> {
-        self.manifest.validate_for_linux_x86_64()?;
+        self.manifest.validate_structure()?;
+        self.manifest
+            .validate_inventory(self.manifest.inventory())?;
+        self.validate_inventory_representation()?;
         if self.manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES
             || sha256_bytes(&self.manifest_bytes) != self.manifest_sha256
         {
@@ -114,6 +121,53 @@ impl TrustedRelease {
         Ok(())
     }
 
+    /// A detached inventory is authenticated the same way a component archive is.
+    ///
+    /// The manifest's reference must equal trusted TUF targets metadata, the bytes in hand must
+    /// equal that reference, and re-resolving those bytes must reproduce exactly the inventory this
+    /// release is already using. An inline release must carry no detached bytes at all, so there is
+    /// never a second candidate inventory that could quietly win.
+    fn validate_inventory_representation(&self) -> Result<(), RuntimeError> {
+        let Some(reference) = self.manifest.release.inventory.detached() else {
+            if self.inventory_bytes.is_some() {
+                return Err(RuntimeError::Trust(
+                    "an inline release carries detached inventory bytes".to_owned(),
+                ));
+            }
+            return Ok(());
+        };
+        let bytes = self.inventory_bytes.as_ref().ok_or_else(|| {
+            RuntimeError::Trust("the detached inventory target was not obtained".to_owned())
+        })?;
+        let target = self.targets.get(&reference.target_name).ok_or_else(|| {
+            RuntimeError::Trust(
+                "the detached inventory target is not present in authenticated targets".to_owned(),
+            )
+        })?;
+        if target.length != reference.size_bytes || target.sha256 != reference.sha256 {
+            return Err(RuntimeError::Trust(
+                "the detached inventory target disagrees with authenticated target metadata"
+                    .to_owned(),
+            ));
+        }
+        if bytes.len() as u64 != reference.size_bytes
+            || Sha256Digest::of(bytes) != reference.sha256
+            || bytes.len() as u64 > MAX_DETACHED_INVENTORY_BYTES
+        {
+            return Err(RuntimeError::Integrity(
+                "the detached inventory bytes do not match the manifest reference".to_owned(),
+            ));
+        }
+        let reresolved =
+            VerifiedRuntimeManifest::from_detached_bytes(self.manifest.manifest().clone(), bytes)?;
+        if reresolved.inventory() != self.manifest.inventory() {
+            return Err(RuntimeError::Trust(
+                "the resolved inventory does not match the detached inventory target".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn target(&self, name: &str) -> Result<&TrustedTarget, RuntimeError> {
         self.targets
             .get(name)
@@ -166,6 +220,33 @@ impl LocalTrustedReleaseSource {
             },
         );
 
+        // A detached inventory is one more fixture target, held to the same rule as a component:
+        // its bytes must equal the length and digest the manifest declared.
+        let mut inventory_bytes = None;
+        if let Some(reference) = manifest.release.inventory.detached() {
+            let path = target_files.get(&reference.target_name).ok_or_else(|| {
+                RuntimeError::Trust(format!(
+                    "local fixture is missing the detached inventory target '{}'",
+                    reference.target_name
+                ))
+            })?;
+            let (length, sha256) = sha256_file(path)?;
+            if length != reference.size_bytes || sha256 != reference.sha256 {
+                return Err(RuntimeError::Trust(
+                    "local fixture detached inventory does not match the manifest".to_owned(),
+                ));
+            }
+            targets.insert(
+                reference.target_name.clone(),
+                TrustedTarget {
+                    name: reference.target_name.clone(),
+                    length,
+                    sha256,
+                },
+            );
+            inventory_bytes = Some(fs::read(path)?);
+        }
+
         for component in &manifest.release.components {
             let path = target_files.get(&component.target_name).ok_or_else(|| {
                 RuntimeError::Trust(format!(
@@ -190,11 +271,13 @@ impl LocalTrustedReleaseSource {
             );
         }
 
+        let manifest = VerifiedRuntimeManifest::resolve(manifest, inventory_bytes.as_deref())?;
         let release = TrustedRelease {
             manifest_target_name: manifest_target_name.clone(),
             manifest_bytes,
             manifest_sha256,
             manifest,
+            inventory_bytes,
             targets,
             policy: RuntimePolicy::default(),
             metadata_versions: Default::default(),
@@ -317,6 +400,34 @@ impl TrustedReleaseSource for ToughTrustedReleaseSource {
                 trusted_target_from_tough(&component.target_name, &target)?,
             );
         }
+
+        // The manifest's explicit representation decides this; the client never probes for a
+        // detached target that was not declared, and never guesses.
+        let inventory_bytes = match manifest.release.inventory.detached() {
+            None => None,
+            Some(reference) => {
+                let target = find_target(&repository, &reference.target_name)?;
+                let trusted = trusted_target_from_tough(&reference.target_name, &target)?;
+                // Required *before* any inventory byte is read: authenticated TUF metadata and the
+                // authenticated manifest must already agree on the exact identity of this target.
+                if trusted.length != reference.size_bytes || trusted.sha256 != reference.sha256 {
+                    return Err(RuntimeError::Trust(format!(
+                        "detached inventory target '{}' disagrees with the release manifest",
+                        reference.target_name
+                    )));
+                }
+                targets.insert(reference.target_name.clone(), trusted);
+                let bytes = read_target_bytes(
+                    &repository,
+                    &reference.target_name,
+                    reference.size_bytes.min(MAX_DETACHED_INVENTORY_BYTES),
+                )
+                .await?;
+                Some(bytes)
+            }
+        };
+        let manifest = VerifiedRuntimeManifest::resolve(manifest, inventory_bytes.as_deref())?;
+
         let policy_bytes =
             read_target_bytes(&repository, &self.policy_target_name, MAX_MANIFEST_BYTES).await?;
         let policy: RuntimePolicy = parse_strict_json(&policy_bytes)
@@ -327,6 +438,7 @@ impl TrustedReleaseSource for ToughTrustedReleaseSource {
             manifest_bytes,
             manifest_sha256,
             manifest,
+            inventory_bytes,
             targets,
             policy,
             metadata_versions: crate::domain::runtime::MetadataVersions {
@@ -617,8 +729,9 @@ mod tests {
     use crate::adapters::runtime_integrity::sha256_file;
     use crate::domain::runtime::{
         ArchiveFormat, ComponentKind, InstalledEntry, InstalledEntryType, RelativePath,
-        ReleaseChannel, RuntimeArchitecture, RuntimeCompatibility, RuntimeComponent,
-        RuntimeManifest, RuntimePlatform, RuntimeRelease, SafeIdentifier, Sha256Digest,
+        ReleaseChannel, ReleaseInventory, RuntimeArchitecture, RuntimeCompatibility,
+        RuntimeComponent, RuntimeManifest, RuntimePlatform, RuntimeRelease, SafeIdentifier,
+        Sha256Digest,
     };
     use std::collections::BTreeMap;
     use std::fs;
@@ -657,7 +770,7 @@ mod tests {
                     systems: Vec::new(),
                 }],
                 app_run_path: RelativePath::new("runtime/app/AppRun").unwrap(),
-                inventory: vec![
+                inventory: ReleaseInventory::Inline(vec![
                     InstalledEntry {
                         path: RelativePath::new("runtime/app").unwrap(),
                         entry_type: InstalledEntryType::Directory,
@@ -674,7 +787,7 @@ mod tests {
                         executable: true,
                         link_target: None,
                     },
-                ],
+                ]),
                 extraction: Default::default(),
             },
             compatibility: RuntimeCompatibility {
