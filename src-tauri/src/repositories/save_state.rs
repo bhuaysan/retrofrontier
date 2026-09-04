@@ -208,11 +208,19 @@ impl SaveStateRepository {
 
     /// Move one existing state onto newly proved physical content.
     ///
-    /// This is the "the same core binary overwrote its own slot" case. Identity, slot, and every
-    /// immutable core-provenance column stay exactly as they were — the SQL statement does not
-    /// mention `core_binary_sha256`, `core_component_id`, `core_id`, or
-    /// `originating_runtime_release_id` at all — and only the physical facts and the session that
-    /// produced them move on.
+    /// This is the "the same core binary overwrote its own slot" case, and the split is exact.
+    ///
+    /// **Immutable** — never mentioned by the SQL statement, because the refresh is *defined* by
+    /// them being unchanged: `core_id`, `core_component_id`, `core_binary_sha256`,
+    /// `core_display_version`, `core_source_revision`, `slot`, `game_id`, `content_unit_id`,
+    /// `state_relative_path`, `created_at`, and the `SaveStateId` itself.
+    ///
+    /// **Moves with the newly proved bytes**, because each of these describes the *new* physical
+    /// version rather than the object's identity: `play_session_id`,
+    /// `originating_runtime_release_id` (MEDIUM-4 — the Runtime Release whose managed RetroArch
+    /// actually produced this version, which a save-state load can legitimately change without
+    /// changing the core binary), `state_sha256`, `state_size`, the proved thumbnail, and
+    /// `updated_at`.
     ///
     /// Conditioned on `status = 'available'`, so it can never resurrect a deleted or superseded row.
     pub async fn refresh_state(

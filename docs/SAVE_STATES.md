@@ -518,28 +518,53 @@ A quarantine name cannot parse as a state or a thumbnail, so a crash between the
 unlink leaves an inert file that is never attributed, never listed, and never loaded. But a bare
 quarantine-shaped name is not, by itself, proof RetroFrontier is the one that put it there: before
 the rename, a small durable **ownership-proof journal entry** is written first, under a random
-128-bit id, recording the exact size and content digest RetroFrontier itself verified.
-`sweep_delete_quarantine` at startup only ever finishes or removes a quarantine-shaped file whose
-journal entry it can find *and* whose current content still matches that recorded proof — a file
-that merely happens to carry the same name pattern, planted or coincidental, is left alone rather
-than assumed to be RetroFrontier's own and swept regardless.
+128-bit id. `sweep_delete_quarantine` at startup only ever finishes or removes a quarantine-shaped
+file whose journal entry it can find *and* which satisfies that recorded proof in full — a file that
+merely happens to carry the same name pattern, planted or coincidental, is left alone rather than
+assumed to be RetroFrontier's own and swept regardless.
+
+**The record names a physical object, not bytes.** Its shape is
+`rfdj1:<device>:<inode>:<size>:<sha256>` — an explicit version marker, a fixed field count, strict
+parsing, a bounded length, and no value that is ever used as a path. Recording only size and digest
+would describe *content*, and content is reproducible by anyone; the entry has to survive process
+restarts, so it must identify the object rather than describe what is inside it. Otherwise a stale
+entry left at a quarantine name by a refused race is satisfied by whatever later occupies that name
+with matching bytes, and a subsequent startup deletes a file RetroFrontier never quarantined. The
+journaled device and inode are therefore a **requirement** at every stage, never something learned
+from whatever currently sits at a pathname, and a record that does not parse is treated as no proof
+at all rather than as a weaker one:
+
+> A journal entry created for physical file A never authorizes the deletion of physical file B, even
+> when B has the same name, the same size, and byte-identical content.
 
 **The startup sweep destroys nothing by pathname either.** Verifying a descriptor does not license
 unlinking a *name*, and Linux has no unlink-by-descriptor: a racing same-user process could rename
 the verified object away and drop an unrelated file at that name in between. So the sweep repeats
 the delete path's own discipline. After verifying the object it moves that directory entry to a
 **fresh** RetroFrontier-owned second-stage quarantine name with `RENAME_NOREPLACE`, journaled before
-the move, and re-proves `(dev, ino, size)` and the digest *at the new name* before unlinking. A
-pathname substituted in that window is carried to the second stage instead, fails the re-proof, is
-renamed back to where it was found, and is never unlinked.
+the move, and re-proves the journaled `(dev, ino, size)` and digest *at the new name* before
+unlinking. A pathname substituted in that window is carried to the second stage instead, fails the
+re-proof, is renamed back to where it was found, and is never unlinked.
 
-**Journal evidence outlives every non-terminal failure.** The entry is removed only after the one
-deterministic terminal result — the owned object was verified and successfully unlinked. A transient
-I/O failure, a content mismatch, an indeterminate verification, and a refused race all keep it,
-because the object is still on disk and that entry is the only durable proof RetroFrontier owns it.
-Discarding it would strand the object permanently: no later startup could prove it safe to finish.
-A mismatching quarantine file is never deleted, and repeating the sweep keeps refusing rather than
-forgetting.
+**Evidence is kept until it would become stale authority.** The ownership chain is:
+
+```text
+J1 names object A at the first-stage name Q1
+  J2 is written, naming the same physical A, before anything moves
+  Q1 → Q2  (NOREPLACE)
+  Q2 is re-proved against the journaled identity
+  only now is J1 retired — Q1 is free again, and a record pointing at a free
+  name is authority over whatever comes to occupy it
+  Q2 is unlinked, and J2 goes with it
+```
+
+There is deliberately no step at which the live object has no durable record, so a crash anywhere in
+that sequence leaves the next startup either the first stage or the second, each with its own proof,
+and never neither. Every non-terminal outcome — a transient I/O failure, an identity or content
+mismatch, an indeterminate verification, a refused race — keeps the entry that still names a real
+object, because discarding it would strand that object permanently: no later startup could prove it
+safe to finish. A mismatching quarantine file is never deleted, the entry is never rewritten onto
+whatever now occupies the pathname, and repeating the sweep keeps refusing rather than forgetting.
 
 Deletion is the irreversible primary action, so ordering is: verify → delete the state file → delete
 the verified thumbnail if safe → persist `deleted`. If persistence fails afterwards, the row briefly
@@ -661,8 +686,9 @@ logs `Redirecting save state to "D/Synthetic Probe.state"`, and `--entryslot 3` 
   original name in the window after the quarantine rename, the restore refuses to overwrite it —
   destroying a file RetroFrontier never verified would break the same invariant the quarantine
   exists to keep. The verified file then stays under its inert quarantine name, with its ownership-
-  proof journal entry still recording what RetroFrontier itself verified, until the next startup
-  sweep re-verifies and removes it.
+  proof journal entry still recording the physical object RetroFrontier itself verified, until the
+  next startup sweep re-proves and removes it. That retained entry names one specific inode, so it
+  can never be satisfied by anything else that comes to occupy the pathname.
 - **A same-inode concurrent writer narrows, rather than fully closes, the deletion window.** POSIX
   and Linux offer no dependable, portable, non-mandatory-locking way to exclude a writer that already
   holds an open, writable descriptor to the exact same inode RetroFrontier is deleting — advisory
