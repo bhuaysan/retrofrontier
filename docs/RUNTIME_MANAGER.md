@@ -66,6 +66,85 @@ compatibility, safe identifiers and paths, component target/installation uniquen
 archive sizes and SHA-256 values, approved core mappings, AppRun location, licenses, extraction
 limits, and the complete installed inventory. JSON duplicate keys and unknown fields are rejected.
 
+Manifest validation has two halves. `validate_structure` checks everything that does not depend on
+the installed-file inventory; `validate_inventory` checks the manifest against the inventory
+entries. The two are joined by `VerifiedRuntimeManifest`, and only that type reaches installation,
+verification, permissioning, extraction, launch resolution, or Save-State core provenance. It is
+constructible in exactly two ways — from an inline manifest, or from the exact bytes of an
+authenticated detached inventory target — so no boundary below it can be reached with an inventory
+that was not authenticated.
+
+## Installed-file inventory representations
+
+ADR-012 allows the complete installed-file inventory either inside the release manifest or in a
+separate immutable target referenced by digest. Both are implemented, and the manifest states
+which one it uses; the client never infers or probes.
+
+| Representation | Wire form of `release.inventory` |
+| --- | --- |
+| Inline (legacy and current) | A JSON array of installed-file entries |
+| Detached | `{"representation": "detached_target", "target_name": …, "size_bytes": …, "sha256": …}` |
+
+The inline form is byte-identical to what it always was, which is what keeps published releases
+parseable: Runtime Release 001 and 002 are immutable inline manifests whose SHA-256 is pinned in
+TUF targets metadata, in `active.json`, in `complete.json`, and in persisted client trust state.
+Release 002 remains the active real Runtime Release; nothing about it changed.
+
+The detached form exists because the manifest bound is nearly exhausted. Release 002 emits a
+870 739-byte manifest against a 1 MiB `MAX_MANIFEST_BYTES` at four cores, so growing toward the
+full V1 core matrix would exceed it.
+
+### Trust chain
+
+A detached inventory is not a new trust root and never a URL:
+
+1. TUF authenticates the release manifest as a target, exactly as before.
+2. The authenticated manifest names the inventory target and repeats its exact length and SHA-256.
+3. The client resolves that target name through the same TUF repository and requires trusted
+   targets metadata to agree with the manifest's length and digest **before** reading any byte.
+4. The bytes are read through the TUF client under a bound, then re-checked against the manifest's
+   length and digest.
+5. The document is parsed strictly and must name the manifest and release it belongs to.
+6. `validate_inventory` then runs unchanged, so the verification boundary below never learns which
+   representation was used.
+
+Because the manifest digest is what trust state records, and the manifest binds the inventory
+digest, a trusted manifest digest can never be paired with a different inventory. The anti-rollback
+floor and revocation set are unaffected: they key on release id, release sequence, and manifest
+digest as before.
+
+An installation with a detached inventory stores the authenticated bytes as `release-inventory.json`
+beside `release-manifest.json`, because ADR-012 requires an installed runtime to stay verifiable and
+launchable offline. That file is a cache of authenticated data, not an authority: every read
+re-checks its length and SHA-256 against the manifest, so substituting or removing it moves the
+installation to `Broken` (repair-required) rather than changing what is verified. Repair performs
+the same full reconstruction as install. `release-inventory.json` is skipped by complete-tree
+verification only for a release that actually declares a detached inventory; for an inline
+installation a file by that name is an unexpected tree entry, and no inventory may claim any of the
+three metadata filenames as a payload path.
+
+### Bounds
+
+The manifest and the inventory have independent, explicit bounds; the detached option did not
+relax the manifest bound.
+
+| Bound | Value | Applies to |
+| --- | --- | --- |
+| `MAX_MANIFEST_BYTES` | 1 MiB | The release manifest, inline inventory included |
+| `MAX_DETACHED_INVENTORY_BYTES` | 16 MiB | A detached inventory target, its download, and its installed copy |
+| `MAX_INVENTORY_ENTRIES` | 200 000 | Any inventory, inline or detached |
+| `RelativePath` | 4096 bytes | Every inventory entry path |
+
+### Failure behaviour
+
+All of these fail closed, with no installation activated and no fallback to an unverified
+inventory: a missing or unlisted inventory target; a target whose TUF metadata disagrees with the
+manifest; wrong length, wrong digest, truncation, or padding; a substituted target that is itself a
+validly signed target of some other kind; malformed JSON; an unsupported schema version; unknown or
+duplicate fields; an entry path or entry count beyond bounds; a document belonging to a different
+release; an inventory that does not describe a component's install path or declared executable; a
+detached manifest with no inventory supplied; and detached bytes offered for an inline manifest.
+
 `TrustedReleaseSource` separates RuntimeManager from network I/O. `ToughTrustedReleaseSource`
 keeps TUF verification behind that boundary using the maintained `tough` client, authenticated
 targets, safe metadata expiration, a persistent datastore, and a required authenticated,
@@ -99,8 +178,9 @@ primitive was added.
    executing the AppImage runtime; a 7z outer container may unwrap only its declared payload.
 4. Reject traversal, absolute paths, special nodes, hard links, unsafe links, duplicates,
    conflicting parents, excessive entries/sizes/ratios, and unexpected inventory types.
-5. Apply the authenticated executable modes, write the release manifest, verify the complete tree,
-   and perform structural AppRun smoke validation.
+5. Apply the authenticated executable modes, write the release manifest — plus the authenticated
+   detached inventory bytes, when the release declares one — verify the complete tree, and perform
+   structural AppRun smoke validation.
 6. Move the verified tree to a new opaque `versions/<installation-id>` directory and write
    `complete.json` last. The directory is immutable after completion.
 7. Under the mutation lock, recheck process/pointer conditions and atomically replace `active.json`.
@@ -284,6 +364,17 @@ application binary. It derives the authenticated installed inventory from each a
 proves it by extracting every component through the production extractor and running this
 module's own `verify_tree` and `validate_app_run`. See
 [`M7_5_RUNTIME_QUALIFICATION.md`](M7_5_RUNTIME_QUALIFICATION.md).
+
+The committed release definition states the inventory representation in its `inventory` field —
+omitted or `{"representation": "inline"}` for the inline form, or
+`{"representation": "detached_target", "target_name": …}` to publish a separate inventory target.
+The publisher pipeline is: definition → deterministic component construction → deterministic
+installed-file inventory → canonical detached inventory bytes → its length and SHA-256 → a manifest
+emitted from those exact values → both published as authenticated TUF targets, alongside the runtime
+policy and component targets as before. Construction then resolves its own emitted manifest through
+the client's resolution path, so a definition that would produce a pair the client refuses fails on
+the maintainer's machine. Switching representation changes the authenticated contents, so
+`ReleaseDefinition::supersedes` requires a new release generation rather than a re-publication.
 
 ### AppImage extraction
 
