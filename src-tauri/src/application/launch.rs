@@ -203,12 +203,17 @@ impl Default for LaunchConfig {
 }
 
 /// The core-binary facts one launch records for its session's baseline.
+///
+/// Deliberately carries no Runtime Release: a Save-State load's historical core binary can be
+/// found in a *retained* release that is not the one whose managed RetroArch executable is
+/// actually running this session (MEDIUM-4). The originating-runtime provenance a baseline
+/// records always comes from `launch_runtime` — the runtime that actually launched — never from
+/// wherever the core binary happened to be located.
 #[derive(Debug, Clone)]
 struct CoreBinaryProvenance {
     sha256: Sha256Digest,
     display_version: Option<String>,
     source_revision: Option<String>,
-    release_id: SafeIdentifier,
 }
 
 #[derive(Debug, Default)]
@@ -610,7 +615,6 @@ impl LaunchApplicationService {
                     sha256: binary.binary_sha256,
                     display_version: binary.display_version.clone(),
                     source_revision: binary.source_revision.clone(),
-                    release_id: launch_runtime.release_id.clone(),
                 };
                 (core, None, provenance)
             }
@@ -646,13 +650,15 @@ impl LaunchApplicationService {
                     &historical,
                     &launch_runtime,
                 )?;
+                // MEDIUM-4: `historical.release_id` — the retained release that happened to
+                // supply this exact core binary — is deliberately not carried into
+                // `CoreBinaryProvenance`. It is not the runtime that is actually launching this
+                // session; `launch_runtime.release_id`, used below when the baseline is captured,
+                // is.
                 let provenance = CoreBinaryProvenance {
                     sha256: historical.binary_sha256,
                     display_version: historical.display_version.clone(),
                     source_revision: historical.source_revision.clone(),
-                    // The release recorded for the *new* session is the one the binary was found
-                    // in, which may not be the release that produced the state being loaded.
-                    release_id: historical.release_id.clone(),
                 };
                 (core, Some(plan.slot), provenance)
             }
@@ -707,7 +713,11 @@ impl LaunchApplicationService {
                 core_display_version: core_binary.display_version.clone(),
                 core_source_revision: core_binary.source_revision.clone(),
                 runtime_installation_id: launch_runtime.installation_id.clone(),
-                runtime_release_id: core_binary.release_id.clone(),
+                // MEDIUM-4: always the Runtime Release whose managed RetroArch executable is
+                // actually running this session — never wherever the core binary happened to be
+                // found. For a save-state load those can differ; for a normal launch they are
+                // already the same value, so this changes nothing about that path.
+                runtime_release_id: launch_runtime.release_id.clone(),
             })
             .await
         {
@@ -3092,6 +3102,67 @@ mod tests {
             .unwrap()
             .expect("a running record");
         assert_eq!(record.play_session_id, second_session.0);
+        harness.stop();
+        harness.await_idle().await;
+    }
+
+    /// MEDIUM-4 regression: a save-state load's baseline records the Runtime Release whose managed
+    /// RetroArch executable actually ran the session — never the (possibly different) retained
+    /// release the historical core binary happened to be located in.
+    #[tokio::test]
+    async fn a_save_state_baseline_records_the_launching_runtime_not_the_cores_source_release() {
+        let harness = Harness::build(SystemId::Nes, Vec::new()).await;
+        harness.set_app_run_until_stopped();
+
+        // The historical core binary is "found" in a retained release, R1, distinct from the
+        // active release (`release-1`, per `synthetic_runtime`) whose executable actually starts.
+        let mut historical = synthetic_historical_core(&harness, SystemId::Nes);
+        historical.release_id = SafeIdentifier::new("retained-release-r1").unwrap();
+        historical.installation_id = SafeIdentifier::new("retained-install-r1").unwrap();
+        harness.set_historical_core(Some(historical));
+
+        let started = harness
+            .service
+            .launch_save_state(save_state_plan(&harness, 2, ContentUnitId(1), SystemId::Nes))
+            .await;
+        let session_id = started_session(&started);
+        harness.await_started();
+
+        let baseline = harness
+            .save_state_repository
+            .baseline(session_id)
+            .await
+            .unwrap()
+            .expect("a save-state launch captures its own baseline");
+        // The launching runtime — R3 in the finding's terms, `release-1` here — not R1.
+        assert_eq!(
+            baseline.provenance.originating_runtime_release_id.as_str(),
+            "release-1"
+        );
+        assert_ne!(
+            baseline.provenance.originating_runtime_release_id.as_str(),
+            "retained-release-r1"
+        );
+        // The exact historical core binary's digest still identifies it, unaffected by where it
+        // was found.
+        assert_eq!(
+            baseline.provenance.core_binary_sha256,
+            Sha256Digest::from_hex(&"a".repeat(64)).unwrap()
+        );
+        assert_eq!(
+            baseline.runtime_installation_id.as_str(),
+            "install-1",
+            "the recorded installation is the one that actually launched, too"
+        );
+
+        // The game's normal per-content-unit core preference is untouched by any of this.
+        assert!(harness
+            .launch_repository
+            .core_override(GameId(1))
+            .await
+            .unwrap()
+            .is_none());
+
         harness.stop();
         harness.await_idle().await;
     }
