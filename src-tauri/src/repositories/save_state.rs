@@ -483,22 +483,36 @@ impl SaveStateRepository {
         Ok(ids.into_iter().map(PlaySessionId).collect())
     }
 
-    /// Whether any play session started *after* this one.
+    /// Whether any play session that could actually have changed the managed state tree started
+    /// *after* this one.
     ///
-    /// Launches are mutually exclusive, so a higher session id means another session ran to
-    /// completion in between. That matters because the baseline delta model is only sound while
-    /// the session that captured the baseline is the *only* thing that touched the state tree
-    /// since: once a later session has written to it, a file absent from this baseline may equally
-    /// have come from that later session, and the delta can no longer prove whose it is.
+    /// Launches are mutually exclusive, so a higher session id means another session was opened in
+    /// between. That matters because the baseline delta model is only sound while the session that
+    /// captured the baseline is the *only* thing that touched the state tree since: once a later
+    /// session has written to it, a file absent from this baseline may equally have come from that
+    /// later session, and the delta can no longer prove whose it is.
+    ///
+    /// A later session that never reached a managed process at all — `failed_to_start` with no
+    /// `exit_code`, which is exactly the shape a durable baseline-capture failure, a process-record
+    /// failure, or a spawn failure that never produced a child all leave — could not have written
+    /// anything, so it does not count. Every other later session does: a `failed_to_start` session
+    /// *with* an `exit_code` means a process really was created and reaped before its identity
+    /// could be confirmed, and it may still have written a state in that brief window; `running`,
+    /// `completed`, `crashed`, and `interrupted` all mean a process existed. This keeps an older
+    /// baseline usable across a sibling launch attempt that never got anywhere near the state tree,
+    /// without weakening the fail-closed rule for every session that plausibly could have.
     pub async fn session_was_superseded(
         &self,
         session_id: PlaySessionId,
     ) -> Result<bool, AppError> {
-        let later: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM play_sessions WHERE id > ?")
-            .bind(session_id.0)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(AppError::Database)?;
+        let later: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM play_sessions \
+             WHERE id > ? AND NOT (outcome = 'failed_to_start' AND exit_code IS NULL)",
+        )
+        .bind(session_id.0)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
         Ok(later > 0)
     }
 
@@ -872,6 +886,77 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    /// LOW-2 regression: a later session that never reached a managed process at all — the exact
+    /// shape a baseline-capture failure, a process-record failure, or a spawn failure that never
+    /// produced a child all leave — must not make an older, still-indeterminate baseline
+    /// non-attributable. It never touched the state tree, so there is nothing for it to have
+    /// superseded.
+    #[tokio::test]
+    async fn a_later_session_that_never_spawned_does_not_supersede_an_older_baseline() {
+        let (_directory, pool) = fixture().await;
+        let repository = SaveStateRepository::new(pool.clone());
+        let older = session(&pool, 1).await;
+        let never_spawned = session(&pool, 1).await;
+        assert!(never_spawned.0 > older.0, "the later session has a higher id");
+
+        sqlx::query(
+            "UPDATE play_sessions SET outcome = 'failed_to_start', exit_code = NULL, \
+             ended_at = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(TEST_TIME)
+        .bind(TEST_TIME)
+        .bind(never_spawned.0)
+        .execute(&pool)
+        .await
+        .expect("the never-spawned session should close");
+
+        assert!(!repository
+            .session_was_superseded(older)
+            .await
+            .expect("the query should succeed"));
+    }
+
+    /// The converse: every later session that could plausibly have touched the state tree still
+    /// supersedes, including the one case that also ends `failed_to_start` — a process that really
+    /// was spawned and reaped, however briefly, before its identity could be confirmed.
+    #[tokio::test]
+    async fn every_later_session_that_could_have_touched_the_tree_still_supersedes() {
+        for (outcome, exit_code) in [
+            (PlaySessionOutcome::Completed, Some(0_i64)),
+            (PlaySessionOutcome::Crashed, Some(1)),
+            (PlaySessionOutcome::Interrupted, None),
+            // Spawned and reaped before identity capture could confirm it "started" — still a
+            // real process that may have written a state before it died.
+            (PlaySessionOutcome::FailedToStart, Some(0)),
+        ] {
+            let (_directory, pool) = fixture().await;
+            let repository = SaveStateRepository::new(pool.clone());
+            let older = session(&pool, 1).await;
+            let later = session(&pool, 1).await;
+
+            sqlx::query(
+                "UPDATE play_sessions SET outcome = ?, exit_code = ?, ended_at = ?, \
+                 updated_at = ? WHERE id = ?",
+            )
+            .bind(outcome.as_db())
+            .bind(exit_code)
+            .bind(TEST_TIME)
+            .bind(TEST_TIME)
+            .bind(later.0)
+            .execute(&pool)
+            .await
+            .expect("the later session should close");
+
+            assert!(
+                repository
+                    .session_was_superseded(older)
+                    .await
+                    .expect("the query should succeed"),
+                "{outcome:?} with exit_code {exit_code:?} must still supersede"
+            );
+        }
     }
 
     #[tokio::test]

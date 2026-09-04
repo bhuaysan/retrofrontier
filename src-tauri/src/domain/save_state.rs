@@ -362,8 +362,12 @@ impl SaveStateError {
             Self::NotFound => "That save state is no longer known to RetroFrontier.",
             Self::Unavailable => "That save state is not available.",
             Self::CoreUnavailable => {
-                "The exact emulation core this save state was made with is not installed, so it \
-                 cannot be loaded."
+                // `CoreUnavailable` can mean the core is absent, revoked, below the security
+                // floor, unauthenticated, or otherwise not eligible right now — never only
+                // "not installed". This wording makes no claim about which, and never exposes
+                // that internal distinction to the user.
+                "The required core build is not currently available for loading. The save state \
+                 itself is kept."
             }
             Self::TemporarilyBlocked => {
                 "A game is running or starting. Close it before loading or deleting a save state."

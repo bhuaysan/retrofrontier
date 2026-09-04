@@ -25,9 +25,10 @@ export function loadabilityHint(loadability: SaveStateLoadability): string {
     case 'ready':
       return 'The exact core build this state was saved with is installed.';
     case 'coreUnavailable':
-      // The missing thing is the *core*, and the state itself is untouched: managed runtime
-      // retention may legitimately remove the only authenticated copy of a historical core.
-      return 'The exact core build this state was saved with is not installed, so it cannot be loaded. The state itself is kept.';
+      // Deliberately not "not installed": the core build can be unavailable because it is
+      // absent, revoked, below the security floor, or otherwise not currently eligible, and this
+      // copy makes no claim about which — only the backend ever knows, and it never says either.
+      return 'The required core build is not currently available for loading. The save state itself is kept.';
     case 'temporarilyBlocked':
       return 'A managed game is in progress, so loading has to wait. Nothing is wrong with this state.';
   }
