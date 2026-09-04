@@ -26,7 +26,8 @@
 //! unattached service refuses every mutation instead of performing an unguarded one.
 
 use crate::application::launch::{
-    BaselineRequest, LaunchApplicationService, SaveStateLaunchPlan, SaveStateLifecycle,
+    BaselineRequest, LaunchApplicationService, LaunchExclusionGuard, SaveStateLaunchPlan,
+    SaveStateLifecycle,
 };
 use crate::application::runtime_manager::{AuthenticatedCoreBinary, RuntimeManager};
 use crate::domain::launch::{LaunchResponse, PlaySessionId};
@@ -92,7 +93,19 @@ impl SaveStateRuntime for RuntimeManager {
 pub trait SaveStateLaunchPort: Send + Sync {
     /// Whether a managed RetroArch session is launching, running, or of uncertain identity.
     fn is_managed_session_active(&self) -> bool;
+    /// The same predicate, for a caller that already holds this port's exclusion guard.
+    ///
+    /// See `LaunchApplicationService::is_running_or_blocked` for why this must be a distinct,
+    /// narrower check rather than a call to `is_managed_session_active`.
+    fn is_running_or_blocked(&self) -> bool;
     async fn launch_save_state(&self, plan: SaveStateLaunchPlan) -> LaunchResponse;
+    /// Enter the same in-process critical section a launch uses, or fail at once (HIGH-1).
+    ///
+    /// A Save-State delete holds this guard for its whole authorization-to-destructive-action
+    /// window, so a managed launch cannot begin — win this same section — while a delete is
+    /// deciding whether to destroy a file, and a delete cannot begin while a launch already owns
+    /// the section. Neither side blocks: whichever loses `try_lock` fails closed immediately.
+    fn try_enter_exclusion(&self) -> Option<LaunchExclusionGuard>;
 }
 
 #[async_trait::async_trait]
@@ -101,8 +114,16 @@ impl SaveStateLaunchPort for LaunchApplicationService {
         LaunchApplicationService::is_managed_session_active(self)
     }
 
+    fn is_running_or_blocked(&self) -> bool {
+        LaunchApplicationService::is_running_or_blocked(self)
+    }
+
     async fn launch_save_state(&self, plan: SaveStateLaunchPlan) -> LaunchResponse {
         LaunchApplicationService::launch_save_state(self, plan).await
+    }
+
+    fn try_enter_exclusion(&self) -> Option<LaunchExclusionGuard> {
+        LaunchApplicationService::try_enter_exclusion(self)
     }
 }
 
@@ -135,6 +156,10 @@ pub struct SaveStateApplicationService {
     states_root: PathBuf,
     config: SaveStateConfig,
     launch: Arc<OnceLock<Arc<dyn SaveStateLaunchPort>>>,
+    /// Test-only rendezvous point inside `delete_verified`'s critical section, used to prove
+    /// HIGH-1's delete-vs-launch serialization deterministically instead of racing real timing.
+    #[cfg(test)]
+    delete_checkpoint: Arc<OnceLock<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
 }
 
 impl SaveStateApplicationService {
@@ -155,7 +180,23 @@ impl SaveStateApplicationService {
             states_root: states_root.into(),
             config,
             launch: Arc::new(OnceLock::new()),
+            #[cfg(test)]
+            delete_checkpoint: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// Make `delete_verified` pause once it has entered its exclusion section and passed its
+    /// first eligibility check, notifying `reached` and waiting for `resume`. Production never
+    /// sets this; it exists so a test can deterministically interleave a concurrent launch attempt
+    /// into that exact window instead of racing real thread timing.
+    #[cfg(test)]
+    pub fn with_delete_checkpoint(
+        self,
+        reached: Arc<tokio::sync::Notify>,
+        resume: Arc<tokio::sync::Notify>,
+    ) -> Self {
+        let _ = self.delete_checkpoint.set((reached, resume));
+        self
     }
 
     /// Replace the stability probe. Tests use this to make both outcomes reachable without
@@ -469,12 +510,39 @@ impl SaveStateApplicationService {
     }
 
     async fn delete_verified(&self, id: SaveStateId) -> Result<(), SaveStateError> {
+        // HIGH-1: enter the exact same in-process critical section a launch uses, *before* doing
+        // anything else, and hold it for the rest of this function. This is what makes "no managed
+        // launch may begin while this delete is deciding whether to destroy a file" a structural
+        // property of the whole authorization-to-destructive-action window, rather than a
+        // point-in-time check a concurrently starting launch could slip past between it and the
+        // actual filesystem delete below. A launch that already owns the section — including one
+        // still only *starting* — refuses this delete immediately; this never blocks.
+        let Some(launch) = self.launch.get() else {
+            return Err(SaveStateError::TemporarilyBlocked);
+        };
+        let Some(_exclusion) = launch.try_enter_exclusion() else {
+            return Err(SaveStateError::TemporarilyBlocked);
+        };
+
         // First, for the same reason the load path checks first: a running RetroArch may
         // legitimately be rewriting this very file, and `verified_state` would otherwise mark a
         // perfectly good Save State `missing` on the strength of a mid-write digest.
-        if self.managed_session_active() {
+        //
+        // This deliberately calls `is_running_or_blocked`, not `managed_session_active`: the guard
+        // above already holds the same in-process section `managed_session_active` would itself
+        // try (and fail) to acquire, which would report every delete as blocked by itself.
+        // Structurally holding the exclusion guard already proves no launch can be *starting*;
+        // this narrower check still catches one that is already running or of uncertain identity.
+        if launch.is_running_or_blocked() {
             return Err(SaveStateError::TemporarilyBlocked);
         }
+
+        #[cfg(test)]
+        if let Some((reached, resume)) = self.delete_checkpoint.get() {
+            reached.notify_one();
+            resume.notified().await;
+        }
+
         let state = self.verified_state(id).await?;
 
         // The filesystem delete is the irreversible primary action, so it happens once every
@@ -1166,6 +1234,10 @@ mod tests {
         active: AtomicBool,
         plans: Mutex<Vec<SaveStateLaunchPlan>>,
         fail: AtomicBool,
+        /// The same kind of in-process exclusion mutex `LaunchApplicationService` uses, so a test
+        /// can hold it to prove a delete refuses while "a launch" (simulated here) owns the
+        /// section, exactly as `try_enter_exclusion` requires.
+        sequence: Arc<tokio::sync::Mutex<()>>,
     }
 
     #[async_trait::async_trait]
@@ -1174,7 +1246,18 @@ mod tests {
             self.active.load(Ordering::Relaxed)
         }
 
+        fn is_running_or_blocked(&self) -> bool {
+            self.active.load(Ordering::Relaxed)
+        }
+
         async fn launch_save_state(&self, plan: SaveStateLaunchPlan) -> LaunchResponse {
+            // Mirrors `LaunchApplicationService::launch()`'s own first move: contend for the same
+            // in-process exclusion section a delete may be holding, so a save-state load racing a
+            // delete is refused exactly as it would be in production, rather than the stub
+            // silently letting it through.
+            let Ok(_sequence) = self.sequence.try_lock() else {
+                return LaunchResponse::failed(LaunchErrorCode::GameAlreadyRunning);
+            };
             self.plans.lock().unwrap().push(plan);
             if self.fail.load(Ordering::Relaxed) {
                 return LaunchResponse::failure(LaunchFailure::new(LaunchErrorCode::SpawnFailed));
@@ -1189,6 +1272,14 @@ mod tests {
                 },
                 diagnostics: Vec::new(),
             }
+        }
+
+        fn try_enter_exclusion(&self) -> Option<crate::application::launch::LaunchExclusionGuard> {
+            self.sequence
+                .clone()
+                .try_lock_owned()
+                .ok()
+                .map(crate::application::launch::LaunchExclusionGuard)
         }
     }
 
@@ -2752,6 +2843,84 @@ mod tests {
                 .unwrap()
                 .status,
             SaveStateStatus::Available
+        );
+    }
+
+    // ================================================================ HIGH-1: delete/launch serialization
+
+    /// HIGH-1 regression (load-vs-delete): a load and a delete of the exact same Save State must
+    /// serialize safely rather than interleave.
+    ///
+    /// A delete is made to pause deterministically *after* it has entered its exclusion section and
+    /// passed its first eligibility check — exactly the window the finding describes as
+    /// unprotected before this fix — and a concurrent load is attempted while it is paused there.
+    /// Before HIGH-1, nothing stopped the load's underlying launch attempt from proceeding while
+    /// the delete was mid-flight. After it, the load's launch attempt shares the very same
+    /// in-process exclusion the delete now holds, so it is refused outright rather than racing the
+    /// file the delete may be about to remove.
+    #[tokio::test]
+    async fn a_concurrent_load_and_delete_of_the_same_save_state_serialize_safely() {
+        let fixture = Fixture::build().await;
+        fixture
+            .run_session(CORE_A, 1, &[("Nestopia/Synthetic.state1", b"state bytes")])
+            .await;
+        let state = fixture.only_state().await;
+
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let checkpointed = SaveStateApplicationService::new(
+            fixture.save_states.clone(),
+            LibraryRepository::new(fixture.pool.clone()),
+            fixture.sessions.clone(),
+            fixture.runtime.clone(),
+            &fixture.states_root,
+            SaveStateConfig::default(),
+        )
+        .with_delete_checkpoint(reached.clone(), resume.clone());
+        checkpointed.attach_launch(fixture.launch.clone());
+
+        let delete_id = state.id;
+        let delete_task =
+            tokio::spawn(async move { checkpointed.delete_save_state(delete_id).await });
+
+        // The delete has entered its exclusion section and passed its first eligibility check —
+        // it now holds the same in-process critical section a launch would need.
+        reached.notified().await;
+
+        // A concurrent load attempt must not be able to reach a launch while the delete is
+        // deciding whether to destroy the very file that load would need. It is refused outright,
+        // and — because `StubLaunch::launch_save_state` itself contends for the same section a
+        // real launch would — it never even records a launch attempt.
+        let racing_load = fixture.service.load_save_state(state.id).await;
+        assert!(
+            matches!(
+                racing_load,
+                LoadSaveStateResponse::LaunchFailed { .. }
+            ),
+            "a load racing an in-flight delete must be refused, not started: {racing_load:?}"
+        );
+        assert!(
+            fixture.launch.plans.lock().unwrap().is_empty(),
+            "no launch attempt for the racing load may reach the launch pipeline"
+        );
+        // The file itself is of course still exactly what it was — the delete has not resumed yet.
+        assert!(fixture.exists("Nestopia/Synthetic.state1"));
+
+        // Let the delete finish.
+        resume.notify_one();
+        let outcome = delete_task.await.unwrap();
+        assert!(matches!(
+            outcome,
+            DeleteSaveStateResponse::Deleted { .. }
+        ));
+        assert!(!fixture.exists("Nestopia/Synthetic.state1"));
+
+        // Only now, once the delete has genuinely completed, does a load see the settled truth —
+        // never a half-deleted file. The row survives as a closed `deleted` lifecycle, so the
+        // verdict is `Unavailable`, not a dangling reference to bytes that might still exist.
+        assert_eq!(
+            fixture.service.load_save_state(state.id).await,
+            LoadSaveStateResponse::refused(SaveStateError::Unavailable)
         );
     }
 

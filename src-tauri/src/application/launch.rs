@@ -126,6 +126,13 @@ pub struct SaveStateLaunchPlan {
     pub slot: SaveStateSlot,
 }
 
+/// Proof that this task, and no other, currently owns the in-process launch-serialization section.
+///
+/// Held by `SaveStateApplicationService` for the whole authorization-to-destructive-action window
+/// of a Save-State delete (HIGH-1). Dropping it releases the section immediately, so a caller that
+/// returns early on a refusal never has to remember to release anything explicitly.
+pub struct LaunchExclusionGuard(pub(crate) tokio::sync::OwnedMutexGuard<()>);
+
 /// Which of the two launch shapes one request is.
 ///
 /// There is exactly one pipeline. The plan replaces only *core resolution* and *content-unit
@@ -418,6 +425,26 @@ impl LaunchApplicationService {
             .await
     }
 
+    /// Enter the exact same in-process critical section `launch()` itself uses, or return `None`
+    /// at once if a launch already owns it.
+    ///
+    /// This never blocks: a Save-State delete that cannot enter fails closed with
+    /// `TemporarilyBlocked` instead of hanging behind an in-progress launch. `SaveStateApplicationService`
+    /// holds the returned guard for its *entire* authorization-to-destructive-action window, which
+    /// is what makes "no managed launch may begin while a delete is deciding whether to destroy a
+    /// file" a structural property of the critical section rather than a point-in-time check that
+    /// a launch could slip past. The same mutex a concurrent `launch()` call contends for is used
+    /// here, so the two directions are symmetric: whichever side wins `try_lock` first excludes the
+    /// other for the whole section, and the loser fails immediately rather than corrupting state or
+    /// deadlocking.
+    pub fn try_enter_exclusion(&self) -> Option<LaunchExclusionGuard> {
+        self.sequence
+            .clone()
+            .try_lock_owned()
+            .ok()
+            .map(LaunchExclusionGuard)
+    }
+
     async fn launch(&self, game_id: GameId, plan: LaunchPlan) -> LaunchResponse {
         let Ok(_sequence) = self.sequence.try_lock() else {
             return LaunchResponse::failed(LaunchErrorCode::GameAlreadyRunning);
@@ -450,16 +477,34 @@ impl LaunchApplicationService {
     /// in this process but has not yet published a running session, and a durable record inherited
     /// from a previous application run.
     pub fn is_managed_session_active(&self) -> bool {
+        if self.is_running_or_blocked() {
+            return true;
+        }
+        if self.sequence.try_lock().is_err() {
+            return true;
+        }
+        // The durable record is the authority on a process this application did not fork.
+        self.runtime.ensure_no_active_game().is_err()
+    }
+
+    /// The same predicate, minus the `sequence` contention check.
+    ///
+    /// `SaveStateApplicationService` calls this — through `SaveStateLaunchPort` — only while it
+    /// already holds `sequence` itself via `try_enter_exclusion` (HIGH-1). Reusing
+    /// `is_managed_session_active`'s own `sequence.try_lock()` there would contend with the caller's
+    /// *own* guard on the very same mutex and always report "active" regardless of whether any
+    /// other launch exists — not a deadlock (`try_lock` never blocks), but a false positive that
+    /// would make every Save-State delete refuse itself. Holding the exclusion guard is already
+    /// structural proof that no launch can be starting concurrently, so that half of the check is
+    /// exactly the part a caller in that position must skip; the other two — a game already running
+    /// or blocked, and the durable process record — remain exactly as authoritative as ever.
+    pub fn is_running_or_blocked(&self) -> bool {
         {
             let active = self.active.lock().expect("launch state lock");
             if active.running.is_some() || active.blocked {
                 return true;
             }
         }
-        if self.sequence.try_lock().is_err() {
-            return true;
-        }
-        // The durable record is the authority on a process this application did not fork.
         self.runtime.ensure_no_active_game().is_err()
     }
 
@@ -3082,5 +3127,75 @@ mod tests {
             .outcome
             .is_open());
         assert!(harness.service.is_managed_session_active());
+    }
+
+    // ============================================================ HIGH-1: delete/launch serialization
+
+    /// HIGH-1 regression (delete-vs-launch), against the *real* `LaunchApplicationService` and its
+    /// real OS-independent in-process exclusion — not a stub.
+    ///
+    /// A Save-State delete is made to pause deterministically once it has entered its exclusion
+    /// section and passed its first eligibility check. While it is paused there, a real concurrent
+    /// launch is attempted. Before HIGH-1, nothing the delete held would have stopped that launch
+    /// from proceeding all the way to a spawn; the destructive filesystem delete and a freshly
+    /// starting managed session could interleave. After the fix, the launch's own `try_lock` on the
+    /// same section the delete now holds fails immediately: the launch is refused, and nothing is
+    /// spawned, for as long as the delete's critical section is open. Once the delete finishes and
+    /// releases the section, ordinary launching resumes — nothing is left permanently blocked.
+    #[tokio::test]
+    async fn a_delete_paused_mid_flight_blocks_a_concurrent_launch_from_ever_spawning() {
+        let launcher = Arc::new(CountingLauncher::default());
+        let harness = Harness::build_with(SystemId::Nes, Vec::new(), launcher.clone()).await;
+        harness.set_app_run("sleep 5");
+
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        // A real `SaveStateApplicationService`, over the same durable state and the same real
+        // `LaunchApplicationService`, with a test-only checkpoint spliced into its delete path.
+        // The save-state id need not resolve to a real row: the checkpoint fires before that
+        // lookup, and this test is only exercising the exclusion section itself.
+        let save_states = harness
+            .save_states()
+            .with_delete_checkpoint(reached.clone(), resume.clone());
+
+        let delete_task = tokio::spawn(async move {
+            save_states
+                .delete_save_state(crate::domain::save_state::SaveStateId(999_999))
+                .await
+        });
+
+        // The delete has entered its exclusion section and passed its first eligibility check —
+        // it now holds the exact section a launch needs.
+        reached.notified().await;
+
+        let response = harness.service.launch_game(GameId(1), None).await;
+        assert_eq!(failure_code(&response), LaunchErrorCode::GameAlreadyRunning);
+        assert_eq!(
+            launcher.spawns(),
+            0,
+            "nothing may be spawned while a delete holds the exclusion section"
+        );
+        assert!(harness
+            .launch_repository
+            .open_sessions()
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Let the delete finish. (It fails with `notFound` — there was never a real row — but
+        // that is irrelevant here: the point is that it *ran its critical section alone*.)
+        resume.notify_one();
+        let outcome = delete_task.await.unwrap();
+        assert!(matches!(
+            outcome,
+            crate::domain::save_state::DeleteSaveStateResponse::Failed { .. }
+        ));
+
+        // The section is released: an ordinary launch now succeeds normally.
+        let started = harness.service.launch_game(GameId(1), None).await;
+        assert!(matches!(started, LaunchResponse::Started { .. }));
+        assert_eq!(launcher.spawns(), 1);
+        harness.stop();
+        harness.await_idle().await;
     }
 }
