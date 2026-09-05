@@ -168,10 +168,18 @@ single site assembles all 40 characters from its own operands:
 | `movdqa 0x27db07(%rip),%xmm0` (→ `0x10f17d0`) → `movups %xmm0,0x10(%rax)` | writes characters 16–31 from `.rodata` |
 | `movabs $0x6130313137383134,%rcx` → `mov %rcx,0x20(%rax)` | writes characters 32–39 as an inline immediate |
 | `movb $0x0,0x28(%rax)` | NUL-terminates at offset 40 |
-| `movq $0x28,…` | stores the `std::string` length as **0x28 = 40** |
+| `movq $0x28,…` | stores the `std::string` length as **0x28 = 40** — *corroborative only, see below* |
 
-All six write through the **same base register** into the **same 41-byte allocation**. Reassembling
-the operands that site itself names, in store order:
+The **first five** rows all write through the **same base register** into the **same 41-byte
+allocation**: they are the character buffer, and its 40 bytes plus the NUL terminator are what the
+proof rests on. The sixth is different in kind. A `std::string`'s length lives in the string *object*,
+not in the allocated character buffer, so that store does not share the buffer's base register and is
+not bound to this construction by the reasoning above. It is read from the disassembly by hand,
+recorded because it is consistent with a 40-character string, and it is **not** part of the
+proof-critical chain — the verification script reports it as corroboration and asserts nothing about
+it.
+
+Reassembling the operands that site itself names, in store order:
 
 ```
 .rodata[0x10f17c0 .. +16]  = fd1aca3af7db7550
@@ -192,8 +200,21 @@ and keeps only those that write bytes 0–15 and 16–31 from `.rodata` loads an
 `movabs` immediate through one base register (two sites qualify — the other builds an unrelated log
 message). Of those it keeps the ones whose assembled 40 bytes are lowercase hexadecimal: **exactly
 one**. Only then is that value compared with the expected revision, together with the NUL at offset
-40, the stored length `0x28`, and the `.rodata` context above. If the instruction-level association
-cannot be established, the script fails rather than falling back to a byte search.
+40 written through the same character-buffer base register, and the `.rodata` context above. If the
+instruction-level association cannot be established, the script fails rather than falling back to a
+byte search.
+
+The proof-critical chain the script asserts is exactly:
+
+1. the authenticated Dolphin binary identity (SHA-256 and GNU build-id, §2);
+2. one isolated 41-byte character-buffer construction site;
+3. bytes 0–31 taken from that site's own `.rodata` operands;
+4. bytes 32–39 taken from that site's own `movabs` immediate;
+5. the reconstructed value equalling the expected 40-character revision exactly;
+6. the NUL terminator at offset 40, through the same character-buffer base register;
+7. the Dolphin scm-revision literal context around that `.rodata` region.
+
+The `0x28` length store is not in that list, for the reason given above.
 
 The binary additionally carries the related constants, stored as `(pointer, length)` pairs in
 `.data.rel.ro` so their boundaries are exact rather than inferred:
@@ -925,10 +946,12 @@ installation and without network access:
 - the §2 binary identity table (SHA-256 and GNU build-id for all four cores);
 - the §3.1 Dolphin revision, at instruction level — it enumerates the `operator new(41)` sites in
   `.text`, keeps the single one that assembles 40 lowercase hex characters from its own two
-  `.rodata` loads and its own `movabs` immediate through one base register, and checks that value,
-  the NUL at offset 40, the stored length `0x28`, and the surrounding scm_rev literal context. It
-  never searches the file for the expected SHA, and it fails rather than degrading to a byte search
-  if the instruction-level association cannot be established;
+  `.rodata` loads and its own `movabs` immediate through one character-buffer base register, and
+  checks that value, the NUL at offset 40 through that same base register, and the surrounding
+  scm_rev literal context. It never searches the file for the expected SHA, and it fails rather than
+  degrading to a byte search if the instruction-level association cannot be established. The
+  `std::string` length store is reported as corroboration only and is not asserted, because the
+  length field is separate state from the character buffer;
 - the §3.2 narrow negative for the other three cores: each documented candidate revision is absent
   from its binary as an embedded revision identifier.
 

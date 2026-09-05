@@ -155,11 +155,19 @@ done
 #
 #    A search for the two fragments anywhere in the binary would NOT prove the document's claim:
 #    two unrelated occurrences would satisfy it. This check therefore works from the disassembly.
-#    It locates every 41-byte std::string construction site (`operator new(41)`), follows the
-#    operands of that site, reads the .rodata bytes the site's own loads name, decodes the
-#    site's own movabs immediate, concatenates them in store order, and only then compares the
+#    It locates every 41-byte std::string character-buffer construction site (`operator new(41)`),
+#    follows the operands of that site, reads the .rodata bytes the site's own loads name, decodes
+#    the site's own movabs immediate, concatenates them in store order, and only then compares the
 #    result with the expected revision. The two fragments are bound to one construction site by
 #    construction; they are never searched for independently.
+#
+#    The proof-critical chain is: authenticated binary identity; one isolated 41-byte construction
+#    site; bytes 0..31 from that site's own .rodata operands; bytes 32..39 from that site's own
+#    movabs immediate; the reconstructed value equalling the expected revision exactly; the NUL
+#    terminator at offset 40 through the same character-buffer base register; and the scm_rev
+#    literal context around the .rodata region. The std::string LENGTH field is deliberately NOT
+#    in that chain: it is separate state from the character buffer, and this tool does not bind
+#    a length store to this construction. It is reported as corroboration only.
 # ---------------------------------------------------------------------------
 echo
 echo "3. Dolphin embedded source revision (section 3.1) — instruction-level"
@@ -244,7 +252,7 @@ candidates = [TEXT_A + m.start() for m in re.finditer(rb'\xbf\x29\x00\x00\x00', 
 sites = []
 for site in candidates:
     xmm, imm, stores, bases = {}, {}, {}, set()
-    alloc = nul40 = len40 = False
+    alloc = nul40 = len_imm_seen = False
     for _addr, mnem, raw in disasm(site, min(TEXT_A + TEXT_S, site + 0x100)):
         comment = raw.split('#', 1)[1] if '#' in raw else ''
         ops = raw.split('#', 1)[0].strip()
@@ -274,10 +282,16 @@ for site in candidates:
                 nul40 = True
                 bases.add(tgt[1])
         elif ops.startswith('$0x28,'):
-            len40 = True                                 # std::string length 0x28 == 40
+            # A $0x28 immediate store appears in the window. Dolphin's std::string length field
+            # is 40, so this is consistent with the construction — but the length lives in the
+            # string OBJECT, not in the character buffer, and this check does not bind the store
+            # to this construction: any $0x28 immediate in the window sets it. It is therefore
+            # reported as CORROBORATIVE ONLY and is not part of the proof-critical chain.
+            len_imm_seen = True
 
     # The site must write bytes 0..15 and 16..31 from .rodata and 32..39 from an immediate,
-    # all through one base register, into a 41-byte allocation.
+    # and NUL-terminate at offset 40, all through the same CHARACTER-BUFFER base register,
+    # into one 41-byte allocation. The length field is separate state and is not asserted.
     if not alloc or len(bases) != 1:
         continue
     if {0, 16, 32} - set(stores):
@@ -293,7 +307,7 @@ for site in candidates:
                       a1=stores[0][1], a2=stores[16][1], sec=(sec_lo, sec_hi),
                       imm=stores[32][1],
                       value=lo16 + hi16 + stores[32][1].to_bytes(8, 'little'),
-                      nul40=nul40, len40=len40))
+                      nul40=nul40, len_imm_seen=len_imm_seen))
 
 # Only sites assembling a 40-character lowercase hex string are revision-shaped.
 hexish = [s for s in sites if re.fullmatch(rb'[0-9a-f]{40}', s['value'])]
@@ -323,7 +337,7 @@ print('assembled=%s' % value)
 print('matches_expected=%s' % ('yes' if value == expected else 'no'))
 print('alloc41=yes')
 print('nul_at_40=%s' % ('yes' if s['nul40'] else 'no'))
-print('length_0x28=%s' % ('yes' if s['len40'] else 'no'))
+print('length_0x28_seen=%s' % ('yes' if s['len_imm_seen'] else 'no'))
 
 # Context: the 32 .rodata characters must sit inside Dolphin's scm_rev literal pool, i.e. be
 # preceded by the "Dolphin [HEAD] " revision-string literal and followed by SCM_DESC_STR
@@ -364,9 +378,11 @@ PY
       && pass "same site NUL-terminates at offset 40" \
       || fail "same site does not NUL-terminate at offset 40"
 
-    [ "$(field length_0x28)" = "yes" ] \
-      && pass "same site stores the std::string length 0x28 (= 40)" \
-      || fail "same site does not store a std::string length of 0x28"
+    # CORROBORATIVE, not asserted. The std::string length field is separate state from the
+    # character buffer, and this check does not bind the store to this construction.
+    note "corroborative only (not asserted): \$0x28 length-shaped immediate store in window: $(field length_0x28_seen)"
+    note "  the length field belongs to the string object, not to the 41-byte character buffer;"
+    note "  section 3.1 records it from manual disassembly, and it is not part of the proof chain"
 
     if [ "$(field ctx_revstr_before)" = "yes" ] && [ "$(field ctx_descstr_after)" = "yes" ]; then
       pass "the .rodata region lies in Dolphin's scm_rev literal pool ('Dolphin [HEAD] ' before, 'Dolphin/$DOLPHIN_DESCRIBE' after)"
