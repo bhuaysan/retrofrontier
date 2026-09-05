@@ -71,9 +71,14 @@ narrowed the corresponding-source blocker considerably:
 - **Dolphin's exact top-level revision is recovered and proven**: `libretro/dolphin` @
   `fd1aca3af7db75504ed7512406d8a4cf4187110a`. The shipped binary embeds the full 40-character
   `SCM_REV_STR` that Dolphin's build emits from `git rev-parse HEAD`; the repository is identified by
-  libretro's historical `libretro-super` recipe. Submodule closure is recorded but **not**
-  independently verified. M10.2's "not recoverable from the shipped binaries" finding was correct for
-  three cores and wrong for this one.
+  libretro's historical `libretro-super` recipe. M10.2's "not recoverable from the shipped binaries"
+  finding was correct for three cores and wrong for this one.
+- **What that closes, and what it does not.** Three layers, never collapsed: **top-level revision
+  provenance** is now CLOSED for Dolphin and OPEN for the other three; **complete corresponding-source
+  materialisation and archive** is OPEN for **all four**, Dolphin included — its 33 submodule pins are
+  determined by the proven commit but the checkout is not materialised or archived and no notices or
+  source bundle exist; **public redistribution** is OPEN/BLOCKED for every system. No GPL compliance
+  claim is made. The corresponding-source blocker below stays open.
 - **For Nestopia, bsnes-mercury Balanced and Beetle PSX the exact source revision remains unknown.**
   A specific public-CI candidate revision has been identified for each, from libretro's *public*
   GitLab CI pipeline records on `git.libretro.com` — a primary source M10.2 did not examine — and

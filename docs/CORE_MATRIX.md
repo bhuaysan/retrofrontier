@@ -314,31 +314,32 @@ unmeasured maturity are.
 **Mega Drive is therefore an Unresolved V1 blocker.** It must not receive a fallback core. Product
 owner decision required (§7).
 
-### 5.3 The four redistributed cores have no corresponding source available to RetroFrontier
+### 5.3 None of the four redistributed cores has corresponding source available to RetroFrontier
 
-> **Partially superseded by M10.3** ([`docs/CORE_BUILD_PROVENANCE.md`](CORE_BUILD_PROVENANCE.md)).
-> Dolphin's exact top-level revision — `fd1aca3af7db75504ed7512406d8a4cf4187110a` — **was**
-> recovered, from the full `SCM_REV_STR` embedded in the shipped binary, so the "shipped binaries"
-> check below is wrong for Dolphin. For the other three, **the exact source revision remains
-> unknown**; a specific public-CI candidate revision has been identified for each and awaits libretro
-> confirmation. A candidate is not corresponding source. The operative conclusion in this section is
-> unchanged, and **exactly three** core revisions remain unproven.
+Release 002 records `"source_revision": null` for `nestopia`, `bsnes-mercury-balanced`, `beetle-psx`
+and `dolphin`, and the release is unchanged. The current position, after M10.3
+([`docs/CORE_BUILD_PROVENANCE.md`](CORE_BUILD_PROVENANCE.md)), separates three things:
 
-Release 002 records `"source_revision": null` for `nestopia`, `bsnes-mercury-balanced`,
-`beetle-psx` and `dolphin`.
+| | Dolphin | `nestopia`, `bsnes-mercury-balanced`, `beetle-psx` |
+|---|---|---|
+| **Top-level revision provenance** | **CLOSED / PROVEN** — `fd1aca3af7db75504ed7512406d8a4cf4187110a`, recovered from the full `SCM_REV_STR` embedded in the shipped binary | **OPEN — unknown.** A public-CI candidate is identified for each and awaits libretro confirmation; a candidate is not corresponding source |
+| **Complete corresponding source, materialised and archived** | **OPEN** — 33 submodule pins determined by the commit, not archived; notices and source bundle not produced | **OPEN**, necessarily |
+| **Public redistribution** | **BLOCKED** (§7 GameCube row) | **BLOCKED** |
 
-The exact revision is **unknown — not recoverable from the currently published bundle, the shipped
-binaries, libretro's core-info metadata, or the public buildbot metadata M10.2 examined.** Four
-independent checks were made and all were negative; the full analysis is in
-[`docs/SOURCE_PROVENANCE.md`](SOURCE_PROVENANCE.md) §2.
+**Exactly three** core revisions remain unproven. For those three, the revision is unknown — not
+recoverable from the published bundle, the shipped binaries, libretro's core-info metadata, or the
+public buildbot metadata examined; the full analysis is in
+[`docs/SOURCE_PROVENANCE.md`](SOURCE_PROVENANCE.md) §2 (M10.2's "shipped binaries" check there is
+wrong for Dolphin and is corrected in place).
 
-This is scoped to what RetroFrontier can obtain from public sources. libretro's own build
+That negative is scoped to what RetroFrontier can obtain from public sources. libretro's own build
 infrastructure may still be able to identify the revision that produced each binary, which is
 exactly why "ask libretro for build provenance" is a live strategy rather than a dead end
 ([`docs/SOURCE_PROVENANCE.md`](SOURCE_PROVENANCE.md) §5, strategy B).
 
 The operative conclusion is unchanged: **RetroFrontier cannot currently satisfy corresponding-source
-requirements from the evidence available to it**, so public redistribution stays blocked.
+requirements for any of the four cores, Dolphin included** — proving a revision is not producing,
+archiving or publishing the source at it — so public redistribution stays blocked.
 
 Beetle PSX is additionally recorded as `GPL-2.0-only` in Release 002 while
 `mednafen/psx/gpu.c` carries a "version 2 … or any later version" header. The declared identifier is

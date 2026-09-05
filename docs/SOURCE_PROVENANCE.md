@@ -8,80 +8,120 @@ Produced by M10.2 alongside [`docs/CORE_MATRIX.md`](CORE_MATRIX.md) and
 not perform production legal distribution, and it is not legal advice. Points requiring professional
 review are marked **Legal review required**.
 
-> **Partially superseded by M10.3.** [`docs/CORE_BUILD_PROVENANCE.md`](CORE_BUILD_PROVENANCE.md)
-> recovered **Dolphin's exact top-level source revision** — `libretro/dolphin` @
+> **Amended by M10.3.** [`docs/CORE_BUILD_PROVENANCE.md`](CORE_BUILD_PROVENANCE.md) recovered
+> **Dolphin's exact top-level source revision** — `libretro/dolphin` @
 > `fd1aca3af7db75504ed7512406d8a4cf4187110a` — from the shipped binary itself, which embeds the full
 > 40-character `SCM_REV_STR` its build emits from `git rev-parse HEAD`. The repository is identified
-> by libretro's historical `libretro-super` build recipe. §2 check 2 below ("the shipped binaries
-> carry no embedded upstream revision") is therefore **correct for three cores and wrong for
-> Dolphin**, and the headline's "all four" scope is overstated.
+> by libretro's historical `libretro-super` build recipe.
 >
-> For Nestopia, bsnes-mercury Balanced and Beetle PSX the **exact source revision remains unknown**;
-> M10.3 identified a specific public-CI **candidate** revision for each, awaiting libretro
-> confirmation. A candidate is not corresponding source. **Exactly three** core revisions remain
-> unproven, and the operative conclusion below — that RetroFrontier cannot meet the obligation and
-> public redistribution stays blocked — is unchanged.
+> **The headline finding and the §1 component table below have been updated to that position and are
+> the current, authoritative statement.** Two sections are retained as **historical** and are marked
+> as such where they appear: §2 records M10.2's four checks as performed, and its check 2 ("the
+> shipped binaries carry no embedded upstream revision") is wrong for Dolphin and is corrected in
+> place there.
 >
-> Note also that proving a core's revision does not clear its system for distribution: GameCube still
-> carries the separate `dolphin-sys` provenance/immutability gap (§4 below) and unconfirmed content
-> execution. Read this document with M10.3 alongside it.
+> Nothing here is a compliance claim. Proving a revision is neither producing corresponding source
+> nor clearing a system for distribution: GameCube still carries the separate `dolphin-sys`
+> provenance/immutability gap (§4 below) and unconfirmed content execution.
 
-## Headline finding
+## Headline finding (current, as amended by M10.3)
 
-> RetroFrontier cannot currently satisfy GPL corresponding-source obligations for the four
-> redistributed libretro cores in Release 002, because the exact source revision of each shipped
-> binary is **unknown — not recoverable from the currently published bundle, the shipped binaries,
-> libretro's core-info metadata, or the public buildbot metadata M10.2 examined.**
+> **RetroFrontier cannot currently satisfy GPL corresponding-source obligations for any of the four
+> redistributed libretro cores in Release 002.** For Dolphin the *top-level source revision* is now
+> proven (`fd1aca3af7db75504ed7512406d8a4cf4187110a`, recovered by M10.3 from the shipped binary);
+> complete corresponding source for it has still not been materialised, archived or published. For
+> Nestopia, bsnes-mercury Balanced and Beetle PSX the exact source revision remains **unknown** — a
+> public-CI **candidate** is identified for each and awaits libretro confirmation.
 
-Scope of that claim, stated precisely because the difference matters:
+Three layers, stated separately because collapsing them is the likely misreading:
 
-- It is a statement about **evidence available to RetroFrontier from public sources**, established by
-  four independent negative checks (§2) — not a claim that the information has ceased to exist.
+| Layer | Dolphin | Other three cores |
+|---|---|---|
+| **Top-level revision provenance** | **CLOSED / PROVEN** by M10.3 | **OPEN** — candidate identified, unconfirmed |
+| **Complete corresponding-source materialisation and archive** | **OPEN** — 33 submodule pins determined by the commit but not archived; notices and source bundle not produced | **OPEN**, necessarily |
+| **Public redistribution** | **OPEN / BLOCKED** (§4 `dolphin-sys`, hosting, key ceremony) | **OPEN / BLOCKED**; PlayStation carries an additional legal gate (§3.3) |
+
+Scope of the revision claim, stated precisely because the difference matters:
+
+- For the three cores it is a statement about **evidence available to RetroFrontier from public
+  sources**, established by the checks in §2 — not a claim that the information has ceased to exist.
 - libretro's own build infrastructure may well still be able to identify which revision produced a
   given binary. That is precisely why asking for it is a live strategy (§5, strategy B) rather than
   a dead end.
-- What *is* established is the operative conclusion: RetroFrontier has no path from the artefacts it
-  can obtain to the corresponding source, so it cannot meet the obligation today.
+- For Dolphin the revision was recoverable after all, from the binary itself. §2 check 2 below is the
+  M10.2 finding that M10.3 corrected.
+- What *is* established is the operative conclusion: RetroFrontier still has no complete
+  corresponding source for any core, so it cannot meet the obligation today.
 
 This blocks **public redistribution of the managed runtime** — including for the four
 already-approved systems — until one of the strategies in §5 is adopted.
+
+**Exactly three** top-level core revisions remain unproven: `nestopia`, `bsnes-mercury-balanced` and
+`beetle-psx`. Details in [`docs/CORE_BUILD_PROVENANCE.md`](CORE_BUILD_PROVENANCE.md).
 
 Release 002 is otherwise sound: it is version-addressed, digest-pinned, and reconstructable. The
 problem is corresponding *source*, not binary integrity.
 
 ## 1. Release 002 components
 
-Release `rf-runtime-1.22.2-linux-x86_64-002`, manifest `rf-runtime-linux-x86_64-002`. **Unchanged by
-M10.2.** Values read from `release/linux-x86_64/runtime-release.json` and from the installed,
-authenticated manifest of the active installation.
+Release `rf-runtime-1.22.2-linux-x86_64-002`, manifest `rf-runtime-linux-x86_64-002`. **The release
+itself is unchanged by M10.2 and by M10.3** — it remains byte-identical, and every `source_revision`
+below is the value the immutable manifest actually records. Values read from
+`release/linux-x86_64/runtime-release.json` and from the installed, authenticated manifest of the
+active installation.
 
-| Component | Kind | Declared licence | Binary identity strategy | `source_revision` | Corresponding source | Gap |
-|---|---|---|---|---|---|---|
-| `retroarch` | runtime | `GPL-3.0-only` | Digest-pinned member of a version-addressed 7z | **`69a4f0e`** | Reconstructable: RetroArch 1.22.2 is a tagged upstream release and the revision is recorded | **Abbreviated revision** — 7 hex characters, not a full 40-character commit id |
-| `nestopia` | core | `GPL-2.0-or-later` | Digest-pinned member of the pinned core bundle | **`null`** | **Unknown** | Full corresponding-source gap |
-| `bsnes-mercury-balanced` | core | `GPL-3.0-only` | as above | **`null`** | **Unknown** | Full corresponding-source gap |
-| `beetle-psx` | core | `GPL-2.0-only` | as above | **`null`** | **Unknown** | Full gap; `only`/`or-later` disposition unaudited (§3.2); **and** the separate-work question against the GPLv3 host is open (§3.3) |
-| `dolphin` | core | `GPL-2.0-or-later` | as above | **`null`** | **Unknown** | Full corresponding-source gap |
-| `dolphin-sys` | support asset | `GPL-2.0-or-later` | Digest-pinned subtree of a **non-version-addressed** zip | **`null`** | Unknown | Gap, plus a non-immutable upstream URL (§4) |
-| `joypad-autoconfig` | support asset | `MIT` | Digest-pinned subtree of a commit-addressed zip | **`38cf938bba0adbde375972053068f10d955a9d14`** | **Closed** — full commit id, permissive licence | **None** |
+The `source_revision` column is what the **immutable release** records. The next column is what
+RetroFrontier has since **recovered externally**; recovering a revision does not and must not
+retroactively change a published release.
 
-Exactly one component — `joypad-autoconfig` — has fully closed provenance. It is also the only
-permissively licensed one, and the only one acquired from a commit-addressed URL. That is not a
-coincidence; it is the model the others need.
+| Component | Kind | Declared licence | Binary identity strategy | Manifest `source_revision` | Externally recovered revision | Revision provenance | Complete corresponding source / archive |
+|---|---|---|---|---|---|---|---|
+| `retroarch` | runtime | `GPL-3.0-only` | Digest-pinned member of a version-addressed 7z | **`69a4f0e`** | — | **Abbreviated** — 7 hex characters, not a full 40-character commit id | **Open** — reconstructable in principle (1.22.2 is a tagged release), not archived |
+| `nestopia` | core | `GPL-2.0-or-later` | Digest-pinned member of the pinned core bundle | **`null`** | none — candidate only: `5deada54077fae87e2873f5ad9ef77e3ab7af5e1` (unconfirmed) | **Open — unknown** | **Open** |
+| `bsnes-mercury-balanced` | core | `GPL-3.0-only` | as above | **`null`** | none — candidate only: `0f35d044bf2f2b879018a0500e676447e93a1db1` (unconfirmed) | **Open — unknown** | **Open** |
+| `beetle-psx` | core | `GPL-2.0-only` | as above | **`null`** | none — candidate only: `d6383bff89a93e02aad10a586e804829861c3de1` (unconfirmed) | **Open — unknown** | **Open**; `only`/`or-later` disposition unaudited (§3.2); **and** the separate-work question against the GPLv3 host is open (§3.3) |
+| `dolphin` | core | `GPL-2.0-or-later` | as above | **`null`** (unchanged in Release 002) | **`fd1aca3af7db75504ed7512406d8a4cf4187110a`** — proven from the shipped binary by M10.3 | **CLOSED — top-level revision proven** | **Open** — 33 submodule pins determined by that commit but not materialised or archived; notices and source bundle not produced |
+| `dolphin-sys` | support asset | `GPL-2.0-or-later` | Digest-pinned subtree of a **non-version-addressed** zip | **`null`** | — | **Open — unknown.** M10.3 proved nothing here | **Open**, plus a non-immutable upstream URL (§4) |
+| `joypad-autoconfig` | support asset | `MIT` | Digest-pinned subtree of a commit-addressed zip | **`38cf938bba0adbde375972053068f10d955a9d14`** | — | **Closed** — full commit id in the manifest | **Closed** — permissive licence, no corresponding-source obligation |
 
-## 2. How the corresponding-source gap was established
+Reading the table:
+
+- **Three** core revisions remain unproven — `nestopia`, `bsnes-mercury-balanced`, `beetle-psx`. A
+  candidate is not provenance and must never be written into `source_revision` or a notice file.
+- Dolphin is the one core whose revision is settled, and it is settled in the *right-hand* column
+  only: the immutable manifest still records `null`, and its corresponding source is still not
+  archived. **Do not read the Dolphin row as compliance.**
+- `joypad-autoconfig` remains the only component with fully closed provenance in the release itself.
+  It is also the only permissively licensed one, and the only one acquired from a commit-addressed
+  URL. That is not a coincidence; it is the model the others need.
+
+## 2. How the corresponding-source gap was established (M10.2 — check 2 superseded)
+
+> **Historical section.** This records the four checks **as M10.2 performed them**. Check 2 was
+> subsequently **found wrong for Dolphin** by M10.3 and is corrected in place below. The other three
+> checks stand. For the current position, read the headline finding and §1 table above.
 
 The claim "the revision is not recoverable from public sources" is itself evidence-backed rather than
-assumed. Four independent checks, all negative. Each is a statement about a specific source that was
-examined, and together they bound what RetroFrontier can obtain — they do not bound what libretro
-knows internally:
+assumed. Four checks, three of them negative and one since corrected. Each is a statement about a
+specific source that was examined, and together they bound what RetroFrontier can obtain — they do
+not bound what libretro knows internally:
 
 1. **The authenticated manifest.** Every core component records
    `"source_revision": null` and pins only `source_pinning: "sha256:4b7ed8dc…"` — the *bundle*
    digest, which identifies the aggregate download, not any core's source.
-2. **The shipped binaries.** The four Release 002 core `.so` files in the active installation were
-   inspected directly. They carry a GNU build-id and no embedded upstream revision, version control
-   string, or commit identifier:
+2. **The shipped binaries.** ~~They carry a GNU build-id and no embedded upstream revision, version
+   control string, or commit identifier.~~ **Superseded by M10.3.** The correct statement is:
+
+   - **Dolphin does embed its revision.** `dolphin_libretro.so` carries the full 40-character
+     `SCM_REV_STR` its own build emits from `git rev-parse HEAD`, assembled at one construction site
+     from `.rodata` and an inline immediate. M10.2's contiguous `strings` scan could not see it.
+     Recovered value: `fd1aca3af7db75504ed7512406d8a4cf4187110a`.
+   - **For the other three, no embedded revision was identified by the inspection performed** — and
+     that is the whole of the finding. No universal negative is asserted: an inspection that finds
+     nothing does not prove nothing is there. Their documented candidate revisions were specifically
+     checked for and are absent as embedded identifiers.
+
+   The binary identity values M10.2 recorded are unaffected and were re-derived unchanged by M10.3:
 
    | Component | Installed `.so` SHA-256 | GNU build-id |
    |---|---|---|
@@ -100,8 +140,10 @@ knows internally:
    only. No per-core build manifest, build log, or revision record accompanies the stable bundle in
    the paths M10.2 inspected.
 
-**Conclusion.** For a core taken from libretro's stable bundle, the corresponding source revision is
-not derivable from any public artefact RetroFrontier examined. It plausibly remains identifiable
+**Conclusion, as corrected.** For **three** of the four cores taken from libretro's stable bundle,
+the corresponding source revision is not derivable from any public artefact RetroFrontier examined.
+For **Dolphin it was**, from the binary itself (check 2 above). For the three, the revision plausibly
+remains identifiable
 *inside* libretro's build infrastructure — the recorded GNU build-ids would likely let libretro
 resolve it — but RetroFrontier has no access to that record today. Any revision RetroFrontier
 asserted from what it can see would be a guess, and a guess is exactly what GPL §3 does not accept.
@@ -239,8 +281,10 @@ Derived from this analysis, for whichever strategy is chosen:
 1. For every redistributed component: exact licence identifier and full licence text.
 2. Complete copyright notices for each upstream project.
 3. For every GPL component: corresponding source at the **exact** revision that produced the binary,
-   or a valid written offer. This is **currently unsatisfied** for the four Release 002 cores,
-   because RetroFrontier does not yet possess that provenance. Strategy A cannot close this gap;
+   or a valid written offer. This is **currently unsatisfied for all four Release 002 cores**. For
+   three, the revision itself is still unknown. For Dolphin the revision is now proven, but the
+   source at that revision — including its 33 submodules — has not been materialised, archived or
+   published, so the obligation is equally unsatisfied there. Strategy A cannot close this gap;
    strategy B closes it only if libretro supplies the exact build provenance; strategy C closes it by
    construction.
 4. Build recipes and any RetroFrontier-applied patches sufficient to reproduce each binary.
@@ -270,8 +314,13 @@ Stated plainly, because the point of this document is to prevent optimistic read
   independently of corresponding source and would also apply to Gambatte if adopted; the
   non-commercial cores' relationship to a GPLv3 host (§3.4); the exact form of the written offer;
   and MPL-2.0 notice obligations if mGBA is adopted.
-- **"Not recoverable" means not recoverable by RetroFrontier from public sources** (§2). It is not a
-  claim that the revisions are lost, and strategy B (§5) remains genuinely open.
+- **"Not recoverable" means not recoverable by RetroFrontier from public sources** (§2), and it now
+  applies to **three** cores, not four — Dolphin's top-level revision was recovered from the binary
+  itself. It is not a claim that the remaining revisions are lost, and strategy B (§5) remains
+  genuinely open.
+- **A proven revision is not corresponding source.** Dolphin's revision being known does not mean its
+  corresponding source is available, archived or published. That work is open, and nothing in this
+  document reports it as done.
 
 ## 8. Evidence
 

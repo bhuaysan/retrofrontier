@@ -6,8 +6,9 @@ self-build archive model, and the resulting recommendation.
 
 Companion documents:
 
-- [`docs/SOURCE_PROVENANCE.md`](SOURCE_PROVENANCE.md) — M10.2 licence, redistribution and
-  corresponding-source closure. M10.3 **narrows** its headline finding; it does not overturn it.
+- [`docs/SOURCE_PROVENANCE.md`](SOURCE_PROVENANCE.md) — licence, redistribution and
+  corresponding-source closure. M10.3 **narrows** its headline finding; it does not overturn it. Its
+  headline and Release 002 component table have been updated to the position recorded here.
 - [`docs/CORE_MATRIX.md`](CORE_MATRIX.md) — policy, availability, implementation, qualification.
 - [`docs/RUNTIME_MANAGER.md`](RUNTIME_MANAGER.md), [`docs/adr/ADR-012-runtime-trust-model.md`](adr/ADR-012-runtime-trust-model.md)
   — the trust semantics this milestone must not weaken.
@@ -17,6 +18,9 @@ trust semantics, and left Release 002 byte-identical. It is not legal advice.
 
 ## Headline finding
 
+> **Dolphin's top-level revision gap is closed; three core revision gaps remain. Complete
+> corresponding-source publication for the Runtime is still open.**
+>
 > M10.2 reported that the source revision of all four Release 002 cores was "not recoverable from
 > public sources". That is now **false for one core and materially overstated for the other three.**
 >
@@ -32,12 +36,26 @@ trust semantics, and left Release 002 byte-identical. It is not legal advice.
 >   bytes** to a **specific CI job**. libretro's CI destroys build artefacts after **10 minutes**, and
 >   job logs require authentication.
 
-The operative consequence is unchanged: **RetroFrontier still cannot satisfy GPL corresponding-source
-obligations for three of the four cores, so public redistribution of the managed runtime remains
-blocked.** What changed is the *shape* of the remaining gap, and therefore the cost of closing it.
-The outreach to libretro is no longer "please excavate unknown information" but "please confirm three
-specific, already-identified candidate revisions and their job binding" — a far cheaper and far more
-answerable request.
+### Three layers, never collapsed
+
+This document is about **one** of three distinct obligations, and it closes part of only that one.
+Every status in it is stated against this table.
+
+| Layer | Dolphin | Nestopia / bsnes-mercury / Beetle PSX |
+|---|---|---|
+| **1. Top-level source revision provenance** — which revision produced the shipped binary | **CLOSED / PROVEN** (§3.1) | **OPEN.** Candidate identified, unconfirmed (§3.2) |
+| **2. Complete corresponding-source materialisation and archive** — the actual source, including every submodule, mirrored immutably, with notices and a source bundle | **OPEN.** The 33 gitlink pins are determined by the proven commit but are not recoverable from the binary; the checkout is not materialised or archived; notices and bundle work is not started (§3.1, §7) | **OPEN**, necessarily — layer 1 is not closed either |
+| **3. Public redistribution** | **OPEN / BLOCKED** (`dolphin-sys`, content execution, hosting, key ceremony — §3.3) | **OPEN / BLOCKED**; PlayStation additionally carries a separate legal gate (§3.3) |
+
+Layer 1 is what M10.3 worked on. **Closing layer 1 for Dolphin does not close layer 2 for Dolphin,
+and no GPL compliance claim is made anywhere in this document.**
+
+The operative consequence for the milestone is therefore: **complete corresponding-source publication
+for the Runtime remains open for all four cores, and public redistribution of the managed runtime
+remains blocked.** What changed is the *shape* of the remaining revision gap, and therefore the cost
+of closing it. The outreach to libretro is no longer "please excavate unknown information" but
+"please confirm three specific, already-identified candidate revisions and their job binding" — a far
+cheaper and far more answerable request.
 
 **Proving a core's source revision is not the same as clearing a system for distribution.** Even for
 GameCube, where the core revision is now proven, distribution remains blocked by the separate
@@ -55,7 +73,7 @@ Three grades are used, and they are never conflated:
 | Grade | Meaning | Admitted evidence |
 |---|---|---|
 | **Proven** | The chain runs from the distributed bytes themselves to one revision, with no unproven step. | Revision constants emitted by the source's own build system into the shipped binary; unique resolution of that identifier in the correct repository. |
-| **Candidate (high confidence)** | A single named revision is strongly indicated by primary build-infrastructure records, but one link in the chain is not publicly verifiable. | Public CI pipeline records; toolchain fingerprints matching a specific public CI image; stability of the revision across the whole release window. |
+| **Candidate (high confidence)** | A single named revision is strongly indicated by primary build-infrastructure records, but one link in the chain is not publicly verifiable. | Public CI pipeline records; a toolchain fingerprint compatible with the documented public CI image for that build path (corroboration only — it identifies no job, see §2.1); stability of the revision across the whole release window. |
 | **Unknown** | No named revision. | — |
 
 Explicitly **not** admitted as proof anywhere in this document:
@@ -102,9 +120,21 @@ Not previously recorded. Read from each binary's `.comment` section and dynamic 
 | `beetle-psx` | `GCC: (Ubuntu 9.4.0-1ubuntu1~16.04) 9.4.0` | `GLIBC_2.14` |
 | `dolphin` | `GCC: (Ubuntu 12.4.0-1ubuntu1~18.04.sav0) 12.4.0` (plus `7.5.0-3ubuntu1~18.04` objects) | `GLIBC_2.27` |
 
-This is a genuine, checkable link from the shipped bytes to a **specific public libretro CI image**
-(§4.2). It authenticates *who built the binary and with what*. It does **not** identify a source
-revision, and is not used as one.
+This is a genuine, checkable observation about the shipped bytes: the compiler each binary records is
+exactly the compiler in the documented public libretro CI image for its build path (§4.2). It
+**corroborates compatibility with the documented libretro CI toolchain and strengthens the candidate
+attribution in §3.2.**
+
+It does **not** identify or authenticate the producing CI job. Stated precisely, a `.comment` string
+does not establish:
+
+- **who** built the binary — anyone with the same compiler produces the same string,
+- **which CI job or pipeline** built it — the string carries no job, pipeline or timestamp,
+- **which container image uniquely** produced it — the string identifies a Ubuntu compiler package,
+  which many images can contain, not a specific image digest.
+
+It is corroboration of one link, not the missing binding described in §3.2, and it is never used as a
+source revision.
 
 ## 3. Per-core recovery result
 
@@ -123,25 +153,47 @@ Dolphin's build produces the value directly from git and bakes it into the binar
 The **full 40-character `SCM_REV_STR` is present in the authenticated Release 002 binary.** It is
 materialised as a 40-character `std::string`, split by the compiler across two storage locations —
 which is why a naive contiguous `strings` scan does not reveal it, and why M10.3's first pass
-understated it as a 32-character prefix. The disassembly at the construction site is unambiguous:
+understated it as a 32-character prefix.
 
-| Instruction | Effect |
+The evidence is **instruction-level, at one construction site**, at `.text` `0xe73c86`. This matters:
+finding the 32-character fragment somewhere in the file and the 8-character fragment somewhere else
+in the file would prove nothing, because two unrelated occurrences would satisfy it. What is claimed
+here — and what `docs/research/m10-3/verify-core-provenance.sh` mechanically re-derives — is that a
+single site assembles all 40 characters from its own operands:
+
+| Instruction at the site | Effect |
 |---|---|
-| `mov $0x29,%edi` → `operator new` | allocates **41** bytes = 40 characters + NUL |
-| `movdqa 0x10f17c0(%rip)` → `movups %xmm0,(%rax)` | writes characters 0–15 from `.rodata` |
-| `movdqa 0x10f17d0(%rip)` → `movups %xmm0,0x10(%rax)` | writes characters 16–31 from `.rodata` |
+| `mov $0x29,%edi` → `call operator new` | allocates **41** bytes = 40 characters + NUL |
+| `movdqa 0x27db21(%rip),%xmm0` (→ `0x10f17c0`) → `movups %xmm0,(%rax)` | writes characters 0–15 from `.rodata` |
+| `movdqa 0x27db07(%rip),%xmm0` (→ `0x10f17d0`) → `movups %xmm0,0x10(%rax)` | writes characters 16–31 from `.rodata` |
 | `movabs $0x6130313137383134,%rcx` → `mov %rcx,0x20(%rax)` | writes characters 32–39 as an inline immediate |
 | `movb $0x0,0x28(%rax)` | NUL-terminates at offset 40 |
 | `movq $0x28,…` | stores the `std::string` length as **0x28 = 40** |
 
-Reassembling the two halves:
+All six write through the **same base register** into the **same 41-byte allocation**. Reassembling
+the operands that site itself names, in store order:
 
 ```
-.rodata[0x10f17c0 .. +32]  = fd1aca3af7db75504ed7512406d8a4cf
-movabs immediate (LE)      =                                 4187110a
+.rodata[0x10f17c0 .. +16]  = fd1aca3af7db7550
+.rodata[0x10f17d0 .. +16]  =                 4ed7512406d8a4cf
+movabs immediate, LE       =                                 4187110a
                              ----------------------------------------
 full SCM_REV_STR (len 40)  = fd1aca3af7db75504ed7512406d8a4cf4187110a
 ```
+
+The `.rodata` region is bounded by Dolphin's other scm_rev literals — the revision string
+`Dolphin [HEAD] ` immediately precedes it and `SCM_DESC_STR` (`Dolphin/fd1aca3a`) immediately follows
+it — so the 32 bytes lie inside the scm_rev literal pool rather than being 32 arbitrary bytes that
+happen to be hexadecimal.
+
+**How the script establishes this without assuming the answer.** It does not search for the expected
+SHA. It enumerates every `operator new(41)` site in `.text` (four in this binary), disassembles each,
+and keeps only those that write bytes 0–15 and 16–31 from `.rodata` loads and bytes 32–39 from a
+`movabs` immediate through one base register (two sites qualify — the other builds an unrelated log
+message). Of those it keeps the ones whose assembled 40 bytes are lowercase hexadecimal: **exactly
+one**. Only then is that value compared with the expected revision, together with the NUL at offset
+40, the stored length `0x28`, and the `.rodata` context above. If the instruction-level association
+cannot be established, the script fails rather than falling back to a byte search.
 
 The binary additionally carries the related constants, stored as `(pointer, length)` pairs in
 `.data.rel.ro` so their boundaries are exact rather than inferred:
@@ -237,16 +289,27 @@ mednafen_psx  … https://github.com/libretro/beetle-psx-libretro.git master YES
 Repository identity is therefore **not** the gap. The gap is the revision.
 
 
-None of these three binaries embeds any revision. This was checked positively, not assumed:
+**No embedded revision was identified by the inspection performed.** That is the finding, and it is
+deliberately narrower than "these binaries embed no revision" — no universal negative is asserted,
+because none was proved. An inspection that finds nothing does not establish that nothing is there.
 
-- no 40-character hex run anywhere in any of the three (the only 40-char runs found binary-wide are
-  decimal digit tables),
-- no `git describe`-shaped `g<hex>` identifier,
-- no `scm_rev` / `git_commit` / `git_version` symbol or string,
-- all three are `stripped`, which the public CI template explains: `STRIP_CORE_LIB: 1` runs
-  `strip --strip-unneeded` on every core before upload.
+What was actually checked, and holds:
 
-Two near-misses were investigated and **rejected**, precisely because they are the kind of thing that
+- **The specific public-CI candidate revision below was not found in its binary as an embedded
+  revision identifier** — not as the full 40 characters, not as a NUL-delimited 7- or 8-character
+  `git describe` prefix, and not in `g<hex>` form. This is a narrow, falsifiable negative, and the
+  verification script re-asserts it for all three cores.
+- No `scm_rev` / `git_commit` / `git_version` symbol or string was found by the inspection.
+- Every candidate 40-character hexadecimal run that the inspection surfaced was examined
+  individually and rejected for a stated reason (below).
+- All three are `stripped`, which the public CI template explains: `STRIP_CORE_LIB: 1` runs
+  `strip --strip-unneeded` on every core before upload. This is a plausible *mechanism* for the
+  absence, not proof of it.
+
+**The exact source revision of each of these three cores therefore remains UNKNOWN**, and that
+conclusion rests on the absence of any identified revision, not on a proof that none exists.
+
+Near-misses were investigated and **rejected**, precisely because they are the kind of thing that
 produces a false provenance claim:
 
 - `bsnes_mercury_balanced_libretro.so` contains the byte sequence `0f35d04`, which is a 7-character
@@ -258,12 +321,20 @@ produces a false provenance claim:
   `/home/alcaro/Desktop/minir/cores/bsnes_v073/supergameboy/libsupergameboy.so`. This is a **string
   constant vendored in the upstream source**, not a build path of this build, and carries no
   provenance for the shipped binary.
-- `mednafen_psx_libretro.so` contains four 40-character runs that fall in the ASCII hex range, such
-  as `aaaaaaaaabbbbbbbbccccccccddddddddeeeeeee`. Each lies inside a ~4 KB **byte-lookup table of
-  ascending values** (`0x01…`, `0x02…`, … `0x61 'a'`, `0x62 'b'`, …), not inside any string. They are
-  data, not identifiers. The verification script excludes such runs on a stated mechanical criterion
-  — fewer than 20 adjacent character transitions — rather than by hand, so the exclusion is
-  reproducible and cannot quietly hide a real revision.
+- `mednafen_psx_libretro.so` contains four 40-character runs that fall in the ASCII hex range:
+  `0000000000111111111122222222223333333333`, `0000011111222223333344444555556666677778`,
+  `4444444444555555555666666666677777777778` and `aaaaaaaaabbbbbbbbccccccccddddddddeeeeeee`. Each
+  lies inside a ~4 KB **byte-lookup table of ascending values** (`0x01…`, `0x02…`, … `0x61 'a'`,
+  `0x62 'b'`, …), not inside any string, and each was inspected in its surrounding table. They are
+  data, not identifiers. Note that these runs exist, so a claim that "no 40-character hex run is
+  present in these binaries" would be false and is not made here. Nestopia and bsnes-mercury contain
+  no such run at all.
+
+  The verification script prints these runs as **diagnostic output only**. It draws no conclusion
+  from them, in either direction. An earlier draft excluded them automatically when they had fewer
+  than 20 adjacent character transitions; that threshold is a **research filter, not a proof rule** —
+  a real Git object id is not logically required to exceed it — so it no longer decides anything, and
+  the disposal of each run above is by inspection, recorded here.
 
 Candidate revisions, from libretro's public GitLab CI pipeline records (§4.2):
 
@@ -309,7 +380,7 @@ different claims, and collapsing them is the most likely misreading of this mile
 | **NES / Nestopia** | Exact revision **unknown**; candidate identified, awaiting libretro confirmation. |
 | **SNES / bsnes-mercury Balanced** | Exact revision **unknown**; candidate identified, awaiting libretro confirmation. |
 | **PlayStation / Beetle PSX** | Exact revision **unknown**; candidate identified, awaiting libretro confirmation. **Additionally** the `GPL-2.0-only` / GPLv3-host separate-work legal gate remains independently open — confirming the revision would not release PlayStation. |
-| **GameCube / Dolphin core** | Top-level source revision **proven**: `fd1aca3af7db75504ed7512406d8a4cf4187110a`. Submodule closure recorded but not independently verified (§3.1). |
+| **GameCube / Dolphin core** | Top-level revision provenance **CLOSED / PROVEN**: `fd1aca3af7db75504ed7512406d8a4cf4187110a`. Complete corresponding-source materialisation/archive **OPEN**: the 33 gitlink pins are determined by that commit but are not recoverable from the binary, and the checkout is not materialised or archived (§3.1, §7.3). |
 | **`dolphin-sys` support asset** | **Separate blocker, open.** `source_revision` remains `null`; upstream `https://buildbot.libretro.com/assets/system/Dolphin.zip` is **not version-addressed**; immutable mirroring is still outstanding. M10.3 proved nothing about this component. |
 | **GameCube qualification** | **Partially qualified.** Content execution is still **not confirmed** (inherited from M7.5; M10.3 measured nothing). |
 
@@ -411,9 +482,17 @@ the answer must identify what is needed for the *complete* source. For the four 
 tractable and already characterised: Dolphin needs its 33 submodule pins (which its commit
 determines); the other three have no submodules.
 
-**Dolphin is already closed under this standard** by §3.1, independently of any libretro reply. The
-outreach therefore concerns three cores, and asks libretro to *confirm* Dolphin rather than supply it
-— which conveniently gives the maintainer a built-in correctness check on their own lookup.
+**Dolphin's *revision* link in that chain is already established** by §3.1, independently of any
+libretro reply: the last two steps — exact repository and exact 40-character revision — hold. The
+final step, *corresponding source obtainable at that revision including every submodule*, is **not**
+discharged: the 33 gitlink pins are determined by the commit but the checkout has not been
+materialised or archived (§3.1, §7.3). And the binary→job binding, which Strategy B exists to supply,
+is not needed for Dolphin because the revision comes from the bytes rather than from a job record.
+
+So the outreach concerns three cores for revision recovery, and asks libretro only to *confirm*
+Dolphin rather than supply it — which conveniently gives the maintainer a built-in correctness check
+on their own lookup. It does **not** follow that Dolphin's corresponding-source obligation is
+satisfied; that is layer 2 work (see the headline table), and it is open.
 
 ### 5.2 Is the request technically well-specified and realistic?
 
@@ -775,10 +854,15 @@ or any change to Runtime Release construction.
 
 ## 11. What is *not* claimed
 
-- **No GPL compliance claim is made.** Three of four cores still lack established corresponding
-  source, so public redistribution remains blocked.
-- **The corresponding-source blocker is NOT closed.** It is closed for Dolphin's revision
-  specifically; it is open for the other three, and the blocker item stays open.
+- **No GPL compliance claim is made.** No core has complete corresponding source materialised,
+  archived and published — **Dolphin included**. Public redistribution remains blocked.
+- **The corresponding-source blocker is NOT closed for any core.** What is closed is one layer for
+  one core: Dolphin's **top-level revision provenance**. The three other cores' revisions are open,
+  and complete corresponding-source materialisation is open for all four. The blocker item stays
+  open.
+- **Proving a revision is not producing corresponding source.** Dolphin's 33 submodule pins are
+  determined by the proven commit, but the checkout has not been materialised, archived or
+  accompanied by notices, and none of that is claimed as done.
 - **Candidate revisions are not corresponding source.** Nestopia, bsnes-mercury and Beetle PSX have
   named candidates, and a candidate must never be written into `source_revision` or a notice file.
 - **No public distribution has occurred**, and none is authorised by this document.
@@ -835,6 +919,19 @@ Primary sources, retrieved 2026-09-05. No community lists, wikis or forum infere
 - `nightly/linux/x86_64/latest/.index-extended` (exists; date + CRC32 + filename, no revision).
 - `stable/1.22.2/linux/x86_64/.index-extended` (HTTP 404).
 
-**Re-verification.** `docs/research/m10-3/verify-core-provenance.sh` re-derives the §2 binary
-identity table and the Dolphin embedded-revision evidence from a local installation, so the central
-claim of this document can be independently re-checked without network access.
+**Re-verification.** `docs/research/m10-3/verify-core-provenance.sh` re-derives, from a local
+installation and without network access:
+
+- the §2 binary identity table (SHA-256 and GNU build-id for all four cores);
+- the §3.1 Dolphin revision, at instruction level — it enumerates the `operator new(41)` sites in
+  `.text`, keeps the single one that assembles 40 lowercase hex characters from its own two
+  `.rodata` loads and its own `movabs` immediate through one base register, and checks that value,
+  the NUL at offset 40, the stored length `0x28`, and the surrounding scm_rev literal context. It
+  never searches the file for the expected SHA, and it fails rather than degrading to a byte search
+  if the instruction-level association cannot be established;
+- the §3.2 narrow negative for the other three cores: each documented candidate revision is absent
+  from its binary as an embedded revision identifier.
+
+Its generic 40-character hex scan is printed as **diagnostic output only** and establishes no
+provenance conclusion. The script asserts nothing about submodule closure, corresponding-source
+materialisation, or redistribution.
